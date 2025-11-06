@@ -334,26 +334,6 @@ class NewPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.black),
-          onPressed: () {
-            Navigator.pop(context);
-          },
-        ),
-        title: Text(
-          title,
-          style: const TextStyle(
-            fontFamily: 'Aeroport',
-            fontSize: 15,
-            fontWeight: FontWeight.w500,
-            color: Colors.black,
-          ),
-        ),
-        centerTitle: true,
-      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 480),
@@ -362,18 +342,28 @@ class NewPage extends StatelessWidget {
             height: double.infinity,
             padding: const EdgeInsets.all(15),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.start,
               children: [
                 Text(
                   title,
                   style: const TextStyle(
                     fontFamily: 'Aeroport',
-                    fontSize: 24,
+                    fontSize: 20,
                     fontWeight: FontWeight.w700,
                     color: Colors.black,
                   ),
-                  textAlign: TextAlign.center,
+                  textAlign: TextAlign.left,
+                ),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontFamily: 'Aeroport',
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.black,
+                  ),
+                  textAlign: TextAlign.left,
                 ),
               ],
             ),
