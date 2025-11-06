@@ -131,7 +131,7 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.red,
+      backgroundColor: Colors.white,
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 480),
@@ -149,89 +149,47 @@ class _HomePageState extends State<HomePage> {
                   height: 30,
                 ),
                 // Add your second child here
-                Container(
-                  width: 100,
-                  height: 50,
-                  color: Colors.grey,
-                  child: const Center(
-                    child: Text('Child 1'),
+                if (!_isFocused) ...[
+                  const SizedBox(
+                    width: 100,
+                    height: 50,
+                    child: Center(
+                      child: Text('Child 1'),
+                    ),
                   ),
-                ),
-                Container(
-                  width: 100,
-                  height: 50,
-                  color: Colors.grey,
-                  child: const Center(
-                    child: Text('Child 2'),
+                  const SizedBox(
+                    width: 100,
+                    height: 50,
+                    child: Center(
+                      child: Text('Child 2'),
+                    ),
                   ),
-                ),
-                Container(
-                  width: 100,
-                  height: 50,
-                  color: Colors.grey,
-                  child: const Center(
-                    child: Text('Child 3'),
+                  const SizedBox(
+                    width: 100,
+                    height: 50,
+                    child: Center(
+                      child: Text('Child 3'),
+                    ),
                   ),
-                ),
-                Container(
-                  width: 100,
-                  height: 50,
-                  color: Colors.grey,
-                  child: const Center(
-                    child: Text('Child 4'),
+                  const SizedBox(
+                    width: 100,
+                    height: 50,
+                    child: Center(
+                      child: Text('Child 4'),
+                    ),
                   ),
-                ),
+                ],
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Expanded(
-                      child: IntrinsicHeight(
-                        child: Container(
-                          constraints: const BoxConstraints(minHeight: 30),
-                          color: Colors.white,
-                          child: _controller.text.isEmpty ||
-                                  _controller.text.split('\n').length == 1
-                              ? SizedBox(
-                                  height: 30,
-                                  child: TextField(
-                                    key: _textFieldKey,
-                                    controller: _controller,
-                                    focusNode: _focusNode,
-                                    cursorColor: Colors.black,
-                                    cursorHeight: 15,
-                                    maxLines: 11,
-                                    minLines: 1,
-                                    textAlignVertical: TextAlignVertical.center,
-                                    style: const TextStyle(
-                                        fontFamily: 'Aeroport',
-                                        fontSize: 15,
-                                        fontWeight: FontWeight.w500,
-                                        height: 2.0),
-                                    decoration: InputDecoration(
-                                      hintText: (_isFocused ||
-                                              _controller.text.isNotEmpty)
-                                          ? null
-                                          : 'Ask anything',
-                                      hintStyle: const TextStyle(
-                                          color: Colors.black,
-                                          fontFamily: 'Aeroport',
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.w500,
-                                          height: 2.0),
-                                      border: InputBorder.none,
-                                      enabledBorder: InputBorder.none,
-                                      focusedBorder: InputBorder.none,
-                                      isDense: true,
-                                      contentPadding:
-                                          _controller.text.isEmpty &&
-                                                  !_isFocused
-                                              ? const EdgeInsets.symmetric(
-                                                  horizontal: 0, vertical: 5)
-                                              : EdgeInsets.zero,
-                                    ),
-                                  ),
-                                )
-                              : TextField(
+                      child: Container(
+                        constraints: const BoxConstraints(minHeight: 30),
+                        color: Colors.white,
+                        child: _controller.text.isEmpty
+                            ? SizedBox(
+                                height: 30,
+                                child: TextField(
                                   key: _textFieldKey,
                                   controller: _controller,
                                   focusNode: _focusNode,
@@ -239,7 +197,51 @@ class _HomePageState extends State<HomePage> {
                                   cursorHeight: 15,
                                   maxLines: 11,
                                   minLines: 1,
-                                  textAlignVertical: TextAlignVertical.top,
+                                  textAlignVertical: TextAlignVertical.center,
+                                  style: const TextStyle(
+                                      fontFamily: 'Aeroport',
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w500,
+                                      height: 2.0),
+                                  decoration: InputDecoration(
+                                    hintText: (_isFocused ||
+                                            _controller.text.isNotEmpty)
+                                        ? null
+                                        : 'Ask anything',
+                                    hintStyle: const TextStyle(
+                                        color: Colors.black,
+                                        fontFamily: 'Aeroport',
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w500,
+                                        height: 2.0),
+                                    border: InputBorder.none,
+                                    enabledBorder: InputBorder.none,
+                                    focusedBorder: InputBorder.none,
+                                    isDense: true,
+                                    contentPadding: !_isFocused
+                                        ? const EdgeInsets.only(
+                                            left: 0,
+                                            right: 0,
+                                            top: 5,
+                                            bottom: 5)
+                                        : const EdgeInsets.only(right: 0),
+                                  ),
+                                ),
+                              )
+                            : Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: TextField(
+                                  key: _textFieldKey,
+                                  controller: _controller,
+                                  focusNode: _focusNode,
+                                  cursorColor: Colors.black,
+                                  cursorHeight: 15,
+                                  maxLines: 11,
+                                  minLines: 1,
+                                  textAlignVertical:
+                                      _controller.text.split('\n').length == 1
+                                          ? TextAlignVertical.center
+                                          : TextAlignVertical.bottom,
                                   style: const TextStyle(
                                       fontFamily: 'Aeroport',
                                       fontSize: 15,
@@ -260,10 +262,14 @@ class _HomePageState extends State<HomePage> {
                                     enabledBorder: InputBorder.none,
                                     focusedBorder: InputBorder.none,
                                     isDense: true,
-                                    contentPadding: EdgeInsets.zero,
+                                    contentPadding:
+                                        _controller.text.split('\n').length > 1
+                                            ? const EdgeInsets.only(
+                                                left: 0, right: 0, top: 5)
+                                            : const EdgeInsets.only(right: 0),
                                   ),
                                 ),
-                        ),
+                              ),
                       ),
                     ),
                     const SizedBox(width: 5),
