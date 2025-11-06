@@ -68,6 +68,19 @@ A simple one-page Telegram Mini App built with Flutter that displays "Hello" tex
    - Press `R` - Hot restart (full restart)
    - Press `q` - Quit
 
+   **Auto Hot Reload on Save (VS Code/Cursor):**
+   - The project includes `.vscode/settings.json` with auto hot reload enabled
+   - **To enable auto hot reload:**
+     1. Make sure you have the **Flutter extension** installed in Cursor/VS Code
+     2. **Run the app from Cursor** (F5 or use Run menu → "Flutter (Chrome)")
+     3. Or if running from terminal, make sure Cursor is connected to the debug session
+     4. Save your file (Ctrl+S / Cmd+S) - it should auto-reload
+   - **If auto-reload doesn't work:**
+     - Make sure the app is running in debug mode (not release mode)
+     - Try manually pressing `r` in the terminal where Flutter is running
+     - Or use the Flutter extension's "Hot Reload" button in Cursor
+     - Check that `dart.flutterHotReloadOnSave` is set to `"always"` in settings
+
 ## Building for Telegram
 
 To build the web version for Telegram Mini App:

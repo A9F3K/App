@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_svg: ^2.2.2
 
 dev_dependencies:
   flutter_test:
@@ -16,6 +17,27 @@ dev_dependencies:
   flutter_lints: ^3.0.0
 
 flutter:
-  uses-material-design: true
+  # Removed uses-material-design to avoid Roboto font loading errors
+  # Using system fonts instead
+  
+  # Assets folder (for images used in Flutter code)
+  assets:
+    - assets/images/logo.svg
+    - assets/icons/apply.svg
+  
+  # Fonts configuration
+  fonts:
+    - family: Aeroport
+      fonts:
+        - asset: assets/fonts/AEROPORT-REGULAR-TRIAL.OTF
+          weight: 400
+        - asset: assets/fonts/AEROPORT-LIGHT-TRIAL.OTF
+          weight: 300
+        - asset: assets/fonts/AEROPORT-MEDIUM-TRIAL.OTF
+          weight: 500
+        - asset: assets/fonts/AEROPORT-BOLD-TRIAL.OTF
+          weight: 700
+        - asset: assets/fonts/AEROPORT-BLACK.OTF
+          weight: 900
 
 

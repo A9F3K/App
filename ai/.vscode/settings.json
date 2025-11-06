@@ -1,0 +1,14 @@
+{
+  "dart.flutterHotReloadOnSave": "always",
+  "dart.flutterHotRestartOnSave": "never",
+  "files.autoSave": "onFocusChange",
+  "[dart]": {
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll": "explicit"
+    }
+  },
+  "dart.enableSdkFormatter": true,
+  "dart.previewFlutterUiGuides": true
+}
+
