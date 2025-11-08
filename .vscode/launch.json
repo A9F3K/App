@@ -7,13 +7,6 @@
       "type": "dart",
       "program": "front/lib/main.dart",
       "deviceId": "chrome"
-    },
-    {
-      "name": "Flutter (Edge)",
-      "request": "launch",
-      "type": "dart",
-      "program": "front/lib/main.dart",
-      "deviceId": "edge"
     }
   ]
 }
