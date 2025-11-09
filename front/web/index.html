@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <base href="$FLUTTER_BASE_HREF">
   <meta charset="UTF-8">
@@ -8,33 +8,125 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="Telegram Mini App">
-  <!-- Viewport is handled by Flutter automatically -->
-      <style>
-        body {
-          background-color: #000000 !important;
-          margin: 0;
-          padding: 0;
-        }
-        html {
-          background-color: #000000 !important;
-        }
-        /* Hide browser scrollbars on body/html only */
-        body::-webkit-scrollbar,
-        html::-webkit-scrollbar {
-          display: none;
-        }
-        body {
-          -ms-overflow-style: none;
-          scrollbar-width: none;
-        }
-      </style>
+  <meta
+    name="viewport"
+    content="width=device-width, user-scalable=no, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0"
+  >
+  <style>
+    body {
+      background-color: #000000 !important;
+      margin: 0;
+      padding: 0;
+    }
+    html {
+      background-color: #000000 !important;
+    }
+    /* Hide browser scrollbars on body/html only */
+    body::-webkit-scrollbar,
+    html::-webkit-scrollbar {
+      display: none;
+    }
+    body {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+    
+    /* Sticky app styles to prevent swipe-down closure */
+    .mobile-body {
+      overflow: hidden !important;
+      height: 100vh !important;
+    }
+
+    .mobile-wrap {
+      position: absolute !important;
+      left: 0 !important;
+      top: 0 !important;
+      right: 0 !important;
+      bottom: 0 !important;
+      overflow-x: hidden !important;
+      overflow-y: auto !important;
+    }
+
+    .mobile-content {
+      height: calc(100% + 1px) !important;
+    }
+  </style>
   <link rel="stylesheet" href="styles.css">
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script src="https://unpkg.com/@telegram-apps/sdk@1.0.0/dist/index.iife.js"></script>
   <script>
-    if (window.Telegram && window.Telegram.WebApp) {
-      window.Telegram.WebApp.ready();
-      window.Telegram.WebApp.expand();
-    }
+    (function() {
+      // Initialize Telegram WebApp
+      if (window.Telegram && window.Telegram.WebApp) {
+        window.Telegram.WebApp.ready();
+        window.Telegram.WebApp.expand();
+      }
+      
+      // Make app sticky to prevent swipe-down closure
+      function applyStickyStyles() {
+        try {
+          var { retrieveLaunchParams, postEvent } = window.telegramApps.sdk;
+          var lp = retrieveLaunchParams();
+
+          // Some versions of Telegram don't need the sticky classes
+          if (['macos', 'tdesktop', 'weba', 'web', 'webk'].includes(lp.platform)) {
+            return;
+          }
+
+          // Expand the application
+          postEvent('web_app_expand');
+
+          // Apply sticky classes
+          document.body.classList.add('mobile-body');
+          
+          // Find Flutter's root element and apply classes
+          // Wait for Flutter to initialize
+          function findFlutterRoot() {
+            var flutterRoot = document.querySelector('flt-glass-pane') || 
+                             document.querySelector('flt-scene-host') ||
+                             document.querySelector('flt-scene') ||
+                             document.body;
+            
+            if (flutterRoot && flutterRoot !== document.body) {
+              flutterRoot.classList.add('mobile-wrap');
+              
+              // Find content container
+              var content = flutterRoot.querySelector('flt-scene') ||
+                           flutterRoot.querySelector('flt-scene-host') ||
+                           flutterRoot;
+              
+              if (content) {
+                content.classList.add('mobile-content');
+              }
+              return true;
+            }
+            return false;
+          }
+          
+          // Try to find Flutter root immediately
+          if (!findFlutterRoot()) {
+            // If not found, wait for Flutter to load
+            var attempts = 0;
+            var maxAttempts = 50; // 5 seconds max
+            var interval = setInterval(function() {
+              attempts++;
+              if (findFlutterRoot() || attempts >= maxAttempts) {
+                clearInterval(interval);
+              }
+            }, 100);
+          }
+        } catch (e) {
+          console.warn('Could not apply sticky app styles:', e);
+        }
+      }
+      
+      // Apply sticky styles when DOM is ready
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', applyStickyStyles);
+      } else {
+        applyStickyStyles();
+      }
+    })();
   </script>
 </head>
 <body style="background-color: #000000; margin: 0; padding: 0;">
