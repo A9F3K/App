@@ -162,7 +162,7 @@ class _HomePageState extends State<HomePage> {
       backgroundColor: Colors.black,
       body: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 750),
+          constraints: const BoxConstraints(maxWidth: 600),
           child: SizedBox(
             width: double.infinity,
             height: double.infinity,
@@ -723,7 +723,7 @@ class _NewPageState extends State<NewPage> with TickerProviderStateMixin {
         backgroundColor: Colors.black,
         body: Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 750),
+            constraints: const BoxConstraints(maxWidth: 600),
             child: SizedBox(
               width: double.infinity,
               height: double.infinity,
@@ -732,16 +732,21 @@ class _NewPageState extends State<NewPage> with TickerProviderStateMixin {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(15),
-                    decoration: const BoxDecoration(
-                      color: Colors.black,
-                    ),
-                    child: SvgPicture.asset(
-                      'assets/images/logo.svg',
-                      width: 30,
-                      height: 30,
+                  GestureDetector(
+                    onTap: () {
+                      Navigator.of(context).popUntil((route) => route.isFirst);
+                    },
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(15),
+                      decoration: const BoxDecoration(
+                        color: Colors.black,
+                      ),
+                      child: SvgPicture.asset(
+                        'assets/images/logo.svg',
+                        width: 30,
+                        height: 30,
+                      ),
                     ),
                   ),
                   Expanded(
