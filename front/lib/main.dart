@@ -220,116 +220,116 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 // Add your second child here
-                if (!_isFocused)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              children: [
-                                SvgPicture.asset(
-                                  'assets/icons/connect.svg',
-                                  width: 20,
-                                  height: 20,
-                                  colorFilter: const ColorFilter.mode(
-                                    Colors.white,
-                                    BlendMode.srcIn,
-                                  ),
-                                ),
-                                const SizedBox(width: 5),
-                                const SizedBox(
-                                  height: 20,
-                                  child: Center(
-                                    child: Text(
-                                      'Connect',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 15,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(width: 15),
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              children: [
-                                SvgPicture.asset(
-                                  'assets/icons/create.svg',
-                                  width: 20,
-                                  height: 20,
-                                  colorFilter: const ColorFilter.mode(
-                                    Colors.white,
-                                    BlendMode.srcIn,
-                                  ),
-                                ),
-                                const SizedBox(width: 5),
-                                const SizedBox(
-                                  height: 20,
-                                  child: Center(
-                                    child: Text(
-                                      'Create',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 15,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(width: 15),
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.center,
-                              children: [
-                                SvgPicture.asset(
-                                  'assets/icons/import.svg',
-                                  width: 20,
-                                  height: 20,
-                                  colorFilter: const ColorFilter.mode(
-                                    Colors.white,
-                                    BlendMode.srcIn,
-                                  ),
-                                ),
-                                const SizedBox(width: 5),
-                                const SizedBox(
-                                  height: 20,
-                                  child: Center(
-                                    child: Text(
-                                      'Import',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 15,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        const Center(
-                          child: Text(
-                            'wallet',
-                            style: TextStyle(
-                              color: Color(0xFF818181),
-                              fontSize: 20,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                // if (!_isFocused)
+                //   Padding(
+                //     padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                //     child: Row(
+                //       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                //       crossAxisAlignment: CrossAxisAlignment.center,
+                //       children: [
+                //         Row(
+                //           crossAxisAlignment: CrossAxisAlignment.center,
+                //           children: [
+                //             Row(
+                //               mainAxisSize: MainAxisSize.min,
+                //               crossAxisAlignment: CrossAxisAlignment.center,
+                //               children: [
+                //                 SvgPicture.asset(
+                //                   'assets/icons/connect.svg',
+                //                   width: 20,
+                //                   height: 20,
+                //                   colorFilter: const ColorFilter.mode(
+                //                     Colors.white,
+                //                     BlendMode.srcIn,
+                //                   ),
+                //                 ),
+                //                 const SizedBox(width: 5),
+                //                 const SizedBox(
+                //                   height: 20,
+                //                   child: Center(
+                //                     child: Text(
+                //                       'Connect',
+                //                       style: TextStyle(
+                //                         color: Colors.white,
+                //                         fontSize: 15,
+                //                       ),
+                //                     ),
+                //                   ),
+                //                 ),
+                //               ],
+                //             ),
+                //             const SizedBox(width: 15),
+                //             Row(
+                //               mainAxisSize: MainAxisSize.min,
+                //               crossAxisAlignment: CrossAxisAlignment.center,
+                //               children: [
+                //                 SvgPicture.asset(
+                //                   'assets/icons/create.svg',
+                //                   width: 20,
+                //                   height: 20,
+                //                   colorFilter: const ColorFilter.mode(
+                //                     Colors.white,
+                //                     BlendMode.srcIn,
+                //                   ),
+                //                 ),
+                //                 const SizedBox(width: 5),
+                //                 const SizedBox(
+                //                   height: 20,
+                //                   child: Center(
+                //                     child: Text(
+                //                       'Create',
+                //                       style: TextStyle(
+                //                         color: Colors.white,
+                //                         fontSize: 15,
+                //                       ),
+                //                     ),
+                //                   ),
+                //                 ),
+                //               ],
+                //             ),
+                //             const SizedBox(width: 15),
+                //             Row(
+                //               mainAxisSize: MainAxisSize.min,
+                //               crossAxisAlignment: CrossAxisAlignment.center,
+                //               children: [
+                //                 SvgPicture.asset(
+                //                   'assets/icons/import.svg',
+                //                   width: 20,
+                //                   height: 20,
+                //                   colorFilter: const ColorFilter.mode(
+                //                     Colors.white,
+                //                     BlendMode.srcIn,
+                //                   ),
+                //                 ),
+                //                 const SizedBox(width: 5),
+                //                 const SizedBox(
+                //                   height: 20,
+                //                   child: Center(
+                //                     child: Text(
+                //                       'Import',
+                //                       style: TextStyle(
+                //                         color: Colors.white,
+                //                         fontSize: 15,
+                //                       ),
+                //                     ),
+                //                   ),
+                //                 ),
+                //               ],
+                //             ),
+                //           ],
+                //         ),
+                //         const Center(
+                //           child: Text(
+                //             'wallet',
+                //             style: TextStyle(
+                //               color: Color(0xFF818181),
+                //               fontSize: 20,
+                //             ),
+                //           ),
+                //         ),
+                //       ],
+                //     ),
+                //   ),
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(20),
