@@ -127,11 +127,17 @@ class _HomePageState extends State<HomePage> {
   final FocusNode _focusNode = FocusNode();
   final GlobalKey _textFieldKey = GlobalKey();
   bool _isFocused = false;
+  bool _isTappingSuggestion = false;
 
   @override
   void initState() {
     super.initState();
     _focusNode.addListener(() {
+      // If we're tapping a suggestion, don't update _isFocused state
+      // This prevents the UI from hiding suggestions when focus temporarily changes
+      if (_isTappingSuggestion) {
+        return;
+      }
       setState(() {
         _isFocused = _focusNode.hasFocus;
       });
@@ -220,6 +226,93 @@ class _HomePageState extends State<HomePage> {
                     height: 30,
                   ),
                 ),
+                if (_isFocused)
+                  Expanded(
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Listener(
+                            onPointerDown: (event) {
+                              print('Suggestion 1 pointer down'); // Debug
+                              // Set flag immediately to prevent unfocus
+                              _isTappingSuggestion = true;
+                              // Request focus immediately
+                              FocusScope.of(context).requestFocus(_focusNode);
+                              // Set text and navigate
+                              _controller.text =
+                                  'What is my all wallet\'s last month profit';
+                              print(
+                                  'Text set to: ${_controller.text}'); // Debug
+                              // Navigate after a short delay
+                              Future.delayed(const Duration(milliseconds: 100),
+                                  () {
+                                if (mounted) {
+                                  _isTappingSuggestion = false;
+                                  _navigateToNewPage();
+                                }
+                              });
+                            },
+                            child: const MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: Padding(
+                                padding: EdgeInsets.symmetric(
+                                    vertical: 8.0, horizontal: 16.0),
+                                child: Text(
+                                  'What is my all wallet\'s last month profit',
+                                  style: TextStyle(
+                                    fontFamily: 'Aeroport',
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w400,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 30),
+                          Listener(
+                            onPointerDown: (event) {
+                              print('Suggestion 2 pointer down'); // Debug
+                              // Set flag immediately to prevent unfocus
+                              _isTappingSuggestion = true;
+                              // Request focus immediately
+                              FocusScope.of(context).requestFocus(_focusNode);
+                              // Set text and navigate
+                              _controller.text = 'Advise me a token to buy';
+                              print(
+                                  'Text set to: ${_controller.text}'); // Debug
+                              // Navigate after a short delay
+                              Future.delayed(const Duration(milliseconds: 100),
+                                  () {
+                                if (mounted) {
+                                  _isTappingSuggestion = false;
+                                  _navigateToNewPage();
+                                }
+                              });
+                            },
+                            child: const MouseRegion(
+                              cursor: SystemMouseCursors.click,
+                              child: Padding(
+                                padding: EdgeInsets.symmetric(
+                                    vertical: 8.0, horizontal: 16.0),
+                                child: Text(
+                                  'Advise me a token to buy',
+                                  style: TextStyle(
+                                    fontFamily: 'Aeroport',
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w400,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 if (!_isFocused)
                   Column(
                     children: [
