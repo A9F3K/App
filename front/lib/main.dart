@@ -242,7 +242,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
   final GlobalKey _textFieldKey = GlobalKey();
@@ -285,7 +285,11 @@ class _HomePageState extends State<HomePage> {
   double? _priceChange1h;
   double? _priceChange6h;
   double? _priceChange24h;
-  bool _isLoadingMarketStats = false;
+  late final AnimationController _bgController;
+  late final Animation<double> _bgAnimation;
+  late final double _bgSeed;
+  late final AnimationController _noiseController;
+  late final Animation<double> _noiseAnimation;
 
   // Resolution mapping: button -> API value
   static const Map<String, String> _resolutionMap = {
@@ -463,6 +467,25 @@ class _HomePageState extends State<HomePage> {
       }
       setState(() {});
     });
+
+    final random = math.Random();
+    final durationMs = 20000 + random.nextInt(14000);
+    _bgController = AnimationController(
+      vsync: this,
+      duration: Duration(milliseconds: durationMs),
+    )..repeat(reverse: true);
+    _bgAnimation =
+        CurvedAnimation(parent: _bgController, curve: Curves.easeInOut);
+    _bgSeed = random.nextDouble();
+    _noiseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 24),
+    )..repeat(reverse: true);
+    _noiseAnimation =
+        Tween<double>(begin: -0.2, end: 0.2).animate(CurvedAnimation(
+      parent: _noiseController,
+      curve: Curves.easeInOut,
+    ));
 
     // Fetch chart data on page load
     _fetchChartData();
@@ -654,10 +677,6 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _fetchMarketStats() async {
-    setState(() {
-      _isLoadingMarketStats = true;
-    });
-
     try {
       // For native TON, we need to use the special address
       // The API might accept the zero address or we might need a different endpoint
@@ -687,27 +706,17 @@ class _HomePageState extends State<HomePage> {
                 (marketStats['price_change_6h'] as num?)?.toDouble();
             _priceChange24h =
                 (marketStats['price_change_24h'] as num?)?.toDouble();
-            _isLoadingMarketStats = false;
           });
           print('Market stats loaded successfully');
         } else {
           print('No market_stats in response');
-          setState(() {
-            _isLoadingMarketStats = false;
-          });
         }
       } else {
         print('Market stats fetch failed: ${response.statusCode}');
         print('Response body: ${response.body}');
-        setState(() {
-          _isLoadingMarketStats = false;
-        });
       }
     } catch (e) {
       print('Error fetching market stats: $e');
-      setState(() {
-        _isLoadingMarketStats = false;
-      });
     }
   }
 
@@ -737,6 +746,18 @@ class _HomePageState extends State<HomePage> {
     if (value == null) return '...';
     final sign = value >= 0 ? '+' : '';
     return '$sign${value.toStringAsFixed(2)}%';
+  }
+
+  Color _shiftColor(Color base, double shift) {
+    final hsl = HSLColor.fromColor(base);
+    final newLightness = (hsl.lightness + shift).clamp(0.0, 1.0);
+    final newHue = (hsl.hue + shift * 10) % 360;
+    final newSaturation = (hsl.saturation + shift * 0.1).clamp(0.0, 1.0);
+    return hsl
+        .withLightness(newLightness)
+        .withHue(newHue)
+        .withSaturation(newSaturation)
+        .toColor();
   }
 
   Future<void> _fetchSwapAmount() async {
@@ -867,6 +888,8 @@ class _HomePageState extends State<HomePage> {
   void dispose() {
     _controller.dispose();
     _focusNode.dispose();
+    _bgController.dispose();
+    _noiseController.dispose();
     super.dispose();
   }
 
@@ -903,14 +926,116 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 600),
-          child: SizedBox(
-            width: double.infinity,
-            height: double.infinity,
-            // padding: const EdgeInsets.all(15),
+      backgroundColor: Colors.transparent,
+      body: AnimatedBuilder(
+        animation: _bgAnimation,
+        builder: (context, child) {
+          final baseShimmer =
+              math.sin(2 * math.pi * (_bgAnimation.value + _bgSeed));
+          final marketFactor =
+              ((_priceChange24h ?? 0).abs() / 100).clamp(0.0, 0.008);
+          final shimmer = (0.007 + marketFactor * 0.4) * baseShimmer;
+          const baseColors = [
+            Color(0xFF010101),
+            Color(0xFF010102),
+            Color(0xFF010103),
+            Color(0xFF010104),
+            Color(0xFF010105),
+            Color(0xFF010106),
+          ];
+          const stopsCount = 28;
+          final colors = List.generate(stopsCount, (index) {
+            final progress = index / (stopsCount - 1);
+            final scaled = progress * (baseColors.length - 1);
+            final lowerIndex = scaled.floor();
+            final upperIndex = scaled.ceil();
+            final frac = scaled - lowerIndex;
+            final lower =
+                baseColors[lowerIndex.clamp(0, baseColors.length - 1)];
+            final upper =
+                baseColors[upperIndex.clamp(0, baseColors.length - 1)];
+            final blended = Color.lerp(lower, upper, frac)!;
+            final offset = index * 0.0015;
+            return _shiftColor(blended, shimmer * (0.035 + offset));
+          });
+          final stops = List.generate(
+              colors.length, (index) => index / (colors.length - 1));
+          final rotation =
+              math.sin(2 * math.pi * (_bgAnimation.value + _bgSeed)) * 0.35;
+          final begin = Alignment(-0.8 + rotation, -0.7 - rotation * 0.2);
+          final end = Alignment(0.9 - rotation, 0.8 + rotation * 0.2);
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: begin,
+                    end: end,
+                    colors: colors,
+                    stops: stops,
+                  ),
+                ),
+              ),
+              AnimatedBuilder(
+                animation: _noiseAnimation,
+                builder: (context, _) {
+                  final alignment = Alignment(
+                    0.2 + _noiseAnimation.value,
+                    -0.4 + _noiseAnimation.value * 0.5,
+                  );
+                  return Container(
+                    decoration: BoxDecoration(
+                      gradient: RadialGradient(
+                        center: alignment,
+                        radius: 0.75,
+                        colors: [
+                          Colors.white.withOpacity(0.01),
+                          Colors.transparent,
+                        ],
+                        stops: const [0.0, 1.0],
+                      ),
+                    ),
+                  );
+                },
+              ),
+              Container(
+                decoration: BoxDecoration(
+                  gradient: RadialGradient(
+                    center: const Alignment(0.7, -0.6),
+                    radius: 0.8,
+                    colors: [
+                      _shiftColor(const Color(0xFF06050A), shimmer * 0.4),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 1.0],
+                  ),
+                  color: Colors.black.withOpacity(0.02),
+                ),
+              ),
+              IgnorePointer(
+                child: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.white.withOpacity(0.01),
+                        Colors.transparent,
+                        Colors.white.withOpacity(0.005),
+                      ],
+                      stops: const [0.0, 0.5, 1.0],
+                    ),
+                  ),
+                ),
+              ),
+              child!,
+            ],
+          );
+        },
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 600),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -919,9 +1044,6 @@ class _HomePageState extends State<HomePage> {
                   width: double.infinity,
                   padding: const EdgeInsets.only(
                       top: 30, bottom: 15, left: 15, right: 15),
-                  decoration: const BoxDecoration(
-                    color: Colors.black,
-                  ),
                   child: SvgPicture.asset(
                     'assets/images/logo.svg',
                     width: 30,
@@ -1689,9 +1811,6 @@ class _HomePageState extends State<HomePage> {
                   width: double.infinity,
                   padding: const EdgeInsets.only(
                       top: 10, bottom: 30, left: 15, right: 15),
-                  decoration: const BoxDecoration(
-                    color: Colors.black,
-                  ),
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
