@@ -1,3 +1,7 @@
+adaptation
+get screen design
+fix styles everywhere
+hovers
 flashing on apply
 new main page
 swap.coffee retries

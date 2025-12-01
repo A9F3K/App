@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:js' as js;
 import 'analytics.dart';
+import 'responsive_spacing.dart';
 
 // Theme helper class
 class AppTheme {
@@ -563,8 +564,12 @@ class _SimpleMainPageState extends State<SimpleMainPage>
               children: [
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.only(
-                      top: 30, bottom: 15, left: 15, right: 15),
+                  padding: EdgeInsets.only(
+                    top: ResponsiveSpacing.getTmaLogoTopPadding(context),
+                    bottom: 15,
+                    left: ResponsiveSpacing.getPadding(context),
+                    right: ResponsiveSpacing.getPadding(context),
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
@@ -1096,7 +1101,7 @@ class _SimpleMainPageState extends State<SimpleMainPage>
                                   ),
                                 )
                               : Padding(
-                                  padding: const EdgeInsets.only(bottom: 8),
+                                  padding: const EdgeInsets.only(bottom: 10),
                                   child: TextField(
                                     key: _textFieldKey,
                                     controller: _controller,
@@ -1149,7 +1154,7 @@ class _SimpleMainPageState extends State<SimpleMainPage>
                       ),
                       const SizedBox(width: 5),
                       Padding(
-                        padding: const EdgeInsets.only(bottom: 7.5),
+                        padding: const EdgeInsets.only(bottom: 10),
                         child: GestureDetector(
                           onTap: () {
                             _navigateToNewPage();
@@ -2667,16 +2672,25 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               crossAxisAlignment: CrossAxisAlignment.center,
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.only(
-                      top: 30, bottom: 15, left: 15, right: 15),
-                  child: SvgPicture.asset(
-                    AppTheme.isLightTheme
-                        ? 'assets/images/logo_light.svg'
-                        : 'assets/images/logo_dark.svg',
-                    width: 30,
-                    height: 30,
+                GestureDetector(
+                  onTap: () {
+                    Navigator.of(context).popUntil((route) => route.isFirst);
+                  },
+                  child: Container(
+                    width: double.infinity,
+                    padding: EdgeInsets.only(
+                      top: ResponsiveSpacing.getTmaLogoTopPadding(context),
+                      bottom: 15,
+                      left: ResponsiveSpacing.getPadding(context),
+                      right: ResponsiveSpacing.getPadding(context),
+                    ),
+                    child: SvgPicture.asset(
+                      AppTheme.isLightTheme
+                          ? 'assets/images/logo_light.svg'
+                          : 'assets/images/logo_dark.svg',
+                      width: 30,
+                      height: 30,
+                    ),
                   ),
                 ),
                 if (_isFocused)
@@ -2772,7 +2786,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       children: [
                         Expanded(
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 15),
+                            padding:
+                                ResponsiveSpacing.getPaddingHorizontal(context),
                             child: SizedBox(
                               width: double.infinity,
                               child: Column(
@@ -3174,7 +3189,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                                                           child:
                                                                               Padding(
                                                                             padding:
-                                                                                const EdgeInsets.all(8.0),
+                                                                                const EdgeInsets.all(10.0),
                                                                             child:
                                                                                 Text(
                                                                               _chartError!,
@@ -3598,7 +3613,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                   ),
                                 )
                               : Padding(
-                                  padding: const EdgeInsets.only(bottom: 8),
+                                  padding: const EdgeInsets.only(bottom: 10),
                                   child: TextField(
                                     key: _textFieldKey,
                                     controller: _controller,
@@ -3656,7 +3671,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       ),
                       const SizedBox(width: 5),
                       Padding(
-                        padding: const EdgeInsets.only(bottom: 7.5),
+                        padding: const EdgeInsets.only(bottom: 10),
                         child: GestureDetector(
                           onTap: () {
                             print('Apply button tapped'); // Debug
@@ -4239,7 +4254,12 @@ class _NewPageState extends State<NewPage> with TickerProviderStateMixin {
                     },
                     child: Container(
                       width: double.infinity,
-                      padding: const EdgeInsets.all(30),
+                      padding: EdgeInsets.only(
+                        top: MediaQuery.of(context).padding.top + 30,
+                        bottom: 15,
+                        left: ResponsiveSpacing.getPadding(context),
+                        right: ResponsiveSpacing.getPadding(context),
+                      ),
                       decoration: BoxDecoration(
                         color: AppTheme.backgroundColor,
                       ),
@@ -4262,8 +4282,8 @@ class _NewPageState extends State<NewPage> with TickerProviderStateMixin {
                             reverse: false,
                             physics: const AlwaysScrollableScrollPhysics(),
                             child: Padding(
-                              padding: const EdgeInsets.only(
-                                  left: 20.0, right: 20.0),
+                              padding: ResponsiveSpacing.getPaddingHorizontal(
+                                  context),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 mainAxisAlignment: MainAxisAlignment.start,
@@ -4414,7 +4434,12 @@ class _NewPageState extends State<NewPage> with TickerProviderStateMixin {
                   ),
                   Container(
                     width: double.infinity,
-                    padding: const EdgeInsets.all(20),
+                    padding: EdgeInsets.only(
+                      top: 20,
+                      left: ResponsiveSpacing.getPadding(context),
+                      right: ResponsiveSpacing.getPadding(context),
+                      bottom: MediaQuery.of(context).padding.bottom + 20,
+                    ),
                     decoration: const BoxDecoration(
                       color: Colors.black,
                     ),
