@@ -1,4 +1,4 @@
-# Bot
+# bot
 
 This is a monorepo containing multiple services.
 
