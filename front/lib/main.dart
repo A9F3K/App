@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:js' as js;
 import 'dart:async';
+import 'dart:ui' as ui show TextDirection;
 import 'package:flutter_telegram_miniapp/flutter_telegram_miniapp.dart' as tma;
 import 'package:intl/intl.dart';
 import 'analytics.dart';
@@ -2165,6 +2166,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return bottomPadding;
   }
 
+  // Helper method to calculate GlobalBottomBar height
+  // GlobalBottomBar structure:
+  // - Container padding: top: 10, bottom: 15 (total 25px)
+  // - TextField minHeight: 30px
+  double _getGlobalBottomBarHeight() {
+    // Minimum height: container padding (10 + 15) + TextField minHeight (30)
+    return 10.0 + 30.0 + 15.0;
+  }
   
   void _handleBackButton() {
     Navigator.of(context).pop();
@@ -2365,6 +2374,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
 
     double maxWidth = 0.0;
+    const textDir = ui.TextDirection.ltr;
 
     // Check all prices in the chart data to find the widest one
     // This ensures the width doesn't change when pointing at different parts of the chart
@@ -2375,6 +2385,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           final priceText = _formatPrice(price);
           final textPainter = TextPainter(
             text: TextSpan(text: priceText, style: textStyle),
+            textDirection: textDir,
           );
           textPainter.layout();
           maxWidth = math.max(maxWidth, textPainter.width);
@@ -2386,6 +2397,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         final minPriceText = _formatPrice(_chartMinPrice!);
         final textPainter = TextPainter(
           text: TextSpan(text: minPriceText, style: textStyle),
+          textDirection: textDir,
         );
         textPainter.layout();
         maxWidth = math.max(maxWidth, textPainter.width);
@@ -2395,6 +2407,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         final maxPriceText = _formatPrice(_chartMaxPrice!);
         final textPainter = TextPainter(
           text: TextSpan(text: maxPriceText, style: textStyle),
+          textDirection: textDir,
         );
         textPainter.layout();
         maxWidth = math.max(maxWidth, textPainter.width);
@@ -2598,6 +2611,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
         final textPainter = TextPainter(
           text: textSpan,
+          textDirection: ui.TextDirection.ltr,
         );
         textPainter.layout();
         final textWidth = textPainter.width;
@@ -2801,6 +2815,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         );
         final textPainter = TextPainter(
           text: TextSpan(text: priceText, style: textStyle),
+          textDirection: ui.TextDirection.ltr,
           textHeightBehavior: const TextHeightBehavior(
             applyHeightToFirstAscent: false,
             applyHeightToLastDescent: false,
@@ -3640,16 +3655,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                       ),
                     ),
                     Expanded(
-                        child: Column(
-                          children: [
-                            Expanded(
-                              child: Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 15),
-                                child: SizedBox(
-                                  width: double.infinity,
-                                  child: Column(
-                                    children: [
+                        child: Padding(
+                          padding: EdgeInsets.only(bottom: _getGlobalBottomBarHeight() - 30),
+                          child: Column(
+                            children: [
+                              Expanded(
+                                child: Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(horizontal: 15),
+                                  child: SizedBox(
+                                    width: double.infinity,
+                                    child: Column(
+                                      children: [
                                       Stack(
                                         alignment: Alignment.center,
                                         children: [
@@ -3957,8 +3974,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                               child: Column(
                                                 children: [
                                                   Expanded(
-                                                    child: SizedBox.expand(
-                                                      child: _isLoadingChart
+                                                    child: _isLoadingChart
                                                           ? const Center(
                                                               child: SizedBox(
                                                                 width: 20,
@@ -4039,13 +4055,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                                                           });
                                                                         },
                                                                         child:
-                                                                            CustomPaint(
-                                                                          painter:
-                                                                              DiagonalLinePainter(
-                                                                            dataPoints:
-                                                                                _chartDataPoints,
-                                                                            selectedPointIndex:
-                                                                                _selectedPointIndex,
+                                                                            SizedBox.expand(
+                                                                          child: CustomPaint(
+                                                                            painter:
+                                                                                DiagonalLinePainter(
+                                                                              dataPoints:
+                                                                                  _chartDataPoints,
+                                                                              selectedPointIndex:
+                                                                                  _selectedPointIndex,
+                                                                            ),
                                                                           ),
                                                                         ),
                                                                       ),
@@ -4076,7 +4094,6 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                                                         )
                                                                       : null,
                                                                 ),
-                                                    ),
                                                   ),
                                                   const SizedBox(height: 5.0),
                                                   SizedBox(
@@ -4428,6 +4445,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           ],
                         ),
                       ),
+                    ),
                   ],
                 ),
               ),
