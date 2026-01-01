@@ -1378,7 +1378,7 @@ class _GlobalLogoBarState extends State<GlobalLogoBar> with SingleTickerProvider
               top: false,
               bottom: false,
               child: Material(
-                color: AppTheme.backgroundColor,
+                color: Colors.transparent,
                 child: Container(
                   width: double.infinity,
                   height: logoBlockHeight,
@@ -1711,25 +1711,11 @@ class _SimpleMainPageState extends State<SimpleMainPage>
   // Mock coin data
   final List<Map<String, dynamic>> _coins = [
     {
-      'icon': 'assets/sample/usdt.png',
-      'ticker': 'USDT',
-      'blockchain': 'On TON',
-      'amount': '20',
-      'usdValue': '\$71',
-    },
-    {
-      'icon': 'assets/sample/1.png',
-      'ticker': 'NOT',
-      'blockchain': 'On TON',
-      'amount': '20,000,000,000',
-      'usdValue': '\$71',
-    },
-    {
-      'icon': 'assets/sample/4.png',
-      'ticker': 'STON',
-      'blockchain': 'On TON',
-      'amount': '40,000,000',
-      'usdValue': '\$100',
+      'icon': 'assets/sample/DLLR.svg',
+      'ticker': 'DLLR',
+      'blockchain': 'TON',
+      'amount': '1',
+      'usdValue': '\$1',
     },
   ];
 
@@ -1739,10 +1725,10 @@ class _SimpleMainPageState extends State<SimpleMainPage>
     return [
       {
         'icon': 'assets/sample/mak/1.svg',
-        'primaryText': 'NFT recieved',
-        'secondaryText': '\$24',
+        'primaryText': 'CLATH 41 NFT recieved',
+        'secondaryText': 'AI CLATH Collection',
         'timestamp': '15:22',
-        'rightText': 'NFT recieved',
+        'rightText': 'Price N/A',
       },
       {
         'icon': 'assets/sample/mak/2.svg',
@@ -2005,7 +1991,7 @@ class _SimpleMainPageState extends State<SimpleMainPage>
                             textBaseline: TextBaseline.alphabetic,
                             children: [
                               Text(
-                                r'$345,768.64',
+                                r'$1',
                                 style: TextStyle(
                                   fontFamily: 'Aeroport',
                                   fontSize: 30,
@@ -2459,12 +2445,19 @@ class _SimpleMainPageState extends State<SimpleMainPage>
                                           CrossAxisAlignment.center,
                                       children: [
                                         // Coin icon - 30px, centered vertically relative to 40px text columns
-                                        Image.asset(
-                                          coin['icon'] as String,
-                                          width: 30,
-                                          height: 30,
-                                          fit: BoxFit.contain,
-                                        ),
+                                        (coin['icon'] as String).endsWith('.svg')
+                                            ? SvgPicture.asset(
+                                                coin['icon'] as String,
+                                                width: 30,
+                                                height: 30,
+                                                fit: BoxFit.contain,
+                                              )
+                                            : Image.asset(
+                                                coin['icon'] as String,
+                                                width: 30,
+                                                height: 30,
+                                                fit: BoxFit.contain,
+                                              ),
                                         const SizedBox(width: 10),
                                         // Coin ticker and blockchain column
                                         Expanded(
@@ -4219,125 +4212,149 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                               ),
                                             ],
                                           ),
-                                          Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              GestureDetector(
-                                                onTap: () {
-                                                  setState(() {
-                                                    _selectedResolution =
-                                                        _resolutionMap['d']!;
-                                                  });
-                                                  _fetchChartData();
-                                                },
-                                                child: Text(
-                                                  "d",
-                                                  style: TextStyle(
-                                                    fontWeight:
-                                                        _selectedResolution ==
-                                                                _resolutionMap[
-                                                                    'd']
-                                                            ? FontWeight.normal
-                                                            : FontWeight.w500,
-                                                    color:
-                                                        _selectedResolution ==
-                                                                _resolutionMap[
-                                                                    'd']
-                                                            ? AppTheme.textColor
-                                                            : const Color(
-                                                                0xFF818181),
-                                                    fontSize: 15,
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(horizontal: 5),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                GestureDetector(
+                                                  onTap: () {
+                                                    setState(() {
+                                                      _selectedResolution =
+                                                          _resolutionMap['d']!;
+                                                    });
+                                                    _fetchChartData();
+                                                  },
+                                                  child: Container(
+                                                    height: 20,
+                                                    constraints: const BoxConstraints(minWidth: 20),
+                                                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                                                    alignment: Alignment.center,
+                                                    child: Text(
+                                                      "d",
+                                                      style: TextStyle(
+                                                        fontWeight:
+                                                            _selectedResolution ==
+                                                                    _resolutionMap[
+                                                                        'd']
+                                                                ? FontWeight.normal
+                                                                : FontWeight.w500,
+                                                        color:
+                                                            _selectedResolution ==
+                                                                    _resolutionMap[
+                                                                        'd']
+                                                                ? AppTheme.textColor
+                                                                : const Color(
+                                                                    0xFF818181),
+                                                        fontSize: 15,
+                                                      ),
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 15),
-                                              GestureDetector(
-                                                onTap: () {
-                                                  setState(() {
-                                                    _selectedResolution =
-                                                        _resolutionMap['h']!;
-                                                  });
-                                                  _fetchChartData();
-                                                },
-                                                child: Text(
-                                                  "h",
-                                                  style: TextStyle(
-                                                    fontWeight:
-                                                        _selectedResolution ==
-                                                                _resolutionMap[
-                                                                    'h']
-                                                            ? FontWeight.normal
-                                                            : FontWeight.w500,
-                                                    color:
-                                                        _selectedResolution ==
-                                                                _resolutionMap[
-                                                                    'h']
-                                                            ? AppTheme.textColor
-                                                            : const Color(
-                                                                0xFF818181),
-                                                    fontSize: 15,
+                                                GestureDetector(
+                                                  onTap: () {
+                                                    setState(() {
+                                                      _selectedResolution =
+                                                          _resolutionMap['h']!;
+                                                    });
+                                                    _fetchChartData();
+                                                  },
+                                                  child: Container(
+                                                    height: 20,
+                                                    constraints: const BoxConstraints(minWidth: 20),
+                                                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                                                    alignment: Alignment.center,
+                                                    child: Text(
+                                                      "h",
+                                                      style: TextStyle(
+                                                        fontWeight:
+                                                            _selectedResolution ==
+                                                                    _resolutionMap[
+                                                                        'h']
+                                                                ? FontWeight.normal
+                                                                : FontWeight.w500,
+                                                        color:
+                                                            _selectedResolution ==
+                                                                    _resolutionMap[
+                                                                        'h']
+                                                                ? AppTheme.textColor
+                                                                : const Color(
+                                                                    0xFF818181),
+                                                        fontSize: 15,
+                                                      ),
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 15),
-                                              GestureDetector(
-                                                onTap: () {
-                                                  setState(() {
-                                                    _selectedResolution =
-                                                        _resolutionMap['q']!;
-                                                  });
-                                                  _fetchChartData();
-                                                },
-                                                child: Text(
-                                                  "q",
-                                                  style: TextStyle(
-                                                    fontWeight:
-                                                        _selectedResolution ==
-                                                                _resolutionMap[
-                                                                    'q']
-                                                            ? FontWeight.normal
-                                                            : FontWeight.w500,
-                                                    color:
-                                                        _selectedResolution ==
-                                                                _resolutionMap[
-                                                                    'q']
-                                                            ? AppTheme.textColor
-                                                            : const Color(
-                                                                0xFF818181),
-                                                    fontSize: 15,
+                                                GestureDetector(
+                                                  onTap: () {
+                                                    setState(() {
+                                                      _selectedResolution =
+                                                          _resolutionMap['q']!;
+                                                    });
+                                                    _fetchChartData();
+                                                  },
+                                                  child: Container(
+                                                    height: 20,
+                                                    constraints: const BoxConstraints(minWidth: 20),
+                                                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                                                    alignment: Alignment.center,
+                                                    child: Text(
+                                                      "q",
+                                                      style: TextStyle(
+                                                        fontWeight:
+                                                            _selectedResolution ==
+                                                                    _resolutionMap[
+                                                                        'q']
+                                                                ? FontWeight.normal
+                                                                : FontWeight.w500,
+                                                        color:
+                                                            _selectedResolution ==
+                                                                    _resolutionMap[
+                                                                        'q']
+                                                                ? AppTheme.textColor
+                                                                : const Color(
+                                                                    0xFF818181),
+                                                        fontSize: 15,
+                                                      ),
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
-                                              const SizedBox(width: 15),
-                                              GestureDetector(
-                                                onTap: () {
-                                                  setState(() {
-                                                    _selectedResolution =
-                                                        _resolutionMap['m']!;
-                                                  });
-                                                  _fetchChartData();
-                                                },
-                                                child: Text(
-                                                  "m",
-                                                  style: TextStyle(
-                                                    fontWeight:
-                                                        _selectedResolution ==
-                                                                _resolutionMap[
-                                                                    'm']
-                                                            ? FontWeight.normal
-                                                            : FontWeight.w500,
-                                                    color:
-                                                        _selectedResolution ==
-                                                                _resolutionMap[
-                                                                    'm']
-                                                            ? AppTheme.textColor
-                                                            : const Color(
-                                                                0xFF818181),
-                                                    fontSize: 15,
+                                                GestureDetector(
+                                                  onTap: () {
+                                                    setState(() {
+                                                      _selectedResolution =
+                                                          _resolutionMap['m']!;
+                                                    });
+                                                    _fetchChartData();
+                                                  },
+                                                  child: Container(
+                                                    height: 20,
+                                                    constraints: const BoxConstraints(minWidth: 20),
+                                                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                                                    alignment: Alignment.center,
+                                                    child: Text(
+                                                      "m",
+                                                      style: TextStyle(
+                                                        fontWeight:
+                                                            _selectedResolution ==
+                                                                    _resolutionMap[
+                                                                        'm']
+                                                                ? FontWeight.normal
+                                                                : FontWeight.w500,
+                                                        color:
+                                                            _selectedResolution ==
+                                                                    _resolutionMap[
+                                                                        'm']
+                                                                ? AppTheme.textColor
+                                                                : const Color(
+                                                                    0xFF818181),
+                                                        fontSize: 15,
+                                                      ),
+                                                    ),
                                                   ),
                                                 ),
-                                              ),
-                                            ],
+                                              ],
+                                            ),
                                           ),
                                         ],
                                       ),
