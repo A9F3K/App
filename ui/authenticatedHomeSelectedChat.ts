@@ -123,6 +123,8 @@ function writeStoredChat(chat: MessageChatRowData | null): void {
 }
 
 let selectedChat: MessageChatRowData | null = null;
+/** When false, live chat-list sync may not lower open-chat unread (user scrolled up). */
+let openChatFollowingBottom = true;
 /** Which pane occupies the wide middle column: message thread vs header menu panel. */
 let middleColumnFocus: "chat" | "headerPanel" = "headerPanel";
 /** Persisted: restore the opened chat and resume its history on reload. */
@@ -202,19 +204,9 @@ export function selectAuthenticatedHomeChat(chat: MessageChatRowData | null) {
 export function openAuthenticatedHomeChatHistory(chat: MessageChatRowData) {
   hydrateFromStorageIfNeeded();
   const sameChat = selectedChat?.telegram_chat_id === chat.telegram_chat_id;
-  const openingUnread = Number.isFinite(chat.unread_count)
-    ? Math.max(0, Math.trunc(chat.unread_count))
-    : 0;
-  const openedChat: MessageChatRowData = {
-    ...chat,
-    unread_count: 0,
-    scroll_below_unread_count: sameChat
-      ? selectedChat?.scroll_below_unread_count ?? openingUnread
-      : openingUnread,
-  };
-  selectedChat = openedChat;
+  selectedChat = chat;
   middleColumnFocus = "chat";
-  writeStoredChat(openedChat);
+  writeStoredChat(chat);
   if (!sameChat) {
     historyLoadChatId = chat.telegram_chat_id;
     historyLoadGeneration += 1;
@@ -336,23 +328,41 @@ export function patchAuthenticatedHomeSelectedChatReadOutbox(messageId: number |
   emit();
 }
 
-/** Scroll-to-bottom FAB unread counter while the chat stays open. */
-export function patchAuthenticatedHomeSelectedChatScrollBelowUnread(count: number): void {
+/** Open-chat unread badge — shared by the chat list preview and scroll-to-bottom FAB. */
+export function patchAuthenticatedHomeSelectedChatUnread(count: number): void {
   hydrateFromStorageIfNeeded();
   if (selectedChat == null) return;
   const next = Math.max(0, Math.trunc(count));
-  if ((selectedChat.scroll_below_unread_count ?? 0) === next) return;
-  selectedChat = { ...selectedChat, scroll_below_unread_count: next };
+  if (selectedChat.unread_count === next) return;
+  selectedChat = { ...selectedChat, unread_count: next };
   writeStoredChat(selectedChat);
   emit();
 }
 
-export function bumpAuthenticatedHomeSelectedChatScrollBelowUnread(delta: number): void {
+export function bumpAuthenticatedHomeSelectedChatUnread(delta: number): void {
   if (!Number.isFinite(delta) || delta <= 0) return;
   hydrateFromStorageIfNeeded();
   if (selectedChat == null) return;
-  const prev = selectedChat.scroll_below_unread_count ?? 0;
-  patchAuthenticatedHomeSelectedChatScrollBelowUnread(prev + Math.trunc(delta));
+  patchAuthenticatedHomeSelectedChatUnread(selectedChat.unread_count + Math.trunc(delta));
+}
+
+/** Open message column is pinned to the latest messages (clears unread on sync). */
+export function setAuthenticatedHomeOpenChatFollowingBottom(following: boolean): void {
+  openChatFollowingBottom = following;
+}
+
+export function isAuthenticatedHomeOpenChatFollowingBottom(): boolean {
+  return openChatFollowingBottom;
+}
+
+/** @deprecated Use {@link patchAuthenticatedHomeSelectedChatUnread}. */
+export function patchAuthenticatedHomeSelectedChatScrollBelowUnread(count: number): void {
+  patchAuthenticatedHomeSelectedChatUnread(count);
+}
+
+/** @deprecated Use {@link bumpAuthenticatedHomeSelectedChatUnread}. */
+export function bumpAuthenticatedHomeSelectedChatScrollBelowUnread(delta: number): void {
+  bumpAuthenticatedHomeSelectedChatUnread(delta);
 }
 
 /** Refresh stored selection when poll updates the same chat row. */
@@ -383,14 +393,12 @@ export function syncAuthenticatedHomeSelectedChat(chats: readonly MessageChatRow
     fresh.chat_action_user_id !== selectedChat.chat_action_user_id ||
     fresh.chat_action_user_name !== selectedChat.chat_action_user_name ||
     fresh.chat_action_expires_at !== selectedChat.chat_action_expires_at ||
-    fresh.last_read_outbox_message_id !== selectedChat.last_read_outbox_message_id ||
-    (fresh.scroll_below_unread_count ?? 0) !== (selectedChat.scroll_below_unread_count ?? 0)
+    fresh.last_read_outbox_message_id !== selectedChat.last_read_outbox_message_id
   ) {
-    selectedChat = {
-      ...fresh,
-      unread_count: 0,
-      scroll_below_unread_count: selectedChat.scroll_below_unread_count ?? 0,
-    };
+    const resolvedUnread = openChatFollowingBottom
+      ? fresh.unread_count
+      : Math.max(fresh.unread_count, selectedChat.unread_count);
+    selectedChat = { ...fresh, unread_count: resolvedUnread };
     writeStoredChat(selectedChat);
     emit();
   }

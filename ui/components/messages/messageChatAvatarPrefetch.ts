@@ -2,6 +2,7 @@ import type { MessageChatHistoryItem, MessageChatKind } from "./messageChatHisto
 import type { MessageChatRowData } from "./MessageChatRow";
 import {
   isMessageChatAvatarBlobCached,
+  isMessageChatAvatarFetchFailed,
   prefetchMessageChatAvatar,
 } from "./MessageChatAvatarImage";
 import { resolveTelegramThreadAvatarUrl } from "./resolveTelegramThreadAvatarUrl";
@@ -9,6 +10,7 @@ import { logPageDisplay } from "../../pageDisplayLog";
 
 const OPEN_CHAT_AVATAR_PREFETCH_MAX = 48;
 let openChatAvatarPriorityId: number | null = null;
+const lastOpenChatPrefetchSignature = new Map<number, string>();
 
 /** While set, only the open chat should use high-priority avatar fetches. */
 export function setOpenChatAvatarPriority(chatId: number | null): void {
@@ -28,7 +30,14 @@ function collectAvatarUrls(
   const seen = new Set<string>();
 
   const push = (url: string | null) => {
-    if (!url || seen.has(url) || isMessageChatAvatarBlobCached(url)) return;
+    if (
+      !url ||
+      seen.has(url) ||
+      isMessageChatAvatarBlobCached(url) ||
+      isMessageChatAvatarFetchFailed(url)
+    ) {
+      return;
+    }
     seen.add(url);
     uris.push(url);
   };
@@ -56,6 +65,10 @@ export function prefetchOpenChatAvatars(
 
   setOpenChatAvatarPriority(chatId);
   const uris = collectAvatarUrls(chat, messages, chatKind);
+  const tailMessageId = messages.length > 0 ? messages[messages.length - 1]!.telegram_message_id : 0;
+  const signature = `${messages.length}:${tailMessageId}:${uris.length}`;
+  if (lastOpenChatPrefetchSignature.get(chatId) === signature) return;
+  lastOpenChatPrefetchSignature.set(chatId, signature);
   if (uris.length === 0) return;
 
   logPageDisplay("messages_avatar_prefetch_open_chat", {

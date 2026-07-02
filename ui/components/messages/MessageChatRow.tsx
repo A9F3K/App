@@ -50,7 +50,7 @@ export type MessageChatRowData = {
   avatar_url: string | null;
   last_message_at: string | null;
   unread_count: number;
-  /** Unread below the viewport — kept while the chat is open for the scroll-to-bottom control. */
+  /** @deprecated Unused — unread_count drives the scroll-to-bottom FAB. */
   scroll_below_unread_count?: number;
   peer_user_id?: number | null;
   peer_username?: string | null;

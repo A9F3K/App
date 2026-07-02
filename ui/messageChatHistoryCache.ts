@@ -98,6 +98,23 @@ function trimCache(): void {
   }
 }
 
+function cachePageSignature(page: ChatHistoryPageResult & { previewOnly?: boolean }): string {
+  const maxId =
+    page.messages.length > 0
+      ? page.messages[page.messages.length - 1]!.telegram_message_id
+      : 0;
+  return [
+    page.messages.length,
+    maxId,
+    page.previewOnly ? 1 : 0,
+    page.hasMoreOlder ? 1 : 0,
+    page.nextBeforeMessageId ?? "",
+    page.lastReadOutboxMessageId ?? "",
+    page.chatKind ?? "",
+    page.selfUserId ?? "",
+  ].join("|");
+}
+
 export function getCachedChatHistory(chatId: number): CachedChatHistoryPage | null {
   let entry = cache.get(chatId) ?? null;
   if (!entry) {
@@ -148,7 +165,10 @@ export function setCachedChatHistory(
     }
   }
   const entry = { ...page, fetchedAt: Date.now(), previewOnly };
+  const prev = cache.get(chatId);
+  const contentChanged = !prev || cachePageSignature(prev) !== cachePageSignature(entry);
   cache.set(chatId, entry);
+  if (!contentChanged) return;
   writeSessionCache(chatId, entry);
   trimCache();
   emitCacheUpdate(chatId);

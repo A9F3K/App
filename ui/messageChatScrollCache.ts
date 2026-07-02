@@ -92,17 +92,3 @@ export function isChatScrollNearBottom(
   const maxScroll = Math.max(0, contentH - layoutH);
   return maxScroll - scrollY <= thresholdPx;
 }
-
-/** Rough count of loaded messages below the viewport (for scroll-to-bottom FAB). */
-export function estimateMessagesBelowViewport(
-  scrollY: number,
-  layoutH: number,
-  contentH: number,
-  messageCount: number,
-): number {
-  if (messageCount <= 0 || contentH <= layoutH + 0.5) return 0;
-  const viewportBottom = scrollY + layoutH;
-  const fractionBelow = 1 - viewportBottom / contentH;
-  if (fractionBelow <= 0) return 0;
-  return Math.max(0, Math.min(messageCount, Math.ceil(fractionBelow * messageCount)));
-}

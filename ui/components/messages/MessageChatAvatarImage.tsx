@@ -9,6 +9,7 @@ function needsAuthenticatedFetch(uri: string): boolean {
 
 /** Reuse blob URLs so avatar proxy images do not refetch on every list re-render. */
 const avatarBlobCache = new Map<string, string>();
+const avatarFailedUrls = new Set<string>();
 const avatarCacheListeners = new Set<() => void>();
 let avatarCacheRevision = 0;
 
@@ -39,13 +40,23 @@ export function isMessageChatAvatarBlobCached(uri: string): boolean {
   return readCachedDisplayUri(uri) != null;
 }
 
+export function isMessageChatAvatarFetchFailed(uri: string): boolean {
+  return avatarFailedUrls.has(uri);
+}
+
 async function fetchAvatarBlob(uri: string): Promise<string | null> {
   if (!needsAuthenticatedFetch(uri)) return uri;
+  if (avatarFailedUrls.has(uri)) return null;
   const cached = avatarBlobCache.get(uri);
   if (cached) return cached;
 
   const response = await fetch(uri, { method: "GET", credentials: "include" });
-  if (!response.ok) throw new Error(`HTTP_${response.status}`);
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 403) {
+      avatarFailedUrls.add(uri);
+    }
+    throw new Error(`HTTP_${response.status}`);
+  }
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
   avatarBlobCache.set(uri, objectUrl);
@@ -58,7 +69,7 @@ export function prefetchMessageChatAvatar(
   uri: string,
   options?: { priority?: NetworkFetchPriority },
 ): void {
-  if (!uri || isMessageChatAvatarBlobCached(uri)) return;
+  if (!uri || isMessageChatAvatarBlobCached(uri) || isMessageChatAvatarFetchFailed(uri)) return;
   void runQueuedNetworkFetch(() => fetchAvatarBlob(uri), {
     priority: options?.priority ?? "normal",
   }).catch(() => {

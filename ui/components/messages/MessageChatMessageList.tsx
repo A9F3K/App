@@ -15,7 +15,6 @@ import {
 } from "../../messageChatHistoryCache";
 import { loadOpenChatHistoryFirstPage } from "../../messageChatHistoryPrefetch";
 import {
-  estimateMessagesBelowViewport,
   getChatScrollPosition,
   isChatScrollNearBottom,
   saveChatScrollPosition,
@@ -38,7 +37,7 @@ import {
   MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX,
 } from "./messageChatLayout";
 import type { MessageChatHistoryItem, MessageChatKind } from "./messageChatHistoryTypes";
-import { patchAuthenticatedHomeSelectedChatReadOutbox, patchAuthenticatedHomeSelectedChatGroupMeta, bumpAuthenticatedHomeSelectedChatScrollBelowUnread, patchAuthenticatedHomeSelectedChatScrollBelowUnread } from "../../authenticatedHomeSelectedChat";
+import { patchAuthenticatedHomeSelectedChatReadOutbox, patchAuthenticatedHomeSelectedChatGroupMeta, bumpAuthenticatedHomeSelectedChatUnread, patchAuthenticatedHomeSelectedChatUnread, setAuthenticatedHomeOpenChatFollowingBottom } from "../../authenticatedHomeSelectedChat";
 import {
   effectiveReadOutboxMessageId as mergeReadOutboxCursor,
   enrichHistoryMessageDisplay,
@@ -150,6 +149,23 @@ function applyHistoryMetaToSelectedChat(
   });
 }
 
+function countNewerTailMessages(
+  messages: readonly MessageChatHistoryItem[],
+  afterMessageId: number,
+): number {
+  if (afterMessageId <= 0) return 0;
+  let count = 0;
+  for (const row of messages) {
+    if (row.telegram_message_id > afterMessageId) count += 1;
+  }
+  return count;
+}
+
+function historyTailSignature(messages: readonly MessageChatHistoryItem[]): string {
+  if (messages.length === 0) return "0:0";
+  return `${messages.length}:${messages[messages.length - 1]!.telegram_message_id}`;
+}
+
 export function MessageChatMessageList({ chat, colors }: Props) {
   const { t } = useAppStrings();
   const { isAuthenticated } = useAuth();
@@ -169,6 +185,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const [selfUserId, setSelfUserId] = useState<number | null>(null);
   const [columnWidthPx, setColumnWidthPx] = useState(0);
   const [isFollowingBottom, setIsFollowingBottom] = useState(true);
+  const [initialScrollInProgress, setInitialScrollInProgress] = useState(false);
+  const [initialScrollAnchor, setInitialScrollAnchor] = useState<"top" | "bottom">("bottom");
   const scrollControllerRef = useRef<HspScrollColumnHandle | null>(null);
   const loadingOlderRef = useRef(false);
   const nextBeforeMessageIdRef = useRef<number | null>(null);
@@ -178,9 +196,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const pinnedScrollYRef = useRef(0);
   const pendingInitialScrollRef = useRef(false);
   const followingBottomRef = useRef(true);
-  const allowScrollBelowUnreadResetRef = useRef(false);
-  const displayMessageCountRef = useRef(0);
-  const scrollBelowUnreadRef = useRef(0);
+  const allowUnreadResetAtBottomRef = useRef(false);
+  const initialScrollInProgressRef = useRef(false);
+  const openingUnreadCountRef = useRef(0);
+  const openScrollAnchorRef = useRef<"top" | "bottom">("bottom");
   const prevDisplayLengthRef = useRef(0);
   const prevDisplayLastIdRef = useRef(0);
   const lastLiveSignatureRef = useRef("");
@@ -190,6 +209,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const historyPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesCountRef = useRef(0);
   const lastTailMessageIdRef = useRef(0);
+  const lastAppliedCacheSignatureRef = useRef("");
+  const lastAvatarPrefetchSignatureRef = useRef("");
   const chatLiveSignatureValue = chatLiveSignature(chat);
   const historyMessageContext = useMemo(
     (): HistoryMessageContext => ({
@@ -211,7 +232,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     lastDisplayMessageIdRef.current = 0;
     prevDisplayLengthRef.current = 0;
     prevDisplayLastIdRef.current = 0;
-    allowScrollBelowUnreadResetRef.current = false;
+    lastAppliedCacheSignatureRef.current = "";
+    lastAvatarPrefetchSignatureRef.current = "";
+    allowUnreadResetAtBottomRef.current = false;
+    initialScrollInProgressRef.current = false;
+    setInitialScrollInProgress(false);
+    openingUnreadCountRef.current = Math.max(
+      0,
+      Math.trunc(Number.isFinite(chat.unread_count) ? chat.unread_count : 0),
+    );
+    const openAnchor =
+      openingUnreadCountRef.current > MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD
+        ? "top"
+        : "bottom";
+    openScrollAnchorRef.current = openAnchor;
+    setInitialScrollAnchor(openAnchor);
+    setAuthenticatedHomeOpenChatFollowingBottom(openAnchor === "bottom");
 
     const cachedScroll = getChatScrollPosition(chat.telegram_chat_id);
     if (cachedScroll) {
@@ -219,8 +255,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       pendingScrollRestoreRef.current = cachedScroll;
       followingBottomRef.current = cachedScroll.followingBottom;
       setIsFollowingBottom(cachedScroll.followingBottom);
+      setAuthenticatedHomeOpenChatFollowingBottom(cachedScroll.followingBottom);
       if (!cachedScroll.followingBottom) {
-        allowScrollBelowUnreadResetRef.current = true;
+        allowUnreadResetAtBottomRef.current = true;
       }
     } else {
       pendingInitialScrollRef.current = true;
@@ -255,30 +292,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     });
     followingBottomRef.current = true;
     setIsFollowingBottom(true);
-    allowScrollBelowUnreadResetRef.current = true;
-    patchAuthenticatedHomeSelectedChatScrollBelowUnread(0);
+    allowUnreadResetAtBottomRef.current = true;
+    setAuthenticatedHomeOpenChatFollowingBottom(true);
+    patchAuthenticatedHomeSelectedChatUnread(0);
   }, []);
-
-  const syncScrollBelowUnreadFromViewport = useCallback((metrics: HspScrollMetrics) => {
-    const estimatedBelow = estimateMessagesBelowViewport(
-      metrics.scrollY,
-      metrics.layoutH,
-      metrics.contentH,
-      displayMessageCountRef.current,
-    );
-    const stored = scrollBelowUnreadRef.current;
-    const next = Math.max(stored, estimatedBelow);
-    if (next > stored) {
-      patchAuthenticatedHomeSelectedChatScrollBelowUnread(next);
-    }
-  }, []);
-
-  const refreshScrollBelowFromCurrentViewport = useCallback(() => {
-    const metrics = scrollControllerRef.current?.getMetrics();
-    if (!metrics || metrics.contentH <= 0) return;
-    if (isChatScrollNearBottom(metrics.scrollY, metrics.layoutH, metrics.contentH)) return;
-    syncScrollBelowUnreadFromViewport(metrics);
-  }, [syncScrollBelowUnreadFromViewport]);
 
   const handleScrollPositionChange = useCallback((metrics: HspScrollMetrics) => {
     if (metrics.contentH <= 0) return;
@@ -288,17 +305,31 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       metrics.layoutH,
       metrics.contentH,
     );
-    followingBottomRef.current = nearBottom;
-    setIsFollowingBottom((current) => (current === nearBottom ? current : nearBottom));
-    if (!nearBottom) {
-      allowScrollBelowUnreadResetRef.current = true;
-      syncScrollBelowUnreadFromViewport(metrics);
+
+    if (initialScrollInProgressRef.current) {
+      if (nearBottom) {
+        initialScrollInProgressRef.current = false;
+        setInitialScrollInProgress(false);
+        allowUnreadResetAtBottomRef.current = true;
+        followingBottomRef.current = true;
+        setIsFollowingBottom(true);
+        setAuthenticatedHomeOpenChatFollowingBottom(true);
+        patchAuthenticatedHomeSelectedChatUnread(0);
+      }
       return;
     }
-    if (allowScrollBelowUnreadResetRef.current) {
-      patchAuthenticatedHomeSelectedChatScrollBelowUnread(0);
+
+    followingBottomRef.current = nearBottom;
+    setIsFollowingBottom((current) => (current === nearBottom ? current : nearBottom));
+    setAuthenticatedHomeOpenChatFollowingBottom(nearBottom);
+    if (!nearBottom) {
+      allowUnreadResetAtBottomRef.current = true;
+      return;
     }
-  }, [syncScrollBelowUnreadFromViewport]);
+    if (allowUnreadResetAtBottomRef.current) {
+      patchAuthenticatedHomeSelectedChatUnread(0);
+    }
+  }, []);
 
   const preserveScrollY = useCallback((scrollY: number) => {
     let attempts = 0;
@@ -317,13 +348,6 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         metrics.contentH,
       );
       setIsFollowingBottom(followingBottomRef.current);
-      if (!followingBottomRef.current) {
-        allowScrollBelowUnreadResetRef.current = true;
-        syncScrollBelowUnreadFromViewport({
-          ...metrics,
-          scrollY: targetY,
-        });
-      }
       return true;
     };
 
@@ -336,7 +360,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       run();
       requestAnimationFrame(run);
     });
-  }, [syncScrollBelowUnreadFromViewport]);
+  }, []);
 
   const captureScrollYIfScrolledUp = useCallback((): number | null => {
     const metrics = scrollControllerRef.current?.getMetrics();
@@ -369,11 +393,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         );
         setIsFollowingBottom(followingBottomRef.current);
         if (!followingBottomRef.current) {
-          allowScrollBelowUnreadResetRef.current = true;
-          syncScrollBelowUnreadFromViewport({
-            ...metrics,
-            scrollY: targetY,
-          });
+          allowUnreadResetAtBottomRef.current = true;
         }
         return true;
       };
@@ -388,17 +408,30 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         requestAnimationFrame(run);
       });
     },
-    [scrollToBottom, syncScrollBelowUnreadFromViewport],
+    [scrollToBottom],
   );
 
   const applyCachedHistoryPage = useCallback(
     (cached: NonNullable<ReturnType<typeof getCachedChatHistory>>, options?: { replace?: boolean }) => {
       const replace = options?.replace !== false;
+      const cachedMaxId =
+        cached.messages.length > 0
+          ? cached.messages[cached.messages.length - 1]!.telegram_message_id
+          : 0;
+      const cacheSignature = `${cached.fetchedAt}:${cached.messages.length}:${cachedMaxId}:${cached.previewOnly ? 1 : 0}`;
+      if (!replace && cacheSignature === lastAppliedCacheSignatureRef.current) {
+        return;
+      }
       if (replace) {
         setMessages(cached.messages);
       } else {
-        setMessages((prev) => mergeHistoryMessages(prev, cached.messages, historyMessageContext));
+        setMessages((prev) => {
+          const merged = mergeHistoryMessages(prev, cached.messages, historyMessageContext);
+          if (historyTailSignature(merged) === historyTailSignature(prev)) return prev;
+          return merged;
+        });
       }
+      lastAppliedCacheSignatureRef.current = cacheSignature;
       setChatKind(cached.chatKind);
       if (cached.selfUserId != null) {
         setSelfUserId(cached.selfUserId);
@@ -461,41 +494,35 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     return patchOutgoingStatusesWithReadOutbox(enriched, readOutboxCursor);
   }, [chat, chatKind, messages, readOutboxCursor]);
 
-  useEffect(() => {
-    displayMessageCountRef.current = displayMessages.length;
-  }, [displayMessages.length]);
-
-  useEffect(() => {
-    scrollBelowUnreadRef.current = chat.scroll_below_unread_count ?? 0;
-  }, [chat.scroll_below_unread_count]);
+  const lastDisplayMessageId =
+    displayMessages.length > 0
+      ? displayMessages[displayMessages.length - 1]!.telegram_message_id
+      : 0;
 
   useEffect(() => {
     if (!shouldLoadHistory) return;
-    if (displayMessages.length === 0) {
-      prefetchOpenChatAvatars(chat, [], chatKind ?? chat.chat_kind ?? null);
-      return;
-    }
-    prefetchOpenChatAvatars(chat, displayMessages, chatKind ?? chat.chat_kind ?? null);
+    const effectiveChatKind = chatKind ?? chat.chat_kind ?? null;
+    const signature = `${chat.telegram_chat_id}:${historyTailSignature(displayMessages)}:${effectiveChatKind ?? ""}`;
+    if (signature === lastAvatarPrefetchSignatureRef.current) return;
+    lastAvatarPrefetchSignatureRef.current = signature;
+    prefetchOpenChatAvatars(chat, displayMessages, effectiveChatKind);
     return () => {
       if (isOpenChatAvatarPriority(chat.telegram_chat_id)) {
         setOpenChatAvatarPriority(null);
       }
     };
   }, [
-    chat,
+    chat.telegram_chat_id,
+    chat.chat_kind,
     chatKind,
-    displayMessages,
+    displayMessages.length,
+    lastDisplayMessageId,
     shouldLoadHistory,
   ]);
 
   useEffect(() => {
     nextBeforeMessageIdRef.current = nextBeforeMessageId;
   }, [nextBeforeMessageId]);
-
-  const lastDisplayMessageId =
-    displayMessages.length > 0
-      ? displayMessages[displayMessages.length - 1]!.telegram_message_id
-      : 0;
 
   useEffect(() => {
     lastDisplayMessageIdRef.current = lastDisplayMessageId;
@@ -528,7 +555,26 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       pendingInitialScrollRef.current = false;
       prevDisplayLengthRef.current = displayMessages.length;
       prevDisplayLastIdRef.current = lastDisplayMessageId;
-      scrollToBottom();
+      const openingUnread = openingUnreadCountRef.current;
+      if (openingUnread > MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD) {
+        followingBottomRef.current = false;
+        setIsFollowingBottom(false);
+        allowUnreadResetAtBottomRef.current = true;
+        setAuthenticatedHomeOpenChatFollowingBottom(false);
+        return;
+      }
+      initialScrollInProgressRef.current = true;
+      setInitialScrollInProgress(true);
+      if (openScrollAnchorRef.current === "top") {
+        scrollToBottom();
+      } else {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const metrics = scrollControllerRef.current?.getMetrics();
+            if (metrics) handleScrollPositionChange(metrics);
+          });
+        });
+      }
       return;
     }
 
@@ -553,20 +599,24 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       !loadingOlderRef.current &&
       !followingBottomRef.current
     ) {
-      const added = displayMessages.length - prevLen;
+      const added = countNewerTailMessages(displayMessages, prevLastId);
       if (added > 0) {
-        bumpAuthenticatedHomeSelectedChatScrollBelowUnread(added);
+        bumpAuthenticatedHomeSelectedChatUnread(added);
       }
-      preserveScrollY(pinnedScrollYRef.current);
-      requestAnimationFrame(() => refreshScrollBelowFromCurrentViewport());
+      const anchor = scrollControllerRef.current?.captureScrollAnchor();
+      if (anchor) {
+        pendingScrollAnchorRef.current = anchor;
+      } else {
+        preserveScrollY(pinnedScrollYRef.current);
+      }
     }
   }, [
     displayMessages.length,
     lastDisplayMessageId,
     preserveScrollY,
-    refreshScrollBelowFromCurrentViewport,
     restoreChatScrollPosition,
     scrollToBottom,
+    handleScrollPositionChange,
   ]);
 
   useLayoutEffect(() => {
@@ -580,7 +630,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   useEffect(() => {
     return subscribeOutgoingChatMessages(({ chatId, message }) => {
       if (chatId !== chat.telegram_chat_id) return;
-      followingBottomRef.current = true;
+      if (!followingBottomRef.current) {
+        const anchor = scrollControllerRef.current?.captureScrollAnchor();
+        if (anchor) pendingScrollAnchorRef.current = anchor;
+      }
       setMessages((prev) => mergeHistoryMessages(prev, [message], historyMessageContext));
     });
   }, [chat.telegram_chat_id, historyMessageContext]);
@@ -593,6 +646,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       if (cached == null || cached.messages.length === 0) return;
       const cachedMaxId =
         cached.messages[cached.messages.length - 1]?.telegram_message_id ?? 0;
+      const cacheSignature = `${cached.fetchedAt}:${cached.messages.length}:${cachedMaxId}:${cached.previewOnly ? 1 : 0}`;
+      if (cacheSignature === lastAppliedCacheSignatureRef.current) return;
       if (cached.previewOnly && lastTailMessageIdRef.current > cachedMaxId) return;
       if (!cached.previewOnly && lastTailMessageIdRef.current > cachedMaxId) return;
       applyCachedHistoryPage(cached, { replace: false });
@@ -864,6 +919,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         }
 
         const preserveScrollYBeforeMerge = captureScrollYIfScrolledUp();
+        const scrollAnchorBeforeMerge =
+          !followingBottomRef.current
+            ? scrollControllerRef.current?.captureScrollAnchor()
+            : null;
         let tailGrew = false;
         setMessages((prev) => {
           const merged = mergeHistoryMessages(prev, result.messages, historyMessageContext);
@@ -873,8 +932,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           tailGrew = mergedMaxId > prevMaxId;
           return merged;
         });
-        if (tailGrew && preserveScrollYBeforeMerge != null) {
-          pendingPreserveScrollYRef.current = preserveScrollYBeforeMerge;
+        if (tailGrew && !followingBottomRef.current) {
+          if (scrollAnchorBeforeMerge) {
+            pendingScrollAnchorRef.current = scrollAnchorBeforeMerge;
+          } else if (preserveScrollYBeforeMerge != null) {
+            pendingPreserveScrollYRef.current = preserveScrollYBeforeMerge;
+          }
         }
         if (result.selfUserId != null) {
           setSelfUserId(result.selfUserId);
@@ -887,7 +950,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           result.chatKind,
           result.memberCount,
         );
-        mergeCachedChatHistoryTail(chat.telegram_chat_id, result);
+        if (tailGrew) {
+          mergeCachedChatHistoryTail(chat.telegram_chat_id, result);
+        }
         if (tailGrew) {
           void import("../../telegram/warmupTelegramChatSession").then(({ warmupTelegramChatSession }) => {
             void warmupTelegramChatSession(chat.telegram_chat_id);
@@ -951,6 +1016,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     followingBottomRef.current = false;
+    setAuthenticatedHomeOpenChatFollowingBottom(false);
     const scrollAnchor = scrollControllerRef.current?.captureScrollAnchor();
 
     logPageDisplay("messages_history_load_older_start", {
@@ -1109,19 +1175,20 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const handleNearTop = useCallback(() => {
     followingBottomRef.current = false;
     setIsFollowingBottom(false);
-    allowScrollBelowUnreadResetRef.current = true;
-    refreshScrollBelowFromCurrentViewport();
+    allowUnreadResetAtBottomRef.current = true;
+    setAuthenticatedHomeOpenChatFollowingBottom(false);
     void loadOlderMessages();
-  }, [loadOlderMessages, refreshScrollBelowFromCurrentViewport]);
+  }, [loadOlderMessages]);
 
-  const scrollBelowUnread = chat.scroll_below_unread_count ?? 0;
+  const openChatUnread = chat.unread_count ?? 0;
   const scrollToBottomUnreadLabel = formatMessageUnreadCountLabel(
-    scrollBelowUnread,
+    openChatUnread,
     chat.telegram_chat_id,
   );
   const showScrollToBottomButton =
+    !initialScrollInProgress &&
     !isFollowingBottom &&
-    scrollBelowUnread > MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD &&
+    openChatUnread > MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD &&
     Boolean(scrollToBottomUnreadLabel);
 
   useEffect(() => {
@@ -1134,7 +1201,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }),
       show: showScrollToBottomButton,
       followingBottom: isFollowingBottom,
-      scrollBelowUnread,
+      initialScrollInProgress,
+      unreadCount: openChatUnread,
       label: scrollToBottomUnreadLabel || null,
     });
   }, [
@@ -1142,7 +1210,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     chat.telegram_chat_id,
     chat.title,
     isFollowingBottom,
-    scrollBelowUnread,
+    initialScrollInProgress,
+    openChatUnread,
     scrollToBottomUnreadLabel,
     shouldLoadHistory,
     showScrollToBottomButton,
@@ -1182,7 +1251,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         style={{ flex: 1, minHeight: 0 }}
         indicatorColor={colors.accent}
         scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
-        initialScrollPosition="top"
+        initialScrollPosition={initialScrollAnchor}
         nearTopThresholdPx={MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX}
         onNearTop={hasMoreOlder ? handleNearTop : undefined}
         onScrollPositionChange={handleScrollPositionChange}

@@ -14,6 +14,7 @@ import {
   useAuthenticatedHomeSelectedChat,
 } from "../authenticatedHomeSelectedChat";
 import { prefetchChatHistory } from "../messageChatHistoryPrefetch";
+import { getCachedChatHistory } from "../messageChatHistoryCache";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
 import { telegramEmojiDebug } from "./messages/telegramEmojiDebug";
 import { homeListShellStyle } from "./messages/messageListLayout";
@@ -245,6 +246,17 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const selectedChatId = selectedChat?.telegram_chat_id ?? null;
   const selectedChatRef = useRef(selectedChat);
   selectedChatRef.current = selectedChat;
+
+  useEffect(() => {
+    if (selectedChatId == null || selectedChat == null) return;
+    setChats((prev) =>
+      prev.map((row) =>
+        row.telegram_chat_id === selectedChatId
+          ? { ...row, unread_count: selectedChat.unread_count }
+          : row,
+      ),
+    );
+  }, [selectedChat, selectedChat?.unread_count, selectedChatId]);
   const { width: windowWidth } = useWindowDimensions();
   const wideListChrome = windowWidth > layout.authenticatedHome.firstBreakpoint;
   const chatSelectionEnabled = wideListChrome;
@@ -572,20 +584,19 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         peerUserId: item.peer_user_id,
         title: item.title,
       }));
-      setChats((prev) =>
-        prev.map((row) =>
-          row.telegram_chat_id === item.telegram_chat_id
-            ? { ...row, unread_count: 0 }
-            : row,
-        ),
-      );
       void import("../telegram/warmupTelegramChatSession").then(({ warmupTelegramChatSession }) => {
         void warmupTelegramChatSession(item.telegram_chat_id);
       });
       openAuthenticatedHomeChatHistory(item);
-      void import("./messages/messageChatAvatarPrefetch").then(({ prefetchOpenChatListAvatar }) => {
-        prefetchOpenChatListAvatar(item);
-      });
+      void import("./messages/messageChatAvatarPrefetch").then(
+        ({ prefetchOpenChatListAvatar, prefetchOpenChatAvatars }) => {
+          prefetchOpenChatListAvatar(item);
+          const cached = getCachedChatHistory(item.telegram_chat_id);
+          if (cached != null && cached.messages.length > 0) {
+            prefetchOpenChatAvatars(item, cached.messages, cached.chatKind);
+          }
+        },
+      );
     },
     [chatSelectionEnabled],
   );
