@@ -320,6 +320,7 @@ export function startTdlibGatewayServer(): http.Server {
             sinceMessageIdRaw != null && sinceMessageIdRaw.trim() !== ""
               ? Number(sinceMessageIdRaw)
               : null;
+          const aroundUnread = url.searchParams.get("aroundUnread") === "1";
           if (!telegramUsername || !Number.isFinite(chatId)) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
             return;
@@ -340,6 +341,7 @@ export function startTdlibGatewayServer(): http.Server {
             limit,
             Number.isFinite(beforeMessageId) ? beforeMessageId : null,
             Number.isFinite(sinceMessageId) ? sinceMessageId : null,
+            aroundUnread,
           );
           logGateway("chat_history_served", {
             telegramUsername,
@@ -347,6 +349,7 @@ export function startTdlibGatewayServer(): http.Server {
             userId: liveChatPeerUserIdForLog(telegramUsername, chatId) ?? null,
             beforeMessageId: Number.isFinite(beforeMessageId) ? beforeMessageId : null,
             sinceMessageId: Number.isFinite(sinceMessageId) ? sinceMessageId : null,
+            aroundUnread,
             count: result.messages.length,
             hasMoreOlder: result.has_more_older,
             nextBeforeMessageId: result.next_before_message_id,

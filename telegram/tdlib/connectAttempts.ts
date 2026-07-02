@@ -16,7 +16,7 @@ import {
   syncChatThreads,
   INITIAL_MAIN_CHAT_SYNC_LIMIT,
 } from "./syncChats.js";
-import { fetchChatHistory, fetchChatHistorySince, markChatInboxRead, sendChatTextMessage, editChatTextMessage } from "./chatHistory.js";
+import { fetchChatHistory, fetchChatHistoryAroundUnread, fetchChatHistorySince, markChatInboxRead, sendChatTextMessage, editChatTextMessage } from "./chatHistory.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
 import { getLiveChatList, getLiveChatListRevision } from "./liveChatCache.js";
 
@@ -1172,6 +1172,7 @@ export async function getChatHistoryForUser(
   limit = 50,
   beforeMessageId?: number | null,
   sinceMessageId?: number | null,
+  aroundUnread = false,
 ): Promise<{
   chat_kind: Awaited<ReturnType<typeof fetchChatHistory>>["chat_kind"];
   self_user_id: number | null;
@@ -1203,7 +1204,9 @@ export async function getChatHistoryForUser(
       sinceMessageId > 0;
     const result = loadSince
       ? await fetchChatHistorySince(record.client, chatId, sinceMessageId!, limit)
-      : await fetchChatHistory(record.client, chatId, limit, beforeMessageId);
+      : aroundUnread
+        ? await fetchChatHistoryAroundUnread(record.client, chatId, limit)
+        : await fetchChatHistory(record.client, chatId, limit, beforeMessageId);
     const memberCount =
       typeof liveRow?.member_count === "number" && liveRow.member_count > 0
         ? liveRow.member_count

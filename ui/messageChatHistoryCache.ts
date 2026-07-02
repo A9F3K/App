@@ -4,6 +4,8 @@ export type CachedChatHistoryPage = ChatHistoryPageResult & {
   fetchedAt: number;
   /** True when only a short preview page was prefetched for the list. */
   previewOnly?: boolean;
+  /** True when loaded around the inbox read cursor instead of the latest tail. */
+  aroundUnread?: boolean;
 };
 
 const cache = new Map<number, CachedChatHistoryPage>();
@@ -98,15 +100,19 @@ function trimCache(): void {
   }
 }
 
-function cachePageSignature(page: ChatHistoryPageResult & { previewOnly?: boolean }): string {
+function cachePageSignature(page: ChatHistoryPageResult & { previewOnly?: boolean; aroundUnread?: boolean }): string {
   const maxId =
     page.messages.length > 0
       ? page.messages[page.messages.length - 1]!.telegram_message_id
       : 0;
+  const minId =
+    page.messages.length > 0 ? page.messages[0]!.telegram_message_id : 0;
   return [
     page.messages.length,
+    minId,
     maxId,
     page.previewOnly ? 1 : 0,
+    page.aroundUnread ? 1 : 0,
     page.hasMoreOlder ? 1 : 0,
     page.nextBeforeMessageId ?? "",
     page.lastReadOutboxMessageId ?? "",
@@ -134,6 +140,16 @@ export function isChatHistoryCacheFresh(chatId: number, maxAgeMs = FRESH_MS): bo
   return Date.now() - entry.fetchedAt < maxAgeMs;
 }
 
+/** Whether a cached page matches the requested load anchor. */
+export function isChatHistoryCacheAnchorMatch(
+  chatId: number,
+  aroundUnread: boolean,
+): boolean {
+  const entry = getCachedChatHistory(chatId);
+  if (!entry || entry.messages.length === 0) return false;
+  return Boolean(entry.aroundUnread) === aroundUnread;
+}
+
 /** Full first page ready to show without another network round-trip. */
 export function isChatHistoryCacheComplete(chatId: number): boolean {
   const entry = getCachedChatHistory(chatId);
@@ -144,10 +160,11 @@ export function isChatHistoryCacheComplete(chatId: number): boolean {
 export function setCachedChatHistory(
   chatId: number,
   page: ChatHistoryPageResult,
-  options?: { previewOnly?: boolean },
+  options?: { previewOnly?: boolean; aroundUnread?: boolean },
 ): void {
   if (page.error) return;
   const previewOnly = options?.previewOnly === true;
+  const aroundUnread = options?.aroundUnread === true;
   const existing = getCachedChatHistory(chatId);
   if (
     existing &&
@@ -164,7 +181,7 @@ export function setCachedChatHistory(
       return;
     }
   }
-  const entry = { ...page, fetchedAt: Date.now(), previewOnly };
+  const entry = { ...page, fetchedAt: Date.now(), previewOnly, aroundUnread };
   const prev = cache.get(chatId);
   const contentChanged = !prev || cachePageSignature(prev) !== cachePageSignature(entry);
   cache.set(chatId, entry);
@@ -205,7 +222,7 @@ export function mergeCachedChatHistoryTail(
       lastReadOutboxMessageId:
         tail.lastReadOutboxMessageId ?? existing.lastReadOutboxMessageId,
     },
-    { previewOnly: existing.previewOnly },
+    { previewOnly: existing.previewOnly, aroundUnread: existing.aroundUnread },
   );
 }
 

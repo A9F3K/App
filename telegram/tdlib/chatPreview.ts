@@ -38,6 +38,7 @@ export type TdChat = {
   };
   last_message?: TdMessage;
   unread_count?: number;
+  last_read_inbox_message_id?: number;
   last_read_outbox_message_id?: number;
   photo?: { small?: { id?: number }; big?: { id?: number } };
   positions?: Array<{
@@ -423,6 +424,15 @@ export function normalizeUnreadCount(chat: TdChat): number {
   // Guard corrupt values (e.g. message/chat ids mistaken for unread).
   if (raw > 50_000 || raw === chat.id || raw === Math.abs(chat.id)) return 0;
   return Math.floor(raw);
+}
+
+export function lastReadInboxMessageIdFromChat(chat: TdChat): number | null {
+  const row = chat as Record<string, unknown>;
+  for (const key of ["last_read_inbox_message_id", "lastReadInboxMessageId"] as const) {
+    const id = Number(row[key]);
+    if (Number.isFinite(id) && id > 0) return id;
+  }
+  return null;
 }
 
 export function lastReadOutboxMessageIdFromChat(chat: TdChat): number | null {

@@ -9,7 +9,7 @@ import {
   type ChatKind,
   type MappedChatHistoryMessage,
 } from "./messageHistoryMap.js";
-import { lastReadOutboxMessageIdFromChat, memberCountFromChat, type TdChat, type TdMessage } from "./chatPreview.js";
+import { lastReadInboxMessageIdFromChat, lastReadOutboxMessageIdFromChat, memberCountFromChat, normalizeUnreadCount, type TdChat, type TdMessage } from "./chatPreview.js";
 import type { TdUserProfileCache } from "./tdUserProfile.js";
 
 export type { ChatKind, MappedChatHistoryMessage };
@@ -198,6 +198,126 @@ export async function fetchChatHistory(
       .map((row) => row.telegram_message_id),
   );
 
+  const memberCount = await memberCountFromChat(client, finalChat);
+
+  return {
+    chat_kind: chatKind,
+    self_user_id: selfUserId,
+    member_count: memberCount,
+    messages,
+    has_more_older: hasMoreOlder,
+    next_before_message_id: nextBeforeMessageId,
+    last_read_outbox_message_id: lastReadOutbox,
+  };
+}
+
+/** Load a window around the inbox read cursor (first-unread area), not the latest tail. */
+export async function fetchChatHistoryAroundUnread(
+  client: Client,
+  chatId: number,
+  limit = 50,
+): Promise<{
+  chat_kind: ChatKind;
+  self_user_id: number | null;
+  messages: MappedChatHistoryMessage[];
+  has_more_older: boolean;
+  next_before_message_id: number | null;
+  last_read_outbox_message_id: number | null;
+  member_count: number | null;
+}> {
+  try {
+    await client.invoke({ _: "openChat", chat_id: chatId });
+  } catch {
+    /* already open */
+  }
+
+  const pageLimit = Math.min(Math.max(limit, 1), 100);
+  const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+  const chatKind = chatKindFromTdChat(chat);
+  const selfUserId = await resolveMyUserId(client);
+  const lastReadInbox = lastReadInboxMessageIdFromChat(chat);
+  const unreadCount = normalizeUnreadCount(chat);
+
+  if (unreadCount <= 0 || lastReadInbox == null) {
+    const fallback = await fetchChatHistory(client, chatId, limit);
+    return { ...fallback, member_count: await memberCountFromChat(client, chat) };
+  }
+
+  const contextBefore = Math.min(
+    Math.max(2, Math.floor(pageLimit * 0.35)),
+    pageLimit - 1,
+  );
+  const newerWanted = Math.min(pageLimit - contextBefore, unreadCount + 6);
+
+  const rawById = new Map<number, TdMessage>();
+
+  const collectRaw = (messages: TdMessage[]) => {
+    for (const message of messages) {
+      const telegramMessageId = Number(message.id);
+      if (!Number.isFinite(telegramMessageId) || telegramMessageId <= 0) continue;
+      rawById.set(telegramMessageId, message);
+    }
+  };
+
+  if (newerWanted > 0) {
+    const newerHistory = (await client.invoke({
+      _: "getChatHistory",
+      chat_id: chatId,
+      from_message_id: lastReadInbox,
+      offset: -Math.max(newerWanted, 1),
+      limit: Math.min(100, newerWanted + 1),
+      only_local: false,
+    })) as { messages?: TdMessage[] };
+    collectRaw(
+      (Array.isArray(newerHistory.messages) ? newerHistory.messages : []).filter((message) => {
+        const telegramMessageId = Number(message.id);
+        return Number.isFinite(telegramMessageId) && telegramMessageId > lastReadInbox;
+      }),
+    );
+  }
+
+  if (contextBefore > 0) {
+    const olderHistory = (await client.invoke({
+      _: "getChatHistory",
+      chat_id: chatId,
+      from_message_id: lastReadInbox,
+      offset: contextBefore,
+      limit: Math.min(100, contextBefore + 1),
+      only_local: false,
+    })) as { messages?: TdMessage[] };
+    collectRaw(
+      (Array.isArray(olderHistory.messages) ? olderHistory.messages : []).filter((message) => {
+        const telegramMessageId = Number(message.id);
+        return Number.isFinite(telegramMessageId) && telegramMessageId <= lastReadInbox;
+      }),
+    );
+  }
+
+  let messages: MappedChatHistoryMessage[] = [];
+  if (rawById.size > 0) {
+    const freshChat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+    let mapped = await mapHistoryBatch(client, [...rawById.values()], freshChat);
+    mapped = applyReadOutboxToHistoryMessages(mapped, freshChat);
+    if (chatKind === "private") {
+      mapped = await enrichOutgoingReadStatuses(client, freshChat, mapped);
+      mapped = applyReadOutboxToHistoryMessages(mapped, freshChat);
+      mapped = applyCumulativeOutgoingReadStatuses(mapped);
+    }
+    messages = sortHistoryMessages(mapped).slice(0, pageLimit);
+  }
+
+  const finalChat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+  const oldestReturnedId = messages[0]?.telegram_message_id ?? null;
+  const hasMoreOlder = messages.length >= pageLimit || contextBefore > 0;
+  const nextBeforeMessageId =
+    hasMoreOlder && oldestReturnedId != null ? oldestReturnedId : null;
+
+  const lastReadOutbox = effectiveReadOutboxMessageId(
+    lastReadOutboxMessageIdFromChat(finalChat),
+    ...messages
+      .filter((row) => row.is_outgoing && row.outgoing_status === "read")
+      .map((row) => row.telegram_message_id),
+  );
   const memberCount = await memberCountFromChat(client, finalChat);
 
   return {

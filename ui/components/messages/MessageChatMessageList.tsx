@@ -6,6 +6,7 @@ import { useAuthenticatedHomeHistoryLoadTarget } from "../../authenticatedHomeSe
 import { chatLogFields, logPageDisplay } from "../../pageDisplayLog";
 import {
   getCachedChatHistory,
+  isChatHistoryCacheAnchorMatch,
   isChatHistoryCacheComplete,
   isChatHistoryCacheFresh,
   PREVIEW_FRESH_MS,
@@ -13,7 +14,10 @@ import {
   setCachedChatHistory,
   subscribeChatHistoryCache,
 } from "../../messageChatHistoryCache";
-import { loadOpenChatHistoryFirstPage } from "../../messageChatHistoryPrefetch";
+import {
+  loadOpenChatHistoryFirstPage,
+  shouldPrefetchHistoryAroundUnread,
+} from "../../messageChatHistoryPrefetch";
 import {
   getChatScrollPosition,
   isChatScrollNearBottom,
@@ -262,8 +266,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     } else {
       pendingInitialScrollRef.current = true;
       pendingScrollRestoreRef.current = null;
-      followingBottomRef.current = true;
-      setIsFollowingBottom(true);
+      const followsBottom = openAnchor === "bottom";
+      followingBottomRef.current = followsBottom;
+      setIsFollowingBottom(followsBottom);
     }
 
     return () => {
@@ -300,11 +305,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const handleScrollPositionChange = useCallback((metrics: HspScrollMetrics) => {
     if (metrics.contentH <= 0) return;
     pinnedScrollYRef.current = metrics.scrollY;
-    const nearBottom = isChatScrollNearBottom(
-      metrics.scrollY,
-      metrics.layoutH,
-      metrics.contentH,
-    );
+    const contentOverflows = metrics.contentH > metrics.layoutH + 0.5;
+    const nearBottom = contentOverflows
+      ? isChatScrollNearBottom(metrics.scrollY, metrics.layoutH, metrics.contentH)
+      : openScrollAnchorRef.current === "bottom";
 
     if (initialScrollInProgressRef.current) {
       if (nearBottom) {
@@ -418,7 +422,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         cached.messages.length > 0
           ? cached.messages[cached.messages.length - 1]!.telegram_message_id
           : 0;
-      const cacheSignature = `${cached.fetchedAt}:${cached.messages.length}:${cachedMaxId}:${cached.previewOnly ? 1 : 0}`;
+      const cacheSignature = `${cached.fetchedAt}:${cached.messages.length}:${cachedMaxId}:${cached.previewOnly ? 1 : 0}:${cached.aroundUnread ? 1 : 0}`;
       if (!replace && cacheSignature === lastAppliedCacheSignatureRef.current) {
         return;
       }
@@ -565,7 +569,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
       initialScrollInProgressRef.current = true;
       setInitialScrollInProgress(true);
-      if (openScrollAnchorRef.current === "top") {
+      if (openScrollAnchorRef.current === "bottom") {
         scrollToBottom();
       } else {
         requestAnimationFrame(() => {
@@ -644,9 +648,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       if (chatId !== chat.telegram_chat_id) return;
       const cached = getCachedChatHistory(chatId);
       if (cached == null || cached.messages.length === 0) return;
+      if (
+        !isChatHistoryCacheAnchorMatch(
+          chatId,
+          shouldPrefetchHistoryAroundUnread(chat),
+        )
+      ) {
+        return;
+      }
       const cachedMaxId =
         cached.messages[cached.messages.length - 1]?.telegram_message_id ?? 0;
-      const cacheSignature = `${cached.fetchedAt}:${cached.messages.length}:${cachedMaxId}:${cached.previewOnly ? 1 : 0}`;
+      const cacheSignature = `${cached.fetchedAt}:${cached.messages.length}:${cachedMaxId}:${cached.previewOnly ? 1 : 0}:${cached.aroundUnread ? 1 : 0}`;
       if (cacheSignature === lastAppliedCacheSignatureRef.current) return;
       if (cached.previewOnly && lastTailMessageIdRef.current > cachedMaxId) return;
       if (!cached.previewOnly && lastTailMessageIdRef.current > cachedMaxId) return;
@@ -686,8 +698,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     let cancelled = false;
     setError(null);
 
+    const aroundUnread = shouldPrefetchHistoryAroundUnread(chat);
     const cached = getCachedChatHistory(chat.telegram_chat_id);
-    const cacheHit = cached != null && cached.messages.length > 0;
+    const cacheHit =
+      cached != null &&
+      cached.messages.length > 0 &&
+      isChatHistoryCacheAnchorMatch(chat.telegram_chat_id, aroundUnread);
 
     if (cacheHit) {
       applyCachedHistoryPage(cached, { replace: true });
@@ -723,12 +739,16 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           const result = await loadOpenChatHistoryFirstPage(
             chat.telegram_chat_id,
             chat.peer_user_id,
+            chat,
           );
           if (cancelled) return;
           if (result.error) {
             throw new Error(result.error);
           }
-          setCachedChatHistory(chat.telegram_chat_id, result, { previewOnly: false });
+          setCachedChatHistory(chat.telegram_chat_id, result, {
+            previewOnly: false,
+            aroundUnread,
+          });
           setMessages(result.messages);
           setChatKind(result.chatKind);
           if (result.selfUserId != null) {
@@ -794,14 +814,19 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       try {
         const cacheComplete =
           cacheHit && isChatHistoryCacheComplete(chat.telegram_chat_id);
-        if (cacheComplete && isChatHistoryCacheFresh(chat.telegram_chat_id)) {
+        if (
+          cacheComplete &&
+          isChatHistoryCacheFresh(chat.telegram_chat_id) &&
+          isChatHistoryCacheAnchorMatch(chat.telegram_chat_id, aroundUnread)
+        ) {
           return;
         }
 
         const previewFresh =
           cacheHit &&
           cached!.previewOnly &&
-          isChatHistoryCacheFresh(chat.telegram_chat_id, PREVIEW_FRESH_MS);
+          isChatHistoryCacheFresh(chat.telegram_chat_id, PREVIEW_FRESH_MS) &&
+          isChatHistoryCacheAnchorMatch(chat.telegram_chat_id, aroundUnread);
 
         if (previewFresh) {
           const scheduleDeferred = (fn: () => void) => {

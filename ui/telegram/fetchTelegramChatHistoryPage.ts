@@ -153,6 +153,7 @@ export async function fetchTelegramChatHistoryPage(
   peerUserId: number | null | undefined,
   beforeMessageId?: number | null,
   sinceMessageId?: number | null,
+  aroundUnread = false,
 ): Promise<ChatHistoryPageResult> {
   const params = new URLSearchParams({
     chat_id: String(chatId),
@@ -171,6 +172,9 @@ export async function fetchTelegramChatHistoryPage(
     sinceMessageId > 0
   ) {
     params.set("since_message_id", String(sinceMessageId));
+  }
+  if (aroundUnread) {
+    params.set("around_unread", "1");
   }
   const url = buildApiUrl(`/api/telegram-messages-history?${params.toString()}`);
   const response = await fetch(url, { method: "GET", credentials: "include" });
@@ -234,9 +238,10 @@ export async function fetchTelegramChatHistoryPage(
 export async function loadTelegramChatHistoryFirstPage(
   chatId: number,
   peerUserId: number | null | undefined,
-  options?: { warmup?: boolean; limit?: number },
+  options?: { warmup?: boolean; limit?: number; aroundUnread?: boolean },
 ): Promise<ChatHistoryPageResult> {
   const warmup = options?.warmup !== false;
+  const aroundUnread = options?.aroundUnread === true;
   const limit =
     typeof options?.limit === "number" &&
     Number.isFinite(options.limit) &&
@@ -244,14 +249,28 @@ export async function loadTelegramChatHistoryFirstPage(
       ? Math.trunc(options.limit)
       : MESSAGE_CHAT_HISTORY_PAGE_SIZE;
   const warmupPromise = warmup ? warmupTelegramChatSession(chatId) : Promise.resolve();
-  let result = await fetchTelegramChatHistoryPage(chatId, limit, peerUserId);
+  let result = await fetchTelegramChatHistoryPage(
+    chatId,
+    limit,
+    peerUserId,
+    null,
+    null,
+    aroundUnread,
+  );
   if (
     result.error === "session_not_ready" ||
     result.error === "history_unavailable" ||
     result.error === "not_found"
   ) {
     await warmupPromise;
-    result = await fetchTelegramChatHistoryPage(chatId, limit, peerUserId);
+    result = await fetchTelegramChatHistoryPage(
+      chatId,
+      limit,
+      peerUserId,
+      null,
+      null,
+      aroundUnread,
+    );
   }
   return result;
 }

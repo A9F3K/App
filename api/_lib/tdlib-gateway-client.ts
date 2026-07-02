@@ -476,6 +476,7 @@ export async function gatewayFetchChatMessages(
   limit = 50,
   beforeMessageId?: number | null,
   sinceMessageId?: number | null,
+  aroundUnread = false,
 ): Promise<{
   messages: Record<string, unknown>[];
   chatKind: string | null;
@@ -506,6 +507,9 @@ export async function gatewayFetchChatMessages(
     sinceMessageId > 0
   ) {
     params.set("sinceMessageId", String(sinceMessageId));
+  }
+  if (aroundUnread) {
+    params.set("aroundUnread", "1");
   }
   const url = `${base}/v1/chat/messages?${params.toString()}`;
   try {

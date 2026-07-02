@@ -713,6 +713,7 @@ export async function telegramMessagesHistoryHandler(
   const limit = Number.isFinite(parsedLimit) ? parsedLimit : 50;
   const beforeMessageId = parseOptionalIdParam(url, "before_message_id");
   const sinceMessageId = parseOptionalIdParam(url, "since_message_id");
+  const aroundUnread = url.searchParams.get("around_unread") === "1";
   if (chatId == null) {
     logTelegramMessagesApi("messages_history_bad_request", {
       telegramUsername: userOrRes,
@@ -729,6 +730,9 @@ export async function telegramMessagesHistoryHandler(
   ) {
     return finishJson(request, res, { ok: false, error: "invalid_params" }, 400);
   }
+  if (aroundUnread && (beforeMessageId != null || sinceMessageId != null)) {
+    return finishJson(request, res, { ok: false, error: "invalid_params" }, 400);
+  }
 
   const started = Date.now();
   const result = await gatewayFetchChatMessages(
@@ -737,12 +741,14 @@ export async function telegramMessagesHistoryHandler(
     limit,
     beforeMessageId,
     sinceMessageId,
+    aroundUnread,
   );
   logTelegramMessagesApi("messages_history_served", {
     telegramUsername: userOrRes,
     chatId,
     beforeMessageId,
     sinceMessageId,
+    aroundUnread,
     count: result.messages.length,
     hasMoreOlder: result.hasMoreOlder,
     nextBeforeMessageId: result.nextBeforeMessageId,
