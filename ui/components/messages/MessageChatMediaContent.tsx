@@ -9,6 +9,7 @@ import {
   MESSAGE_BUBBLE_MEDIA_MAX_WIDTH_PX,
   MESSAGE_BUBBLE_MEDIA_PREVIEW_PROGRESS_HEIGHT_PX,
   MESSAGE_BUBBLE_MEDIA_PROGRESS_HEIGHT_PX,
+  MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
   MESSAGE_BUBBLE_STICKER_MAX_PX,
 } from "./messageChatLayout";
 import { bytesLookLikeTgs, bytesLookLikeVideo } from "./loadTgsAnimation";
@@ -400,16 +401,19 @@ function WebMessageChatVideo({
           {
             style: {
               width: widthPx,
-              height: posterVisible
-                ? MESSAGE_BUBBLE_MEDIA_PREVIEW_PROGRESS_HEIGHT_PX
-                : MESSAGE_BUBBLE_MEDIA_PROGRESS_HEIGHT_PX,
+              height: MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
               backgroundColor: colors.highlight,
               position: "relative",
               overflow: "hidden",
+              flexShrink: 0,
             },
           },
           createElement("div", {
             style: {
+              position: "absolute",
+              left: 0,
+              right: 0,
+              bottom: 0,
               width: `${Math.max(0, Math.min(100, progress * 100))}%`,
               height: posterVisible
                 ? MESSAGE_BUBBLE_MEDIA_PREVIEW_PROGRESS_HEIGHT_PX
@@ -735,8 +739,19 @@ export function MessageChatMediaContent({
 
   if (loading && !previewUri) {
     return (
-      <View style={[frameStyle, { alignItems: "center", justifyContent: "center" }]}>
-        <ActivityIndicator size="small" color={colors.primary} />
+      <View>
+        <View style={[frameStyle, { alignItems: "center", justifyContent: "center" }]}>
+          <ActivityIndicator size="small" color={colors.primary} />
+        </View>
+        {usesVideoPreview && showProgress ? (
+          <View
+            style={{
+              width: displayWidthPx,
+              height: MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
+              backgroundColor: colors.highlight,
+            }}
+          />
+        ) : null}
       </View>
     );
   }

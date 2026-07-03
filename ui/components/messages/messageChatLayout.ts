@@ -87,6 +87,12 @@ export const MESSAGE_BUBBLE_GIF_MAX_PX = 320;
 export const MESSAGE_BUBBLE_MEDIA_PROGRESS_HEIGHT_PX = 1;
 /** Progress strip under video/GIF while poster preview is visible (before playback). */
 export const MESSAGE_BUBBLE_MEDIA_PREVIEW_PROGRESS_HEIGHT_PX = 5;
+/** Reserved height for video progress so preview → playback does not shift layout. */
+export const MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX =
+  MESSAGE_BUBBLE_MEDIA_PREVIEW_PROGRESS_HEIGHT_PX;
+
+/** Read-receipt ticks — matches `assets/images/logo.svg` green. */
+export const MESSAGE_CHAT_READ_CHECK_COLOR = "#1AAA11";
 
 /** Web-only: match {@link measureWrappedLineWidths} probe so long URLs/hashtags wrap inside bubbles. */
 export const messageChatBubbleTextWebWrapStyle = {

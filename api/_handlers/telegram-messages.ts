@@ -214,6 +214,14 @@ function mapLiveChats(live: { chats: Record<string, unknown>[]; revision: number
       row.last_read_outbox_message_id > 0
         ? row.last_read_outbox_message_id
         : null,
+    last_message_is_outgoing: Boolean(row.last_message_is_outgoing),
+    last_message_outgoing_status:
+      row.last_message_outgoing_status === "pending" ||
+      row.last_message_outgoing_status === "delivered" ||
+      row.last_message_outgoing_status === "read" ||
+      row.last_message_outgoing_status === "failed"
+        ? row.last_message_outgoing_status
+        : null,
   }));
   return { chats, revision: live.revision };
 }

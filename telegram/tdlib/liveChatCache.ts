@@ -19,7 +19,12 @@ import {
 } from "./chatPreview.js";
 import { previewSegmentsFromMessage } from "./formattedTextSegments.js";
 import { emojiStatusCustomIdFromChat } from "./emojiStatus.js";
-import { chatKindFromTdChat } from "./messageHistoryMap.js";
+import {
+  chatKindFromTdChat,
+  lastMessageOutgoingPreviewFromChat,
+  lastMessageOutgoingPreviewFromMessage,
+  type MessageOutgoingStatus,
+} from "./messageHistoryMap.js";
 import { shouldIncludeChatInList } from "./chatListFilter.js";
 import { isPrivateTdChat } from "./chatPreview.js";
 import type { FormattedTextSegment } from "../../shared/formattedTextSegments.js";
@@ -47,6 +52,8 @@ export type LiveChatRow = {
   chat_action_user_name: string | null;
   chat_action_expires_at: string | null;
   last_read_outbox_message_id: number | null;
+  last_message_is_outgoing: boolean;
+  last_message_outgoing_status: MessageOutgoingStatus | null;
   is_pinned: boolean;
   pin_order: string;
   /** Monotonic version bumped on each update (for client diffing). */
@@ -263,6 +270,7 @@ export function patchLiveChatFromTdlib(
     chat_action_expires_at: existing?.chat_action_expires_at ?? null,
     last_read_outbox_message_id:
       lastReadOutboxMessageIdFromChat(chat) ?? existing?.last_read_outbox_message_id ?? null,
+    ...lastMessageOutgoingPreviewFromChat(chat),
     is_pinned: isChatPinnedInMainList(chat),
     pin_order: mainListOrderKey(chat),
   };
@@ -309,6 +317,8 @@ export function patchLiveChatAction(
     chat_action_user_name: input.userName,
     chat_action_expires_at: expiresAt,
     last_read_outbox_message_id: existing.last_read_outbox_message_id,
+    last_message_is_outgoing: existing.last_message_is_outgoing,
+    last_message_outgoing_status: existing.last_message_outgoing_status,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
   });
@@ -346,6 +356,8 @@ export function patchLiveChatPresence(
       chat_action_user_name: row.chat_action_user_name,
       chat_action_expires_at: row.chat_action_expires_at,
       last_read_outbox_message_id: row.last_read_outbox_message_id,
+      last_message_is_outgoing: row.last_message_is_outgoing,
+      last_message_outgoing_status: row.last_message_outgoing_status,
       is_pinned: row.is_pinned,
       pin_order: row.pin_order,
     });
@@ -387,6 +399,8 @@ export function patchLiveChatEmojiStatus(
       chat_action_user_name: row.chat_action_user_name,
       chat_action_expires_at: row.chat_action_expires_at,
       last_read_outbox_message_id: row.last_read_outbox_message_id,
+      last_message_is_outgoing: row.last_message_is_outgoing,
+      last_message_outgoing_status: row.last_message_outgoing_status,
       is_pinned: row.is_pinned,
       pin_order: row.pin_order,
     });
@@ -426,6 +440,8 @@ export function patchLiveChatChatEmojiStatus(
     chat_action_user_name: existing.chat_action_user_name,
     chat_action_expires_at: existing.chat_action_expires_at,
     last_read_outbox_message_id: existing.last_read_outbox_message_id,
+    last_message_is_outgoing: existing.last_message_is_outgoing,
+    last_message_outgoing_status: existing.last_message_outgoing_status,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
   });
@@ -470,6 +486,10 @@ export function applyLiveMessageUpdate(
     chat_action_user_name: existing?.chat_action_user_name ?? null,
     chat_action_expires_at: existing?.chat_action_expires_at ?? null,
     last_read_outbox_message_id: existing?.last_read_outbox_message_id ?? null,
+    ...lastMessageOutgoingPreviewFromMessage(
+      message,
+      existing?.last_read_outbox_message_id ?? null,
+    ),
     is_pinned: existing?.is_pinned ?? false,
     pin_order: existing?.pin_order ?? "0",
   };
@@ -512,6 +532,8 @@ export function patchLiveChatMemberMeta(
     chat_action_user_name: existing.chat_action_user_name,
     chat_action_expires_at: existing.chat_action_expires_at,
     last_read_outbox_message_id: existing.last_read_outbox_message_id,
+    last_message_is_outgoing: existing.last_message_is_outgoing,
+    last_message_outgoing_status: existing.last_message_outgoing_status,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
   });

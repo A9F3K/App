@@ -2,7 +2,11 @@ import { View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import type { ThemeColors } from "../../theme";
 import type { MessageOutgoingStatus } from "./messageChatHistoryTypes";
-import { MESSAGE_CHAT_CHECKMARK_GAP_PX, MESSAGE_CHAT_CHECKMARK_SIZE_PX } from "./messageChatLayout";
+import {
+  MESSAGE_CHAT_CHECKMARK_GAP_PX,
+  MESSAGE_CHAT_CHECKMARK_SIZE_PX,
+  MESSAGE_CHAT_READ_CHECK_COLOR,
+} from "./messageChatLayout";
 
 type Props = {
   status: MessageOutgoingStatus;
@@ -62,7 +66,7 @@ export function MessageChatOutgoingChecks({
 }: Props) {
   if (status !== "delivered" && status !== "read") return null;
 
-  const readColor = onMedia ? "#7ecbff" : colors.accent;
+  const readColor = MESSAGE_CHAT_READ_CHECK_COLOR;
   const deliveredColor = onMedia ? "rgba(255,255,255,0.92)" : colors.secondary;
   const reserveWidthPx = outgoingChecksSvgWidthPx(size);
 

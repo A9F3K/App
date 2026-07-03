@@ -33,7 +33,7 @@ import {
 } from "./liveChatCache.js";
 import { logGateway } from "./gatewayLog.js";
 import { emojiStatusCustomIdFromChat } from "./emojiStatus.js";
-import { chatKindFromTdChat } from "./messageHistoryMap.js";
+import { lastMessageOutgoingPreviewFromChat } from "./messageHistoryMap.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
 import {
   specialUserForceIncludedPeerUserIds,
@@ -766,6 +766,7 @@ async function buildLiveRowsForChats(
       chat_action_user_name: null,
       chat_action_expires_at: null,
       last_read_outbox_message_id: lastReadOutboxMessageIdFromChat(chat),
+      ...lastMessageOutgoingPreviewFromChat(chat),
       is_pinned: isChatPinnedInMainList(chat),
       pin_order: mainListOrderKey(chat),
     });

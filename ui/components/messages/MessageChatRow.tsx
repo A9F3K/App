@@ -16,10 +16,19 @@ import { MessageUnreadCountBadge } from "./MessageUnreadCountBadge";
 import { MessageChatPinIcon } from "./MessageChatPinIcon";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
 import { MessageChatRichText } from "./MessageChatRichText";
-import { formatMessageChatListPreview } from "./formatMessageChatSubheader";
+import {
+  formatMessageChatListPreview,
+  isMessageChatActionLive,
+} from "./formatMessageChatSubheader";
 import { formatMessageChatWallClock } from "./formatMessageChatTime";
 import { resolveTelegramThreadAvatarUrl } from "./resolveTelegramThreadAvatarUrl";
 import { useElementVisible } from "./useElementVisible";
+import { MessageChatOutgoingChecks } from "./MessageChatOutgoingChecks";
+import {
+  isPrivateChatForReadReceipts,
+  resolveOutgoingStatusForDisplay,
+  type MessageOutgoingStatus,
+} from "./messageChatHistoryTypes";
 import {
   MESSAGE_AVATAR_PX,
   MESSAGE_ICON_TEXT_GAP_PX,
@@ -30,6 +39,9 @@ import {
   MESSAGE_FONT_SIZE_PX,
   formatMessageUnreadCountLabel,
 } from "./messageListLayout";
+import { MESSAGE_CHAT_CHECKMARK_SIZE_PX } from "./messageChatLayout";
+
+const LIST_ROW_CHECKMARK_SIZE_PX = Math.max(11, MESSAGE_CHAT_CHECKMARK_SIZE_PX - 2);
 
 export type MessageChatActionKind =
   | "typing"
@@ -67,6 +79,8 @@ export type MessageChatRowData = {
   chat_action_user_name?: string | null;
   chat_action_expires_at?: string | null;
   last_read_outbox_message_id?: number | null;
+  last_message_is_outgoing?: boolean;
+  last_message_outgoing_status?: MessageOutgoingStatus | null;
   is_pinned?: boolean;
 };
 
@@ -103,6 +117,21 @@ export function MessageChatRow({
   const parsedClock = formatMessageChatWallClock(item.last_message_at);
   const timeLabel = parsedClock || timePendingLabel;
   const gapTitleTime = !!(title && timeLabel.trim());
+  const listOutgoingStatus = item.last_message_is_outgoing
+    ? resolveOutgoingStatusForDisplay(
+        {
+          is_outgoing: true,
+          outgoing_status: item.last_message_outgoing_status ?? null,
+        },
+        item.chat_kind,
+        item,
+      )
+    : null;
+  const showListOutgoingChecks =
+    Boolean(item.last_message_is_outgoing) &&
+    !isMessageChatActionLive(item) &&
+    (listOutgoingStatus === "delivered" || listOutgoingStatus === "read");
+  const listDoubleCheckDelivered = isPrivateChatForReadReceipts(item.chat_kind, item);
   const avatarLogOnceRef = useRef(false);
   const avatarLabel = useMemo(() => {
     const display = specialUserDisplayName(item.peer_user_id, title, item.telegram_chat_id);
@@ -247,6 +276,17 @@ export function MessageChatRow({
             />
           </View>
           {gapTitleTime ? <View style={{ width: MESSAGE_NAME_TIME_GAP_PX }} /> : null}
+          {showListOutgoingChecks && listOutgoingStatus ? (
+            <>
+              <MessageChatOutgoingChecks
+                status={listOutgoingStatus}
+                colors={colors}
+                size={LIST_ROW_CHECKMARK_SIZE_PX}
+                doubleCheckDelivered={listDoubleCheckDelivered}
+              />
+              <View style={{ width: 2 }} />
+            </>
+          ) : null}
           {timeLabel ? (
             <Text
               numberOfLines={1}

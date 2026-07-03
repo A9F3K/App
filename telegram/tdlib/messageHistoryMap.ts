@@ -408,7 +408,7 @@ export async function enrichOutgoingReadStatuses(
 
 export { lastReadOutboxMessageIdFromChat };
 
-function resolveOutgoingStatus(
+export function resolveOutgoingStatusFromTdMessage(
   message: TdMessage,
   chat: TdChat,
   myUserId?: number | null,
@@ -435,6 +435,44 @@ function resolveOutgoingStatus(
   }
 
   return "delivered";
+}
+
+export function lastMessageOutgoingPreviewFromChat(
+  chat: TdChat,
+  myUserId?: number | null,
+): {
+  last_message_is_outgoing: boolean;
+  last_message_outgoing_status: MessageOutgoingStatus | null;
+} {
+  const message = chat.last_message;
+  if (!message || !messageIsOutgoing(message, myUserId)) {
+    return { last_message_is_outgoing: false, last_message_outgoing_status: null };
+  }
+  return {
+    last_message_is_outgoing: true,
+    last_message_outgoing_status: resolveOutgoingStatusFromTdMessage(message, chat, myUserId),
+  };
+}
+
+export function lastMessageOutgoingPreviewFromMessage(
+  message: TdMessage,
+  lastReadOutboxMessageId: number | null,
+  myUserId?: number | null,
+): {
+  last_message_is_outgoing: boolean;
+  last_message_outgoing_status: MessageOutgoingStatus | null;
+} {
+  const chatId = Number(message.chat_id);
+  const pseudoChat: TdChat = {
+    id: Number.isFinite(chatId) ? chatId : 0,
+    ...(lastReadOutboxMessageId != null
+      ? { last_read_outbox_message_id: lastReadOutboxMessageId }
+      : {}),
+  };
+  return lastMessageOutgoingPreviewFromChat(
+    { ...pseudoChat, last_message: message },
+    myUserId,
+  );
 }
 
 /** In private chats, any read outgoing message implies all older outgoing are read. */
@@ -528,7 +566,7 @@ export async function mapHistoryMessage(
     sender_accent_color_light: senderProfile?.accent_color_light ?? null,
     sender_accent_color_dark: senderProfile?.accent_color_dark ?? null,
     is_outgoing: messageIsOutgoing(resolved, myUserId),
-    outgoing_status: resolveOutgoingStatus(resolved, chat, myUserId),
+    outgoing_status: resolveOutgoingStatusFromTdMessage(resolved, chat, myUserId),
     content_kind: messageContentKind(resolved),
     has_media: hasMedia,
     media_width: dimensions.width,

@@ -11,6 +11,7 @@ const {
   nativeTheme,
   shell,
   session,
+  clipboard,
 } = require("electron");
 
 /** Must match package.json `build.appId`. Call synchronously before `ready` on Windows (Electron + shell taskbar expectations). */
@@ -29,7 +30,11 @@ if (process.platform === "win32" && process.env.HSP_DISABLE_GPU === "1") {
 }
 const path = require("path");
 const { registerOAuthIpc } = require("./oauth-window.cjs");
-const { registerOsScreenshotPassthrough, ensureWebContentsAllowsOsCapture } = require("./os-screenshot.cjs");
+const {
+  registerOsScreenshotPassthrough,
+  ensureBrowserWindowAllowsOsCapture,
+  ensureWebContentsAllowsOsCapture,
+} = require("./os-screenshot.cjs");
 const preloadPath = path.join(__dirname, "preload.cjs");
 let mainWindowRef = null;
 const fs = require("fs");
@@ -2308,7 +2313,7 @@ async function createWindow() {
     show: false,
   });
   mainWindowRef = mainWindow;
-  ensureWebContentsAllowsOsCapture(mainWindow.webContents, log);
+  ensureBrowserWindowAllowsOsCapture(mainWindow, log);
 
   try {
     mainWindow.webContents.setIgnoreMenuShortcuts(false);
@@ -2414,7 +2419,7 @@ process.on("uncaughtException", (err) => {
   } catch (_) {}
 });
 
-registerOsScreenshotPassthrough(app, log);
+registerOsScreenshotPassthrough(app, { BrowserWindow, clipboard }, log);
 
 app.whenReady().then(async () => {
   if (process.platform === "win32") {

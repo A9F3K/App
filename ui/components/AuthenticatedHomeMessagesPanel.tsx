@@ -123,6 +123,14 @@ function normalizeChat(raw: unknown): MessageChatRowData | null {
       const raw = Number(row.last_read_outbox_message_id);
       return Number.isFinite(raw) && raw > 0 ? raw : null;
     })(),
+    last_message_is_outgoing: Boolean(row.last_message_is_outgoing),
+    last_message_outgoing_status:
+      row.last_message_outgoing_status === "pending" ||
+      row.last_message_outgoing_status === "delivered" ||
+      row.last_message_outgoing_status === "read" ||
+      row.last_message_outgoing_status === "failed"
+        ? row.last_message_outgoing_status
+        : null,
     is_pinned: Boolean(row.is_pinned),
   };
 }
@@ -180,6 +188,8 @@ function chatsChanged(prev: MessageChatRowData[], next: MessageChatRowData[]): b
       a.chat_action_user_name !== b.chat_action_user_name ||
       a.chat_action_expires_at !== b.chat_action_expires_at ||
       a.last_read_outbox_message_id !== b.last_read_outbox_message_id ||
+      Boolean(a.last_message_is_outgoing) !== Boolean(b.last_message_is_outgoing) ||
+      a.last_message_outgoing_status !== b.last_message_outgoing_status ||
       Boolean(a.is_pinned) !== Boolean(b.is_pinned)
     ) {
       return true;
