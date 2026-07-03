@@ -23,7 +23,7 @@ import {
   MESSAGE_BUBBLE_INLINE_META_BASELINE_OFFSET_PX,
   MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX,
   MESSAGE_BUBBLE_PADDING_VERTICAL_PX,
-  MESSAGE_BUBBLE_MEDIA_PROGRESS_HEIGHT_PX,
+  MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
   MESSAGE_BUBBLE_TIME_FONT_SIZE_PX,
   MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX,
   messageBubbleMediaMetaBottomPx,
@@ -463,7 +463,7 @@ export function MessageChatBubbleBody({
   const displayMediaHeightPx = liveMediaSize?.heightPx ?? mediaHeightPx;
   const mediaBlockHeightPx =
     displayMediaHeightPx +
-    (mediaHasProgress ? MESSAGE_BUBBLE_MEDIA_PROGRESS_HEIGHT_PX : 0);
+    (mediaHasProgress ? MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX : 0);
 
   useEffect(() => {
     setLiveMediaSize(null);

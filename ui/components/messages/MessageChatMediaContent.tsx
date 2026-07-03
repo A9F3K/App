@@ -338,6 +338,25 @@ function WebMessageChatVideo({
     };
   }, [src, loop]);
 
+  const mediaObjectFit = pixelPerfect ? "cover" : "cover";
+  const mediaFrameStyle = {
+    width: widthPx,
+    height: heightPx,
+    position: "relative" as const,
+    flexShrink: 0,
+    overflow: "hidden" as const,
+  };
+  const layeredMediaStyle = {
+    position: "absolute" as const,
+    inset: 0,
+    width: "100%",
+    height: "100%",
+    display: "block",
+    borderRadius: 0,
+    objectFit: mediaObjectFit,
+    ...(pixelPerfect ? ({ imageRendering: "crisp-edges" } as object) : null),
+  };
+
   return createElement(
     "div",
     {
@@ -347,55 +366,41 @@ function WebMessageChatVideo({
         width: widthPx,
         display: "flex",
         flexDirection: "column",
-        position: "relative",
       },
     },
-    posterVisible && posterSrc
-      ? createElement("img", {
-          src: posterSrc,
-          alt: "",
-          width: widthPx,
-          height: heightPx,
-          style: {
-            width: widthPx,
-            height: heightPx,
-            display: "block",
-            position: src ? ("absolute" as const) : ("relative" as const),
-            inset: src ? 0 : undefined,
-            zIndex: 1,
-            pointerEvents: "none",
-            borderRadius: 0,
-            ...(pixelPerfect
-              ? ({ objectFit: "cover", imageRendering: "crisp-edges" } as object)
-              : ({ objectFit: "cover" } as object)),
-          },
-        })
-      : null,
-    src
-      ? createElement("video", {
-          key: src,
-          ref: videoRef,
-          src,
-          playsInline: true,
-          muted: true,
-          defaultMuted: true,
-          loop,
-          autoPlay: true,
-          preload: "auto",
-          disablePictureInPicture: true,
-          style: {
-            width: widthPx,
-            height: heightPx,
-            display: "block",
-            position: "relative",
-            zIndex: 0,
-            borderRadius: 0,
-            ...(pixelPerfect
-              ? ({ imageRendering: "crisp-edges" } as object)
-              : ({ objectFit: "cover" } as object)),
-          },
-        })
-      : null,
+    createElement(
+      "div",
+      { style: mediaFrameStyle },
+      src
+        ? createElement("video", {
+            key: src,
+            ref: videoRef,
+            src,
+            playsInline: true,
+            muted: true,
+            defaultMuted: true,
+            loop,
+            autoPlay: true,
+            preload: "auto",
+            disablePictureInPicture: true,
+            style: {
+              ...layeredMediaStyle,
+              zIndex: 1,
+            },
+          })
+        : null,
+      posterSrc && (posterVisible || !src)
+        ? createElement("img", {
+            src: posterSrc,
+            alt: "",
+            style: {
+              ...layeredMediaStyle,
+              zIndex: src ? 2 : 1,
+              pointerEvents: "none",
+            },
+          })
+        : null,
+    ),
     showProgress
       ? createElement(
           "div",
@@ -413,7 +418,6 @@ function WebMessageChatVideo({
             style: {
               position: "absolute",
               left: 0,
-              right: 0,
               bottom: 0,
               width: `${Math.max(0, Math.min(100, progress * 100))}%`,
               height: posterVisible
@@ -495,6 +499,7 @@ export function MessageChatMediaContent({
   const [displayHeightPx, setDisplayHeightPx] = useState(heightPx);
   const [failed, setFailed] = useState(false);
   const [loading, setLoading] = useState(true);
+  const displayDimsLockedRef = useRef(false);
   const showProgress = messageMediaShowsProgressBar(contentKind);
   const pixelPerfect = isPixelPerfectMediaKind(contentKind);
   const usesVideoPreview = isStreamableVideoContentKind(contentKind);
@@ -523,6 +528,10 @@ export function MessageChatMediaContent({
     setDisplayHeightPx(heightPx);
 
     const layoutCapPx = Math.max(maxWidthPx ?? widthPx, widthPx, PHOTO_MIN_LAYOUT_WIDTH_PX);
+    const placeholderDims = mediaLoadingPlaceholderDimensions(layoutCapPx, contentKind);
+    displayDimsLockedRef.current =
+      usesVideoPreview &&
+      (widthPx !== placeholderDims.widthPx || heightPx !== placeholderDims.heightPx);
     const debugContext = {
       contentKind,
       layoutWidthPx: widthPx,
@@ -536,6 +545,7 @@ export function MessageChatMediaContent({
       objectUrl: string,
       measureKind: ResolvedMediaKind,
     ) => {
+      if (displayDimsLockedRef.current) return;
       if (!shouldMeasureIntrinsicMediaSize(contentKind)) return;
       const intrinsic = await measureWebMediaIntrinsicSize(objectUrl, measureKind);
       if (cancelled || !intrinsic) return;
@@ -554,6 +564,7 @@ export function MessageChatMediaContent({
       );
       setDisplayWidthPx(fitted.widthPx);
       setDisplayHeightPx(fitted.heightPx);
+      if (usesVideoPreview) displayDimsLockedRef.current = true;
     };
 
     void (async () => {
@@ -1004,6 +1015,8 @@ export function messageMediaBlockHeightPx(
 ): number {
   return (
     mediaHeightPx +
-    (messageMediaShowsProgressBar(contentKind) ? MESSAGE_BUBBLE_MEDIA_PROGRESS_HEIGHT_PX : 0)
+    (messageMediaShowsProgressBar(contentKind)
+      ? MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX
+      : 0)
   );
 }

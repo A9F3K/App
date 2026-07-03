@@ -19,7 +19,6 @@ import {
   shouldPrefetchHistoryAroundUnread,
 } from "../../messageChatHistoryPrefetch";
 import {
-  getChatScrollPosition,
   isChatScrollNearBottom,
   saveChatScrollPosition,
   type CachedChatScrollPosition,
@@ -55,6 +54,7 @@ import {
 import { MessageChatMessageRow } from "./MessageChatMessageRow";
 import { MessageChatOlderHistoryLoadLine } from "./MessageChatOlderHistoryLoadLine";
 import { MessageChatScrollToBottomButton } from "./MessageChatScrollToBottomButton";
+import { resolveChatOpenScrollPlan } from "./resolveChatOpenScrollPlan";
 import { prefetchOpenChatAvatars, setOpenChatAvatarPriority, isOpenChatAvatarPriority } from "./messageChatAvatarPrefetch";
 import type { MessageChatRowData } from "./MessageChatRow";
 import {
@@ -190,7 +190,14 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const [columnWidthPx, setColumnWidthPx] = useState(0);
   const [isFollowingBottom, setIsFollowingBottom] = useState(true);
   const [initialScrollInProgress, setInitialScrollInProgress] = useState(false);
-  const [initialScrollAnchor, setInitialScrollAnchor] = useState<"top" | "bottom">("bottom");
+  const [chatScrollPaintReady, setChatScrollPaintReady] = useState(false);
+  const openScrollPlan = useMemo(
+    () => resolveChatOpenScrollPlan(chat),
+    [chat.telegram_chat_id, chat.unread_count, historyLoad.generation],
+  );
+  const [initialScrollAnchor, setInitialScrollAnchor] = useState<"top" | "bottom">(
+    () => openScrollPlan.openAnchor,
+  );
   const scrollControllerRef = useRef<HspScrollColumnHandle | null>(null);
   const loadingOlderRef = useRef(false);
   const nextBeforeMessageIdRef = useRef<number | null>(null);
@@ -218,6 +225,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const saveScrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevContentHForBottomStickRef = useRef(0);
   const historySyncKeyRef = useRef("");
+  const chatScrollPaintReadyRef = useRef(false);
   const chatLiveSignatureValue = chatLiveSignature(chat);
   const historyMessageContext = useMemo(
     (): HistoryMessageContext => ({
@@ -233,7 +241,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       messages.length > 0 ? messages[messages.length - 1]!.telegram_message_id : 0;
   }, [messages]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     lastLiveSignatureRef.current = "";
     lastMessageTailSigRef.current = "";
     lastDisplayMessageIdRef.current = 0;
@@ -244,39 +252,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     allowUnreadResetAtBottomRef.current = false;
     initialScrollInProgressRef.current = false;
     setInitialScrollInProgress(false);
-    openingUnreadCountRef.current = Math.max(
-      0,
-      Math.trunc(Number.isFinite(chat.unread_count) ? chat.unread_count : 0),
-    );
-    const openAnchor =
-      openingUnreadCountRef.current > MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD
-        ? "top"
-        : "bottom";
-    openScrollAnchorRef.current = openAnchor;
-    setInitialScrollAnchor(openAnchor);
-    setAuthenticatedHomeOpenChatFollowingBottom(openAnchor === "bottom");
+    setChatScrollPaintReady(false);
+    chatScrollPaintReadyRef.current = false;
 
+    const plan = resolveChatOpenScrollPlan(chat);
+    openingUnreadCountRef.current = plan.openingUnreadCount;
+    openScrollAnchorRef.current = plan.openAnchor;
+    pendingInitialScrollRef.current = plan.pendingInitialScroll;
+    pendingScrollRestoreRef.current = plan.pendingScrollRestore;
+    followingBottomRef.current = plan.followingBottom;
+    setIsFollowingBottom(plan.followingBottom);
+    setInitialScrollAnchor(plan.openAnchor);
+    setAuthenticatedHomeOpenChatFollowingBottom(plan.followingBottom);
     prevContentHForBottomStickRef.current = 0;
+  }, [chat.telegram_chat_id, chat.unread_count, historyLoad.generation]);
 
-    const cachedScroll = getChatScrollPosition(chat.telegram_chat_id);
-    if (cachedScroll) {
-      pendingInitialScrollRef.current = false;
-      pendingScrollRestoreRef.current = cachedScroll;
-      followingBottomRef.current = cachedScroll.followingBottom;
-      setIsFollowingBottom(cachedScroll.followingBottom);
-      setAuthenticatedHomeOpenChatFollowingBottom(cachedScroll.followingBottom);
-      setInitialScrollAnchor(cachedScroll.followingBottom ? "bottom" : "top");
-      if (!cachedScroll.followingBottom) {
-        allowUnreadResetAtBottomRef.current = true;
-      }
-    } else {
-      pendingInitialScrollRef.current = true;
-      pendingScrollRestoreRef.current = null;
-      const followsBottom = openAnchor === "bottom";
-      followingBottomRef.current = followsBottom;
-      setIsFollowingBottom(followsBottom);
-    }
-
+  useEffect(() => {
     return () => {
       const metrics = scrollControllerRef.current?.getMetrics();
       if (metrics && metrics.contentH > 0) {
@@ -297,15 +288,28 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   }, []);
 
   const scrollToBottom = useCallback(() => {
-    requestAnimationFrame(() => {
-      scrollControllerRef.current?.scrollToEnd();
-      requestAnimationFrame(() => scrollControllerRef.current?.scrollToEnd());
-    });
+    scrollControllerRef.current?.scrollToEnd();
     followingBottomRef.current = true;
     setIsFollowingBottom(true);
     allowUnreadResetAtBottomRef.current = true;
     setAuthenticatedHomeOpenChatFollowingBottom(true);
     patchAuthenticatedHomeSelectedChatUnread(0);
+  }, []);
+
+  const settleOpenBottomScroll = useCallback(() => {
+    if (openScrollAnchorRef.current !== "bottom") return;
+    const metrics = scrollControllerRef.current?.getMetrics();
+    const contentFits =
+      metrics != null &&
+      metrics.layoutH > 0 &&
+      metrics.contentH > 0 &&
+      metrics.contentH <= metrics.layoutH + 0.5;
+    if (!contentFits) {
+      scrollControllerRef.current?.scrollToEnd();
+    }
+    initialScrollInProgressRef.current = false;
+    setInitialScrollInProgress(false);
+    allowUnreadResetAtBottomRef.current = true;
   }, []);
 
   const persistChatScrollPosition = useCallback(
@@ -453,47 +457,35 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     return metrics.scrollY;
   }, []);
 
-  const restoreChatScrollPosition = useCallback(
-    (state: CachedChatScrollPosition) => {
-      let attempts = 0;
-      const maxAttempts = 12;
+  const restoreChatScrollPosition = useCallback((state: CachedChatScrollPosition): boolean => {
+    const metrics = scrollControllerRef.current?.getMetrics();
+    if (!metrics || metrics.contentH <= 0 || metrics.layoutH <= 0) return false;
 
-      const tryRestore = (): boolean => {
-        const metrics = scrollControllerRef.current?.getMetrics();
-        if (!metrics || metrics.contentH <= 0 || metrics.layoutH <= 0) return false;
+    if (state.followingBottom) {
+      const contentFits = metrics.contentH <= metrics.layoutH + 0.5;
+      if (!contentFits) {
+        scrollControllerRef.current?.scrollToEnd();
+      }
+      followingBottomRef.current = true;
+      setIsFollowingBottom(true);
+      allowUnreadResetAtBottomRef.current = true;
+      return true;
+    }
 
-        if (state.followingBottom) {
-          scrollToBottom();
-          return true;
-        }
-
-        const maxScroll = Math.max(0, metrics.contentH - metrics.layoutH);
-        const targetY = Math.min(Math.max(0, state.scrollY), maxScroll);
-        scrollControllerRef.current?.scrollToY(targetY);
-        followingBottomRef.current = isChatScrollNearBottom(
-          targetY,
-          metrics.layoutH,
-          metrics.contentH,
-        );
-        setIsFollowingBottom(followingBottomRef.current);
-        if (!followingBottomRef.current) {
-          allowUnreadResetAtBottomRef.current = true;
-        }
-        return true;
-      };
-
-      const run = () => {
-        if (tryRestore() || ++attempts >= maxAttempts) return;
-        requestAnimationFrame(run);
-      };
-
-      requestAnimationFrame(() => {
-        run();
-        requestAnimationFrame(run);
-      });
-    },
-    [scrollToBottom],
-  );
+    const maxScroll = Math.max(0, metrics.contentH - metrics.layoutH);
+    const targetY = Math.min(Math.max(0, state.scrollY), maxScroll);
+    scrollControllerRef.current?.scrollToY(targetY);
+    followingBottomRef.current = isChatScrollNearBottom(
+      targetY,
+      metrics.layoutH,
+      metrics.contentH,
+    );
+    setIsFollowingBottom(followingBottomRef.current);
+    if (!followingBottomRef.current) {
+      allowUnreadResetAtBottomRef.current = true;
+    }
+    return true;
+  }, []);
 
   const applyCachedHistoryPage = useCallback(
     (cached: NonNullable<ReturnType<typeof getCachedChatHistory>>, options?: { replace?: boolean }) => {
@@ -584,6 +576,79 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       : 0;
 
   useEffect(() => {
+    chatScrollPaintReadyRef.current = chatScrollPaintReady;
+  }, [chatScrollPaintReady]);
+
+  const revealChatScroll = useCallback(() => {
+    if (chatScrollPaintReadyRef.current) return;
+    chatScrollPaintReadyRef.current = true;
+    setChatScrollPaintReady(true);
+  }, []);
+
+  const trySettleOpenChatScroll = useCallback((): boolean => {
+    if (displayMessages.length === 0) {
+      if (!loadingInitial) revealChatScroll();
+      return true;
+    }
+
+    if (pendingScrollRestoreRef.current) {
+      const state = pendingScrollRestoreRef.current;
+      if (!restoreChatScrollPosition(state)) return false;
+      pendingScrollRestoreRef.current = null;
+      prevDisplayLengthRef.current = displayMessages.length;
+      prevDisplayLastIdRef.current = lastDisplayMessageId;
+      revealChatScroll();
+      return true;
+    }
+
+    if (pendingInitialScrollRef.current) {
+      pendingInitialScrollRef.current = false;
+      prevDisplayLengthRef.current = displayMessages.length;
+      prevDisplayLastIdRef.current = lastDisplayMessageId;
+      const openingUnread = openingUnreadCountRef.current;
+      if (openingUnread > MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD) {
+        followingBottomRef.current = false;
+        setIsFollowingBottom(false);
+        allowUnreadResetAtBottomRef.current = true;
+        setAuthenticatedHomeOpenChatFollowingBottom(false);
+        revealChatScroll();
+        return true;
+      }
+      const metrics = scrollControllerRef.current?.getMetrics();
+      if (!metrics || metrics.layoutH <= 0 || metrics.contentH <= 0) return false;
+      settleOpenBottomScroll();
+      revealChatScroll();
+      return true;
+    }
+
+    if (!chatScrollPaintReadyRef.current) revealChatScroll();
+    return true;
+  }, [
+    displayMessages.length,
+    lastDisplayMessageId,
+    loadingInitial,
+    restoreChatScrollPosition,
+    revealChatScroll,
+    settleOpenBottomScroll,
+  ]);
+
+  const handleOpenScrollMetrics = useCallback(
+    (metrics: Omit<HspScrollMetrics, "scrollY">) => {
+      if (chatScrollPaintReadyRef.current) return;
+      if (metrics.layoutH <= 0) return;
+      if (displayMessages.length === 0 && !loadingInitial) {
+        revealChatScroll();
+        return;
+      }
+      if (displayMessages.length === 0) return;
+      if (!trySettleOpenChatScroll() && metrics.contentH > 0) {
+        revealChatScroll();
+      }
+    },
+    [displayMessages.length, loadingInitial, revealChatScroll, trySettleOpenChatScroll],
+  );
+
+  useEffect(() => {
     if (!shouldLoadHistory) return;
     const effectiveChatKind = chatKind ?? chat.chat_kind ?? null;
     const signature = `${chat.telegram_chat_id}:${historyTailSignature(displayMessages)}:${effectiveChatKind ?? ""}`;
@@ -613,16 +678,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   }, [lastDisplayMessageId]);
 
   useLayoutEffect(() => {
-    if (displayMessages.length === 0) return;
-
-    if (pendingScrollRestoreRef.current) {
-      const state = pendingScrollRestoreRef.current;
-      pendingScrollRestoreRef.current = null;
-      prevDisplayLengthRef.current = displayMessages.length;
-      prevDisplayLastIdRef.current = lastDisplayMessageId;
-      restoreChatScrollPosition(state);
-      return;
+    if (!chatScrollPaintReadyRef.current) {
+      trySettleOpenChatScroll();
     }
+
+    if (displayMessages.length === 0) return;
 
     if (pendingScrollAnchorRef.current) return;
 
@@ -632,33 +692,6 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       prevDisplayLengthRef.current = displayMessages.length;
       prevDisplayLastIdRef.current = lastDisplayMessageId;
       preserveScrollY(scrollY);
-      return;
-    }
-
-    if (pendingInitialScrollRef.current) {
-      pendingInitialScrollRef.current = false;
-      prevDisplayLengthRef.current = displayMessages.length;
-      prevDisplayLastIdRef.current = lastDisplayMessageId;
-      const openingUnread = openingUnreadCountRef.current;
-      if (openingUnread > MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD) {
-        followingBottomRef.current = false;
-        setIsFollowingBottom(false);
-        allowUnreadResetAtBottomRef.current = true;
-        setAuthenticatedHomeOpenChatFollowingBottom(false);
-        return;
-      }
-      initialScrollInProgressRef.current = true;
-      setInitialScrollInProgress(true);
-      if (openScrollAnchorRef.current === "bottom") {
-        scrollToBottom();
-      } else {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            const metrics = scrollControllerRef.current?.getMetrics();
-            if (metrics) handleScrollPositionChange(metrics);
-          });
-        });
-      }
       return;
     }
 
@@ -698,9 +731,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     displayMessages.length,
     lastDisplayMessageId,
     preserveScrollY,
-    restoreChatScrollPosition,
     scrollToBottom,
-    handleScrollPositionChange,
+    trySettleOpenChatScroll,
   ]);
 
   useLayoutEffect(() => {
@@ -1377,6 +1409,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     );
   }
 
+  const pinMessagesToBottom = openScrollPlan.pinMessagesToBottom;
+  const hideScrollUntilSettled = !chatScrollPaintReady && displayMessages.length > 0;
+
   return (
     <View
       style={{
@@ -1388,6 +1423,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       onLayout={onColumnLayout}
     >
       <MessageChatOlderHistoryLoadLine active={loadingOlder} color={colors.accent} />
+      <View style={{ flex: 1, minHeight: 0, opacity: hideScrollUntilSettled ? 0 : 1 }}>
       <HspScrollColumn
         key={`${chat.telegram_chat_id}-${historyLoad.generation}`}
         style={{ flex: 1, minHeight: 0 }}
@@ -1397,11 +1433,16 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         nearTopThresholdPx={MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX}
         onNearTop={hasMoreOlder ? handleNearTop : undefined}
         onScrollPositionChange={handleScrollPositionChange}
+        onMetricsChange={handleOpenScrollMetrics}
         scrollControllerRef={scrollControllerRef}
         contentContainerStyle={{
           padding: MESSAGE_CHAT_BODY_PADDING_PX,
+          ...(pinMessagesToBottom ? { flexGrow: 1 } : null),
         }}
       >
+        {pinMessagesToBottom ? (
+          <View style={{ flexGrow: 1, flexShrink: 1, minHeight: 0 }} />
+        ) : null}
         {loadingInitial && messages.length === 0 ? (
           <View style={{ paddingVertical: 24, alignItems: "center" }}>
             <ActivityIndicator size="small" color={colors.primary} />
@@ -1448,6 +1489,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           </View>
         ))}
       </HspScrollColumn>
+      </View>
       {showScrollToBottomButton ? (
         <View
           pointerEvents="box-none"

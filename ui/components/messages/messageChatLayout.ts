@@ -71,7 +71,7 @@ export const MESSAGE_BUBBLE_INLINE_META_BASELINE_OFFSET_PX =
 
 export function messageBubbleMediaMetaBottomPx(
   hasProgressBar: boolean,
-  progressHeightPx = MESSAGE_BUBBLE_MEDIA_PROGRESS_HEIGHT_PX,
+  progressHeightPx = MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
 ): number {
   return (
     (hasProgressBar ? progressHeightPx : 0) +

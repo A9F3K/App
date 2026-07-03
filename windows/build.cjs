@@ -283,6 +283,132 @@ function installPathNeedsElevation(targetPath) {
   }
 }
 
+const HSP_FROM_CURRENT_ENV = "HSP_FROM_CURRENT_JUNCTION";
+const APPLIED_VERSION_MARKER = "last-applied-version.txt";
+
+function getAppliedVersionMarkerPath() {
+  return path.join(app.getPath("userData"), APPLIED_VERSION_MARKER);
+}
+
+function readAppliedVersionMarker() {
+  try {
+    const p = getAppliedVersionMarkerPath();
+    if (!fs.existsSync(p)) return null;
+    return fs.readFileSync(p, "utf8").trim() || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function clearAppliedVersionMarkerIfMatched() {
+  try {
+    const marker = readAppliedVersionMarker();
+    if (!marker) return;
+    if (compareSemverLike(app.getVersion(), marker) >= 0) {
+      fs.unlinkSync(getAppliedVersionMarkerPath());
+    }
+  } catch (_) {}
+}
+
+/** True when install-root `current` junction has newer app.asar than the running binary (flat shortcut after zip apply). */
+function windowsCurrentJunctionHasNewerBuild() {
+  if (process.platform !== "win32" || !app.isPackaged) return false;
+  const execDir = path.dirname(process.execPath);
+  if (path.basename(execDir).toLowerCase() === "current") return false;
+
+  const appRoot = getWindowsAppRootFromExecPath(process.execPath);
+  const currentDir = path.join(appRoot, "current");
+  if (!fs.existsSync(currentDir)) return false;
+
+  const relAsar = path.join("resources", "app.asar");
+  const currentAsar = path.join(currentDir, relAsar);
+  if (!fs.existsSync(currentAsar)) {
+    for (const name of brand.allKnownExeBaseNames()) {
+      if (fs.existsSync(path.join(currentDir, name))) return true;
+    }
+    return false;
+  }
+
+  const runningAsar = path.join(execDir, relAsar);
+  if (!fs.existsSync(runningAsar)) return true;
+  try {
+    const c = fs.statSync(currentAsar);
+    const r = fs.statSync(runningAsar);
+    return c.mtimeMs > r.mtimeMs || c.size !== r.size;
+  } catch (_) {
+    return true;
+  }
+}
+
+function resolveWindowsCurrentLaunchExe() {
+  const appRoot = getWindowsAppRootFromExecPath(process.execPath);
+  const currentDir = path.join(appRoot, "current");
+  if (!fs.existsSync(currentDir)) return null;
+
+  const tries = new Set([path.basename(process.execPath), ...brand.allKnownExeBaseNames()]);
+  for (const name of tries) {
+    const exeName = /\.exe$/i.test(name) ? name : `${name}.exe`;
+    const candidate = path.join(currentDir, exeName);
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    } catch (_) {}
+  }
+  return null;
+}
+
+/**
+ * After zip apply, shortcuts may still launch the flat install exe while `current` points at the new build.
+ * Re-exec from `current` once so app.getVersion() and UI bundle match the applied update.
+ * @returns {boolean} true when this process is quitting to hand off to `current`
+ */
+function tryRelaunchFromCurrentJunction() {
+  if (process.platform !== "win32" || !app.isPackaged || isDev) return false;
+  if (process.env[HSP_FROM_CURRENT_ENV] === "1") return false;
+
+  const execDir = path.dirname(process.execPath);
+  if (path.basename(execDir).toLowerCase() === "current") return false;
+
+  const marker = readAppliedVersionMarker();
+  const runningVer = app.getVersion();
+  const markerNewer = marker && compareSemverLike(marker, runningVer) > 0;
+  const junctionNewer = windowsCurrentJunctionHasNewerBuild();
+  if (!markerNewer && !junctionNewer) return false;
+
+  const currentExe = resolveWindowsCurrentLaunchExe();
+  if (!currentExe) {
+    try {
+      log(
+        `[startup] update handoff skipped: current junction newer (marker=${marker} running=${runningVer}) but exe missing`,
+      );
+    } catch (_) {}
+    return false;
+  }
+
+  try {
+    log(
+      `[startup] relaunch from current junction exe=${currentExe} running=${runningVer} marker=${marker || "none"} junctionNewer=${junctionNewer}`,
+    );
+  } catch (_) {}
+
+  try {
+    const child = spawn(currentExe, [], {
+      detached: true,
+      stdio: "ignore",
+      cwd: path.dirname(currentExe),
+      env: { ...process.env, [HSP_FROM_CURRENT_ENV]: "1" },
+    });
+    child.unref();
+  } catch (e) {
+    try {
+      log(`[startup] relaunch from current failed: ${e?.message || e}`);
+    } catch (_) {}
+    return false;
+  }
+
+  app.quit();
+  return true;
+}
+
 function parseSimpleUpdateYml(text) {
   const versionM = text.match(/^version:\s*(.+)$/m);
   const version = versionM ? versionM[1].trim() : null;
@@ -1392,12 +1518,14 @@ function setupAutoUpdater() {
       const targetVersionDir =
         useVersionedLayout && zipReadyVersion ? path.join(appRoot, "versions", zipReadyVersion) : null;
       const currentLink = useVersionedLayout ? path.join(appRoot, "current") : null;
+      const appliedVersionMarker = getAppliedVersionMarkerPath();
       const plan = {
         stagingContent: zipStagingContentPath,
         installDir,
         exeName,
         waitPid: process.pid,
         appliedVersion: zipReadyVersion,
+        appliedVersionMarker,
         stagingVersionDirToRemove,
         logPath: applyLogPath,
         useVersionedLayout,
@@ -1448,8 +1576,9 @@ function setupAutoUpdater() {
         "  $plan.elevated = $true",
         "  ($plan | ConvertTo-Json -Compress) | Set-Content -LiteralPath $PlanPath -Encoding UTF8",
         "  $psExe = (Get-Command powershell.exe).Source",
-        "  $arg = \"-NoProfile -ExecutionPolicy Bypass -File `\"$PSCommandPath`\" -PlanPath `\"$PlanPath`\" -LogPath `\"$LogPath`\"\"",
-        "  Start-Process -FilePath $psExe -Verb RunAs -ArgumentList $arg -WindowStyle Hidden",
+        "  Start-Process -FilePath $psExe -Verb RunAs -WindowStyle Hidden -ArgumentList @(",
+        "    '-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath,'-PlanPath',$PlanPath,'-LogPath',$LogPath",
+        "  )",
         "  exit 0",
         "}",
         "function Write-FileProbe([string]$label, [string]$path) {",
@@ -1523,6 +1652,16 @@ function setupAutoUpdater() {
         "    $null = New-Item -ItemType Junction -Path $plan.currentLink -Target $plan.targetVersionDir",
         '    Write-ApplyLog ("junction: $($plan.currentLink) -> $($plan.targetVersionDir)")',
         "  }",
+        "  if ($plan.appliedVersionMarker -and $plan.appliedVersion) {",
+        "    try {",
+        "      $md = Split-Path -Parent $plan.appliedVersionMarker",
+        "      if ($md) { $null = New-Item -ItemType Directory -Force -LiteralPath $md }",
+        "      Set-Content -LiteralPath $plan.appliedVersionMarker -Value $plan.appliedVersion -Encoding UTF8 -NoNewline",
+        '      Write-ApplyLog ("wrote applied version marker: " + $plan.appliedVersion)',
+        "    } catch {",
+        '      Write-ApplyLog ("applied version marker failed: " + $_.Exception.Message)',
+        "    }",
+        "  }",
         "  if ($plan.cleanupLegacyFlat -and $plan.appRoot) {",
         '    Write-ApplyLog "mirror legacy flat root for shortcuts (exclude versions, current)"',
         "    Get-ChildItem -LiteralPath $plan.appRoot -Force -ErrorAction SilentlyContinue | Where-Object {",
@@ -1543,7 +1682,13 @@ function setupAutoUpdater() {
         "  }",
         "  if (-not $exePath) { throw (\"main exe missing after apply under \" + $workDir + \" (tried \" + ($candidates -join \", \") + \")\") }",
         '  Write-ApplyLog ("relaunch " + $exePath + " (wd=" + $workDir + ")")',
-        "  Start-Process -FilePath $exePath -WorkingDirectory $workDir",
+        `  $relaunchEnv = @{ '${HSP_FROM_CURRENT_ENV}' = '1' }`,
+        "  if ($PSVersionTable.PSVersion.Major -ge 6) {",
+        "    Start-Process -FilePath $exePath -WorkingDirectory $workDir -Environment $relaunchEnv",
+        "  } else {",
+        `    $cmd = 'set ${HSP_FROM_CURRENT_ENV}=1&& start "" ' + [char]34 + $exePath + [char]34`,
+        "    Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $cmd -WorkingDirectory $workDir -WindowStyle Hidden",
+        "  }",
         '  Write-ApplyLog "Start-Process returned (GUI may take a moment)"',
         "  if ($plan.stagingVersionDirToRemove -and (Test-Path -LiteralPath $plan.stagingVersionDirToRemove)) {",
         "    $sdRm = $plan.stagingVersionDirToRemove",
@@ -2435,16 +2580,76 @@ async function createWindow() {
     }
   });
 
-  mainWindow.webContents.on("did-fail-load", (_event, code, errMsg, url) => {
-    log(`did-fail-load: code=${code} ${errMsg} ${url}`);
+  mainWindow.webContents.on("did-fail-load", (event, code, errMsg, url, isMainFrame) => {
+    log(`did-fail-load: code=${code} ${errMsg} ${url} mainFrame=${isMainFrame}`);
+    if (isDev || !isMainFrame || mainWindow.isDestroyed()) return;
+    if (typeof mainWindow.__hspLoadFailRetries !== "number") mainWindow.__hspLoadFailRetries = 0;
+    if (mainWindow.__hspLoadFailRetries >= 2) return;
+    mainWindow.__hspLoadFailRetries += 1;
+    try {
+      event?.preventDefault?.();
+    } catch (_) {}
+    setTimeout(() => {
+      if (mainWindow.isDestroyed()) return;
+      try {
+        log(`[ui] did-fail-load retry ${mainWindow.__hspLoadFailRetries} → app://./`);
+        mainWindow.loadURL("app://./");
+      } catch (e) {
+        log(`[ui] did-fail-load retry failed: ${e?.message || e}`);
+      }
+    }, 400);
   });
 
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    const reason = details?.reason ?? "unknown";
+    const exitCode = details?.exitCode ?? "?";
+    log(`[ui] render-process-gone reason=${reason} exitCode=${exitCode}`);
+    if (mainWindow.isDestroyed()) return;
+    if (typeof mainWindow.__hspRendererRecoveryCount !== "number") {
+      mainWindow.__hspRendererRecoveryCount = 0;
+    }
+    if (mainWindow.__hspRendererRecoveryCount >= 2) {
+      const errOpts = {
+        type: "error",
+        title: brand.productDisplayName,
+        message:
+          "The window stopped responding and could not recover. Please close and reopen the app.",
+        buttons: ["OK"],
+      };
+      void (mainWindow.isDestroyed()
+        ? dialog.showMessageBox(errOpts)
+        : dialog.showMessageBox(mainWindow, errOpts));
+      return;
+    }
+    mainWindow.__hspRendererRecoveryCount += 1;
+    try {
+      log(`[ui] render-process-gone reload attempt ${mainWindow.__hspRendererRecoveryCount}`);
+      mainWindow.loadURL(isDev ? "http://localhost:8081" : "app://./");
+    } catch (e) {
+      log(`[ui] render-process-gone reload failed: ${e?.message || e}`);
+    }
+  });
+
+  mainWindow.webContents.on("unresponsive", () => {
+    log("[ui] webContents unresponsive");
+  });
+
+  mainWindow.webContents.on("responsive", () => {
+    log("[ui] webContents responsive");
+  });
+
+  // Expo static export may navigate to index.html; serve SPA root once (avoid reload loops).
+  let indexHtmlRedirected = false;
   mainWindow.webContents.on("did-start-loading", (_, url) => {
-    if (!isDev && url && (url.endsWith("/index.html") || url.includes("/index.html"))) {
-      const root = url.replace(/\/index\.html.*$/, "/");
-      if (root !== url) {
-        mainWindow.loadURL(root);
-      }
+    if (isDev || indexHtmlRedirected || !url) return;
+    if (!/\/index\.html(?:$|[?#])/i.test(url)) return;
+    const root = url.replace(/\/index\.html(?:[?#].*)?$/i, "/");
+    if (root === url) return;
+    indexHtmlRedirected = true;
+    try {
+      mainWindow.loadURL(root);
+    } catch (e) {
+      log(`[ui] index.html redirect failed: ${e?.message || e}`);
     }
   });
 
@@ -2475,6 +2680,8 @@ app.whenReady().then(async () => {
     // Dark native chrome (title bar / menu area) so the OS-drawn separator under the menu reads closer to #111111.
     nativeTheme.themeSource = "dark";
   }
+  if (tryRelaunchFromCurrentJunction()) return;
+  clearAppliedVersionMarkerIfMatched();
   setupAppMenu();
   await clearStaleClientCacheIfNeeded();
   if (!isDev) {
