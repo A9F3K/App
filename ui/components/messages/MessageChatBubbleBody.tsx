@@ -85,8 +85,8 @@ function MessageChatBubbleTextContent({
   metaPlacement = "stacked",
   metaReserveWidthPx = 0,
   callIndicator = null,
-  doubleCheckDelivered = false,
   emojiContentActive = true,
+  chatId,
 }: {
   bodyText: string;
   bodyTextSegments?: FormattedTextSegment[] | null;
@@ -100,8 +100,8 @@ function MessageChatBubbleTextContent({
   metaPlacement?: BubbleMetaPlacement;
   metaReserveWidthPx?: number;
   callIndicator?: { outgoing: boolean; successful: boolean } | null;
-  doubleCheckDelivered?: boolean;
   emojiContentActive?: boolean;
+  chatId: number;
 }) {
   if (!bodyText && !timeLabel) return null;
 
@@ -114,7 +114,6 @@ function MessageChatBubbleTextContent({
       alignSelf={metaPlacement === "stacked" ? "flex-end" : undefined}
       alignWithBodyBaseline={metaPlacement === "inline" || metaPlacement === "lastLine"}
       callIndicator={callIndicator}
-      doubleCheckDelivered={doubleCheckDelivered}
     />
   ) : null;
 
@@ -148,6 +147,7 @@ function MessageChatBubbleTextContent({
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchPriority
           enrichStandardEmojis
+          chatId={chatId}
         />
         <View
           style={{
@@ -188,6 +188,7 @@ function MessageChatBubbleTextContent({
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchPriority
           enrichStandardEmojis
+          chatId={chatId}
         />
         <View
           style={{
@@ -222,6 +223,7 @@ function MessageChatBubbleTextContent({
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchPriority
           enrichStandardEmojis
+          chatId={chatId}
         />
       ) : null}
       {timeRow ? (
@@ -249,7 +251,6 @@ function MessageChatBubbleTimeRow({
   alignWithBodyBaseline = false,
   lightOnMedia = false,
   callIndicator = null,
-  doubleCheckDelivered = false,
 }: {
   timeLabel: string;
   colors: ThemeColors;
@@ -259,7 +260,6 @@ function MessageChatBubbleTimeRow({
   alignWithBodyBaseline?: boolean;
   lightOnMedia?: boolean;
   callIndicator?: { outgoing: boolean; successful: boolean } | null;
-  doubleCheckDelivered?: boolean;
 }) {
   const showChecks =
     isOutgoing &&
@@ -306,8 +306,6 @@ function MessageChatBubbleTimeRow({
         <MessageChatOutgoingChecks
           status={outgoingStatus!}
           colors={colors}
-          onMedia={lightOnMedia}
-          doubleCheckDelivered={doubleCheckDelivered}
         />
       ) : null}
     </View>
@@ -380,6 +378,7 @@ function MessageChatReplyBlock({
           text={reply.text}
           segments={reply.text_segments}
           numberOfLines={2}
+          chatId={telegramChatId}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchPriority
           enrichStandardEmojis
@@ -614,7 +613,6 @@ export function MessageChatBubbleBody({
                 alignSelf="flex-end"
                 lightOnMedia
                 callIndicator={callIndicator}
-                doubleCheckDelivered={false}
               />
             </View>
           ) : null}
@@ -658,8 +656,8 @@ export function MessageChatBubbleBody({
             metaPlacement={metaPlacement}
             metaReserveWidthPx={metaReserveWidthPx}
             callIndicator={callIndicator}
-            doubleCheckDelivered={false}
             emojiContentActive={emojiContentActive}
+            chatId={chatId}
           />
         </View>
       ) : null}

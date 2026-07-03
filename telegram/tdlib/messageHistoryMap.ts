@@ -8,6 +8,7 @@ import {
   messageBodyText,
   messageIsOutgoing,
   messageReadDateFromTdMessage,
+  peerUserIdFromChat,
   previewFromMessage,
   type TdChat,
   type TdMessage,
@@ -408,12 +409,25 @@ export async function enrichOutgoingReadStatuses(
 
 export { lastReadOutboxMessageIdFromChat };
 
+/** Private-chat fallback when TDLib omits `is_outgoing` on chat.last_message. */
+function messageIsOutgoingForChatPreview(
+  message: TdMessage,
+  chat: TdChat,
+  myUserId?: number | null,
+): boolean {
+  if (messageIsOutgoing(message, myUserId)) return true;
+  const peerId = peerUserIdFromChat(chat);
+  const sender = message.sender_id;
+  if (sender?._ !== "messageSenderUser" || peerId == null) return false;
+  return sender.user_id !== peerId;
+}
+
 export function resolveOutgoingStatusFromTdMessage(
   message: TdMessage,
   chat: TdChat,
   myUserId?: number | null,
 ): MessageOutgoingStatus | null {
-  if (!messageIsOutgoing(message, myUserId)) return null;
+  if (!messageIsOutgoingForChatPreview(message, chat, myUserId)) return null;
 
   const sendingState = message.sending_state?._;
   if (sendingState === "messageSendingStateFailed") return "failed";
@@ -445,13 +459,64 @@ export function lastMessageOutgoingPreviewFromChat(
   last_message_outgoing_status: MessageOutgoingStatus | null;
 } {
   const message = chat.last_message;
-  if (!message || !messageIsOutgoing(message, myUserId)) {
+  if (!message || !messageIsOutgoingForChatPreview(message, chat, myUserId)) {
     return { last_message_is_outgoing: false, last_message_outgoing_status: null };
   }
   return {
     last_message_is_outgoing: true,
     last_message_outgoing_status: resolveOutgoingStatusFromTdMessage(message, chat, myUserId),
   };
+}
+
+function lastMessageSenderUserIdFromTdMessage(message: TdMessage | null | undefined): number | null {
+  const sender = message?.sender_id;
+  if (sender?._ === "messageSenderUser" && typeof sender.user_id === "number") {
+    return sender.user_id;
+  }
+  return null;
+}
+
+function lastMessageTelegramIdFromTdMessage(message: TdMessage | null | undefined): number | null {
+  const id = Number(message?.id);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+/** Chat list row: outgoing ticks + ids for client-side inference when flags are stale. */
+export function lastMessageListRowMetaFromChat(
+  chat: TdChat,
+  myUserId?: number | null,
+): {
+  last_message_is_outgoing: boolean;
+  last_message_outgoing_status: MessageOutgoingStatus | null;
+  last_message_telegram_id: number | null;
+  last_message_sender_user_id: number | null;
+} {
+  const message = chat.last_message ?? null;
+  return {
+    ...lastMessageOutgoingPreviewFromChat(chat, myUserId),
+    last_message_telegram_id: lastMessageTelegramIdFromTdMessage(message),
+    last_message_sender_user_id: lastMessageSenderUserIdFromTdMessage(message),
+  };
+}
+
+export function lastMessageListRowMetaFromMessage(
+  message: TdMessage,
+  lastReadOutboxMessageId: number | null,
+  myUserId?: number | null,
+): {
+  last_message_is_outgoing: boolean;
+  last_message_outgoing_status: MessageOutgoingStatus | null;
+  last_message_telegram_id: number | null;
+  last_message_sender_user_id: number | null;
+} {
+  const chatId = Number(message.chat_id);
+  const pseudoChat: TdChat = {
+    id: Number.isFinite(chatId) ? chatId : 0,
+    ...(lastReadOutboxMessageId != null
+      ? { last_read_outbox_message_id: lastReadOutboxMessageId }
+      : {}),
+  };
+  return lastMessageListRowMetaFromChat({ ...pseudoChat, last_message: message }, myUserId);
 }
 
 export function lastMessageOutgoingPreviewFromMessage(

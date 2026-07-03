@@ -2,6 +2,7 @@ import { View } from "react-native";
 import { layout, type ThemeColors } from "../../theme";
 import { MessageChatHeader } from "./MessageChatHeader";
 import { MessageChatMessageList } from "./MessageChatMessageList";
+import { MessageSubtreeErrorBoundary } from "./MessageSubtreeErrorBoundary";
 import type { MessageChatRowData } from "./MessageChatRow";
 
 type Props = {
@@ -24,7 +25,9 @@ export function MessageChatPanel({ chat, colors }: Props) {
       }}
     >
       <MessageChatHeader chat={chat} colors={colors} />
-      <MessageChatMessageList chat={chat} colors={colors} />
+      <MessageSubtreeErrorBoundary resetKey={chat.telegram_chat_id}>
+        <MessageChatMessageList key={chat.telegram_chat_id} chat={chat} colors={colors} />
+      </MessageSubtreeErrorBoundary>
     </View>
   );
 }

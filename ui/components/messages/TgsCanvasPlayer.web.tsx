@@ -31,16 +31,23 @@ function releasePlaySlot(): void {
   activePlayerCount = Math.max(0, activePlayerCount - 1);
 }
 
-function forcePaintFrame(anim: AnimationItem): void {
+function safeAnimCall(anim: AnimationItem | null, fn: (item: AnimationItem) => void): void {
+  if (!anim) return;
   try {
-    anim.goToAndStop(0, true);
-    const renderer = anim.renderer as { renderFrame?: (frame: number) => void } | undefined;
-    if (renderer?.renderFrame) {
-      renderer.renderFrame(anim.currentFrame);
-    }
+    fn(anim);
   } catch {
-    /* lottie not ready yet */
+    /* lottie can throw when the canvas was torn down during chat switches */
   }
+}
+
+function forcePaintFrame(anim: AnimationItem): void {
+  safeAnimCall(anim, (item) => {
+    item.goToAndStop(0, true);
+    const renderer = item.renderer as { renderFrame?: (frame: number) => void } | undefined;
+    if (renderer?.renderFrame) {
+      renderer.renderFrame(item.currentFrame);
+    }
+  });
 }
 
 function styleLottieCanvas(host: HTMLElement, widthPx: number, heightPx: number): void {
@@ -68,6 +75,7 @@ export function TgsCanvasPlayer({
   const animRef = useRef<AnimationItem | null>(null);
   const slotHeldRef = useRef(false);
   const visibleRef = useRef(true);
+  const mountGenRef = useRef(0);
   const visible = useElementVisible(hostRef, { enabled: !priority });
   visibleRef.current = visible;
 
@@ -75,56 +83,98 @@ export function TgsCanvasPlayer({
     const host = hostRef.current;
     if (!host) return;
 
-    host.replaceChildren();
+    const mountGen = mountGenRef.current + 1;
+    mountGenRef.current = mountGen;
+    const isStale = () => mountGenRef.current !== mountGen;
 
-    const shouldAutoplay = priority || visibleRef.current;
-    const anim = lottie.loadAnimation({
-      container: host,
-      renderer: "canvas",
-      loop,
-      autoplay: shouldAutoplay,
-      animationData,
-      rendererSettings: {
-        clearCanvas: true,
-        progressiveLoad: false,
-        hideOnTransparent: false,
-      },
-    } as AnimationConfig);
+    let anim: AnimationItem | null = null;
+    let localSlotHeld = false;
+
+    const releaseLocalSlot = () => {
+      if (!localSlotHeld) return;
+      releasePlaySlot();
+      localSlotHeld = false;
+      if (slotHeldRef.current) slotHeldRef.current = false;
+    };
+
+    try {
+      host.replaceChildren();
+      anim = lottie.loadAnimation({
+        container: host,
+        renderer: "canvas",
+        loop,
+        autoplay: false,
+        animationData,
+        rendererSettings: {
+          clearCanvas: true,
+          progressiveLoad: false,
+          hideOnTransparent: false,
+        },
+      } as AnimationConfig);
+    } catch {
+      return;
+    }
+
+    if (isStale()) {
+      safeAnimCall(anim, (item) => item.destroy());
+      return;
+    }
+
     animRef.current = anim;
 
     const onReady = () => {
-      styleLottieCanvas(host, widthPx, height);
-      forcePaintFrame(anim);
+      if (isStale() || !animRef.current) return;
+      const currentAnim = animRef.current;
+      const currentHost = hostRef.current;
+      if (!currentHost) return;
+
+      styleLottieCanvas(currentHost, widthPx, height);
+      forcePaintFrame(currentAnim);
+
       const shouldPlay = priority || visibleRef.current;
       telegramEmojiDebug.playerAction("ready", {
         priority,
         visible: visibleRef.current,
         shouldPlay,
-        hasCanvas: Boolean(host.querySelector("canvas")),
+        hasCanvas: Boolean(currentHost.querySelector("canvas")),
       });
-      if (shouldPlay) {
-        if (!slotHeldRef.current && (priority || acquirePlaySlot())) {
-          slotHeldRef.current = true;
-        }
-        if (slotHeldRef.current || priority) {
-          anim.play();
-        }
+
+      if (!shouldPlay) return;
+
+      if (!localSlotHeld && (priority || acquirePlaySlot())) {
+        localSlotHeld = true;
+        slotHeldRef.current = true;
+      }
+      if (localSlotHeld || priority) {
+        safeAnimCall(currentAnim, (item) => item.play());
+        telegramEmojiDebug.playerAction("play", {
+          priority,
+          visible: visibleRef.current,
+          reason: "ready",
+        });
       }
     };
-    onReady();
+
     anim.addEventListener("DOMLoaded", onReady);
     anim.addEventListener("data_ready", onReady);
+    requestAnimationFrame(() => {
+      if (!isStale()) onReady();
+    });
 
     return () => {
-      if (slotHeldRef.current) {
-        releasePlaySlot();
-        slotHeldRef.current = false;
-      }
-      anim.removeEventListener("DOMLoaded", onReady);
-      anim.removeEventListener("data_ready", onReady);
-      anim.destroy();
+      mountGenRef.current += 1;
+      releaseLocalSlot();
+      safeAnimCall(anim, (item) => {
+        item.removeEventListener("DOMLoaded", onReady);
+        item.removeEventListener("data_ready", onReady);
+        item.destroy();
+      });
       animRef.current = null;
-      host.replaceChildren();
+      try {
+        host.replaceChildren();
+      } catch {
+        /* host may already be detached */
+      }
     };
   }, [animationData, widthPx, height, loop, lowPriority, priority]);
 
@@ -137,10 +187,10 @@ export function TgsCanvasPlayer({
     if (shouldPlay) {
       if (!slotHeldRef.current && (priority || acquirePlaySlot())) {
         slotHeldRef.current = true;
-        anim.play();
+        safeAnimCall(anim, (item) => item.play());
         telegramEmojiDebug.playerAction("play", { priority, visible, reason: "slot_acquired" });
       } else if (slotHeldRef.current) {
-        anim.play();
+        safeAnimCall(anim, (item) => item.play());
         telegramEmojiDebug.playerAction("play", { priority, visible, reason: "slot_held" });
       } else {
         forcePaintFrame(anim);
@@ -149,7 +199,7 @@ export function TgsCanvasPlayer({
       return;
     }
 
-    anim.pause();
+    safeAnimCall(anim, (item) => item.pause());
     if (slotHeldRef.current) {
       releasePlaySlot();
       slotHeldRef.current = false;

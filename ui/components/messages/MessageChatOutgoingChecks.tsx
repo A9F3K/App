@@ -12,19 +12,51 @@ type Props = {
   status: MessageOutgoingStatus;
   colors: ThemeColors;
   size?: number;
-  /** Time sits on dark media — use light ticks. */
-  onMedia?: boolean;
-  /** Private chats: double grey ticks once delivered (Telegram-style). */
-  doubleCheckDelivered?: boolean;
+  /** Chat list row: no extra left margin before the time label. */
+  compact?: boolean;
 };
 
 const SINGLE_CHECK_PATH = "M1 7.5 L4.5 11 L10 2";
 const READ_CHECK_OFFSET = 4;
+/** One tick glyph width in the shared 14px-tall viewBox (path spans x≈1…10). */
+const SINGLE_CHECK_VIEW_WIDTH = 10;
 /** Wide enough for two checks + round stroke caps (path reaches x≈14 at strokeWidth 1.75). */
 const READ_VIEW_WIDTH = 16;
 
+function singleCheckSvgWidthPx(size = MESSAGE_CHAT_CHECKMARK_SIZE_PX): number {
+  return (size * SINGLE_CHECK_VIEW_WIDTH) / 14;
+}
+
 function outgoingChecksSvgWidthPx(size = MESSAGE_CHAT_CHECKMARK_SIZE_PX): number {
   return (size * READ_VIEW_WIDTH) / 14;
+}
+
+function SingleCheckSvg({
+  color,
+  size,
+}: {
+  color: string;
+  size: number;
+}) {
+  const stroke = {
+    stroke: color,
+    strokeWidth: 1.75,
+    fill: "none" as const,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
+  const widthPx = singleCheckSvgWidthPx(size);
+
+  return (
+    <Svg
+      width={widthPx}
+      height={size}
+      viewBox={`0 0 ${SINGLE_CHECK_VIEW_WIDTH} 14`}
+      style={{ overflow: "visible" }}
+    >
+      <Path d={SINGLE_CHECK_PATH} {...stroke} />
+    </Svg>
+  );
 }
 
 function DoubleCheckSvg({
@@ -59,80 +91,54 @@ function DoubleCheckSvg({
 /** Telegram-style delivery ticks beside bubble time (outgoing only). */
 export function MessageChatOutgoingChecks({
   status,
-  colors,
+  colors: _colors,
   size = MESSAGE_CHAT_CHECKMARK_SIZE_PX,
-  onMedia = false,
-  doubleCheckDelivered = false,
+  compact = false,
 }: Props) {
   if (status !== "delivered" && status !== "read") return null;
 
-  const readColor = MESSAGE_CHAT_READ_CHECK_COLOR;
-  const deliveredColor = onMedia ? "rgba(255,255,255,0.92)" : colors.secondary;
-  const reserveWidthPx = outgoingChecksSvgWidthPx(size);
+  const checkColor = MESSAGE_CHAT_READ_CHECK_COLOR;
+  const marginLeft = compact ? 0 : MESSAGE_CHAT_CHECKMARK_GAP_PX;
 
   if (status === "read") {
+    const reserveWidthPx = outgoingChecksSvgWidthPx(size);
     return (
       <View
         style={{
-          marginLeft: MESSAGE_CHAT_CHECKMARK_GAP_PX,
+          marginLeft,
           width: reserveWidthPx,
           alignItems: "center",
           justifyContent: "center",
           overflow: "visible",
         }}
       >
-        <DoubleCheckSvg color={readColor} size={size} />
+        <DoubleCheckSvg color={checkColor} size={size} />
       </View>
     );
   }
 
-  if (doubleCheckDelivered) {
-    return (
-      <View
-        style={{
-          marginLeft: MESSAGE_CHAT_CHECKMARK_GAP_PX,
-          width: reserveWidthPx,
-          alignItems: "center",
-          justifyContent: "center",
-          overflow: "visible",
-        }}
-      >
-        <DoubleCheckSvg color={deliveredColor} size={size} />
-      </View>
-    );
-  }
-
+  const reserveWidthPx = singleCheckSvgWidthPx(size);
   return (
     <View
       style={{
-        marginLeft: MESSAGE_CHAT_CHECKMARK_GAP_PX,
+        marginLeft,
         width: reserveWidthPx,
         alignItems: "center",
         justifyContent: "center",
         overflow: "visible",
       }}
     >
-      <Svg width={size * 0.62} height={size} viewBox="0 0 11 14" style={{ overflow: "visible" }}>
-        <Path
-          d={SINGLE_CHECK_PATH}
-          stroke={deliveredColor}
-          strokeWidth={1.75}
-          fill="none"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </Svg>
+      <SingleCheckSvg color={checkColor} size={size} />
     </View>
   );
 }
 
 export function messageChatOutgoingChecksWidthPx(
   status: MessageOutgoingStatus | null | undefined,
-  doubleCheckDelivered = false,
 ): number {
   if (status !== "delivered" && status !== "read") return 0;
-  if (status === "read" || doubleCheckDelivered) {
+  if (status === "read") {
     return outgoingChecksSvgWidthPx() + MESSAGE_CHAT_CHECKMARK_GAP_PX;
   }
-  return Math.ceil(MESSAGE_CHAT_CHECKMARK_SIZE_PX * 0.62) + MESSAGE_CHAT_CHECKMARK_GAP_PX;
+  return singleCheckSvgWidthPx() + MESSAGE_CHAT_CHECKMARK_GAP_PX;
 }

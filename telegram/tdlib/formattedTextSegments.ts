@@ -11,7 +11,7 @@ export type { FormattedTextSegment };
 type EntityRange = {
   offset: number;
   length: number;
-  kind: "custom_emoji" | "link";
+  kind: "custom_emoji" | "link" | "bot_command";
   custom_emoji_id?: string;
   url?: string;
 };
@@ -52,6 +52,13 @@ function parseEntityRange(entity: unknown): EntityRange | null {
   if (type === "messageEntityUrl" || type === "textEntityTypeUrl" || type === "textEntityUrl") {
     return { offset, length, kind: "link" };
   }
+  if (
+    type === "messageEntityBotCommand" ||
+    type === "textEntityTypeBotCommand" ||
+    type === "textEntityBotCommand"
+  ) {
+    return { offset, length, kind: "bot_command" };
+  }
   return null;
 }
 
@@ -90,6 +97,12 @@ export function parseFormattedTextSegments(value: unknown): FormattedTextSegment
         kind: "custom_emoji",
         text: slice,
         custom_emoji_id: range.custom_emoji_id!,
+      });
+    } else if (range.kind === "bot_command") {
+      segments.push({
+        kind: "bot_command",
+        text: slice,
+        command: slice,
       });
     } else {
       segments.push({

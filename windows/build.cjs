@@ -263,6 +263,26 @@ function getWindowsAppRootFromExecPath(execPath) {
   return dir;
 }
 
+/** Program Files (per-machine NSIS) needs elevation for in-place zip apply. */
+function installPathNeedsElevation(targetPath) {
+  if (process.platform !== "win32") return false;
+  const norm = path.normalize(String(targetPath || "")).toLowerCase();
+  if (norm.includes(`${path.sep}program files`) || norm.includes(`${path.sep}program files (x86)`)) {
+    return true;
+  }
+  try {
+    const probeDir = path.join(targetPath, `.hsp-write-probe-${process.pid}`);
+    fs.mkdirSync(probeDir, { recursive: true });
+    const probeFile = path.join(probeDir, "probe.txt");
+    fs.writeFileSync(probeFile, "1");
+    fs.unlinkSync(probeFile);
+    fs.rmdirSync(probeDir);
+    return false;
+  } catch (_) {
+    return true;
+  }
+}
+
 function parseSimpleUpdateYml(text) {
   const versionM = text.match(/^version:\s*(.+)$/m);
   const version = versionM ? versionM[1].trim() : null;
@@ -1091,7 +1111,13 @@ function setupAutoUpdater() {
           continue;
         }
         if (!st.isDirectory()) continue;
-        if (compareSemverLike(name, currentVersion) <= 0) continue;
+        if (compareSemverLike(name, currentVersion) <= 0) {
+          try {
+            fs.rmSync(full, { recursive: true, force: true });
+            logUpdater("staging", `removed stale staging folder ${name} (current=${currentVersion})`);
+          } catch (_) {}
+          continue;
+        }
         const extractDir = path.join(full, "extract");
         if (!fs.existsSync(extractDir)) continue;
         const contentRoot = resolveZipAppContentRoot(extractDir, exeBase);
@@ -1349,12 +1375,14 @@ function setupAutoUpdater() {
       const installDir = path.dirname(execPath);
       const exeName = path.basename(execPath);
       const appRoot = getWindowsAppRootFromExecPath(execPath);
-      const useVersionedLayout =
-        process.platform === "win32" && path.basename(installDir).toLowerCase() === "current";
+      // Always apply into versions/<semver> + current junction (avoids locked flat exe / partial overwrite).
+      const useVersionedLayout = true;
+      const cleanupLegacyFlat = path.basename(installDir).toLowerCase() !== "current";
+      const needsElevation = installPathNeedsElevation(appRoot);
       const applyLogPath = applyUserLogPath;
       logUpdater(
         "apply",
-        `applyVersionsStagedUpdate installDir=${installDir} appRoot=${appRoot} versioned=${useVersionedLayout} exe=${exeName} staging=${zipStagingContentPath} version=${zipReadyVersion} pid=${process.pid}`,
+        `applyVersionsStagedUpdate installDir=${installDir} appRoot=${appRoot} versioned=${useVersionedLayout} cleanupLegacyFlat=${cleanupLegacyFlat} needsElevation=${needsElevation} exe=${exeName} staging=${zipStagingContentPath} version=${zipReadyVersion} pid=${process.pid}`,
       );
       logUpdater("apply", `helper log (next run): ${applyLogPath}`);
       const planPath = path.join(app.getPath("temp"), `hsp-update-plan-${Date.now()}.json`);
@@ -1376,6 +1404,9 @@ function setupAutoUpdater() {
         appRoot,
         targetVersionDir,
         currentLink,
+        cleanupLegacyFlat,
+        needsElevation,
+        elevated: false,
       };
       fs.writeFileSync(planPath, JSON.stringify(plan), "utf8");
       logUpdater("apply", `wrote plan ${planPath} ${safeJson(plan)}`);
@@ -1412,6 +1443,15 @@ function setupAutoUpdater() {
         "  $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')",
         '  Add-Content -LiteralPath $LogFile -Value ("[$ts] " + $m) -Encoding UTF8',
         "}",
+        "if ($plan.needsElevation -and -not $plan.elevated) {",
+        '  Write-ApplyLog "needsElevation=true; relaunching apply helper elevated"',
+        "  $plan.elevated = $true",
+        "  ($plan | ConvertTo-Json -Compress) | Set-Content -LiteralPath $PlanPath -Encoding UTF8",
+        "  $psExe = (Get-Command powershell.exe).Source",
+        "  $arg = \"-NoProfile -ExecutionPolicy Bypass -File `\"$PSCommandPath`\" -PlanPath `\"$PlanPath`\" -LogPath `\"$LogPath`\"\"",
+        "  Start-Process -FilePath $psExe -Verb RunAs -ArgumentList $arg -WindowStyle Hidden",
+        "  exit 0",
+        "}",
         "function Write-FileProbe([string]$label, [string]$path) {",
         "  try {",
         "    if (-not (Test-Path -LiteralPath $path)) {",
@@ -1435,16 +1475,24 @@ function setupAutoUpdater() {
         "  foreach ($kn in $killNames) {",
         "    try { Get-Process -Name $kn -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}",
         "  }",
-        '  Write-ApplyLog "stopped helpers by process name (fast; avoids Win32_Process scan of every OS process)"',
-        "  $src = $plan.stagingContent",
-        "  if ($plan.useVersionedLayout) {",
-        "    $dst = $plan.targetVersionDir",
-        "    $null = New-Item -ItemType Directory -Force -LiteralPath $dst",
-        '    Write-ApplyLog "mirror target (versioned): $dst"',
-        "  } else {",
-        "    $dst = $plan.installDir",
-        '    Write-ApplyLog "mirror target (flat): $dst"',
+        "  $root = [string]$plan.appRoot",
+        "  if ($root) {",
+        "    $rootNorm = $root.TrimEnd('\\').ToLower()",
+        "    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {",
+        "      $_.ExecutablePath -and $_.ExecutablePath.ToLower().StartsWith($rootNorm)",
+        "    } | ForEach-Object {",
+        "      try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}",
+        "    }",
         "  }",
+        "  Start-Sleep -Milliseconds 1500",
+        '  Write-ApplyLog "stopped app processes under install root"',
+        "  $src = $plan.stagingContent",
+        "  if (-not $plan.useVersionedLayout -or -not $plan.targetVersionDir) {",
+        '    throw "versioned apply target missing"',
+        "  }",
+        "  $dst = $plan.targetVersionDir",
+        "  $null = New-Item -ItemType Directory -Force -LiteralPath $dst",
+        '  Write-ApplyLog "mirror target (versioned): $dst"',
         "  $srcAsar = Join-Path $src 'resources\\app.asar'",
         "  $srcExe = Join-Path $src $plan.exeName",
         "  $dstAsar = Join-Path $dst 'resources\\app.asar'",
@@ -1453,19 +1501,9 @@ function setupAutoUpdater() {
         "  Write-FileProbe 'pre-copy src exe' $srcExe",
         "  Write-FileProbe 'pre-copy dst asar' $dstAsar",
         "  Write-FileProbe 'pre-copy dst exe' $dstExe",
-        '  Write-ApplyLog "copy staging -> dest (robocopy; versioned uses /MIR, flat purges then /E)"',
+        '  Write-ApplyLog "copy staging -> dest (robocopy /MIR into versions/<semver>)"',
         "  $robocopyExe = Join-Path $env:SystemRoot 'System32\\robocopy.exe'",
-        "  if ($plan.useVersionedLayout) {",
-        "    & $robocopyExe $src $dst /MIR /E /MT:64 /J /R:0 /W:0 /XD versions /NFL /NDL /NJH /NJS",
-        "  } else {",
-        '    Write-ApplyLog "flat install: purge old payload (keep Uninstall*.exe)"',
-        "    Get-ChildItem -LiteralPath $dst -Force -ErrorAction SilentlyContinue | Where-Object {",
-        "      $_.Name -notlike 'Uninstall*.exe'",
-        "    } | ForEach-Object {",
-        "      Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue",
-        "    }",
-        "    & $robocopyExe $src $dst /E /MT:64 /J /R:0 /W:0 /XD versions /NFL /NDL /NJH /NJS",
-        "  }",
+        "  & $robocopyExe $src $dst /MIR /E /MT:64 /J /R:0 /W:0 /NFL /NDL /NJH /NJS",
         "  $mirrorExit = $LASTEXITCODE",
         "  Write-ApplyLog (\"robocopy mirror exit=\" + $mirrorExit)",
         "  if ($mirrorExit -gt 7) {",
@@ -1484,6 +1522,17 @@ function setupAutoUpdater() {
         "    }",
         "    $null = New-Item -ItemType Junction -Path $plan.currentLink -Target $plan.targetVersionDir",
         '    Write-ApplyLog ("junction: $($plan.currentLink) -> $($plan.targetVersionDir)")',
+        "  }",
+        "  if ($plan.cleanupLegacyFlat -and $plan.appRoot) {",
+        '    Write-ApplyLog "mirror legacy flat root for shortcuts (exclude versions, current)"',
+        "    Get-ChildItem -LiteralPath $plan.appRoot -Force -ErrorAction SilentlyContinue | Where-Object {",
+        "      $n = $_.Name",
+        "      $n -ne 'versions' -and $n -ne 'current' -and $n -notlike 'Uninstall*.exe'",
+        "    } | ForEach-Object {",
+        "      Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue",
+        "    }",
+        "    & $robocopyExe $src $plan.appRoot /E /MT:64 /J /R:0 /W:0 /XD versions current /NFL /NDL /NJH /NJS",
+        "    Write-ApplyLog (\"legacy flat robocopy exit=\" + $LASTEXITCODE)",
         "  }",
         "  $workDir = if ($plan.useVersionedLayout) { $plan.currentLink } else { $dst }",
         `  $candidates = @($plan.exeName, ${brand.allKnownExeBaseNames().map((n) => `"${n}"`).join(", ")}) | Select-Object -Unique`,

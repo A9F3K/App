@@ -215,6 +215,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const lastTailMessageIdRef = useRef(0);
   const lastAppliedCacheSignatureRef = useRef("");
   const lastAvatarPrefetchSignatureRef = useRef("");
+  const saveScrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevContentHForBottomStickRef = useRef(0);
+  const historySyncKeyRef = useRef("");
   const chatLiveSignatureValue = chatLiveSignature(chat);
   const historyMessageContext = useMemo(
     (): HistoryMessageContext => ({
@@ -253,6 +256,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     setInitialScrollAnchor(openAnchor);
     setAuthenticatedHomeOpenChatFollowingBottom(openAnchor === "bottom");
 
+    prevContentHForBottomStickRef.current = 0;
+
     const cachedScroll = getChatScrollPosition(chat.telegram_chat_id);
     if (cachedScroll) {
       pendingInitialScrollRef.current = false;
@@ -260,6 +265,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       followingBottomRef.current = cachedScroll.followingBottom;
       setIsFollowingBottom(cachedScroll.followingBottom);
       setAuthenticatedHomeOpenChatFollowingBottom(cachedScroll.followingBottom);
+      setInitialScrollAnchor(cachedScroll.followingBottom ? "bottom" : "top");
       if (!cachedScroll.followingBottom) {
         allowUnreadResetAtBottomRef.current = true;
       }
@@ -302,38 +308,112 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     patchAuthenticatedHomeSelectedChatUnread(0);
   }, []);
 
-  const handleScrollPositionChange = useCallback((metrics: HspScrollMetrics) => {
-    if (metrics.contentH <= 0) return;
-    pinnedScrollYRef.current = metrics.scrollY;
-    const contentOverflows = metrics.contentH > metrics.layoutH + 0.5;
-    const nearBottom = contentOverflows
-      ? isChatScrollNearBottom(metrics.scrollY, metrics.layoutH, metrics.contentH)
-      : openScrollAnchorRef.current === "bottom";
+  const persistChatScrollPosition = useCallback(
+    (metrics: HspScrollMetrics) => {
+      if (metrics.contentH <= 0) return;
+      saveChatScrollPosition(chat.telegram_chat_id, {
+        scrollY: metrics.scrollY,
+        contentH: metrics.contentH,
+        followingBottom:
+          followingBottomRef.current ||
+          isChatScrollNearBottom(metrics.scrollY, metrics.layoutH, metrics.contentH),
+      });
+    },
+    [chat.telegram_chat_id],
+  );
 
-    if (initialScrollInProgressRef.current) {
-      if (nearBottom) {
-        initialScrollInProgressRef.current = false;
-        setInitialScrollInProgress(false);
+  const handleScrollPositionChange = useCallback(
+    (metrics: HspScrollMetrics) => {
+      if (metrics.contentH <= 0) return;
+      pinnedScrollYRef.current = metrics.scrollY;
+      const contentOverflows = metrics.contentH > metrics.layoutH + 0.5;
+      const nearBottom = contentOverflows
+        ? isChatScrollNearBottom(metrics.scrollY, metrics.layoutH, metrics.contentH)
+        : openScrollAnchorRef.current === "bottom";
+
+      if (initialScrollInProgressRef.current) {
+        if (
+          followingBottomRef.current &&
+          metrics.contentH > prevContentHForBottomStickRef.current + 2
+        ) {
+          prevContentHForBottomStickRef.current = metrics.contentH;
+          scrollToBottom();
+        } else {
+          prevContentHForBottomStickRef.current = metrics.contentH;
+        }
+        if (nearBottom) {
+          initialScrollInProgressRef.current = false;
+          setInitialScrollInProgress(false);
+          allowUnreadResetAtBottomRef.current = true;
+          followingBottomRef.current = true;
+          setIsFollowingBottom(true);
+          setAuthenticatedHomeOpenChatFollowingBottom(true);
+          patchAuthenticatedHomeSelectedChatUnread(0);
+        }
+        return;
+      }
+
+      if (
+        followingBottomRef.current &&
+        metrics.contentH > prevContentHForBottomStickRef.current + 2
+      ) {
+        prevContentHForBottomStickRef.current = metrics.contentH;
+        scrollToBottom();
+        if (saveScrollDebounceRef.current) {
+          clearTimeout(saveScrollDebounceRef.current);
+        }
+        saveScrollDebounceRef.current = setTimeout(() => {
+          saveScrollDebounceRef.current = null;
+          persistChatScrollPosition(metrics);
+        }, 200);
+        return;
+      }
+      prevContentHForBottomStickRef.current = metrics.contentH;
+
+      followingBottomRef.current = nearBottom;
+      setIsFollowingBottom((current) => (current === nearBottom ? current : nearBottom));
+      setAuthenticatedHomeOpenChatFollowingBottom(nearBottom);
+      if (!nearBottom) {
         allowUnreadResetAtBottomRef.current = true;
-        followingBottomRef.current = true;
-        setIsFollowingBottom(true);
-        setAuthenticatedHomeOpenChatFollowingBottom(true);
+      } else if (allowUnreadResetAtBottomRef.current) {
         patchAuthenticatedHomeSelectedChatUnread(0);
       }
-      return;
-    }
 
-    followingBottomRef.current = nearBottom;
-    setIsFollowingBottom((current) => (current === nearBottom ? current : nearBottom));
-    setAuthenticatedHomeOpenChatFollowingBottom(nearBottom);
-    if (!nearBottom) {
-      allowUnreadResetAtBottomRef.current = true;
-      return;
+      if (saveScrollDebounceRef.current) {
+        clearTimeout(saveScrollDebounceRef.current);
+      }
+      saveScrollDebounceRef.current = setTimeout(() => {
+        saveScrollDebounceRef.current = null;
+        persistChatScrollPosition(metrics);
+      }, 300);
+    },
+    [persistChatScrollPosition, scrollToBottom],
+  );
+
+  useEffect(() => {
+    const flushScrollPosition = () => {
+      const metrics = scrollControllerRef.current?.getMetrics();
+      if (metrics && metrics.contentH > 0) {
+        persistChatScrollPosition(metrics);
+      }
+    };
+    if (typeof globalThis !== "undefined" && "addEventListener" in globalThis) {
+      globalThis.addEventListener("pagehide", flushScrollPosition);
+      return () => {
+        globalThis.removeEventListener("pagehide", flushScrollPosition);
+        if (saveScrollDebounceRef.current) {
+          clearTimeout(saveScrollDebounceRef.current);
+          saveScrollDebounceRef.current = null;
+        }
+      };
     }
-    if (allowUnreadResetAtBottomRef.current) {
-      patchAuthenticatedHomeSelectedChatUnread(0);
-    }
-  }, []);
+    return () => {
+      if (saveScrollDebounceRef.current) {
+        clearTimeout(saveScrollDebounceRef.current);
+        saveScrollDebounceRef.current = null;
+      }
+    };
+  }, [persistChatScrollPosition]);
 
   const preserveScrollY = useCallback((scrollY: number) => {
     let attempts = 0;
@@ -679,6 +759,43 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     chat.peer_user_id,
     chat.telegram_chat_id,
     chat.title,
+    shouldLoadHistory,
+  ]);
+
+  // Apply cached history (or clear stale rows) before paint when switching chats.
+  useLayoutEffect(() => {
+    if (!shouldLoadHistory || !isAuthenticated || !isTelegramMessagesConnected) {
+      historySyncKeyRef.current = "";
+      return;
+    }
+    const historyKey = `${chat.telegram_chat_id}:${historyLoad.generation}`;
+    if (historySyncKeyRef.current === historyKey) return;
+    historySyncKeyRef.current = historyKey;
+
+    const aroundUnread = shouldPrefetchHistoryAroundUnread(chat);
+    const cached = getCachedChatHistory(chat.telegram_chat_id);
+    const cacheHit =
+      cached != null &&
+      cached.messages.length > 0 &&
+      isChatHistoryCacheAnchorMatch(chat.telegram_chat_id, aroundUnread);
+
+    if (cacheHit) {
+      applyCachedHistoryPage(cached, { replace: true });
+      return;
+    }
+
+    setMessages([]);
+    setChatKind(null);
+    setHasMoreOlder(false);
+    setNextBeforeMessageId(null);
+    setLastReadOutboxFromHistory(null);
+    setSelfUserId(null);
+  }, [
+    applyCachedHistoryPage,
+    chat,
+    historyLoad.generation,
+    isAuthenticated,
+    isTelegramMessagesConnected,
     shouldLoadHistory,
   ]);
 

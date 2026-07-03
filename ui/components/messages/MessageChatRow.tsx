@@ -20,15 +20,12 @@ import {
   formatMessageChatListPreview,
   isMessageChatActionLive,
 } from "./formatMessageChatSubheader";
-import { formatMessageChatWallClock } from "./formatMessageChatTime";
+import { formatMessageChatListTime } from "./formatMessageChatTime";
 import { resolveTelegramThreadAvatarUrl } from "./resolveTelegramThreadAvatarUrl";
 import { useElementVisible } from "./useElementVisible";
 import { MessageChatOutgoingChecks } from "./MessageChatOutgoingChecks";
-import {
-  isPrivateChatForReadReceipts,
-  resolveOutgoingStatusForDisplay,
-  type MessageOutgoingStatus,
-} from "./messageChatHistoryTypes";
+import { type MessageOutgoingStatus } from "./messageChatHistoryTypes";
+import { resolveChatListOutgoingPreview } from "./resolveChatListOutgoingPreview";
 import {
   MESSAGE_AVATAR_PX,
   MESSAGE_ICON_TEXT_GAP_PX,
@@ -81,6 +78,8 @@ export type MessageChatRowData = {
   last_read_outbox_message_id?: number | null;
   last_message_is_outgoing?: boolean;
   last_message_outgoing_status?: MessageOutgoingStatus | null;
+  last_message_telegram_id?: number | null;
+  last_message_sender_user_id?: number | null;
   is_pinned?: boolean;
 };
 
@@ -114,24 +113,15 @@ export function MessageChatRow({
   const isPinned = Boolean(item.is_pinned);
   const showPin = isPinned && !trailing;
   const iconUrl = resolveAvatarUrl(item);
-  const parsedClock = formatMessageChatWallClock(item.last_message_at);
-  const timeLabel = parsedClock || timePendingLabel;
-  const gapTitleTime = !!(title && timeLabel.trim());
-  const listOutgoingStatus = item.last_message_is_outgoing
-    ? resolveOutgoingStatusForDisplay(
-        {
-          is_outgoing: true,
-          outgoing_status: item.last_message_outgoing_status ?? null,
-        },
-        item.chat_kind,
-        item,
-      )
-    : null;
+  const parsedClock = formatMessageChatListTime(item.last_message_at, locale);
+  const timeLabel = parsedClock || (item.last_message_at ? timePendingLabel : "");
+  const showTimeMeta = Boolean(timeLabel.trim());
+  const listOutgoing = resolveChatListOutgoingPreview(item);
+  const listOutgoingStatus = listOutgoing.status;
   const showListOutgoingChecks =
-    Boolean(item.last_message_is_outgoing) &&
+    listOutgoing.isOutgoing &&
     !isMessageChatActionLive(item) &&
     (listOutgoingStatus === "delivered" || listOutgoingStatus === "read");
-  const listDoubleCheckDelivered = isPrivateChatForReadReceipts(item.chat_kind, item);
   const avatarLogOnceRef = useRef(false);
   const avatarLabel = useMemo(() => {
     const display = specialUserDisplayName(item.peer_user_id, title, item.telegram_chat_id);
@@ -275,29 +265,37 @@ export function MessageChatRow({
               }}
             />
           </View>
-          {gapTitleTime ? <View style={{ width: MESSAGE_NAME_TIME_GAP_PX }} /> : null}
-          {showListOutgoingChecks && listOutgoingStatus ? (
-            <>
-              <MessageChatOutgoingChecks
-                status={listOutgoingStatus}
-                colors={colors}
-                size={LIST_ROW_CHECKMARK_SIZE_PX}
-                doubleCheckDelivered={listDoubleCheckDelivered}
-              />
-              <View style={{ width: 2 }} />
-            </>
-          ) : null}
-          {timeLabel ? (
-            <Text
-              numberOfLines={1}
+          {showTimeMeta || showListOutgoingChecks ? (
+            <View
               style={{
-                ...textBase,
+                flexDirection: "row",
+                alignItems: "center",
                 flexShrink: 0,
-                color: colors.accent,
+                marginLeft: MESSAGE_NAME_TIME_GAP_PX,
               }}
             >
-              {timeLabel}
-            </Text>
+              {showListOutgoingChecks && listOutgoingStatus ? (
+                <MessageChatOutgoingChecks
+                  status={listOutgoingStatus}
+                  colors={colors}
+                  size={LIST_ROW_CHECKMARK_SIZE_PX}
+                  compact
+                />
+              ) : null}
+              {showTimeMeta ? (
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    ...textBase,
+                    flexShrink: 0,
+                    color: colors.accent,
+                    marginLeft: showListOutgoingChecks ? 4 : 0,
+                  }}
+                >
+                  {timeLabel}
+                </Text>
+              ) : null}
+            </View>
           ) : null}
         </View>
         <View
@@ -320,6 +318,7 @@ export function MessageChatRow({
               enrichStandardEmojis
               emojiFetchEnabled={rowInView || Boolean(isActive)}
               emojiFetchPriority={rowInView || Boolean(isActive)}
+              chatId={item.telegram_chat_id}
               style={{
                 ...textBase,
                 color: colors.secondary,

@@ -5,6 +5,7 @@ import {
   segmentsContainTelegramEmoji,
 } from "../../../shared/formattedTextSegments";
 import { parseMessageTextLinks } from "./parseMessageTextLinks";
+import { enrichSegmentsWithBotCommands } from "./parseMessageBotCommands";
 
 const PICTOGRAPHIC_EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
 
@@ -26,12 +27,13 @@ export function resolveMessageDisplaySegments(
 ): FormattedTextSegment[] | null {
   const normalized = normalizeFormattedTextSegments(segments);
   const trimmed = text.trim();
-  const base =
+  let base =
     normalized ??
     (trimmed
       ? (parseMessageTextLinks(trimmed) as FormattedTextSegment[])
       : null);
   if (!base?.length) return null;
+  base = enrichSegmentsWithBotCommands(base);
   return enrichSegmentsWithStandardEmojis(base);
 }
 
@@ -59,6 +61,9 @@ export function formattedSegmentsEqual(
     const other = b[index];
     if (!other || seg.kind !== other.kind || seg.text !== other.text) return false;
     if (seg.kind === "link" && other.kind === "link") return seg.url === other.url;
+    if (seg.kind === "bot_command" && other.kind === "bot_command") {
+      return seg.command === other.command;
+    }
     if (seg.kind === "custom_emoji" && other.kind === "custom_emoji") {
       return seg.custom_emoji_id === other.custom_emoji_id;
     }

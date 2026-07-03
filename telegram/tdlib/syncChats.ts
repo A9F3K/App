@@ -29,11 +29,13 @@ import {
   seedLiveChatList,
   mergeLiveChatRows,
   getLiveChatList,
+  setLiveChatSelfUserId,
   type LiveChatRow,
 } from "./liveChatCache.js";
+import { resolveMyUserId } from "./chatHistory.js";
 import { logGateway } from "./gatewayLog.js";
 import { emojiStatusCustomIdFromChat } from "./emojiStatus.js";
-import { lastMessageOutgoingPreviewFromChat } from "./messageHistoryMap.js";
+import { lastMessageListRowMetaFromChat } from "./messageHistoryMap.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
 import {
   specialUserForceIncludedPeerUserIds,
@@ -671,6 +673,7 @@ export async function syncChatThreads(
   telegramUsername: string,
   options?: SyncChatThreadsOptions,
 ): Promise<number> {
+  setLiveChatSelfUserId(telegramUsername, await resolveMyUserId(client));
   const chats = await loadAllChats(client, {
     maxMainChats: options?.maxMainChats ?? null,
     includeArchive: options?.includeArchive,
@@ -706,6 +709,8 @@ async function buildLiveRowsForChats(
   options?: { skipMemberCounts?: boolean },
 ): Promise<Omit<LiveChatRow, "revision">[]> {
   if (chats.length === 0) return [];
+
+  const myUserId = await resolveMyUserId(client);
 
   let previewPayloads = await mapWithConcurrency(chats, PREVIEW_SYNC_CONCURRENCY, (chat) =>
     resolveLastMessagePreviewPayload(client, chat),
@@ -766,7 +771,7 @@ async function buildLiveRowsForChats(
       chat_action_user_name: null,
       chat_action_expires_at: null,
       last_read_outbox_message_id: lastReadOutboxMessageIdFromChat(chat),
-      ...lastMessageOutgoingPreviewFromChat(chat),
+      ...lastMessageListRowMetaFromChat(chat, myUserId),
       is_pinned: isChatPinnedInMainList(chat),
       pin_order: mainListOrderKey(chat),
     });

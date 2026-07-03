@@ -2,8 +2,8 @@ import type { MessageChatRowData } from "./components/messages/MessageChatRow";
 import {
   MESSAGE_CHAT_HISTORY_PAGE_SIZE,
   MESSAGE_CHAT_HISTORY_PREVIEW_SIZE,
-  MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD,
 } from "./components/messages/messageChatLayout";
+import { MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD } from "./components/messages/messageListLayout";
 import type { ChatHistoryPageResult } from "./telegram/fetchTelegramChatHistoryPage";
 import { loadTelegramChatHistoryFirstPage } from "./telegram/fetchTelegramChatHistoryPage";
 import {

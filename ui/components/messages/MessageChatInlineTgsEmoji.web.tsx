@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { deferRevokeObjectUrl } from "./deferRevokeObjectUrl";
 import {
   fetchTelegramEmojiAsset,
   type TelegramEmojiFetchRef,
@@ -98,7 +99,7 @@ export function MessageChatInlineTgsEmoji(props: Props) {
   useEffect(() => {
     setAnimationData(null);
     setMediaUrl((current) => {
-      if (current) URL.revokeObjectURL(current);
+      deferRevokeObjectUrl(current);
       return null;
     });
     setMediaKind(null);
@@ -129,7 +130,7 @@ export function MessageChatInlineTgsEmoji(props: Props) {
             setMediaUrl(url);
             setMediaKind("video");
           } else {
-            URL.revokeObjectURL(url);
+            deferRevokeObjectUrl(url);
           }
           return;
         }
@@ -140,7 +141,7 @@ export function MessageChatInlineTgsEmoji(props: Props) {
             setMediaUrl(url);
             setMediaKind("image");
           } else {
-            URL.revokeObjectURL(url);
+            deferRevokeObjectUrl(url);
           }
         }
       })
@@ -199,7 +200,7 @@ export function MessageChatInlineTgsEmoji(props: Props) {
             setMediaUrl(url);
             setMediaKind("video");
           } else {
-            URL.revokeObjectURL(url);
+            deferRevokeObjectUrl(url);
           }
           return;
         }
@@ -211,7 +212,7 @@ export function MessageChatInlineTgsEmoji(props: Props) {
             setMediaUrl(url);
             setMediaKind("image");
           } else {
-            URL.revokeObjectURL(url);
+            deferRevokeObjectUrl(url);
           }
           return;
         }
@@ -236,7 +237,7 @@ export function MessageChatInlineTgsEmoji(props: Props) {
 
   useEffect(() => {
     return () => {
-      if (mediaUrl) URL.revokeObjectURL(mediaUrl);
+      deferRevokeObjectUrl(mediaUrl);
     };
   }, [mediaUrl]);
 

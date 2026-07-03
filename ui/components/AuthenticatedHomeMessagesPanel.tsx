@@ -131,6 +131,14 @@ function normalizeChat(raw: unknown): MessageChatRowData | null {
       row.last_message_outgoing_status === "failed"
         ? row.last_message_outgoing_status
         : null,
+    last_message_telegram_id: (() => {
+      const raw = Number(row.last_message_telegram_id);
+      return Number.isFinite(raw) && raw > 0 ? raw : null;
+    })(),
+    last_message_sender_user_id: (() => {
+      const raw = Number(row.last_message_sender_user_id);
+      return Number.isFinite(raw) && raw > 0 ? raw : null;
+    })(),
     is_pinned: Boolean(row.is_pinned),
   };
 }
@@ -190,6 +198,8 @@ function chatsChanged(prev: MessageChatRowData[], next: MessageChatRowData[]): b
       a.last_read_outbox_message_id !== b.last_read_outbox_message_id ||
       Boolean(a.last_message_is_outgoing) !== Boolean(b.last_message_is_outgoing) ||
       a.last_message_outgoing_status !== b.last_message_outgoing_status ||
+      a.last_message_telegram_id !== b.last_message_telegram_id ||
+      a.last_message_sender_user_id !== b.last_message_sender_user_id ||
       Boolean(a.is_pinned) !== Boolean(b.is_pinned)
     ) {
       return true;

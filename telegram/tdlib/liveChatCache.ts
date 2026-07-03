@@ -21,8 +21,8 @@ import { previewSegmentsFromMessage } from "./formattedTextSegments.js";
 import { emojiStatusCustomIdFromChat } from "./emojiStatus.js";
 import {
   chatKindFromTdChat,
-  lastMessageOutgoingPreviewFromChat,
-  lastMessageOutgoingPreviewFromMessage,
+  lastMessageListRowMetaFromChat,
+  lastMessageListRowMetaFromMessage,
   type MessageOutgoingStatus,
 } from "./messageHistoryMap.js";
 import { shouldIncludeChatInList } from "./chatListFilter.js";
@@ -54,6 +54,8 @@ export type LiveChatRow = {
   last_read_outbox_message_id: number | null;
   last_message_is_outgoing: boolean;
   last_message_outgoing_status: MessageOutgoingStatus | null;
+  last_message_telegram_id: number | null;
+  last_message_sender_user_id: number | null;
   is_pinned: boolean;
   pin_order: string;
   /** Monotonic version bumped on each update (for client diffing). */
@@ -92,6 +94,20 @@ type UserCache = {
 };
 
 const caches = new Map<string, UserCache>();
+const selfUserIds = new Map<string, number>();
+
+export function setLiveChatSelfUserId(telegramUsername: string, userId: number | null): void {
+  if (typeof userId === "number" && Number.isFinite(userId) && userId > 0) {
+    selfUserIds.set(telegramUsername, userId);
+    return;
+  }
+  selfUserIds.delete(telegramUsername);
+}
+
+export function getLiveChatSelfUserId(telegramUsername: string): number | null {
+  const id = selfUserIds.get(telegramUsername);
+  return typeof id === "number" && Number.isFinite(id) && id > 0 ? id : null;
+}
 
 function emptyChatActionFields(): Pick<
   LiveChatRow,
@@ -144,6 +160,7 @@ function replaceLiveChatRowQuietly(
 
 export function clearLiveChatCache(telegramUsername: string): void {
   caches.delete(telegramUsername);
+  selfUserIds.delete(telegramUsername);
 }
 
 export function getLiveChatListRevision(telegramUsername: string): number {
@@ -270,7 +287,7 @@ export function patchLiveChatFromTdlib(
     chat_action_expires_at: existing?.chat_action_expires_at ?? null,
     last_read_outbox_message_id:
       lastReadOutboxMessageIdFromChat(chat) ?? existing?.last_read_outbox_message_id ?? null,
-    ...lastMessageOutgoingPreviewFromChat(chat),
+    ...lastMessageListRowMetaFromChat(chat, getLiveChatSelfUserId(telegramUsername)),
     is_pinned: isChatPinnedInMainList(chat),
     pin_order: mainListOrderKey(chat),
   };
@@ -319,6 +336,8 @@ export function patchLiveChatAction(
     last_read_outbox_message_id: existing.last_read_outbox_message_id,
     last_message_is_outgoing: existing.last_message_is_outgoing,
     last_message_outgoing_status: existing.last_message_outgoing_status,
+    last_message_telegram_id: existing.last_message_telegram_id,
+    last_message_sender_user_id: existing.last_message_sender_user_id,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
   });
@@ -358,6 +377,8 @@ export function patchLiveChatPresence(
       last_read_outbox_message_id: row.last_read_outbox_message_id,
       last_message_is_outgoing: row.last_message_is_outgoing,
       last_message_outgoing_status: row.last_message_outgoing_status,
+      last_message_telegram_id: row.last_message_telegram_id,
+      last_message_sender_user_id: row.last_message_sender_user_id,
       is_pinned: row.is_pinned,
       pin_order: row.pin_order,
     });
@@ -401,6 +422,8 @@ export function patchLiveChatEmojiStatus(
       last_read_outbox_message_id: row.last_read_outbox_message_id,
       last_message_is_outgoing: row.last_message_is_outgoing,
       last_message_outgoing_status: row.last_message_outgoing_status,
+      last_message_telegram_id: row.last_message_telegram_id,
+      last_message_sender_user_id: row.last_message_sender_user_id,
       is_pinned: row.is_pinned,
       pin_order: row.pin_order,
     });
@@ -442,6 +465,8 @@ export function patchLiveChatChatEmojiStatus(
     last_read_outbox_message_id: existing.last_read_outbox_message_id,
     last_message_is_outgoing: existing.last_message_is_outgoing,
     last_message_outgoing_status: existing.last_message_outgoing_status,
+    last_message_telegram_id: existing.last_message_telegram_id,
+    last_message_sender_user_id: existing.last_message_sender_user_id,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
   });
@@ -486,9 +511,10 @@ export function applyLiveMessageUpdate(
     chat_action_user_name: existing?.chat_action_user_name ?? null,
     chat_action_expires_at: existing?.chat_action_expires_at ?? null,
     last_read_outbox_message_id: existing?.last_read_outbox_message_id ?? null,
-    ...lastMessageOutgoingPreviewFromMessage(
+    ...lastMessageListRowMetaFromMessage(
       message,
       existing?.last_read_outbox_message_id ?? null,
+      getLiveChatSelfUserId(telegramUsername),
     ),
     is_pinned: existing?.is_pinned ?? false,
     pin_order: existing?.pin_order ?? "0",
@@ -534,6 +560,8 @@ export function patchLiveChatMemberMeta(
     last_read_outbox_message_id: existing.last_read_outbox_message_id,
     last_message_is_outgoing: existing.last_message_is_outgoing,
     last_message_outgoing_status: existing.last_message_outgoing_status,
+    last_message_telegram_id: existing.last_message_telegram_id,
+    last_message_sender_user_id: existing.last_message_sender_user_id,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
   });

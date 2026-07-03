@@ -3,6 +3,7 @@ import { parseCustomEmojiId } from "./telegramCustomEmojiId";
 export type FormattedTextSegment =
   | { kind: "text"; text: string }
   | { kind: "link"; text: string; url: string }
+  | { kind: "bot_command"; text: string; command: string }
   | { kind: "custom_emoji"; text: string; custom_emoji_id: string }
   | { kind: "animated_emoji"; text: string; emoji: string };
 
@@ -82,6 +83,13 @@ export function normalizeFormattedTextSegments(raw: unknown): FormattedTextSegme
     }
     if (row.kind === "link" && typeof row.text === "string" && typeof row.url === "string") {
       segments.push({ kind: "link", text: row.text, url: row.url });
+      continue;
+    }
+    if (row.kind === "bot_command" && typeof row.text === "string" && typeof row.command === "string") {
+      const command = row.command.trim();
+      if (command.startsWith("/")) {
+        segments.push({ kind: "bot_command", text: row.text, command });
+      }
       continue;
     }
     if (row.kind === "custom_emoji" && typeof row.text === "string") {

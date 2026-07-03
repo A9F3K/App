@@ -17,10 +17,12 @@ import {
   isCustomEmojiTextLabel,
 } from "../../../shared/formattedTextSegments";
 import { openMessageLinkUrl } from "./openMessageLinkUrl";
+import { enrichSegmentsWithBotCommands } from "./parseMessageBotCommands";
 import { messageChatBubbleTextWebWrapStyle, inlineEmojiHostCss } from "./messageChatLayout";
 import { MessageChatInlineTgsEmoji } from "./MessageChatInlineTgsEmoji";
 import { parseMessageTextLinks } from "./parseMessageTextLinks";
 import { telegramEmojiDebug } from "./telegramEmojiDebug";
+import { submitChatBotCommand } from "../../telegram/submitChatBotCommand";
 
 const MESSAGE_LINK_COLOR = "#3390ec";
 const DEFAULT_INLINE_EMOJI_SIZE_PX = 20;
@@ -41,7 +43,29 @@ type Props = {
   nowrap?: boolean;
   /** Open-chat bubbles: split Unicode into animated emoji fetches. Off for list previews. */
   enrichStandardEmojis?: boolean;
+  /** When set, tapping a bot command (e.g. /start) re-sends it to this chat. */
+  chatId?: number;
+  onBotCommandPress?: (command: string) => void;
 } & Pick<TextProps, "numberOfLines">;
+
+function handleRichTextSegmentPress(
+  segment: FormattedTextSegment,
+  options: { chatId?: number; onBotCommandPress?: (command: string) => void },
+): void {
+  if (segment.kind === "link") {
+    openMessageLinkUrl(segment.url);
+    return;
+  }
+  if (segment.kind === "bot_command") {
+    if (options.onBotCommandPress) {
+      options.onBotCommandPress(segment.command);
+      return;
+    }
+    if (options.chatId != null) {
+      void submitChatBotCommand(options.chatId, segment.command);
+    }
+  }
+}
 
 function flattenSegmentTextForSingleLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
@@ -52,7 +76,7 @@ function flattenSegmentsForSingleLine(segments: FormattedTextSegment[]): Formatt
     if (segment.kind === "text") {
       return { ...segment, text: flattenSegmentTextForSingleLine(segment.text) };
     }
-    if (segment.kind === "link") {
+    if (segment.kind === "link" || segment.kind === "bot_command") {
       return { ...segment, text: flattenSegmentTextForSingleLine(segment.text) };
     }
     return segment;
@@ -72,7 +96,7 @@ function resolveSegments(
   if (!base.length) {
     resolved = text ? [{ kind: "text", text }] : [];
   } else {
-    resolved = base;
+    resolved = enrichSegmentsWithBotCommands(base);
   }
   if (options?.enrichStandardEmojis) {
     resolved = enrichSegmentsWithStandardEmojis(resolved);
@@ -135,6 +159,8 @@ function RichTextWebRow({
   emojiFetchEnabled = true,
   emojiFetchPriority,
   nowrap = false,
+  chatId,
+  onBotCommandPress,
 }: {
   segments: FormattedTextSegment[];
   style: TextStyle;
@@ -145,6 +171,8 @@ function RichTextWebRow({
   emojiFetchEnabled?: boolean;
   emojiFetchPriority?: boolean;
   nowrap?: boolean;
+  chatId?: number;
+  onBotCommandPress?: (command: string) => void;
 }) {
   const wrapStyle =
     Platform.OS === "web" && !nowrap ? (messageChatBubbleTextWebWrapStyle as TextStyle) : null;
@@ -243,13 +271,26 @@ function RichTextWebRow({
             ),
           );
         }
+        if (segment.kind === "bot_command") {
+          return createElement(
+            "span",
+            {
+              key: index,
+              style: inlineLinkCss,
+              role: "link",
+              onClick: () =>
+                handleRichTextSegmentPress(segment, { chatId, onBotCommandPress }),
+            },
+            segment.text,
+          );
+        }
         return createElement(
           "span",
           {
             key: index,
             style: inlineLinkCss,
             role: "link",
-            onClick: () => openMessageLinkUrl(segment.url),
+            onClick: () => handleRichTextSegmentPress(segment, { chatId, onBotCommandPress }),
           },
           segment.text,
         );
@@ -295,12 +336,27 @@ function RichTextWebRow({
             emojiFetchPriority,
           );
         }
+        if (segment.kind === "bot_command") {
+          return (
+            <Text
+              key={index}
+              style={linkStyle}
+              numberOfLines={numberOfLines}
+              onPress={() =>
+                handleRichTextSegmentPress(segment, { chatId, onBotCommandPress })
+              }
+              accessibilityRole="link"
+            >
+              {segment.text}
+            </Text>
+          );
+        }
         return (
           <Text
             key={index}
             style={linkStyle}
             numberOfLines={numberOfLines}
-            onPress={() => openMessageLinkUrl(segment.url)}
+            onPress={() => handleRichTextSegmentPress(segment, { chatId, onBotCommandPress })}
             accessibilityRole="link"
           >
             {segment.text}
@@ -358,6 +414,8 @@ export function MessageChatRichText({
   emojiFetchPriority,
   nowrap = false,
   enrichStandardEmojis = false,
+  chatId,
+  onBotCommandPress,
 }: Props) {
   const singleLine = numberOfLines === 1 || nowrap;
   const resolvedSegments = useMemo(
@@ -373,6 +431,7 @@ export function MessageChatRichText({
   const hasRichContent = resolvedSegments.some(
     (segment) =>
       segment.kind === "link" ||
+      segment.kind === "bot_command" ||
       segment.kind === "custom_emoji" ||
       segment.kind === "animated_emoji",
   );
@@ -407,6 +466,8 @@ export function MessageChatRichText({
         emojiFetchEnabled={emojiFetchEnabled}
         emojiFetchPriority={emojiFetchPriority}
         nowrap={nowrap}
+        chatId={chatId}
+        onBotCommandPress={onBotCommandPress}
       />
     );
   }
@@ -438,11 +499,25 @@ export function MessageChatRichText({
             emojiFetchPriority,
           );
         }
+        if (segment.kind === "bot_command") {
+          return (
+            <Text
+              key={index}
+              style={linkStyle}
+              onPress={() =>
+                handleRichTextSegmentPress(segment, { chatId, onBotCommandPress })
+              }
+              accessibilityRole="link"
+            >
+              {segment.text}
+            </Text>
+          );
+        }
         return (
           <Text
             key={index}
             style={linkStyle}
-            onPress={() => openMessageLinkUrl(segment.url)}
+            onPress={() => handleRichTextSegmentPress(segment, { chatId, onBotCommandPress })}
             accessibilityRole="link"
           >
             {segment.text}

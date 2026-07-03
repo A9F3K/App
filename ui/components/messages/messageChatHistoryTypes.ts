@@ -107,7 +107,7 @@ export function messageShowsOutgoingChecks(
   return true;
 }
 
-/** Outgoing ticks: TDLib may briefly report `pending` after send; show delivered in UI. */
+/** Normalize TDLib / API outgoing delivery state for UI ticks. */
 export function coalesceOutgoingStatus(
   raw: unknown,
   isOutgoing: boolean,
@@ -115,6 +115,8 @@ export function coalesceOutgoingStatus(
   if (!isOutgoing) return null;
   if (raw === "failed") return "failed";
   if (raw === "read") return "read";
+  if (raw === "delivered") return "delivered";
+  if (raw === "pending") return "pending";
   return "delivered";
 }
 

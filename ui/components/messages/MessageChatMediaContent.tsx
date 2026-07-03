@@ -13,6 +13,7 @@ import {
   MESSAGE_BUBBLE_STICKER_MAX_PX,
 } from "./messageChatLayout";
 import { bytesLookLikeTgs, bytesLookLikeVideo } from "./loadTgsAnimation";
+import { deferRevokeObjectUrl } from "./deferRevokeObjectUrl";
 import { MessageChatTgsSticker } from "./MessageChatTgsSticker";
 import {
   logMessageMediaDebug,
@@ -636,7 +637,7 @@ export function MessageChatMediaContent({
               });
               if (cancelled) return;
               const kind = resolveMediaKind(bytes, contentKind, mime);
-              if (mediaObjectUrl) URL.revokeObjectURL(mediaObjectUrl);
+              if (mediaObjectUrl) deferRevokeObjectUrl(mediaObjectUrl);
               mediaObjectUrl = createObjectUrl(bytes, mime, kind);
               const intrinsic = await measureWebMediaIntrinsicSize(
                 mediaObjectUrl,
@@ -674,7 +675,7 @@ export function MessageChatMediaContent({
                 },
                 "warn",
               );
-              URL.revokeObjectURL(mediaObjectUrl);
+              deferRevokeObjectUrl(mediaObjectUrl);
               mediaObjectUrl = null;
               logMessageMediaDebug(
                 "photo_full_give_up_thumbnail_only",
@@ -724,8 +725,8 @@ export function MessageChatMediaContent({
 
     return () => {
       cancelled = true;
-      if (mediaObjectUrl) URL.revokeObjectURL(mediaObjectUrl);
-      if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+      deferRevokeObjectUrl(mediaObjectUrl);
+      deferRevokeObjectUrl(previewObjectUrl);
     };
   }, [contentKind, uri, usesVideoPreview]);
 

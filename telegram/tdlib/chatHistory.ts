@@ -36,7 +36,7 @@ function oldestRawMessageId(messages: TdMessage[]): number | null {
   return oldest;
 }
 
-async function resolveMyUserId(client: Client): Promise<number | null> {
+export async function resolveMyUserId(client: Client): Promise<number | null> {
   try {
     const me = (await client.invoke({ _: "getMe" })) as { id?: number };
     return typeof me.id === "number" ? me.id : null;
@@ -470,8 +470,7 @@ export async function sendChatTextMessage(
   const myUserId = await resolveMyUserId(client);
   const mapped = await mapHistoryMessage(client, message, chat, new Map(), new Map(), myUserId);
   if (!mapped || !mapped.is_outgoing) return mapped;
-  if (mapped.outgoing_status === "failed") return mapped;
-  return { ...mapped, outgoing_status: "delivered" };
+  return mapped;
 }
 
 export async function editChatTextMessage(
@@ -503,6 +502,5 @@ export async function editChatTextMessage(
   const myUserId = await resolveMyUserId(client);
   const mapped = await mapHistoryMessage(client, message, chat, new Map(), new Map(), myUserId);
   if (!mapped || !mapped.is_outgoing) return mapped;
-  if (mapped.outgoing_status === "failed") return mapped;
-  return { ...mapped, outgoing_status: mapped.outgoing_status ?? "delivered" };
+  return mapped;
 }
