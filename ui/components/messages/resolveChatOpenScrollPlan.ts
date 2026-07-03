@@ -2,7 +2,6 @@ import {
   getChatScrollPosition,
   type CachedChatScrollPosition,
 } from "../../messageChatScrollCache";
-import { MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD } from "./messageListLayout";
 import type { MessageChatRowData } from "./MessageChatRow";
 
 export type ChatOpenScrollPlan = {
@@ -20,23 +19,23 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
     0,
     Math.trunc(Number.isFinite(chat.unread_count) ? chat.unread_count : 0),
   );
-  const unreadOpensAtTop =
-    openingUnreadCount > MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD;
-  const openAnchor: "top" | "bottom" = unreadOpensAtTop ? "top" : "bottom";
 
   const cachedScroll = getChatScrollPosition(chat.telegram_chat_id);
   if (cachedScroll) {
-    const followingBottom = cachedScroll.followingBottom;
+    const restoreAtBottom = cachedScroll.followingBottom;
+    // Cached "at bottom" is a scroll position only — keep FAB visible while unreads remain.
+    const followingBottom = restoreAtBottom && openingUnreadCount <= 0;
     return {
       openingUnreadCount,
-      openAnchor: followingBottom ? "bottom" : "top",
-      pinMessagesToBottom: followingBottom,
+      openAnchor: restoreAtBottom ? "bottom" : "top",
+      pinMessagesToBottom: restoreAtBottom,
       followingBottom,
       pendingInitialScroll: false,
       pendingScrollRestore: cachedScroll,
     };
   }
 
+  const openAnchor: "top" | "bottom" = "bottom";
   const followingBottom = openAnchor === "bottom";
   return {
     openingUnreadCount,

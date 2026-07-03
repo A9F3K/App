@@ -123,7 +123,7 @@ function writeStoredChat(chat: MessageChatRowData | null): void {
 }
 
 let selectedChat: MessageChatRowData | null = null;
-/** When false, live chat-list sync may not lower open-chat unread (user scrolled up). */
+/** When false, poll may increase open-chat unread (new messages) but not overwrite scroll-based decreases. */
 let openChatFollowingBottom = true;
 /** Which pane occupies the wide middle column: message thread vs header menu panel. */
 let middleColumnFocus: "chat" | "headerPanel" = "headerPanel";
@@ -203,15 +203,12 @@ export function selectAuthenticatedHomeChat(chat: MessageChatRowData | null) {
 /** Select chat and start (or restart) paginated history load for that chat. */
 export function openAuthenticatedHomeChatHistory(chat: MessageChatRowData) {
   hydrateFromStorageIfNeeded();
-  const sameChat = selectedChat?.telegram_chat_id === chat.telegram_chat_id;
   selectedChat = chat;
   middleColumnFocus = "chat";
   writeStoredChat(chat);
-  if (!sameChat) {
-    historyLoadChatId = chat.telegram_chat_id;
-    historyLoadGeneration += 1;
-    syncHistoryLoadSnapshot();
-  }
+  historyLoadChatId = chat.telegram_chat_id;
+  historyLoadGeneration += 1;
+  syncHistoryLoadSnapshot();
   emit();
 }
 
@@ -395,9 +392,11 @@ export function syncAuthenticatedHomeSelectedChat(chats: readonly MessageChatRow
     fresh.chat_action_expires_at !== selectedChat.chat_action_expires_at ||
     fresh.last_read_outbox_message_id !== selectedChat.last_read_outbox_message_id
   ) {
-    const resolvedUnread = openChatFollowingBottom
-      ? fresh.unread_count
-      : Math.max(fresh.unread_count, selectedChat.unread_count);
+    // Client-side scroll marks unreads down; poll may only raise the count (new messages).
+    const resolvedUnread =
+      fresh.unread_count > selectedChat.unread_count
+        ? fresh.unread_count
+        : selectedChat.unread_count;
     selectedChat = { ...fresh, unread_count: resolvedUnread };
     writeStoredChat(selectedChat);
     emit();

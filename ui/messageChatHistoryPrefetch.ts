@@ -1,13 +1,15 @@
 import type { MessageChatRowData } from "./components/messages/MessageChatRow";
 import {
+  MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER,
+  MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER,
   MESSAGE_CHAT_HISTORY_PAGE_SIZE,
   MESSAGE_CHAT_HISTORY_PREVIEW_SIZE,
 } from "./components/messages/messageChatLayout";
-import { MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD } from "./components/messages/messageListLayout";
 import type { ChatHistoryPageResult } from "./telegram/fetchTelegramChatHistoryPage";
 import { loadTelegramChatHistoryFirstPage } from "./telegram/fetchTelegramChatHistoryPage";
 import {
   type CachedChatHistoryPage,
+  type ChatHistoryCacheAnchorSpec,
   getCachedChatHistory,
   isChatHistoryCacheAnchorMatch,
   isChatHistoryCacheComplete,
@@ -27,6 +29,9 @@ type LoadSpec = {
   limit: number;
   previewOnly: boolean;
   aroundUnread: boolean;
+  aroundMessageId?: number | null;
+  olderAbove?: number | null;
+  newerBelow?: number | null;
 };
 
 const sharedLoads = new Map<number, Promise<ChatHistoryPageResult>>();
@@ -41,8 +46,13 @@ let backgroundActive = 0;
 let openChatLoadingId: number | null = null;
 
 function toPageResult(cached: CachedChatHistoryPage): ChatHistoryPageResult {
-  const { fetchedAt: _fetchedAt, previewOnly: _previewOnly, aroundUnread: _aroundUnread, ...page } =
-    cached;
+  const {
+    fetchedAt: _fetchedAt,
+    previewOnly: _previewOnly,
+    aroundUnread: _aroundUnread,
+    aroundMessageId: _aroundMessageId,
+    ...page
+  } = cached;
   return page;
 }
 
@@ -50,18 +60,53 @@ function isFullPageSpec(spec: LoadSpec): boolean {
   return !spec.previewOnly && spec.limit >= MESSAGE_CHAT_HISTORY_PAGE_SIZE;
 }
 
-/** Read / bottom-pinned chats load the latest tail; top-anchored unread chats load around unread. */
+function toCacheAnchorSpec(spec: LoadSpec): ChatHistoryCacheAnchorSpec {
+  return {
+    aroundUnread: spec.aroundUnread,
+    aroundMessageId: spec.aroundMessageId ?? null,
+  };
+}
+
+/** Always load the latest tail; scroll position is restored client-side. */
 export function shouldPrefetchHistoryAroundUnread(
-  chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count">,
+  _chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count">,
 ): boolean {
-  const unread = Math.max(
-    0,
-    Math.trunc(Number.isFinite(chat.unread_count) ? chat.unread_count : 0),
-  );
-  if (unread > MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD) return true;
-  const scroll = getChatScrollPosition(chat.telegram_chat_id);
-  if (scroll != null && !scroll.followingBottom && unread > 0) return true;
   return false;
+}
+
+function resolveOpenLoadSpec(
+  chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count">,
+): LoadSpec {
+  const aroundUnread = shouldPrefetchHistoryAroundUnread(chat);
+  const scrollPos = getChatScrollPosition(chat.telegram_chat_id);
+  const anchorId = scrollPos?.anchorMessageId;
+  const loadAroundAnchor =
+    scrollPos != null &&
+    !scrollPos.followingBottom &&
+    anchorId != null &&
+    anchorId > 0;
+
+  if (loadAroundAnchor) {
+    return {
+      warmup: true,
+      limit:
+        MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER +
+        MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER +
+        2,
+      previewOnly: false,
+      aroundUnread: false,
+      aroundMessageId: anchorId,
+      olderAbove: MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER,
+      newerBelow: MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER,
+    };
+  }
+
+  return {
+    warmup: true,
+    limit: MESSAGE_CHAT_HISTORY_PAGE_SIZE,
+    previewOnly: false,
+    aroundUnread,
+  };
 }
 
 function resolveLoadSpec(
@@ -82,6 +127,13 @@ function resolveLoadSpec(
   };
 }
 
+/** Cache anchor for the current open-chat history load strategy. */
+export function getOpenChatHistoryCacheAnchorSpec(
+  chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count">,
+): ChatHistoryCacheAnchorSpec {
+  return toCacheAnchorSpec(resolveOpenLoadSpec(chat));
+}
+
 async function runHistoryLoad(
   chatId: number,
   peerUserId: number | null,
@@ -92,11 +144,15 @@ async function runHistoryLoad(
     warmup: spec.warmup,
     limit: spec.limit,
     aroundUnread: spec.aroundUnread,
+    aroundMessageId: spec.aroundMessageId ?? null,
+    olderAbove: spec.olderAbove ?? null,
+    newerBelow: spec.newerBelow ?? null,
   });
   if (!result.error && result.messages.length > 0) {
     setCachedChatHistory(chatId, result, {
       previewOnly: spec.previewOnly,
       aroundUnread: spec.aroundUnread,
+      aroundMessageId: spec.aroundMessageId ?? null,
     });
     logPageDisplay("messages_history_prefetch_ok", {
       chatId,
@@ -104,6 +160,7 @@ async function runHistoryLoad(
       elapsedMs: Date.now() - started,
       previewOnly: spec.previewOnly,
       aroundUnread: spec.aroundUnread,
+      aroundMessageId: spec.aroundMessageId ?? null,
       limit: spec.limit,
       lane: spec.previewOnly ? "preview" : "full",
     });
@@ -114,6 +171,7 @@ async function runHistoryLoad(
       elapsedMs: Date.now() - started,
       previewOnly: spec.previewOnly,
       aroundUnread: spec.aroundUnread,
+      aroundMessageId: spec.aroundMessageId ?? null,
       limit: spec.limit,
       lane: spec.previewOnly ? "preview" : "full",
     });
@@ -126,6 +184,7 @@ function startSharedLoad(
   peerUserId: number | null,
   spec: LoadSpec,
 ): Promise<ChatHistoryPageResult> {
+  const anchorSpec = toCacheAnchorSpec(spec);
   const existing = sharedLoads.get(chatId);
   if (existing) {
     if (isFullPageSpec(spec)) {
@@ -136,7 +195,7 @@ function startSharedLoad(
         if (
           isChatHistoryCacheComplete(chatId) &&
           isChatHistoryCacheFresh(chatId) &&
-          isChatHistoryCacheAnchorMatch(chatId, spec.aroundUnread)
+          isChatHistoryCacheAnchorMatch(chatId, anchorSpec)
         ) {
           const cached = getCachedChatHistory(chatId);
           return cached ? toPageResult(cached) : prior;
@@ -168,7 +227,7 @@ function scheduleBackgroundDrain(): void {
     const freshMs = next.spec.previewOnly ? PREVIEW_FRESH_MS : undefined;
     if (
       isChatHistoryCacheFresh(next.chatId, freshMs) &&
-      isChatHistoryCacheAnchorMatch(next.chatId, next.spec.aroundUnread)
+      isChatHistoryCacheAnchorMatch(next.chatId, toCacheAnchorSpec(next.spec))
     ) {
       continue;
     }
@@ -198,7 +257,7 @@ function enqueueBackgroundPrefetch(
   const freshMs = spec.previewOnly ? PREVIEW_FRESH_MS : undefined;
   if (
     isChatHistoryCacheFresh(chatId, freshMs) &&
-    isChatHistoryCacheAnchorMatch(chatId, spec.aroundUnread)
+    isChatHistoryCacheAnchorMatch(chatId, toCacheAnchorSpec(spec))
   ) {
     return;
   }
@@ -238,11 +297,8 @@ export async function loadOpenChatHistoryFirstPage(
     };
   }
 
-  const spec = resolveLoadSpec(chat ?? { telegram_chat_id: chatId, unread_count: 0 }, {
-    previewOnly: false,
-    warmup: true,
-    limit: MESSAGE_CHAT_HISTORY_PAGE_SIZE,
-  });
+  const spec = resolveOpenLoadSpec(chat ?? { telegram_chat_id: chatId, unread_count: 0 });
+  const anchorSpec = toCacheAnchorSpec(spec);
 
   openChatLoadingId = chatId;
   try {
@@ -251,7 +307,7 @@ export async function loadOpenChatHistoryFirstPage(
       cached &&
       !cached.previewOnly &&
       isChatHistoryCacheFresh(chatId) &&
-      isChatHistoryCacheAnchorMatch(chatId, spec.aroundUnread)
+      isChatHistoryCacheAnchorMatch(chatId, anchorSpec)
     ) {
       return toPageResult(cached);
     }
@@ -287,13 +343,14 @@ export function prefetchChatHistoryPriority(
 ): void {
   const chatId = chat.telegram_chat_id;
   if (!Number.isFinite(chatId)) return;
-  const spec = resolveLoadSpec(chat, { previewOnly: false, warmup: true });
+  const spec = resolveOpenLoadSpec(chat);
+  const anchorSpec = toCacheAnchorSpec(spec);
   const cached = getCachedChatHistory(chatId);
   if (
     cached &&
     !cached.previewOnly &&
     isChatHistoryCacheFresh(chatId) &&
-    isChatHistoryCacheAnchorMatch(chatId, spec.aroundUnread)
+    isChatHistoryCacheAnchorMatch(chatId, anchorSpec)
   ) {
     return;
   }
@@ -301,7 +358,7 @@ export function prefetchChatHistoryPriority(
   if (
     cached?.previewOnly &&
     isChatHistoryCacheFresh(chatId, PREVIEW_FRESH_MS) &&
-    isChatHistoryCacheAnchorMatch(chatId, spec.aroundUnread)
+    isChatHistoryCacheAnchorMatch(chatId, anchorSpec)
   ) {
     return;
   }

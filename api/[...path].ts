@@ -16,6 +16,7 @@ import botHandler from './_handlers/bot.js';
 import feedHandler from './_handlers/feed.js';
 import pingHandler from './_handlers/ping.js';
 import releasesHandler from './_handlers/releases.js';
+import swapCoffeeTokensHandler from './_handlers/swap-coffee-tokens.js';
 import telegramHandler from './_handlers/telegram.js';
 import walletEnvelopePingHandler from './_handlers/wallet-envelope-ping.js';
 import walletEnvelopeProbeHandler from './_handlers/wallet-envelope-probe.js';
@@ -64,6 +65,7 @@ const ROUTES: Record<string, ApiHandler> = {
   blockchain: blockchainHandler as ApiHandler,
   telegram: telegramHandler as ApiHandler,
   releases: releasesHandler as ApiHandler,
+  'swap-coffee-tokens': swapCoffeeTokensHandler as ApiHandler,
   'wallet-envelope-ping': walletEnvelopePingHandler as ApiHandler,
   'wallet-envelope-probe': walletEnvelopeProbeHandler as ApiHandler,
   'wallet-envelope-roundtrip': walletEnvelopeRoundtripHandler as ApiHandler,

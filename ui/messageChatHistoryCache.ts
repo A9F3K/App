@@ -6,6 +6,13 @@ export type CachedChatHistoryPage = ChatHistoryPageResult & {
   previewOnly?: boolean;
   /** True when loaded around the inbox read cursor instead of the latest tail. */
   aroundUnread?: boolean;
+  /** Message id the first page was centered on (saved scroll anchor). */
+  aroundMessageId?: number | null;
+};
+
+export type ChatHistoryCacheAnchorSpec = {
+  aroundUnread?: boolean;
+  aroundMessageId?: number | null;
 };
 
 const cache = new Map<number, CachedChatHistoryPage>();
@@ -100,7 +107,13 @@ function trimCache(): void {
   }
 }
 
-function cachePageSignature(page: ChatHistoryPageResult & { previewOnly?: boolean; aroundUnread?: boolean }): string {
+function cachePageSignature(
+  page: ChatHistoryPageResult & {
+    previewOnly?: boolean;
+    aroundUnread?: boolean;
+    aroundMessageId?: number | null;
+  },
+): string {
   const maxId =
     page.messages.length > 0
       ? page.messages[page.messages.length - 1]!.telegram_message_id
@@ -113,6 +126,7 @@ function cachePageSignature(page: ChatHistoryPageResult & { previewOnly?: boolea
     maxId,
     page.previewOnly ? 1 : 0,
     page.aroundUnread ? 1 : 0,
+    page.aroundMessageId ?? "",
     page.hasMoreOlder ? 1 : 0,
     page.nextBeforeMessageId ?? "",
     page.lastReadOutboxMessageId ?? "",
@@ -140,14 +154,29 @@ export function isChatHistoryCacheFresh(chatId: number, maxAgeMs = FRESH_MS): bo
   return Date.now() - entry.fetchedAt < maxAgeMs;
 }
 
-/** Whether a cached page matches the requested load anchor. */
+/** Whether a cached page matches the current load strategy. */
 export function isChatHistoryCacheAnchorMatch(
   chatId: number,
-  aroundUnread: boolean,
+  spec: ChatHistoryCacheAnchorSpec = {},
 ): boolean {
   const entry = getCachedChatHistory(chatId);
   if (!entry || entry.messages.length === 0) return false;
-  return Boolean(entry.aroundUnread) === aroundUnread;
+
+  const aroundMessageId = spec.aroundMessageId;
+  if (aroundMessageId != null && aroundMessageId > 0) {
+    if (entry.aroundMessageId === aroundMessageId) return true;
+    return entry.messages.some((row) => row.telegram_message_id === aroundMessageId);
+  }
+
+  if (spec.aroundUnread === true) {
+    return entry.aroundUnread === true;
+  }
+
+  if (entry.aroundMessageId != null && entry.aroundMessageId > 0) {
+    return false;
+  }
+
+  return true;
 }
 
 /** Full first page ready to show without another network round-trip. */
@@ -160,11 +189,17 @@ export function isChatHistoryCacheComplete(chatId: number): boolean {
 export function setCachedChatHistory(
   chatId: number,
   page: ChatHistoryPageResult,
-  options?: { previewOnly?: boolean; aroundUnread?: boolean },
+  options?: { previewOnly?: boolean; aroundUnread?: boolean; aroundMessageId?: number | null },
 ): void {
   if (page.error) return;
   const previewOnly = options?.previewOnly === true;
   const aroundUnread = options?.aroundUnread === true;
+  const aroundMessageId =
+    typeof options?.aroundMessageId === "number" &&
+    Number.isFinite(options.aroundMessageId) &&
+    options.aroundMessageId > 0
+      ? Math.trunc(options.aroundMessageId)
+      : null;
   const existing = getCachedChatHistory(chatId);
   if (
     existing &&
@@ -181,7 +216,13 @@ export function setCachedChatHistory(
       return;
     }
   }
-  const entry = { ...page, fetchedAt: Date.now(), previewOnly, aroundUnread };
+  const entry = {
+    ...page,
+    fetchedAt: Date.now(),
+    previewOnly,
+    aroundUnread,
+    ...(aroundMessageId != null ? { aroundMessageId } : {}),
+  };
   const prev = cache.get(chatId);
   const contentChanged = !prev || cachePageSignature(prev) !== cachePageSignature(entry);
   cache.set(chatId, entry);
@@ -222,7 +263,7 @@ export function mergeCachedChatHistoryTail(
       lastReadOutboxMessageId:
         tail.lastReadOutboxMessageId ?? existing.lastReadOutboxMessageId,
     },
-    { previewOnly: existing.previewOnly, aroundUnread: existing.aroundUnread },
+    { previewOnly: existing.previewOnly, aroundUnread: existing.aroundUnread, aroundMessageId: existing.aroundMessageId ?? null },
   );
 }
 

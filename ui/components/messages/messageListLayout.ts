@@ -18,14 +18,171 @@ export const MESSAGE_CHAT_SCROLL_TO_BOTTOM_OUTER_PX = 60;
 export const MESSAGE_CHAT_SCROLL_TO_BOTTOM_INNER_PX = 30;
 export const MESSAGE_CHAT_SCROLL_TO_BOTTOM_ICON_BOTTOM_INSET_PX = 7.5;
 export const MESSAGE_CHAT_SCROLL_TO_BOTTOM_BADGE_TOP_PX = 5;
-/** Show when unread count is strictly greater than this value. */
-export const MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_THRESHOLD = 10;
+export const MESSAGE_CHAT_LIST_UNREAD_MAX_DISPLAY = 99;
+export const MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_MAX_DISPLAY = 999;
 
-export function formatMessageUnreadCountLabel(count: number, chatId: number): string {
+export function formatMessageUnreadCountLabel(
+  count: number,
+  chatId: number,
+  maxDisplay = MESSAGE_CHAT_LIST_UNREAD_MAX_DISPLAY,
+): string {
   if (!Number.isFinite(count) || count <= 0) return "";
   if (count === chatId || count > 50_000) return "";
-  if (count > 99) return "99+";
+  if (count > maxDisplay) return `${maxDisplay}+`;
   return String(count);
+}
+
+/** Open-chat scroll-to-bottom FAB — higher cap than the chat list preview badge. */
+export function formatScrollToBottomUnreadCountLabel(count: number, chatId: number): string {
+  return formatMessageUnreadCountLabel(
+    count,
+    chatId,
+    MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_MAX_DISPLAY,
+  );
+}
+
+export type MessageScrollLayoutEntry = { y: number; height: number };
+
+export function isMessageFullyVisibleInViewport(
+  entry: MessageScrollLayoutEntry,
+  viewportTop: number,
+  viewportBottom: number,
+): boolean {
+  return (
+    entry.y >= viewportTop - 0.5 &&
+    entry.y + entry.height <= viewportBottom + 0.5
+  );
+}
+
+/** Topmost message intersecting the viewport — saved as the reopen scroll anchor. */
+export function topViewportAnchorMessageId(
+  messages: readonly { telegram_message_id: number }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+): number | null {
+  const viewportTop = metrics.scrollY;
+  const viewportBottom = metrics.scrollY + metrics.layoutH;
+  let anchorId: number | null = null;
+  let anchorY = Number.POSITIVE_INFINITY;
+
+  for (const msg of messages) {
+    const id = msg.telegram_message_id;
+    const entry = layouts.get(id);
+    if (!entry) continue;
+    const bottom = entry.y + entry.height;
+    if (bottom <= viewportTop + 0.5) continue;
+    if (entry.y >= viewportBottom - 0.5) continue;
+    if (entry.y < anchorY) {
+      anchorY = entry.y;
+      anchorId = id;
+    }
+  }
+
+  return anchorId;
+}
+
+/** Highest message id that is fully visible in the viewport (open-chat unread baseline). */
+export function maxFullyVisibleMessageId(
+  messages: readonly { telegram_message_id: number }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+): number {
+  const viewportTop = metrics.scrollY;
+  const viewportBottom = metrics.scrollY + metrics.layoutH;
+  let maxId = 0;
+  for (const msg of messages) {
+    const id = msg.telegram_message_id;
+    const entry = layouts.get(id);
+    if (!entry) continue;
+    if (isMessageFullyVisibleInViewport(entry, viewportTop, viewportBottom)) {
+      maxId = Math.max(maxId, id);
+    }
+  }
+  return maxId;
+}
+
+/** Lowest message id that is fully visible in the viewport. */
+export function minFullyVisibleMessageId(
+  messages: readonly { telegram_message_id: number }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+): number {
+  const viewportTop = metrics.scrollY;
+  const viewportBottom = metrics.scrollY + metrics.layoutH;
+  let minId = 0;
+  for (const msg of messages) {
+    const id = msg.telegram_message_id;
+    const entry = layouts.get(id);
+    if (!entry) continue;
+    if (isMessageFullyVisibleInViewport(entry, viewportTop, viewportBottom)) {
+      if (minId <= 0 || id < minId) minId = id;
+    }
+  }
+  return minId;
+}
+
+function isMessageIntersectingViewport(
+  entry: MessageScrollLayoutEntry,
+  viewportTop: number,
+  viewportBottom: number,
+): boolean {
+  const bottom = entry.y + entry.height;
+  return bottom > viewportTop + 0.5 && entry.y < viewportBottom - 0.5;
+}
+
+/** Newer-than-baseline messages visible in the viewport (fully or partially). */
+export function collectFullyVisibleUnreadMessageIds(
+  messages: readonly { telegram_message_id: number }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+  minUnreadMessageIdExclusive: number,
+  alreadyReadIds?: ReadonlySet<number>,
+): number[] {
+  if (messages.length === 0) return [];
+
+  const viewportTop = metrics.scrollY;
+  const viewportBottom = metrics.scrollY + metrics.layoutH;
+  const readIds = alreadyReadIds ?? new Set<number>();
+  const newlyRead: number[] = [];
+
+  for (const msg of messages) {
+    const id = msg.telegram_message_id;
+    if (id <= minUnreadMessageIdExclusive) continue;
+    if (readIds.has(id)) continue;
+    const entry = layouts.get(id);
+    if (!entry) continue;
+    if (isMessageIntersectingViewport(entry, viewportTop, viewportBottom)) {
+      newlyRead.push(id);
+    }
+  }
+
+  return newlyRead;
+}
+
+/** Remaining unreads = opening count minus messages fully seen while scrolling. */
+export function computeRemainingUnreadCount(
+  openingUnreadCount: number,
+  fullyReadMessageIds: ReadonlySet<number>,
+): number {
+  const openingUnread = Math.max(0, Math.trunc(openingUnreadCount));
+  if (openingUnread <= 0) return 0;
+  const readCount = Math.min(openingUnread, fullyReadMessageIds.size);
+  return Math.max(0, openingUnread - readCount);
+}
+
+/** Loaded history includes the chat's latest message (not a stale preview tail). */
+export function isAtLoadedChatTail(
+  loadedTailMessageId: number,
+  chatTailMessageId?: number | null,
+): boolean {
+  if (
+    chatTailMessageId == null ||
+    !Number.isFinite(chatTailMessageId) ||
+    chatTailMessageId <= 0
+  ) {
+    return true;
+  }
+  return loadedTailMessageId >= Math.trunc(chatTailMessageId);
 }
 
 /** Vertical rhythm for authenticated home Feed / Messages lists. */

@@ -30,6 +30,7 @@ if (process.platform === "win32" && process.env.HSP_DISABLE_GPU === "1") {
 }
 const path = require("path");
 const { registerOAuthIpc } = require("./oauth-window.cjs");
+const { registerZoomMenu } = require("./zoom-menu-row.cjs");
 const {
   registerOsScreenshotPassthrough,
   ensureBrowserWindowAllowsOsCapture,
@@ -2155,7 +2156,17 @@ function setupAppMenu() {
     },
     {
       label: "View",
-      submenu: [{ role: "reload" }, { role: "togglefullscreen" }],
+      submenu: [
+        { role: "reload" },
+        { role: "togglefullscreen" },
+        { type: "separator" },
+        {
+          label: "Zoom",
+          click: () => {
+            if (zoomMenuApi) zoomMenuApi.showRowPopup(null, { extension: true });
+          },
+        },
+      ],
     },
     {
       label: "Updates",
@@ -2212,6 +2223,11 @@ function log(msg) {
 
 registerOAuthIpc({
   ipcMain,
+  getMainWindow: () => mainWindowRef,
+  log,
+});
+
+const zoomMenuApi = registerZoomMenu({
   getMainWindow: () => mainWindowRef,
   log,
 });
@@ -2507,6 +2523,7 @@ async function createWindow() {
     show: false,
   });
   mainWindowRef = mainWindow;
+  zoomMenuApi.attachMainWindowZoomHooks(mainWindow);
   ensureBrowserWindowAllowsOsCapture(mainWindow, log);
 
   try {
@@ -2661,6 +2678,7 @@ async function createWindow() {
   }
 
   mainWindow.on("closed", () => {
+    zoomMenuApi.destroyRowPopup();
     mainWindowRef = null;
     if (suppressQuitForUpdateInstall) return;
     app.quit();

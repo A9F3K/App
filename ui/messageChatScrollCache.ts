@@ -2,6 +2,8 @@ export type CachedChatScrollPosition = {
   scrollY: number;
   contentH: number;
   followingBottom: boolean;
+  /** Top-of-viewport message when scroll was saved — used to load a tight window on reopen. */
+  anchorMessageId?: number;
   savedAt: number;
 };
 
@@ -50,12 +52,23 @@ function writeSessionCache(chatId: number, entry: CachedChatScrollPosition): voi
   }
 }
 
+function normalizeAnchorMessageId(raw: unknown): number | undefined {
+  const id = Number(raw);
+  if (!Number.isFinite(id) || id <= 0) return undefined;
+  return Math.trunc(id);
+}
+
 function hydrateFromSession(chatId: number): CachedChatScrollPosition | null {
   const entry = readSessionCache()[String(chatId)];
   if (!entry || !Number.isFinite(entry.scrollY) || !Number.isFinite(entry.contentH)) return null;
   if (Date.now() - entry.savedAt > MAX_AGE_MS) return null;
-  memory.set(chatId, entry);
-  return entry;
+  const anchorMessageId = normalizeAnchorMessageId(entry.anchorMessageId);
+  const normalized: CachedChatScrollPosition = {
+    ...entry,
+    ...(anchorMessageId != null ? { anchorMessageId } : {}),
+  };
+  memory.set(chatId, normalized);
+  return normalized;
 }
 
 export function saveChatScrollPosition(

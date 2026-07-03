@@ -7,11 +7,13 @@ import type { MessageChatContentKind } from "./messageChatHistoryTypes";
 import {
   MESSAGE_BUBBLE_GIF_MAX_PX,
   MESSAGE_BUBBLE_MEDIA_MAX_WIDTH_PX,
-  MESSAGE_BUBBLE_MEDIA_PREVIEW_PROGRESS_HEIGHT_PX,
   MESSAGE_BUBBLE_MEDIA_PROGRESS_HEIGHT_PX,
   MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
   MESSAGE_BUBBLE_STICKER_MAX_PX,
+  MESSAGE_BUBBLE_TIME_FONT_SIZE_PX,
+  MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX,
 } from "./messageChatLayout";
+import { WEB_UI_SANS_STACK } from "../../theme";
 import { bytesLookLikeTgs, bytesLookLikeVideo } from "./loadTgsAnimation";
 import { deferRevokeObjectUrl } from "./deferRevokeObjectUrl";
 import { MessageChatTgsSticker } from "./MessageChatTgsSticker";
@@ -221,6 +223,21 @@ function resolveMediaKind(
   return "image";
 }
 
+function formatVideoClock(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const total = Math.floor(seconds);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function progressFromClientX(track: HTMLDivElement | null, clientX: number): number {
+  if (!track) return 0;
+  const rect = track.getBoundingClientRect();
+  if (rect.width <= 0) return 0;
+  return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+}
+
 function WebMessageChatVideo({
   src,
   posterSrc,
@@ -230,6 +247,7 @@ function WebMessageChatVideo({
   loop,
   showProgress,
   pixelPerfect,
+  contentKind,
 }: {
   src?: string | null;
   posterSrc?: string | null;
@@ -239,11 +257,26 @@ function WebMessageChatVideo({
   loop: boolean;
   showProgress: boolean;
   pixelPerfect?: boolean;
+  contentKind: MessageChatContentKind;
 }) {
+  const isVideo = contentKind === "video";
   const containerRef = useRef<HTMLDivElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const scrubTrackRef = useRef<HTMLDivElement | null>(null);
+  const wasPlayingBeforeScrubRef = useRef(false);
+  const isScrubbingRef = useRef(false);
   const [progress, setProgress] = useState(0);
+  const [scrubProgress, setScrubProgress] = useState(0);
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [durationSec, setDurationSec] = useState(0);
+  const [playbackSec, setPlaybackSec] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
   const [posterVisible, setPosterVisible] = useState(Boolean(posterSrc));
+
+  const displayProgress = isScrubbing ? scrubProgress : progress;
+  const displayPlaybackSec = isScrubbing ? scrubProgress * durationSec : playbackSec;
+  const showPlaybackClock =
+    isVideo && (isPlaying || isScrubbing) && Number.isFinite(durationSec) && durationSec > 0;
 
   useEffect(() => {
     setPosterVisible(Boolean(posterSrc));
@@ -286,19 +319,31 @@ function WebMessageChatVideo({
       const duration = video.duration;
       if (!Number.isFinite(duration) || duration <= 0) {
         setProgress(0);
+        setPlaybackSec(0);
         return;
       }
+      setDurationSec(duration);
       setProgress(Math.max(0, Math.min(1, video.currentTime / duration)));
+      setPlaybackSec(video.currentTime);
     };
 
     const onPlaying = () => {
       setPosterVisible(false);
+      setIsPlaying(true);
+    };
+    const onPause = () => {
+      setIsPlaying(false);
     };
     const onLoadedData = () => {
       playIfVisible();
     };
     const onLoadedMetadata = () => {
+      const duration = video.duration;
+      if (Number.isFinite(duration) && duration > 0) {
+        setDurationSec(duration);
+      }
       setProgress(0);
+      setPlaybackSec(0);
       playIfVisible();
     };
     const onCanPlay = () => {
@@ -306,6 +351,7 @@ function WebMessageChatVideo({
     };
     const onEnded = () => {
       if (loop) setProgress(0);
+      setIsPlaying(false);
     };
 
     video.defaultMuted = true;
@@ -315,12 +361,14 @@ function WebMessageChatVideo({
     video.setAttribute("webkit-playsinline", "");
 
     video.addEventListener("playing", onPlaying);
+    video.addEventListener("pause", onPause);
     video.addEventListener("loadeddata", onLoadedData);
     video.addEventListener("loadedmetadata", onLoadedMetadata);
     video.addEventListener("canplay", onCanPlay);
     video.addEventListener("canplaythrough", onCanPlay);
     video.addEventListener("timeupdate", syncProgress);
     video.addEventListener("seeking", syncProgress);
+    video.addEventListener("seeked", syncProgress);
     video.addEventListener("ended", onEnded);
     video.load();
     playIfVisible();
@@ -328,15 +376,68 @@ function WebMessageChatVideo({
     return () => {
       observer.disconnect();
       video.removeEventListener("playing", onPlaying);
+      video.removeEventListener("pause", onPause);
       video.removeEventListener("loadeddata", onLoadedData);
       video.removeEventListener("loadedmetadata", onLoadedMetadata);
       video.removeEventListener("canplay", onCanPlay);
       video.removeEventListener("canplaythrough", onCanPlay);
       video.removeEventListener("timeupdate", syncProgress);
       video.removeEventListener("seeking", syncProgress);
+      video.removeEventListener("seeked", syncProgress);
       video.removeEventListener("ended", onEnded);
     };
   }, [src, loop]);
+
+  const seekToProgress = (nextProgress: number) => {
+    const video = videoRef.current;
+    if (!video) return;
+    const duration = video.duration;
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    const clamped = Math.max(0, Math.min(1, nextProgress));
+    const nextTime = clamped * duration;
+    video.currentTime = nextTime;
+    setProgress(clamped);
+    setPlaybackSec(nextTime);
+    setScrubProgress(clamped);
+  };
+
+  const beginScrub = (clientX: number, pointerId: number) => {
+    const video = videoRef.current;
+    const track = scrubTrackRef.current;
+    if (!isVideo || !video || !track) return;
+    wasPlayingBeforeScrubRef.current = !video.paused;
+    video.pause();
+    const next = progressFromClientX(track, clientX);
+    isScrubbingRef.current = true;
+    setIsScrubbing(true);
+    setScrubProgress(next);
+    seekToProgress(next);
+    try {
+      track.setPointerCapture(pointerId);
+    } catch (_) {}
+  };
+
+  const moveScrub = (clientX: number) => {
+    if (!isScrubbingRef.current) return;
+    const track = scrubTrackRef.current;
+    const next = progressFromClientX(track, clientX);
+    setScrubProgress(next);
+    seekToProgress(next);
+  };
+
+  const endScrub = (pointerId: number) => {
+    const video = videoRef.current;
+    const track = scrubTrackRef.current;
+    if (!isScrubbingRef.current) return;
+    isScrubbingRef.current = false;
+    setIsScrubbing(false);
+    try {
+      track?.releasePointerCapture(pointerId);
+    } catch (_) {}
+    if (wasPlayingBeforeScrubRef.current && video) {
+      void video.play().catch(() => {});
+    }
+  };
 
   const mediaObjectFit = pixelPerfect ? "cover" : "cover";
   const mediaFrameStyle = {
@@ -400,6 +501,27 @@ function WebMessageChatVideo({
             },
           })
         : null,
+      showPlaybackClock
+        ? createElement(
+            "div",
+            {
+              style: {
+                position: "absolute",
+                left: 8,
+                top: 6,
+                zIndex: 3,
+                color: "rgba(255,255,255,0.92)",
+                fontSize: MESSAGE_BUBBLE_TIME_FONT_SIZE_PX,
+                lineHeight: `${MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX}px`,
+                fontFamily: WEB_UI_SANS_STACK,
+                textShadow: "0 1px 2px rgba(0,0,0,0.65)",
+                pointerEvents: "none",
+                whiteSpace: "nowrap",
+              },
+            },
+            `${formatVideoClock(displayPlaybackSec)} / ${formatVideoClock(durationSec)}`,
+          )
+        : null,
     ),
     showProgress
       ? createElement(
@@ -408,24 +530,94 @@ function WebMessageChatVideo({
             style: {
               width: widthPx,
               height: MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
-              backgroundColor: colors.highlight,
               position: "relative",
-              overflow: "hidden",
               flexShrink: 0,
+              overflow: "visible",
             },
           },
-          createElement("div", {
-            style: {
-              position: "absolute",
-              left: 0,
-              bottom: 0,
-              width: `${Math.max(0, Math.min(100, progress * 100))}%`,
-              height: posterVisible
-                ? MESSAGE_BUBBLE_MEDIA_PREVIEW_PROGRESS_HEIGHT_PX
-                : MESSAGE_BUBBLE_MEDIA_PROGRESS_HEIGHT_PX,
-              backgroundColor: colors.accent,
+          createElement(
+            "div",
+            {
+              ref: isVideo ? scrubTrackRef : undefined,
+              onPointerDown: isVideo
+                ? (event) => {
+                    event.preventDefault();
+                    beginScrub(event.clientX, event.pointerId);
+                  }
+                : undefined,
+              onPointerMove: isVideo
+                ? (event) => {
+                    if (!isScrubbingRef.current) return;
+                    event.preventDefault();
+                    moveScrub(event.clientX);
+                  }
+                : undefined,
+              onPointerUp: isVideo
+                ? (event) => {
+                    endScrub(event.pointerId);
+                  }
+                : undefined,
+              onPointerCancel: isVideo
+                ? (event) => {
+                    endScrub(event.pointerId);
+                  }
+                : undefined,
+              style: {
+                position: "absolute",
+                left: 0,
+                right: 0,
+                top: isVideo ? -8 : 0,
+                height: isVideo ? 20 : MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
+                display: "flex",
+                alignItems: "center",
+                touchAction: isVideo ? "none" : "auto",
+                cursor: isVideo ? "pointer" : "default",
+                zIndex: isVideo ? 4 : undefined,
+              },
             },
-          }),
+            createElement("div", {
+              style: {
+                position: "absolute",
+                left: 0,
+                right: 0,
+                top: "50%",
+                height: MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
+                marginTop: -(MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX / 2),
+                backgroundColor: colors.highlight,
+                overflow: "hidden",
+                pointerEvents: "none",
+              },
+            }),
+            createElement("div", {
+              style: {
+                position: "absolute",
+                left: 0,
+                top: "50%",
+                marginTop: -(MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX / 2),
+                width: `${Math.max(0, Math.min(100, displayProgress * 100))}%`,
+                height: MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
+                backgroundColor: colors.accent,
+                pointerEvents: "none",
+              },
+            }),
+            isVideo
+              ? createElement("div", {
+                  style: {
+                    position: "absolute",
+                    left: `${Math.max(0, Math.min(100, displayProgress * 100))}%`,
+                    top: "50%",
+                    width: 8,
+                    height: 8,
+                    marginTop: -4,
+                    marginLeft: -4,
+                    borderRadius: 4,
+                    backgroundColor: colors.primary,
+                    boxShadow: "0 0 0 1px rgba(0,0,0,0.35)",
+                    pointerEvents: "none",
+                  },
+                })
+              : null,
+          ),
         )
       : null,
   );
@@ -813,9 +1005,10 @@ export function MessageChatMediaContent({
         widthPx={displayWidthPx}
         heightPx={displayHeightPx}
         colors={colors}
-        loop
+        loop={contentKind === "animation"}
         showProgress={showProgress}
         pixelPerfect={pixelPerfect}
+        contentKind={contentKind}
       />
     );
   }

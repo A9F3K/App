@@ -591,6 +591,7 @@ export function MessageChatBubbleBody({
                 position: "absolute",
                 left: 8,
                 top: 6,
+                zIndex: 4,
               }}
             >
               <Text style={messageChatOnMediaMetaTextStyle(colors)}>gif</Text>
@@ -603,6 +604,7 @@ export function MessageChatBubbleBody({
                 position: "absolute",
                 right: MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX,
                 bottom: messageBubbleMediaMetaBottomPx(mediaHasProgress),
+                zIndex: 4,
               }}
             >
               <MessageChatBubbleTimeRow

@@ -321,6 +321,21 @@ export function startTdlibGatewayServer(): http.Server {
               ? Number(sinceMessageIdRaw)
               : null;
           const aroundUnread = url.searchParams.get("aroundUnread") === "1";
+          const aroundMessageIdRaw = url.searchParams.get("aroundMessageId");
+          const aroundMessageId =
+            aroundMessageIdRaw != null && aroundMessageIdRaw.trim() !== ""
+              ? Number(aroundMessageIdRaw)
+              : null;
+          const olderAboveRaw = url.searchParams.get("olderAbove");
+          const olderAbove =
+            olderAboveRaw != null && olderAboveRaw.trim() !== ""
+              ? Number(olderAboveRaw)
+              : null;
+          const newerBelowRaw = url.searchParams.get("newerBelow");
+          const newerBelow =
+            newerBelowRaw != null && newerBelowRaw.trim() !== ""
+              ? Number(newerBelowRaw)
+              : null;
           if (!telegramUsername || !Number.isFinite(chatId)) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
             return;
@@ -334,6 +349,18 @@ export function startTdlibGatewayServer(): http.Server {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
             return;
           }
+          if (aroundUnread && (Number.isFinite(beforeMessageId) || Number.isFinite(sinceMessageId))) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          if (
+            Number.isFinite(aroundMessageId) &&
+            aroundMessageId! > 0 &&
+            (Number.isFinite(beforeMessageId) || Number.isFinite(sinceMessageId) || aroundUnread)
+          ) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
           const started = Date.now();
           const result = await getChatHistoryForUser(
             telegramUsername,
@@ -342,6 +369,9 @@ export function startTdlibGatewayServer(): http.Server {
             Number.isFinite(beforeMessageId) ? beforeMessageId : null,
             Number.isFinite(sinceMessageId) ? sinceMessageId : null,
             aroundUnread,
+            Number.isFinite(aroundMessageId) ? aroundMessageId : null,
+            Number.isFinite(olderAbove) ? olderAbove : null,
+            Number.isFinite(newerBelow) ? newerBelow : null,
           );
           logGateway("chat_history_served", {
             telegramUsername,
@@ -350,6 +380,7 @@ export function startTdlibGatewayServer(): http.Server {
             beforeMessageId: Number.isFinite(beforeMessageId) ? beforeMessageId : null,
             sinceMessageId: Number.isFinite(sinceMessageId) ? sinceMessageId : null,
             aroundUnread,
+            aroundMessageId: Number.isFinite(aroundMessageId) ? aroundMessageId : null,
             count: result.messages.length,
             hasMoreOlder: result.has_more_older,
             nextBeforeMessageId: result.next_before_message_id,

@@ -52,6 +52,8 @@ export type HspScrollColumnHandle = {
   restoreScrollAnchor: (anchor: HspScrollAnchor) => void;
   /** Allow {@link onNearTop} to fire again after prepending content near the top. */
   clearNearTopLatch: () => void;
+  /** Allow {@link onNearBottom} to fire again after appending content near the bottom. */
+  clearNearBottomLatch: () => void;
 };
 
 type Props = {
@@ -78,6 +80,9 @@ type Props = {
   /** Fired when the user scrolls within {@link nearTopThresholdPx} of the top. */
   onNearTop?: () => void;
   nearTopThresholdPx?: number;
+  /** Fired when the user scrolls within {@link nearBottomThresholdPx} of the bottom. */
+  onNearBottom?: () => void;
+  nearBottomThresholdPx?: number;
   /** Optional imperative scroll API (scroll-to-end, preserve position on prepend). */
   scrollControllerRef?: React.MutableRefObject<HspScrollColumnHandle | null>;
 };
@@ -98,6 +103,8 @@ export function HspScrollColumn({
   initialScrollPosition = "top",
   onNearTop,
   nearTopThresholdPx = 120,
+  onNearBottom,
+  nearBottomThresholdPx = 120,
   scrollControllerRef,
 }: Props) {
   const colors = useColors();
@@ -106,6 +113,7 @@ export function HspScrollColumn({
   const didInitialTopResetRef = useRef(false);
   const didInitialBottomScrollRef = useRef(false);
   const nearTopFiredRef = useRef(false);
+  const nearBottomFiredRef = useRef(false);
   const scrollMetricsRef = useRef({ layoutH: 0, contentH: 0, scrollY: 0 });
   const [scroll, setScroll] = useState({ layoutH: 0, contentH: 0, scrollY: 0 });
   scrollMetricsRef.current = scroll;
@@ -138,6 +146,20 @@ export function HspScrollColumn({
     [nearTopThresholdPx, onNearTop],
   );
 
+  const syncNearBottomLatch = useCallback(
+    (scrollY: number, layoutH: number, contentH: number) => {
+      if (!onNearBottom) {
+        nearBottomFiredRef.current = false;
+        return;
+      }
+      const maxScroll = Math.max(0, contentH - layoutH);
+      if (scrollY < maxScroll - nearBottomThresholdPx) {
+        nearBottomFiredRef.current = false;
+      }
+    },
+    [nearBottomThresholdPx, onNearBottom],
+  );
+
   const syncScrollMetricsFromDom = useCallback(() => {
     if (Platform.OS !== "web") return;
     const el = getScrollElement();
@@ -148,6 +170,7 @@ export function HspScrollColumn({
     const scrollY = scrollYRaw <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : scrollYRaw;
     if (layoutH <= 0) return;
     syncNearTopLatch(scrollY);
+    syncNearBottomLatch(scrollY, layoutH, contentH);
     setScroll((prev) => {
       const next = {
         ...prev,
@@ -158,7 +181,7 @@ export function HspScrollColumn({
       emitScrollPosition(next);
       return next;
     });
-  }, [emitScrollPosition, getScrollElement, syncNearTopLatch]);
+  }, [emitScrollPosition, getScrollElement, syncNearBottomLatch, syncNearTopLatch]);
 
   /** Reset scroll only on first mount — not when `children` change (e.g. split-pane resize reflow). */
   const didMountScrollResetRef = useRef(false);
@@ -310,6 +333,20 @@ export function HspScrollColumn({
         nearTopFiredRef.current = false;
       }
     }
+    const layoutH = scrollMetricsRef.current.layoutH;
+    const contentH = ch > 0 ? ch : scrollMetricsRef.current.contentH;
+    if (onNearBottom && layoutH > 0 && contentH > layoutH + 0.5) {
+      const maxScroll = contentH - layoutH;
+      if (y >= maxScroll - nearBottomThresholdPx) {
+        if (!nearBottomFiredRef.current) {
+          nearBottomFiredRef.current = true;
+          onNearBottom();
+        }
+      } else {
+        nearBottomFiredRef.current = false;
+      }
+    }
+    syncNearBottomLatch(y, layoutH, contentH);
     if (Platform.OS === "web") {
       syncScrollMetricsFromDom();
     }
@@ -362,9 +399,10 @@ export function HspScrollColumn({
       }
       scrollRef.current?.scrollTo({ y: clamped, animated: false });
       syncNearTopLatch(clamped);
+      syncNearBottomLatch(clamped, scrollMetricsRef.current.layoutH, scrollMetricsRef.current.contentH);
       setScroll((prev) => ({ ...prev, scrollY: clamped }));
     },
-    [syncNearTopLatch],
+    [syncNearBottomLatch, syncNearTopLatch],
   );
 
   const scrollToEnd = useCallback(() => {
@@ -382,11 +420,12 @@ export function HspScrollColumn({
           scrollY: y,
         }));
         syncNearTopLatch(y);
+        syncNearBottomLatch(y, layoutH, contentH);
         return;
       }
     }
     scrollRef.current?.scrollToEnd({ animated: false });
-  }, [getScrollElement, syncNearTopLatch]);
+  }, [getScrollElement, syncNearBottomLatch, syncNearTopLatch]);
 
   const captureScrollAnchor = useCallback((): HspScrollAnchor | null => {
     if (Platform.OS === "web") {
@@ -415,6 +454,7 @@ export function HspScrollColumn({
           scrollY: nextTop,
         }));
         syncNearTopLatch(nextTop);
+        syncNearBottomLatch(nextTop, el.clientHeight, el.scrollHeight);
         return true;
       }
       const metrics = scrollMetricsRef.current;
@@ -424,9 +464,10 @@ export function HspScrollColumn({
       scrollRef.current?.scrollTo({ y: nextTop, animated: false });
       setScroll((prev) => ({ ...prev, scrollY: nextTop, contentH: metrics.contentH }));
       syncNearTopLatch(nextTop);
+      syncNearBottomLatch(nextTop, metrics.layoutH, metrics.contentH);
       return true;
     },
-    [getScrollElement, syncNearTopLatch],
+    [getScrollElement, syncNearBottomLatch, syncNearTopLatch],
   );
 
   const restoreScrollAnchor = useCallback(
@@ -462,6 +503,9 @@ export function HspScrollColumn({
       restoreScrollAnchor,
       clearNearTopLatch: () => {
         nearTopFiredRef.current = false;
+      },
+      clearNearBottomLatch: () => {
+        nearBottomFiredRef.current = false;
       },
     };
     (scrollControllerRef as MutableRefObject<HspScrollColumnHandle | null>).current = controller;

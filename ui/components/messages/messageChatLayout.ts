@@ -111,3 +111,12 @@ export const MESSAGE_CHAT_HISTORY_LIVE_TAIL_SIZE = 10;
 
 /** Distance from top (px) that triggers loading the previous page. */
 export const MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX = 120;
+
+/** On reopen, load only this many messages above the saved viewport anchor. */
+export const MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER = 5;
+/** On reopen, load only this many messages below the saved viewport anchor. */
+export const MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER = 10;
+/** Batch size when scrolling down into newer history below the loaded window. */
+export const MESSAGE_CHAT_HISTORY_NEWER_PAGE_SIZE = 15;
+/** Distance from bottom (px) that triggers loading the next newer page. */
+export const MESSAGE_CHAT_LOAD_NEWER_THRESHOLD_PX = 120;

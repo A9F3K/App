@@ -477,6 +477,9 @@ export async function gatewayFetchChatMessages(
   beforeMessageId?: number | null,
   sinceMessageId?: number | null,
   aroundUnread = false,
+  aroundMessageId?: number | null,
+  olderAbove?: number | null,
+  newerBelow?: number | null,
 ): Promise<{
   messages: Record<string, unknown>[];
   chatKind: string | null;
@@ -510,6 +513,27 @@ export async function gatewayFetchChatMessages(
   }
   if (aroundUnread) {
     params.set("aroundUnread", "1");
+  }
+  if (
+    typeof aroundMessageId === "number" &&
+    Number.isFinite(aroundMessageId) &&
+    aroundMessageId > 0
+  ) {
+    params.set("aroundMessageId", String(aroundMessageId));
+  }
+  if (
+    typeof olderAbove === "number" &&
+    Number.isFinite(olderAbove) &&
+    olderAbove >= 0
+  ) {
+    params.set("olderAbove", String(Math.trunc(olderAbove)));
+  }
+  if (
+    typeof newerBelow === "number" &&
+    Number.isFinite(newerBelow) &&
+    newerBelow >= 0
+  ) {
+    params.set("newerBelow", String(Math.trunc(newerBelow)));
   }
   const url = `${base}/v1/chat/messages?${params.toString()}`;
   try {

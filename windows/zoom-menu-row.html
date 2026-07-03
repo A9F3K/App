@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Zoom</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: transparent;
+        user-select: none;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        height: 32px;
+        padding: 0 10px 0 12px;
+        background: #111111;
+        border: 1px solid #5a5a5a;
+        border-radius: 0;
+        gap: 8px;
+      }
+      .label {
+        flex: 1;
+        font-size: 12px;
+        line-height: 16px;
+        color: #ffffff;
+        white-space: nowrap;
+      }
+      .row.extension .label {
+        display: none;
+      }
+      .row.extension {
+        padding-left: 8px;
+        justify-content: flex-end;
+      }
+      .controls {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      .undercover {
+        background: #323232;
+        color: #ffffff;
+        border: 0;
+        box-shadow: inset 0 0 0 1px #818181;
+        outline: none;
+      }
+      .undercover-btn {
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        font-size: 16px;
+        line-height: 1;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .undercover-btn:hover {
+        box-shadow: inset 0 0 0 1px #a1a1a1;
+      }
+      .undercover-btn:active {
+        background: #3d3d3d;
+      }
+      .undercover-input {
+        width: 58px;
+        height: 28px;
+        padding: 0 6px;
+        font-size: 12px;
+        line-height: 28px;
+        text-align: center;
+        font-family: inherit;
+        cursor: text;
+      }
+      .undercover-input:focus {
+        box-shadow: inset 0 0 0 1px #a1a1a1;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <span class="label">Zoom</span>
+      <div class="controls">
+        <button type="button" class="undercover undercover-btn" id="minus" title="Zoom out" aria-label="Zoom out">−</button>
+        <input
+          type="text"
+          class="undercover undercover-input"
+          id="pct"
+          inputmode="numeric"
+          spellcheck="false"
+          aria-label="Zoom percent"
+        />
+        <button type="button" class="undercover undercover-btn" id="plus" title="Zoom in" aria-label="Zoom in">+</button>
+      </div>
+    </div>
+    <script>
+      (function () {
+        const { ipcRenderer } = require("electron");
+        const minus = document.getElementById("minus");
+        const plus = document.getElementById("plus");
+        const pct = document.getElementById("pct");
+        const row = document.querySelector(".row");
+
+        function formatPercent(factor) {
+          return `${Math.round(factor * 100)}%`;
+        }
+
+        function syncInput(factor) {
+          pct.value = formatPercent(factor);
+        }
+
+        function parsePercentInput(raw) {
+          const digits = String(raw || "").replace(/[^\d]/g, "");
+          if (!digits) return null;
+          const n = Number(digits);
+          if (!Number.isFinite(n)) return null;
+          return n / 100;
+        }
+
+        minus.addEventListener("click", () => {
+          ipcRenderer.send("hsp-zoom-adjust", -0.1);
+        });
+        plus.addEventListener("click", () => {
+          ipcRenderer.send("hsp-zoom-adjust", 0.1);
+        });
+
+        pct.addEventListener("focus", () => {
+          pct.select();
+        });
+        pct.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            const next = parsePercentInput(pct.value);
+            if (next != null) ipcRenderer.send("hsp-zoom-set-factor", next);
+            pct.blur();
+            e.preventDefault();
+          } else if (e.key === "Escape") {
+            ipcRenderer.invoke("hsp-zoom-get-factor").then(syncInput).catch(() => {});
+            ipcRenderer.send("hsp-zoom-popup-close");
+            e.preventDefault();
+          }
+        });
+        pct.addEventListener("blur", () => {
+          ipcRenderer.invoke("hsp-zoom-get-factor").then(syncInput).catch(() => {});
+        });
+
+        ipcRenderer.on("hsp-zoom-sync", (_e, factor) => {
+          syncInput(factor);
+        });
+
+        ipcRenderer.on("hsp-zoom-mode", (_e, mode) => {
+          if (mode === "extension") row.classList.add("extension");
+          else row.classList.remove("extension");
+        });
+
+        ipcRenderer.invoke("hsp-zoom-get-factor").then(syncInput).catch(() => {});
+      })();
+    </script>
+  </body>
+</html>

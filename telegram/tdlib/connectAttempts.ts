@@ -16,7 +16,7 @@ import {
   syncChatThreads,
   INITIAL_MAIN_CHAT_SYNC_LIMIT,
 } from "./syncChats.js";
-import { fetchChatHistory, fetchChatHistoryAroundUnread, fetchChatHistorySince, markChatInboxRead, sendChatTextMessage, editChatTextMessage } from "./chatHistory.js";
+import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, markChatInboxRead, sendChatTextMessage, editChatTextMessage } from "./chatHistory.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
 import { getLiveChatList, getLiveChatListRevision } from "./liveChatCache.js";
 
@@ -1173,6 +1173,9 @@ export async function getChatHistoryForUser(
   beforeMessageId?: number | null,
   sinceMessageId?: number | null,
   aroundUnread = false,
+  aroundMessageId?: number | null,
+  olderAbove?: number | null,
+  newerBelow?: number | null,
 ): Promise<{
   chat_kind: Awaited<ReturnType<typeof fetchChatHistory>>["chat_kind"];
   self_user_id: number | null;
@@ -1202,8 +1205,21 @@ export async function getChatHistoryForUser(
       typeof sinceMessageId === "number" &&
       Number.isFinite(sinceMessageId) &&
       sinceMessageId > 0;
+    const loadAroundMessage =
+      typeof aroundMessageId === "number" &&
+      Number.isFinite(aroundMessageId) &&
+      aroundMessageId > 0;
     const result = loadSince
       ? await fetchChatHistorySince(record.client, chatId, sinceMessageId!, limit)
+      : loadAroundMessage
+        ? await fetchChatHistoryAroundMessage(
+            record.client,
+            chatId,
+            aroundMessageId!,
+            limit,
+            typeof olderAbove === "number" && Number.isFinite(olderAbove) ? olderAbove : undefined,
+            typeof newerBelow === "number" && Number.isFinite(newerBelow) ? newerBelow : undefined,
+          )
       : aroundUnread
         ? await fetchChatHistoryAroundUnread(record.client, chatId, limit)
         : await fetchChatHistory(record.client, chatId, limit, beforeMessageId);

@@ -730,6 +730,21 @@ export async function telegramMessagesHistoryHandler(
   const beforeMessageId = parseOptionalIdParam(url, "before_message_id");
   const sinceMessageId = parseOptionalIdParam(url, "since_message_id");
   const aroundUnread = url.searchParams.get("around_unread") === "1";
+  const aroundMessageId = parseOptionalIdParam(url, "around_message_id");
+  const olderAboveRaw = url.searchParams.get("older_above");
+  const parsedOlderAbove =
+    olderAboveRaw == null || olderAboveRaw.trim() === "" ? null : Number(olderAboveRaw);
+  const olderAbove =
+    parsedOlderAbove != null && Number.isFinite(parsedOlderAbove) && parsedOlderAbove >= 0
+      ? Math.trunc(parsedOlderAbove)
+      : null;
+  const newerBelowRaw = url.searchParams.get("newer_below");
+  const parsedNewerBelow =
+    newerBelowRaw == null || newerBelowRaw.trim() === "" ? null : Number(newerBelowRaw);
+  const newerBelow =
+    parsedNewerBelow != null && Number.isFinite(parsedNewerBelow) && parsedNewerBelow >= 0
+      ? Math.trunc(parsedNewerBelow)
+      : null;
   if (chatId == null) {
     logTelegramMessagesApi("messages_history_bad_request", {
       telegramUsername: userOrRes,
@@ -749,6 +764,13 @@ export async function telegramMessagesHistoryHandler(
   if (aroundUnread && (beforeMessageId != null || sinceMessageId != null)) {
     return finishJson(request, res, { ok: false, error: "invalid_params" }, 400);
   }
+  if (
+    aroundMessageId != null &&
+    aroundMessageId > 0 &&
+    (beforeMessageId != null || sinceMessageId != null || aroundUnread)
+  ) {
+    return finishJson(request, res, { ok: false, error: "invalid_params" }, 400);
+  }
 
   const started = Date.now();
   const result = await gatewayFetchChatMessages(
@@ -758,6 +780,9 @@ export async function telegramMessagesHistoryHandler(
     beforeMessageId,
     sinceMessageId,
     aroundUnread,
+    aroundMessageId,
+    olderAbove,
+    newerBelow,
   );
   logTelegramMessagesApi("messages_history_served", {
     telegramUsername: userOrRes,
@@ -765,6 +790,7 @@ export async function telegramMessagesHistoryHandler(
     beforeMessageId,
     sinceMessageId,
     aroundUnread,
+    aroundMessageId,
     count: result.messages.length,
     hasMoreOlder: result.hasMoreOlder,
     nextBeforeMessageId: result.nextBeforeMessageId,

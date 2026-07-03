@@ -154,6 +154,9 @@ export async function fetchTelegramChatHistoryPage(
   beforeMessageId?: number | null,
   sinceMessageId?: number | null,
   aroundUnread = false,
+  aroundMessageId?: number | null,
+  olderAbove?: number | null,
+  newerBelow?: number | null,
 ): Promise<ChatHistoryPageResult> {
   const params = new URLSearchParams({
     chat_id: String(chatId),
@@ -175,6 +178,27 @@ export async function fetchTelegramChatHistoryPage(
   }
   if (aroundUnread) {
     params.set("around_unread", "1");
+  }
+  if (
+    typeof aroundMessageId === "number" &&
+    Number.isFinite(aroundMessageId) &&
+    aroundMessageId > 0
+  ) {
+    params.set("around_message_id", String(aroundMessageId));
+  }
+  if (
+    typeof olderAbove === "number" &&
+    Number.isFinite(olderAbove) &&
+    olderAbove >= 0
+  ) {
+    params.set("older_above", String(Math.trunc(olderAbove)));
+  }
+  if (
+    typeof newerBelow === "number" &&
+    Number.isFinite(newerBelow) &&
+    newerBelow >= 0
+  ) {
+    params.set("newer_below", String(Math.trunc(newerBelow)));
   }
   const url = buildApiUrl(`/api/telegram-messages-history?${params.toString()}`);
   const response = await fetch(url, { method: "GET", credentials: "include" });
@@ -238,10 +262,20 @@ export async function fetchTelegramChatHistoryPage(
 export async function loadTelegramChatHistoryFirstPage(
   chatId: number,
   peerUserId: number | null | undefined,
-  options?: { warmup?: boolean; limit?: number; aroundUnread?: boolean },
+  options?: {
+    warmup?: boolean;
+    limit?: number;
+    aroundUnread?: boolean;
+    aroundMessageId?: number | null;
+    olderAbove?: number | null;
+    newerBelow?: number | null;
+  },
 ): Promise<ChatHistoryPageResult> {
   const warmup = options?.warmup !== false;
   const aroundUnread = options?.aroundUnread === true;
+  const aroundMessageId = options?.aroundMessageId ?? null;
+  const olderAbove = options?.olderAbove ?? null;
+  const newerBelow = options?.newerBelow ?? null;
   const limit =
     typeof options?.limit === "number" &&
     Number.isFinite(options.limit) &&
@@ -249,28 +283,25 @@ export async function loadTelegramChatHistoryFirstPage(
       ? Math.trunc(options.limit)
       : MESSAGE_CHAT_HISTORY_PAGE_SIZE;
   const warmupPromise = warmup ? warmupTelegramChatSession(chatId) : Promise.resolve();
-  let result = await fetchTelegramChatHistoryPage(
+  const fetchArgs = [
     chatId,
     limit,
     peerUserId,
     null,
     null,
     aroundUnread,
-  );
+    aroundMessageId,
+    olderAbove,
+    newerBelow,
+  ] as const;
+  let result = await fetchTelegramChatHistoryPage(...fetchArgs);
   if (
     result.error === "session_not_ready" ||
     result.error === "history_unavailable" ||
     result.error === "not_found"
   ) {
     await warmupPromise;
-    result = await fetchTelegramChatHistoryPage(
-      chatId,
-      limit,
-      peerUserId,
-      null,
-      null,
-      aroundUnread,
-    );
+    result = await fetchTelegramChatHistoryPage(...fetchArgs);
   }
   return result;
 }
