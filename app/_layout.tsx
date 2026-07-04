@@ -25,6 +25,7 @@ import { FloatingShield } from "../ui/components/FloatingShield";
 import { TelegramConnectFooterStrip } from "../ui/components/TelegramConnectFooterStrip";
 import { TelegramMessagesConnectionProvider } from "../ui/telegram/TelegramMessagesConnectionContext";
 import { SettingsProvider } from "../ui/settings/SettingsContext";
+import { WelcomeEmailAuthProvider } from "../ui/welcome/WelcomeEmailAuthContext";
 import { useTmaMobileNativeBackNavigation } from "../ui/telegram/useTmaMobileNativeBackNavigation";
 import { logBuildSnapshotOnce, logPageDisplay } from "../ui/pageDisplayLog";
 import { appWarn } from "../shared/appLog";
@@ -76,6 +77,7 @@ export default function RootLayout() {
     <TelegramProvider>
       <AppStringsProvider>
         <AuthProvider>
+          <WelcomeEmailAuthProvider>
           <TelegramMessagesConnectionProvider>
             <SettingsProvider>
             <BottomBarLayoutProvider>
@@ -93,6 +95,7 @@ export default function RootLayout() {
             </BottomBarLayoutProvider>
             </SettingsProvider>
           </TelegramMessagesConnectionProvider>
+          </WelcomeEmailAuthProvider>
         </AuthProvider>
       </AppStringsProvider>
     </TelegramProvider>

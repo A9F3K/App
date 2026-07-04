@@ -45,6 +45,7 @@ Switch sigle chat interface to other modes on multicolumn mechanics.
 Not all avatars are displayed and messages, instant update, instant chat loads on page load
 Instant messages update
 Telegram connect vs. Telegram login (preferable)
+1 wallet >
 Connect telegram seccion store
 Real time sync with TDLib without DB.
 Apple styled button, revert to how it has been

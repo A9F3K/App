@@ -1,5 +1,5 @@
 import { Alert, Pressable, StyleSheet, Text, View, Platform } from "react-native";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Image } from "expo-image";
 import { useRouter } from "expo-router";
 import { useAuth } from "../../auth/AuthContext";
@@ -15,6 +15,7 @@ import { useAppStrings } from "../../locales/AppStringsContext";
 import type { AppStringKey } from "../../locales/appStrings";
 import { WelcomeAppPreviews } from "./WelcomeAppPreviews";
 import { WelcomeAuthFormField, WELCOME_AUTH_MAX_WIDTH } from "./WelcomeAuthFormField";
+import { useWelcomeEmailAuth } from "../welcome/WelcomeEmailAuthContext";
 import { useTelegram } from "./Telegram";
 import { isActuallyInTelegram } from "./telegramWebApp";
 import { getApiBaseUrl } from "../../api/_base";
@@ -118,9 +119,11 @@ export function WelcomeAuthButtons() {
   const colors = useColors();
   const { t } = useAppStrings();
   const { colorScheme, isInTelegram, triggerHaptic } = useTelegram();
+  const { openEmailCodeSheet } = useWelcomeEmailAuth();
   const [browserOAuthPending, setBrowserOAuthPending] = useState<BrowserOAuthProvider | null>(null);
   const [email, setEmail] = useState("");
   const [emailInvalid, setEmailInvalid] = useState(false);
+  const [emailSubmitting, setEmailSubmitting] = useState(false);
   /** Web hover: RN `Pressable` style state has no `hovered` in typings; use hover events (see theme hover helpers). */
   const [hoverOAuthId, setHoverOAuthId] = useState<BrowserOAuthProvider | null>(null);
   const useBlackIcons = colorScheme === "light";
@@ -219,6 +222,64 @@ export function WelcomeAuthButtons() {
       if (!navigated) {
         setBrowserOAuthPending(null);
       }
+    }
+  };
+
+  const startEmailSignIn = async () => {
+    if (!useBrowserOAuth) return;
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!isValidBasicEmail(normalizedEmail)) {
+      setEmailInvalid(true);
+      return;
+    }
+    setEmailInvalid(false);
+    setEmailSubmitting(true);
+    const startedAt = Date.now();
+    const startUrl = buildApiUrl("/api/auth/email/start");
+    try {
+      logPageDisplay("welcome_email_start", {
+        apiBase: getApiBaseUrl(),
+        startUrl,
+        platform: Platform.OS,
+      });
+      const response = await fetch(startUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          email: normalizedEmail,
+          source: "welcome",
+        }),
+      });
+      const json = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        attemptId?: string;
+        error?: string;
+      };
+      logPageDisplay("welcome_email_start_response", {
+        status: response.status,
+        ok: response.ok,
+        bodyOk: json?.ok,
+        hasAttemptId: Boolean(json?.attemptId),
+        error: json?.error ?? null,
+        elapsedMs: Date.now() - startedAt,
+      });
+      if (!response.ok || !json?.ok || !json.attemptId) {
+        throw new Error(json?.error || `HTTP_${response.status}`);
+      }
+      setEmail(normalizedEmail);
+      openEmailCodeSheet({ email: normalizedEmail, attemptId: json.attemptId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appError("[welcome]", "email_auth_start_failed", { message }, error);
+      logPageDisplay("welcome_email_start_error", {
+        message,
+        startUrl,
+        elapsedMs: Date.now() - startedAt,
+      });
+      Alert.alert(t("welcome.auth.emailBrowserAlertTitle"), t("welcome.auth.emailStartError"));
+    } finally {
+      setEmailSubmitting(false);
     }
   };
 
@@ -340,14 +401,9 @@ export function WelcomeAuthButtons() {
           inputId="welcome-email-input"
           errorText={emailInvalid ? t("welcome.auth.emailInvalid") : null}
           submitLabel={t("welcome.auth.signInButton")}
-          onSubmit={() => {
-            if (!isValidBasicEmail(email)) {
-              setEmailInvalid(true);
-              return;
-            }
-            setEmailInvalid(false);
-            /* wired when auth flows land */
-          }}
+          onSubmit={startEmailSignIn}
+          submitting={emailSubmitting}
+          submitDisabled={emailSubmitting}
         />
       </View>
       <WelcomeAppPreviews />

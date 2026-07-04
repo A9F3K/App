@@ -1210,9 +1210,11 @@ export function HomeAuthenticatedScreen() {
   ]);
 
   if (isBrowserSessionHydrating) {
-    // Signed-in browser reload: keep this phase visually neutral while Telegram provider hydrates
-    // session-backed fields, so users do not see a temporary "other page".
-    return <View style={{ flex: 1, backgroundColor: colors.background }} />;
+    return (
+      <View style={{ flex: 1, backgroundColor: colors.background, alignItems: "center", justifyContent: "center" }}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
   }
 
   if (status === "idle" || status === "loading") {

@@ -1,6 +1,6 @@
 import { sql } from "./start.js";
 
-export type AuthProvider = "telegram" | "google" | "github" | "apple";
+export type AuthProvider = "telegram" | "google" | "github" | "apple" | "email";
 
 export type LoginAttemptStatus = "created" | "consumed" | "expired" | "failed";
 
@@ -37,6 +37,54 @@ export async function createLoginAttempt(input: {
       ${input.expiresAtIso}::timestamptz
     );
   `;
+}
+
+export async function getLoginAttemptById(id: string): Promise<
+  | {
+      id: string;
+      nonce_hash: string;
+      pkce_verifier: string;
+      redirect_uri: string;
+      status: LoginAttemptStatus;
+      expires_at: string;
+    }
+  | null
+> {
+  type LoginAttemptRow = {
+    id: string;
+    nonce_hash: string;
+    pkce_verifier: string;
+    redirect_uri: string;
+    status: LoginAttemptStatus;
+    expires_at: string;
+  };
+  const rows = (await sql`
+    SELECT id, nonce_hash, pkce_verifier, redirect_uri, status, expires_at
+    FROM auth_login_attempts
+    WHERE id = ${id}
+    LIMIT 1;
+  `) as LoginAttemptRow[];
+  return rows[0] ?? null;
+}
+
+export async function countRecentEmailLoginStarts(input: {
+  ip: string | null;
+  email: string;
+  windowMinutes: number;
+}): Promise<number> {
+  const windowMinutes = Math.max(1, Math.min(input.windowMinutes, 24 * 60));
+  type CountRow = { count: string };
+  const rows = (await sql`
+    SELECT COUNT(*)::text AS count
+    FROM auth_login_attempts
+    WHERE provider = 'email'
+      AND created_at > NOW() - (${windowMinutes}::int * INTERVAL '1 minute')
+      AND (
+        (${input.ip}::text IS NOT NULL AND ip = ${input.ip})
+        OR pkce_verifier = ${input.email}
+      );
+  `) as CountRow[];
+  return Number(rows[0]?.count ?? "0");
 }
 
 export async function getLoginAttemptByStateHash(stateHash: string): Promise<
@@ -252,6 +300,52 @@ export async function upsertGithubIdentity(input: {
           username = EXCLUDED.username,
           display_name = EXCLUDED.display_name,
           picture_url = EXCLUDED.picture_url,
+          claims_version = EXCLUDED.claims_version,
+          updated_at = NOW(),
+          last_login_at = NOW();
+  `;
+}
+
+export async function upsertEmailIdentity(input: {
+  providerSubject: string;
+  telegramUsername: string;
+  email: string;
+  displayName: string | null;
+  claimsVersion: string | null;
+}): Promise<void> {
+  await sql`
+    INSERT INTO auth_identities (
+      provider,
+      provider_subject,
+      telegram_username,
+      telegram_id,
+      username,
+      display_name,
+      picture_url,
+      phone_number,
+      claims_version,
+      created_at,
+      updated_at,
+      last_login_at
+    )
+    VALUES (
+      'email',
+      ${input.providerSubject},
+      ${input.telegramUsername},
+      NULL,
+      ${input.email},
+      ${input.displayName},
+      NULL,
+      NULL,
+      ${input.claimsVersion},
+      NOW(),
+      NOW(),
+      NOW()
+    )
+    ON CONFLICT (provider, provider_subject) DO UPDATE
+      SET telegram_username = EXCLUDED.telegram_username,
+          username = EXCLUDED.username,
+          display_name = COALESCE(EXCLUDED.display_name, auth_identities.display_name),
           claims_version = EXCLUDED.claims_version,
           updated_at = NOW(),
           last_login_at = NOW();

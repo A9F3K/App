@@ -264,6 +264,8 @@ export type TelegramContextValue = {
    * server without waiting for a full /api/telegram or local storage.
    */
   applyServerWalletAfterRegister: (wallet: TelegramWalletRow) => void;
+  /** Outside TMA: hydrate account fields from `GET /api/auth/session` (browser OAuth / email OTP). */
+  hydrateBrowserSessionFromCookie: () => Promise<boolean>;
 };
 
 const defaultDebug: TelegramDebugInfo = {
@@ -308,6 +310,7 @@ const defaultContext: TelegramContextValue = {
   debug: defaultDebug,
   telegramBootstrapFeed: null,
   applyServerWalletAfterRegister: () => {},
+  hydrateBrowserSessionFromCookie: async () => false,
 };
 
 const TelegramContext = createContext<TelegramContextValue>(defaultContext);
@@ -355,18 +358,59 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
     setClientHydrated(true);
   }, []);
 
+  const applyServerWalletAfterRegister = useCallback((w: TelegramWalletRow) => {
+    setWallet(w);
+    setHasWallet(true);
+    setWalletRequired(false);
+  }, []);
+
+  const hydrateBrowserSessionFromCookie = useCallback(async (): Promise<boolean> => {
+    if (typeof window === "undefined" || isMiniAppContext()) return false;
+    try {
+      const response = await fetch(buildApiUrl("/api/auth/session"), {
+        method: "GET",
+        credentials: "include",
+      });
+      const json = (await response.json().catch(() => ({}))) as {
+        authenticated?: boolean;
+        telegram_username?: string;
+        display_name?: string;
+        has_wallet?: boolean;
+        wallet_required?: boolean;
+        wallet?: TelegramContextValue["wallet"];
+      };
+      if (!response.ok || !json?.authenticated) return false;
+      setTelegramUsername(json.telegram_username ?? null);
+      setDisplayName(
+        typeof json.display_name === "string" && json.display_name.trim()
+          ? json.display_name.trim()
+          : null,
+      );
+      setHasWallet(typeof json.has_wallet === "boolean" ? json.has_wallet : null);
+      setWalletRequired(Boolean(json.wallet_required));
+      setWallet(json.wallet ?? null);
+      setStatus("ok");
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
   useEffect(() => {
     if (typeof document === "undefined") return;
     const onSignedOut = () => {
       hasRegisteredRef.current = false;
     };
     const onSignedIn = () => {
-      if (!isMiniAppContext()) return;
-      hasRegisteredRef.current = false;
-      const initDataStr = getInitDataString();
-      if (initDataStr) {
-        registerWithBackendRef.current(initDataStr);
+      if (isMiniAppContext()) {
+        hasRegisteredRef.current = false;
+        const initDataStr = getInitDataString();
+        if (initDataStr) {
+          registerWithBackendRef.current(initDataStr);
+        }
+        return;
       }
+      void hydrateBrowserSessionFromCookie();
     };
     document.addEventListener("hsp-auth-signed-out", onSignedOut);
     document.addEventListener("hsp-auth-signed-in", onSignedIn);
@@ -374,16 +418,10 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
       document.removeEventListener("hsp-auth-signed-out", onSignedOut);
       document.removeEventListener("hsp-auth-signed-in", onSignedIn);
     };
-  }, []);
+  }, [hydrateBrowserSessionFromCookie]);
 
   const refreshLayoutStartup = useCallback(() => {
     setLayoutStartup(computeTelegramLayoutStartupSnapshot());
-  }, []);
-
-  const applyServerWalletAfterRegister = useCallback((w: TelegramWalletRow) => {
-    setWallet(w);
-    setHasWallet(true);
-    setWalletRequired(false);
   }, []);
 
   useLayoutEffect(() => {
@@ -926,47 +964,14 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
     setThemeBgReady(true);
   }, [status]);
 
-  // Browser OIDC session bootstrap (outside TMA): if a server session exists, hydrate
-  // Telegram-facing user fields so root `/` can render account data after callback redirect.
+  // Browser OIDC / email session bootstrap (outside TMA).
   useEffect(() => {
     if (status !== "dev") return;
     if (isMiniAppContext()) return;
     if (browserSessionHydratedRef.current) return;
     browserSessionHydratedRef.current = true;
-    let cancelled = false;
-    (async () => {
-      try {
-        const response = await fetch(buildApiUrl("/api/auth/session"), {
-          method: "GET",
-          credentials: "include",
-        });
-        const json = (await response.json().catch(() => ({}))) as {
-          authenticated?: boolean;
-          telegram_username?: string;
-          display_name?: string;
-          has_wallet?: boolean;
-          wallet_required?: boolean;
-          wallet?: TelegramContextValue["wallet"];
-        };
-        if (!response.ok || !json?.authenticated || cancelled) return;
-        setTelegramUsername(json.telegram_username ?? null);
-        setDisplayName(
-          typeof json.display_name === "string" && json.display_name.trim()
-            ? json.display_name.trim()
-            : null,
-        );
-        setHasWallet(typeof json.has_wallet === "boolean" ? json.has_wallet : null);
-        setWalletRequired(Boolean(json.wallet_required));
-        setWallet(json.wallet ?? null);
-        setStatus("ok");
-      } catch {
-        // keep dev fallback UI
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [status]);
+    void hydrateBrowserSessionFromCookie();
+  }, [status, hydrateBrowserSessionFromCookie]);
 
   const miniAppContext = typeof window !== "undefined" && isMiniAppContext();
   const isInTelegram = status !== "dev" && miniAppContext;
@@ -1000,6 +1005,7 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
     debug,
     telegramBootstrapFeed,
     applyServerWalletAfterRegister,
+    hydrateBrowserSessionFromCookie,
   };
 
   return (
