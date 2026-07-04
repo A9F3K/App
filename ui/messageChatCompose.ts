@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { MessageChatHistoryItem } from "./components/messages/messageChatHistoryTypes";
+import type { ComposeReplySenderContext } from "./components/messages/resolveMessageSenderDisplayName";
+import { resolveComposeReplySenderName } from "./components/messages/resolveMessageSenderDisplayName";
 import { messageChatActionPreviewText } from "./components/messages/messageChatActionUtils";
 
 export type MessageChatComposeReplyTarget = {
@@ -48,12 +50,16 @@ export function useMessageChatCompose(chatId: number | null | undefined): Messag
   );
 }
 
-export function setMessageChatComposeReply(chatId: number, item: MessageChatHistoryItem): void {
+export function setMessageChatComposeReply(
+  chatId: number,
+  item: MessageChatHistoryItem,
+  ctx: ComposeReplySenderContext,
+): void {
   composeState = {
     chatId,
     reply: {
       telegram_message_id: item.telegram_message_id,
-      sender_name: item.sender_name.trim() || "User",
+      sender_name: resolveComposeReplySenderName(item, ctx),
       text: messageChatActionPreviewText(item),
     },
     edit: null,

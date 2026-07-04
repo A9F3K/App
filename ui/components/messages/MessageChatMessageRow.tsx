@@ -426,8 +426,14 @@ export function MessageChatMessageRow({
   const onReply = useCallback(() => {
     setActionSheetVisible(false);
     setMenuAnchor(null);
-    setMessageChatComposeReply(chat.telegram_chat_id, item);
-  }, [chat.telegram_chat_id, item]);
+    setMessageChatComposeReply(chat.telegram_chat_id, item, {
+      chatTitle: chat.title,
+      chatKind: chatKind ?? chat.chat_kind ?? null,
+      telegramChatId: chat.telegram_chat_id,
+      peerUserId: chat.peer_user_id,
+      selfUserId,
+    });
+  }, [chat, chatKind, item, selfUserId]);
 
   const onEdit = useCallback(() => {
     setActionSheetVisible(false);

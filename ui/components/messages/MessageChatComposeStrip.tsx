@@ -11,7 +11,7 @@ type Props = {
 };
 
 export function MessageChatComposeStrip({ compose, colors, onDismiss }: Props) {
-  const { t } = useAppStrings();
+  const { t, tf } = useAppStrings();
   const textBase = {
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
     includeFontPadding: false,
@@ -20,7 +20,7 @@ export function MessageChatComposeStrip({ compose, colors, onDismiss }: Props) {
   const title = compose.edit
     ? t("messages.compose.editing")
     : compose.reply
-      ? t("messages.compose.replyTo", { name: compose.reply.sender_name })
+      ? tf("messages.compose.replyTo", { name: compose.reply.sender_name })
       : "";
 
   const preview = compose.edit?.text ?? compose.reply?.text ?? "";
