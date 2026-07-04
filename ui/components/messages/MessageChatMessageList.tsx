@@ -326,6 +326,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       allowUnreadResetAtBottomRef.current = false;
       loadOlderEnabledRef.current = false;
       loadNewerEnabledRef.current = false;
+      setChatScrollPaintReady(false);
+      chatScrollPaintReadyRef.current = false;
     }
   }, [chat.telegram_chat_id, historyLoad.generation]);
 
@@ -789,33 +791,29 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     const effectiveChatKind = chatKind ?? chat.chat_kind ?? null;
     if (!isPrivateChatForReadReceipts(effectiveChatKind, chat)) return enriched;
     return patchOutgoingStatusesWithReadOutbox(enriched, readOutboxCursor);
-  }, [chat, chatKind, messages, readOutboxCursor]);
+  }, [
+    chat.chat_kind,
+    chat.peer_user_id,
+    chatKind,
+    messages,
+    readOutboxCursor,
+  ]);
 
   const displayMessagesSigRef = useRef("");
+  const [displayMessagesLayoutSig, setDisplayMessagesLayoutSig] = useState("");
 
   useEffect(() => {
     displayMessagesRef.current = displayMessages;
     const sig = displayMessages.map((m) => m.telegram_message_id).join(",");
     if (sig !== displayMessagesSigRef.current) {
       displayMessagesSigRef.current = sig;
+      setDisplayMessagesLayoutSig(sig);
       const liveIds = new Set(displayMessages.map((m) => m.telegram_message_id));
       for (const id of messageLayoutsRef.current.keys()) {
         if (!liveIds.has(id)) messageLayoutsRef.current.delete(id);
       }
     }
   }, [displayMessages]);
-
-  useEffect(() => {
-    if (openingUnreadCountRef.current <= 0) return;
-    if (!unreadMarkingArmPendingRef.current && !unreadMarkingArmedRef.current) {
-      return;
-    }
-    const metrics = scrollControllerRef.current?.getMetrics();
-    if (!metrics || metrics.contentH <= 0 || metrics.layoutH <= 0) return;
-    if (tryArmUnreadMarking(metrics) || unreadMarkingArmedRef.current) {
-      syncScrollBelowUnreadRef.current(metrics);
-    }
-  }, [displayMessages, tryArmUnreadMarking]);
 
   const syncScrollBelowUnread = useCallback(
     (metrics: HspScrollMetrics) => {
@@ -896,6 +894,18 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   useEffect(() => {
     syncScrollBelowUnreadRef.current = syncScrollBelowUnread;
   }, [syncScrollBelowUnread]);
+
+  useEffect(() => {
+    if (openingUnreadCountRef.current <= 0) return;
+    if (!unreadMarkingArmPendingRef.current && !unreadMarkingArmedRef.current) {
+      return;
+    }
+    const metrics = scrollControllerRef.current?.getMetrics();
+    if (!metrics || metrics.contentH <= 0 || metrics.layoutH <= 0) return;
+    if (tryArmUnreadMarking(metrics) || unreadMarkingArmedRef.current) {
+      syncScrollBelowUnread(metrics);
+    }
+  }, [displayMessagesLayoutSig, syncScrollBelowUnread, tryArmUnreadMarking]);
 
   const handleMessageLayout = useCallback((messageId: number, event: LayoutChangeEvent) => {
     const { y, height } = event.nativeEvent.layout;
@@ -2034,7 +2044,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       <MessageChatOlderHistoryLoadLine active={loadingOlder} color={colors.accent} />
       <View style={{ flex: 1, minHeight: 0, opacity: hideScrollUntilSettled ? 0 : 1 }}>
       <HspScrollColumn
-        key={String(chat.telegram_chat_id)}
+        key={`${chat.telegram_chat_id}-${historyLoad.generation}`}
         style={{ flex: 1, minHeight: 0 }}
         indicatorColor={colors.accent}
         scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}

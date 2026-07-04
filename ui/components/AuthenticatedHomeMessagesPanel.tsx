@@ -10,6 +10,7 @@ import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConne
 import {
   clearAuthenticatedHomeSelectedChat,
   openAuthenticatedHomeChatHistory,
+  resolveAuthenticatedHomeOpenChatUnread,
   syncAuthenticatedHomeSelectedChat,
   useAuthenticatedHomeSelectedChat,
 } from "../authenticatedHomeSelectedChat";
@@ -222,27 +223,56 @@ function sortChatRows(rows: MessageChatRowData[]): MessageChatRowData[] {
 /** Keep stable rows when the gateway returns a truncated snapshot during resync. */
 const CHAT_LIST_OVERSIZED_THRESHOLD = 250;
 
+function applyOpenChatUnreadToRows(rows: MessageChatRowData[]): MessageChatRowData[] {
+  let changed = false;
+  const next = rows.map((row) => {
+    const unread = resolveAuthenticatedHomeOpenChatUnread(
+      row.unread_count,
+      row.telegram_chat_id,
+    );
+    if (unread === row.unread_count) return row;
+    changed = true;
+    return { ...row, unread_count: unread };
+  });
+  return changed ? next : rows;
+}
+
 function mergeChatRows(
   prev: MessageChatRowData[],
   incoming: MessageChatRowData[],
 ): MessageChatRowData[] {
   if (incoming.length === 0) return prev;
-  if (prev.length === 0) return sortChatRows(incoming);
+  if (prev.length === 0) {
+    return applyOpenChatUnreadToRows(sortChatRows(incoming));
+  }
   if (
     prev.length >= CHAT_LIST_OVERSIZED_THRESHOLD &&
     incoming.length < prev.length * 0.25
   ) {
-    return sortChatRows(incoming);
+    return applyOpenChatUnreadToRows(sortChatRows(incoming));
   }
 
   const byId = new Map(incoming.map((row) => [row.telegram_chat_id, row]));
   const merged: MessageChatRowData[] = [];
 
   for (const row of prev) {
-    merged.push(byId.get(row.telegram_chat_id) ?? row);
+    const fresh = byId.get(row.telegram_chat_id);
+    if (fresh) {
+      merged.push({
+        ...fresh,
+        unread_count: resolveAuthenticatedHomeOpenChatUnread(
+          fresh.unread_count,
+          fresh.telegram_chat_id,
+        ),
+      });
+    } else {
+      merged.push(row);
+    }
   }
 
-  if (incoming.length >= prev.length * 0.9) return sortChatRows(incoming);
+  if (incoming.length >= prev.length * 0.9) {
+    return applyOpenChatUnreadToRows(sortChatRows(incoming));
+  }
 
   return sortChatRows(merged);
 }

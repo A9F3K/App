@@ -325,6 +325,24 @@ export function patchAuthenticatedHomeSelectedChatReadOutbox(messageId: number |
   emit();
 }
 
+/**
+ * Chat-list unread for the open chat: poll may only raise the count (new messages);
+ * client scroll marking may lower it until the server catches up.
+ */
+export function resolveAuthenticatedHomeOpenChatUnread(
+  incomingUnread: number,
+  chatId: number,
+): number {
+  hydrateFromStorageIfNeeded();
+  const incoming = Math.max(0, Math.trunc(incomingUnread));
+  if (selectedChat == null || selectedChat.telegram_chat_id !== chatId) {
+    return incoming;
+  }
+  return incoming > selectedChat.unread_count
+    ? incoming
+    : selectedChat.unread_count;
+}
+
 /** Open-chat unread badge — shared by the chat list preview and scroll-to-bottom FAB. */
 export function patchAuthenticatedHomeSelectedChatUnread(count: number): void {
   hydrateFromStorageIfNeeded();
