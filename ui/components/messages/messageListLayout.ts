@@ -130,6 +130,27 @@ function isMessageIntersectingViewport(
   return bottom > viewportTop + 0.5 && entry.y < viewportBottom - 0.5;
 }
 
+/** Lowest message id that intersects the viewport (fully or partially). */
+export function minIntersectingMessageId(
+  messages: readonly { telegram_message_id: number }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+): number | null {
+  const viewportTop = metrics.scrollY;
+  const viewportBottom = metrics.scrollY + metrics.layoutH;
+  let minId: number | null = null;
+
+  for (const msg of messages) {
+    const id = msg.telegram_message_id;
+    const entry = layouts.get(id);
+    if (!entry) continue;
+    if (!isMessageIntersectingViewport(entry, viewportTop, viewportBottom)) continue;
+    if (minId == null || id < minId) minId = id;
+  }
+
+  return minId;
+}
+
 /** Newer-than-baseline messages visible in the viewport (fully or partially). */
 export function collectFullyVisibleUnreadMessageIds(
   messages: readonly { telegram_message_id: number }[],
@@ -159,6 +180,32 @@ export function collectFullyVisibleUnreadMessageIds(
   return newlyRead;
 }
 
+/** Lowest newer-than-baseline message intersecting the viewport — one mark per scroll tick. */
+export function collectNextUnreadMessageIdToMark(
+  messages: readonly { telegram_message_id: number }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+  minUnreadMessageIdExclusive: number,
+  alreadyReadIds?: ReadonlySet<number>,
+): number | null {
+  const viewportTop = metrics.scrollY;
+  const viewportBottom = metrics.scrollY + metrics.layoutH;
+  const readIds = alreadyReadIds ?? new Set<number>();
+  let nextId: number | null = null;
+
+  for (const msg of messages) {
+    const id = msg.telegram_message_id;
+    if (id <= minUnreadMessageIdExclusive) continue;
+    if (readIds.has(id)) continue;
+    const entry = layouts.get(id);
+    if (!entry) continue;
+    if (!isMessageIntersectingViewport(entry, viewportTop, viewportBottom)) continue;
+    if (nextId == null || id < nextId) nextId = id;
+  }
+
+  return nextId;
+}
+
 /** Remaining unreads = opening count minus messages fully seen while scrolling. */
 export function computeRemainingUnreadCount(
   openingUnreadCount: number,
@@ -168,6 +215,26 @@ export function computeRemainingUnreadCount(
   if (openingUnread <= 0) return 0;
   const readCount = Math.min(openingUnread, fullyReadMessageIds.size);
   return Math.max(0, openingUnread - readCount);
+}
+
+/** First unread message in a loaded history page (id strictly after inbox read cursor). */
+export function resolveFirstUnreadMessageId(
+  messages: readonly { telegram_message_id: number }[],
+  lastReadInboxMessageId: number | null | undefined,
+): number | null {
+  if (messages.length === 0) return null;
+  const floor =
+    typeof lastReadInboxMessageId === "number" &&
+    Number.isFinite(lastReadInboxMessageId) &&
+    lastReadInboxMessageId > 0
+      ? Math.trunc(lastReadInboxMessageId)
+      : 0;
+  for (const msg of messages) {
+    if (msg.telegram_message_id > floor) {
+      return msg.telegram_message_id;
+    }
+  }
+  return null;
 }
 
 /** Loaded history includes the chat's latest message (not a stale preview tail). */

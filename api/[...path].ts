@@ -23,6 +23,7 @@ import walletEnvelopeProbeHandler from './_handlers/wallet-envelope-probe.js';
 import walletEnvelopeRoundtripHandler from './_handlers/wallet-envelope-roundtrip.js';
 import {
   telegramMessagesChatsHandler,
+  telegramMessagesChatsLoadMoreHandler,
   telegramMessagesChatsStreamHandler,
   telegramMessagesConnectHandler,
   telegramMessagesDisconnectHandler,
@@ -80,6 +81,7 @@ const ROUTES: Record<string, ApiHandler> = {
   'telegram-messages-connect': telegramMessagesConnectHandler as ApiHandler,
   'telegram-messages-disconnect': telegramMessagesDisconnectHandler as ApiHandler,
   'telegram-messages-chats': telegramMessagesChatsHandler as ApiHandler,
+  'telegram-messages-chats-load-more': telegramMessagesChatsLoadMoreHandler as ApiHandler,
   'telegram-messages-chats-stream': telegramMessagesChatsStreamHandler as ApiHandler,
   'telegram-messages-avatar': telegramMessagesAvatarHandler as ApiHandler,
   'telegram-messages-history': telegramMessagesHistoryHandler as ApiHandler,

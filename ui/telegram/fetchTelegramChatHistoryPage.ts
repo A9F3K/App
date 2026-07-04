@@ -21,6 +21,7 @@ export type ChatHistoryPageResult = {
   hasMoreOlder: boolean;
   nextBeforeMessageId: number | null;
   lastReadOutboxMessageId: number | null;
+  lastReadInboxMessageId: number | null;
   memberCount: number | null;
   selfUserId: number | null;
 };
@@ -210,6 +211,7 @@ export async function fetchTelegramChatHistoryPage(
     has_more_older?: boolean;
     next_before_message_id?: number;
     last_read_outbox_message_id?: number;
+    last_read_inbox_message_id?: number;
     self_user_id?: number;
     error?: string;
   };
@@ -221,6 +223,7 @@ export async function fetchTelegramChatHistoryPage(
       hasMoreOlder: false,
       nextBeforeMessageId: null,
       lastReadOutboxMessageId: null,
+      lastReadInboxMessageId: null,
       memberCount: null,
       selfUserId: null,
     };
@@ -238,6 +241,7 @@ export async function fetchTelegramChatHistoryPage(
     }
   }
   const lastReadRaw = Number(json.last_read_outbox_message_id);
+  const lastReadInboxRaw = Number(json.last_read_inbox_message_id);
   const memberRaw = Number(json.member_count);
   return {
     messages: rows,
@@ -252,6 +256,8 @@ export async function fetchTelegramChatHistoryPage(
         : null,
     lastReadOutboxMessageId:
       Number.isFinite(lastReadRaw) && lastReadRaw > 0 ? lastReadRaw : null,
+    lastReadInboxMessageId:
+      Number.isFinite(lastReadInboxRaw) && lastReadInboxRaw > 0 ? lastReadInboxRaw : null,
     memberCount:
       Number.isFinite(memberRaw) && memberRaw > 0 ? Math.trunc(memberRaw) : null,
     selfUserId,

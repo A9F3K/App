@@ -120,9 +120,16 @@ function textStyleToDomCss(style: TextStyle, options?: { omitLayout?: boolean })
   if (style.color != null) css.color = String(style.color);
   if (style.fontWeight != null) css.fontWeight = style.fontWeight as string | number;
   if (style.textDecorationLine === "underline") css.textDecoration = "underline";
+  if (typeof style.paddingRight === "number") css.paddingRight = style.paddingRight;
+  if (typeof style.paddingLeft === "number") css.paddingLeft = style.paddingLeft;
+  if (typeof style.paddingTop === "number") css.paddingTop = style.paddingTop;
+  if (typeof style.paddingBottom === "number") css.paddingBottom = style.paddingBottom;
+  if (style.textAlign != null) css.textAlign = style.textAlign;
   if (!options?.omitLayout) {
     if (style.flex != null) css.flex = style.flex as number;
     if (style.minWidth != null) css.minWidth = style.minWidth as number;
+    if (typeof style.width === "number") css.width = style.width;
+    if (typeof style.maxWidth === "number") css.maxWidth = style.maxWidth;
   }
   return css;
 }
@@ -207,6 +214,7 @@ function RichTextWebRow({
           textOverflow: "ellipsis",
           whiteSpace: "nowrap",
           minWidth: 0,
+          maxWidth: "100%",
           textAlign: "left",
           ...baseTextCss,
         }
@@ -228,7 +236,10 @@ function RichTextWebRow({
             ...inlineWrapStyle,
           };
 
-    const emojiHostCss = (textLabel: boolean) => inlineEmojiHostCss(emojiSizePx, textLabel);
+    const emojiHostCss = (textLabel: boolean) =>
+      listPreviewTruncate
+        ? ({ display: "inline" } as const)
+        : inlineEmojiHostCss(emojiSizePx, textLabel);
 
     const inlineTextCss = singleLine
       ? ({ display: "inline" } as const)
@@ -257,6 +268,9 @@ function RichTextWebRow({
           return createElement("span", { key: index, style: inlineTextCss }, segment.text);
         }
         if (segment.kind === "custom_emoji" || segment.kind === "animated_emoji") {
+          if (listPreviewTruncate) {
+            return createElement("span", { key: index, style: inlineTextCss }, segment.text);
+          }
           const textLabel =
             segment.kind === "custom_emoji" && isCustomEmojiTextLabel(segment.text);
           return createElement(
@@ -299,11 +313,50 @@ function RichTextWebRow({
   }
 
   const listPreviewTruncate = numberOfLines === 1 && !nowrap;
+  if (listPreviewTruncate) {
+    return (
+      <Text style={resolvedTextStyle} numberOfLines={1} ellipsizeMode="tail">
+        {segments.map((segment, index) => {
+          if (segment.kind === "text") {
+            return <Text key={index}>{segment.text}</Text>;
+          }
+          if (segment.kind === "custom_emoji" || segment.kind === "animated_emoji") {
+            return <Text key={index}>{segment.text}</Text>;
+          }
+          if (segment.kind === "bot_command") {
+            return (
+              <Text
+                key={index}
+                style={linkStyle}
+                onPress={() =>
+                  handleRichTextSegmentPress(segment, { chatId, onBotCommandPress })
+                }
+                accessibilityRole="link"
+              >
+                {segment.text}
+              </Text>
+            );
+          }
+          return (
+            <Text
+              key={index}
+              style={linkStyle}
+              onPress={() => handleRichTextSegmentPress(segment, { chatId, onBotCommandPress })}
+              accessibilityRole="link"
+            >
+              {segment.text}
+            </Text>
+          );
+        })}
+      </Text>
+    );
+  }
+
   const rowStyle: ViewStyle = {
     flexDirection: "row",
     flexWrap: nowrap || numberOfLines === 1 ? "nowrap" : "wrap",
     alignItems: "flex-end",
-    overflow: listPreviewTruncate ? "hidden" : "visible",
+    overflow: "visible",
     ...(nowrap
       ? { flexGrow: 0, flexShrink: 0, alignSelf: "flex-start" as const }
       : {
@@ -448,7 +501,11 @@ export function MessageChatRichText({
 
   if (!hasRichContent) {
     return (
-      <Text style={resolvedStyle} numberOfLines={numberOfLines}>
+      <Text
+        style={resolvedStyle}
+        numberOfLines={numberOfLines}
+        ellipsizeMode={numberOfLines === 1 ? "tail" : undefined}
+      >
         {text}
       </Text>
     );

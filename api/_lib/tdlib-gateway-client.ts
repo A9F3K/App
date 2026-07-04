@@ -320,6 +320,11 @@ export async function gatewayFocusChat(
   }
 }
 
+export type ChatListSyncStatus = {
+  inProgress: boolean;
+  cachedCount: number;
+};
+
 export async function gatewayFetchLiveChats(
   telegramUsername: string,
   options?: { sinceRevision?: number | null },
@@ -327,6 +332,7 @@ export async function gatewayFetchLiveChats(
   chats: Record<string, unknown>[];
   revision: number;
   unchanged?: boolean;
+  chatListSync?: ChatListSyncStatus;
 } | null> {
   const base = getGatewayBaseUrl();
   const secret = getGatewaySecret();
@@ -364,7 +370,9 @@ export async function gatewayFetchLiveChats(
       unchanged?: boolean;
       chats?: Record<string, unknown>[];
       revision?: number;
+      chatListSync?: ChatListSyncStatus;
     };
+    const chatListSync = json.chatListSync;
     if (json.unchanged === true) {
       logTdlibGatewayApi("gateway_fetch_done", {
         path: "/v1/chats/list",
@@ -378,6 +386,7 @@ export async function gatewayFetchLiveChats(
         chats: [],
         revision: Number(json.revision) || 0,
         unchanged: true,
+        chatListSync,
       };
     }
     if (!Array.isArray(json.chats)) {
@@ -398,7 +407,7 @@ export async function gatewayFetchLiveChats(
       revision: Number(json.revision) || 0,
       count: json.chats.length,
     });
-    return { chats: json.chats, revision: Number(json.revision) || 0 };
+    return { chats: json.chats, revision: Number(json.revision) || 0, chatListSync };
   } catch (err) {
     logTdlibGatewayApi("gateway_fetch_error", {
       path: "/v1/chats/list",
@@ -406,6 +415,44 @@ export async function gatewayFetchLiveChats(
       fetchError: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
     });
     return null;
+  }
+}
+
+export async function gatewayLoadMoreChats(
+  telegramUsername: string,
+): Promise<{ ok: boolean; started?: boolean; chatListSync?: ChatListSyncStatus; error?: string }> {
+  const base = getGatewayBaseUrl();
+  const secret = getGatewaySecret();
+  const url = `${base}/v1/chats/load-more`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gateway-Secret": secret,
+      },
+      body: JSON.stringify({ telegramUsername }),
+    });
+    if (!response.ok) {
+      return { ok: false, error: `HTTP_${response.status}` };
+    }
+    const json = (await response.json()) as {
+      ok?: boolean;
+      started?: boolean;
+      chatListSync?: ChatListSyncStatus;
+      error?: string;
+    };
+    return {
+      ok: json.ok === true,
+      started: json.started,
+      chatListSync: json.chatListSync,
+      error: json.error,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "load_more_failed",
+    };
   }
 }
 
@@ -488,6 +535,7 @@ export async function gatewayFetchChatMessages(
   hasMoreOlder: boolean;
   nextBeforeMessageId: number | null;
   lastReadOutboxMessageId: number | null;
+  lastReadInboxMessageId: number | null;
   selfUserId: number | null;
 }> {
   const base = getGatewayBaseUrl();
@@ -549,6 +597,7 @@ export async function gatewayFetchChatMessages(
       has_more_older?: boolean;
       next_before_message_id?: number;
       last_read_outbox_message_id?: number;
+      last_read_inbox_message_id?: number;
       self_user_id?: number;
       error?: string;
     };
@@ -560,11 +609,13 @@ export async function gatewayFetchChatMessages(
         hasMoreOlder: false,
         nextBeforeMessageId: null,
         lastReadOutboxMessageId: null,
+        lastReadInboxMessageId: null,
         memberCount: null,
         selfUserId: null,
       };
     }
     const lastReadRaw = Number(json.last_read_outbox_message_id);
+    const lastReadInboxRaw = Number(json.last_read_inbox_message_id);
     const memberRaw = Number(json.member_count);
     const selfUserRaw = Number(json.self_user_id);
     return {
@@ -580,6 +631,8 @@ export async function gatewayFetchChatMessages(
           : null,
       lastReadOutboxMessageId:
         Number.isFinite(lastReadRaw) && lastReadRaw > 0 ? lastReadRaw : null,
+      lastReadInboxMessageId:
+        Number.isFinite(lastReadInboxRaw) && lastReadInboxRaw > 0 ? lastReadInboxRaw : null,
       memberCount:
         Number.isFinite(memberRaw) && memberRaw > 0 ? Math.trunc(memberRaw) : null,
       selfUserId:
@@ -593,6 +646,7 @@ export async function gatewayFetchChatMessages(
       hasMoreOlder: false,
       nextBeforeMessageId: null,
       lastReadOutboxMessageId: null,
+      lastReadInboxMessageId: null,
       memberCount: null,
       selfUserId: null,
     };

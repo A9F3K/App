@@ -1,14 +1,19 @@
 import { WEB_UI_SANS_STACK } from "../../fonts";
 import {
   MESSAGE_BUBBLE_FONT_SIZE_PX,
+  MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX,
   MESSAGE_BUBBLE_LINE_HEIGHT_PX,
   MESSAGE_BUBBLE_META_GAP_PX,
   MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX,
   MESSAGE_BUBBLE_TIME_FONT_SIZE_PX,
   MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX,
+  MESSAGE_BUBBLE_TIME_MIN_WIDTH_PX,
 } from "./messageChatLayout";
 
 export type BubbleMetaPlacement = "inline" | "lastLine" | "stacked";
+
+const UNICODE_EMOJI_PATTERN =
+  /\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\uFE0E)?)*/gu;
 
 function applyBodyProbeStyles(element: HTMLElement, maxContentWidth: number) {
   element.style.position = "fixed";
@@ -42,12 +47,80 @@ export function measureTextGlyphWidth(text: string, fontSizePx: number, lineHeig
   return width;
 }
 
+function appendBodyTextWithInlineEmoji(
+  probe: HTMLElement,
+  text: string,
+  emojiSizePx: number,
+) {
+  const pattern = new RegExp(UNICODE_EMOJI_PATTERN.source, "gu");
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const start = match.index;
+    if (start > lastIndex) {
+      probe.appendChild(document.createTextNode(text.slice(lastIndex, start)));
+    }
+    const span = document.createElement("span");
+    span.style.display = "inline-block";
+    span.style.width = `${emojiSizePx}px`;
+    span.style.height = `${emojiSizePx}px`;
+    span.style.verticalAlign = "middle";
+    probe.appendChild(span);
+    lastIndex = start + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    probe.appendChild(document.createTextNode(text.slice(lastIndex)));
+  }
+}
+
+function measureWrappedContentLineWidths(probe: HTMLElement): number[] {
+  const rects = Array.from(probe.getClientRects());
+  if (rects.length === 0) return [0];
+  const lineBuckets = new Map<number, DOMRect[]>();
+  for (const rect of rects) {
+    const top = Math.round(rect.top);
+    const bucket = lineBuckets.get(top) ?? [];
+    bucket.push(rect);
+    lineBuckets.set(top, bucket);
+  }
+  return [...lineBuckets.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, lineRects]) => {
+      const left = Math.min(...lineRects.map((rect) => rect.left));
+      const right = Math.max(...lineRects.map((rect) => rect.right));
+      return Math.ceil(right - left);
+    });
+}
+
+/** Extra width on the last line when inline emoji render wider than body glyphs. */
+export function adjustBubbleLineWidthsForInlineEmoji(
+  lineWidths: number[],
+  bodyText: string,
+): number[] {
+  if (lineWidths.length === 0 || !bodyText.trim()) return lineWidths;
+  const extra = measureInlineEmojiExtraWidthPx(bodyText);
+  if (extra <= 0) return lineWidths;
+  const adjusted = [...lineWidths];
+  adjusted[adjusted.length - 1] = (adjusted[adjusted.length - 1] ?? 0) + extra;
+  return adjusted;
+}
+
 /** Wrapped line widths for bubble body text at `maxContentWidth`. */
 export function measureWrappedLineWidths(text: string, maxContentWidth: number): number[] {
   if (typeof document === "undefined" || maxContentWidth <= 0 || !text.trim()) return [];
 
   const probe = document.createElement("div");
   applyBodyProbeStyles(probe, maxContentWidth);
+  const hasEmoji = UNICODE_EMOJI_PATTERN.test(text);
+  UNICODE_EMOJI_PATTERN.lastIndex = 0;
+  if (hasEmoji) {
+    appendBodyTextWithInlineEmoji(probe, text, MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX);
+    document.body.appendChild(probe);
+    const lineWidths = measureWrappedContentLineWidths(probe);
+    document.body.removeChild(probe);
+    return lineWidths.length > 0 ? lineWidths : [0];
+  }
+
   probe.textContent = text;
   document.body.appendChild(probe);
 
@@ -101,20 +174,43 @@ export function measureMessageBubbleMetaWidthPx(
     MESSAGE_BUBBLE_TIME_FONT_SIZE_PX,
     MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX,
   );
-  return timeWidth + metaExtraWidthPx;
+  return Math.max(
+    MESSAGE_BUBBLE_TIME_MIN_WIDTH_PX,
+    timeWidth + metaExtraWidthPx,
+  );
 }
 
 /** Single-line inline row: body glyphs + gap + time/checks. */
 export function measureInlineBubbleRowWidth(bodyText: string, metaWidthPx: number): number {
   const trimmed = bodyText.trim();
   if (!trimmed) return Math.max(0, metaWidthPx);
-  const textWidth = measureTextGlyphWidth(
-    trimmed,
-    MESSAGE_BUBBLE_FONT_SIZE_PX,
-    MESSAGE_BUBBLE_LINE_HEIGHT_PX,
-  );
+  const textWidth =
+    measureTextGlyphWidth(
+      trimmed,
+      MESSAGE_BUBBLE_FONT_SIZE_PX,
+      MESSAGE_BUBBLE_LINE_HEIGHT_PX,
+    ) +
+    measureInlineEmojiExtraWidthPx(trimmed);
   if (metaWidthPx <= 0) return textWidth;
   return Math.ceil(textWidth + MESSAGE_BUBBLE_META_GAP_PX + metaWidthPx);
+}
+
+function measureInlineEmojiExtraWidthPx(
+  text: string,
+  emojiSizePx = MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX,
+): number {
+  const pattern = new RegExp(UNICODE_EMOJI_PATTERN.source, "gu");
+  let extra = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    const glyphWidth = measureTextGlyphWidth(
+      match[0],
+      MESSAGE_BUBBLE_FONT_SIZE_PX,
+      MESSAGE_BUBBLE_LINE_HEIGHT_PX,
+    );
+    extra += Math.max(0, emojiSizePx - glyphWidth);
+  }
+  return extra;
 }
 
 export function resolveBubbleMetaPlacementFromLineWidths(

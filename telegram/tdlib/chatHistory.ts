@@ -208,6 +208,7 @@ export async function fetchChatHistory(
     has_more_older: hasMoreOlder,
     next_before_message_id: nextBeforeMessageId,
     last_read_outbox_message_id: lastReadOutbox,
+    last_read_inbox_message_id: lastReadInboxMessageIdFromChat(finalChat),
   };
 }
 
@@ -334,6 +335,7 @@ export async function fetchChatHistoryAroundMessage(
     has_more_older: hasMoreOlder,
     next_before_message_id: nextBeforeMessageId,
     last_read_outbox_message_id: lastReadOutbox,
+    last_read_inbox_message_id: lastReadInboxMessageIdFromChat(finalChat),
   };
 }
 
@@ -446,6 +448,7 @@ export async function fetchChatHistorySince(
     member_count: memberCount,
     messages,
     last_read_outbox_message_id: lastReadOutbox,
+    last_read_inbox_message_id: lastReadInboxMessageIdFromChat(chat),
   };
 }
 

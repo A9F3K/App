@@ -120,3 +120,6 @@ export const MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER = 10;
 export const MESSAGE_CHAT_HISTORY_NEWER_PAGE_SIZE = 15;
 /** Distance from bottom (px) that triggers loading the next newer page. */
 export const MESSAGE_CHAT_LOAD_NEWER_THRESHOLD_PX = 120;
+
+/** IntersectionObserver preload margin for history sentinels (telegram-tt). */
+export const MESSAGE_LIST_SENSITIVE_AREA_PX = 750;

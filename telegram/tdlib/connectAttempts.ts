@@ -15,6 +15,8 @@ import {
   refreshLiveChats,
   syncChatThreads,
   INITIAL_MAIN_CHAT_SYNC_LIMIT,
+  scheduleBackgroundChatSync,
+  isBackgroundChatSyncInProgress,
 } from "./syncChats.js";
 import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, markChatInboxRead, sendChatTextMessage, editChatTextMessage } from "./chatHistory.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
@@ -348,6 +350,7 @@ async function finalizeReady(record: AttemptRecord): Promise<void> {
   record.error = null;
   clearStoredAuthMethod(record.telegramUsername);
   attachLiveChatSync(record);
+  scheduleBackgroundChatSync(client, record.telegramUsername);
   logConnectEvent(record, "connect_ready", { chatCount: record.chatCount ?? 0 });
 }
 
@@ -1091,6 +1094,7 @@ export async function resyncUserChats(
       replaceCache: true,
     });
     record.chatCount = count;
+    scheduleBackgroundChatSync(record.client, telegramUsername);
     logConnectEvent(record, "connect_resync_ok", { chatCount: count });
     return { chatCount: count, backfillCount: 0, error: null };
   } catch (err) {
@@ -1098,6 +1102,23 @@ export async function resyncUserChats(
     logConnectEvent(record, "connect_resync_failed", { message });
     return { chatCount: 0, backfillCount: 0, error: message };
   }
+}
+
+/** Nudge background chat paging (idempotent — no-op if already running). */
+export function requestBackgroundChatSync(telegramUsername: string): {
+  started: boolean;
+  inProgress: boolean;
+} {
+  const record = getActiveRecord(telegramUsername);
+  if (!record?.client || record.authState !== "ready") {
+    return {
+      started: false,
+      inProgress: isBackgroundChatSyncInProgress(telegramUsername),
+    };
+  }
+  const wasInProgress = isBackgroundChatSyncInProgress(telegramUsername);
+  scheduleBackgroundChatSync(record.client, telegramUsername);
+  return { started: !wasInProgress, inProgress: true };
 }
 
 /** After gateway restart, reload TDLib sessions from disk so live updates resume. */
@@ -1131,6 +1152,7 @@ export function restorePersistedGatewaySessions(): void {
           skipMemberCounts: true,
           replaceCache: true,
         });
+        scheduleBackgroundChatSync(record.client, telegramUsername);
         logGateway("connect_restore_session_done", {
           telegramUsername,
           chatCount,
@@ -1183,6 +1205,7 @@ export async function getChatHistoryForUser(
   has_more_older: boolean;
   next_before_message_id: number | null;
   last_read_outbox_message_id: number | null;
+  last_read_inbox_message_id: number | null;
   member_count: number | null;
   error: string | null;
 }> {
@@ -1195,6 +1218,7 @@ export async function getChatHistoryForUser(
       has_more_older: false,
       next_before_message_id: null,
       last_read_outbox_message_id: null,
+      last_read_inbox_message_id: null,
       member_count: null,
       error: "session_not_ready",
     };
@@ -1234,6 +1258,7 @@ export async function getChatHistoryForUser(
       has_more_older: loadSince ? false : result.has_more_older,
       next_before_message_id: loadSince ? null : result.next_before_message_id,
       last_read_outbox_message_id: result.last_read_outbox_message_id,
+      last_read_inbox_message_id: result.last_read_inbox_message_id ?? null,
       member_count: memberCount,
       error: null,
     };
@@ -1246,6 +1271,7 @@ export async function getChatHistoryForUser(
       has_more_older: false,
       next_before_message_id: null,
       last_read_outbox_message_id: null,
+      last_read_inbox_message_id: null,
       member_count: null,
       error: message,
     };

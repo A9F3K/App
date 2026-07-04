@@ -10,6 +10,7 @@ function needsAuthenticatedFetch(uri: string): boolean {
 /** Reuse blob URLs so avatar proxy images do not refetch on every list re-render. */
 const avatarBlobCache = new Map<string, string>();
 const avatarFailedUrls = new Set<string>();
+const inflightAvatarFetches = new Map<string, Promise<string | null>>();
 const avatarCacheListeners = new Set<() => void>();
 let avatarCacheRevision = 0;
 
@@ -44,7 +45,7 @@ export function isMessageChatAvatarFetchFailed(uri: string): boolean {
   return avatarFailedUrls.has(uri);
 }
 
-async function fetchAvatarBlob(uri: string): Promise<string | null> {
+async function fetchAvatarBlobOnce(uri: string): Promise<string | null> {
   if (!needsAuthenticatedFetch(uri)) return uri;
   if (avatarFailedUrls.has(uri)) return null;
   const cached = avatarBlobCache.get(uri);
@@ -54,14 +55,31 @@ async function fetchAvatarBlob(uri: string): Promise<string | null> {
   if (!response.ok) {
     if (response.status === 404 || response.status === 403) {
       avatarFailedUrls.add(uri);
+      notifyAvatarCacheListeners();
     }
-    throw new Error(`HTTP_${response.status}`);
+    return null;
   }
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
   avatarBlobCache.set(uri, objectUrl);
   notifyAvatarCacheListeners();
   return objectUrl;
+}
+
+async function fetchAvatarBlob(uri: string): Promise<string | null> {
+  if (!needsAuthenticatedFetch(uri)) return uri;
+  if (avatarFailedUrls.has(uri)) return null;
+  const cached = avatarBlobCache.get(uri);
+  if (cached) return cached;
+
+  const inflight = inflightAvatarFetches.get(uri);
+  if (inflight) return inflight;
+
+  const promise = fetchAvatarBlobOnce(uri).finally(() => {
+    inflightAvatarFetches.delete(uri);
+  });
+  inflightAvatarFetches.set(uri, promise);
+  return promise;
 }
 
 /** Populate the shared avatar blob cache (open-chat prefetch). */
@@ -121,6 +139,7 @@ export function MessageChatAvatarImage({
 
   useEffect(() => {
     if (!loadEnabled) return;
+    if (isMessageChatAvatarFetchFailed(uri)) return;
 
     const cached = readCachedDisplayUri(uri);
     if (cached) {
@@ -131,18 +150,17 @@ export function MessageChatAvatarImage({
     let cancelled = false;
 
     void runQueuedNetworkFetch(async () => {
-      try {
-        const next = await fetchAvatarBlob(uri);
-        if (!cancelled && next) setDisplayUri(next);
-      } catch (err) {
-        if (!cancelled) onErrorRef.current?.(err);
+      const next = await fetchAvatarBlob(uri);
+      if (!cancelled) {
+        if (next) setDisplayUri(next);
+        else onErrorRef.current?.(new Error("avatar_unavailable"));
       }
     }, { priority: fetchPriority });
 
     return () => {
       cancelled = true;
     };
-  }, [uri, loadEnabled, fetchPriority]);
+  }, [uri, loadEnabled, fetchPriority, cacheRevision]);
 
   if (!displayUri) return null;
 

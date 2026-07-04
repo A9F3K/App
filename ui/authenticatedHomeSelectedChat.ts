@@ -326,8 +326,8 @@ export function patchAuthenticatedHomeSelectedChatReadOutbox(messageId: number |
 }
 
 /**
- * Chat-list unread for the open chat: poll may only raise the count (new messages);
- * client scroll marking may lower it until the server catches up.
+ * Chat-list unread for the open chat: scroll marking owns the badge while the chat is open.
+ * Poll cannot overwrite a client-lowered count with a stale higher server value.
  */
 export function resolveAuthenticatedHomeOpenChatUnread(
   incomingUnread: number,
@@ -338,9 +338,7 @@ export function resolveAuthenticatedHomeOpenChatUnread(
   if (selectedChat == null || selectedChat.telegram_chat_id !== chatId) {
     return incoming;
   }
-  return incoming > selectedChat.unread_count
-    ? incoming
-    : selectedChat.unread_count;
+  return selectedChat.unread_count;
 }
 
 /** Open-chat unread badge — shared by the chat list preview and scroll-to-bottom FAB. */
@@ -410,11 +408,12 @@ export function syncAuthenticatedHomeSelectedChat(chats: readonly MessageChatRow
     fresh.chat_action_expires_at !== selectedChat.chat_action_expires_at ||
     fresh.last_read_outbox_message_id !== selectedChat.last_read_outbox_message_id
   ) {
-    // Client-side scroll marks unreads down; poll may only raise the count (new messages).
-    const resolvedUnread =
-      fresh.unread_count > selectedChat.unread_count
-        ? fresh.unread_count
-        : selectedChat.unread_count;
+    const prevTailId = selectedChat.last_message_telegram_id ?? 0;
+    const nextTailId = fresh.last_message_telegram_id ?? 0;
+    const tailBumped = nextTailId > prevTailId;
+    const resolvedUnread = tailBumped
+      ? Math.max(selectedChat.unread_count, fresh.unread_count)
+      : selectedChat.unread_count;
     selectedChat = { ...fresh, unread_count: resolvedUnread };
     writeStoredChat(selectedChat);
     emit();

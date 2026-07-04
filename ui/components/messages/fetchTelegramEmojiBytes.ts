@@ -14,6 +14,7 @@ export type TelegramEmojiAsset = {
 
 const bytesCache = new Map<string, TelegramEmojiAsset>();
 const unavailableCache = new Set<string>();
+const inflightFetches = new Map<string, Promise<TelegramEmojiAsset | null>>();
 let fetchGeneration = 0;
 
 function isTransientEmojiHttpStatus(status: number): boolean {
@@ -50,21 +51,11 @@ function resolveMime(mime: string, bytes: Uint8Array): string {
   return mime || "application/octet-stream";
 }
 
-export async function fetchTelegramEmojiAsset(
+async function fetchTelegramEmojiAssetOnce(
   ref: TelegramEmojiFetchRef,
+  key: string,
   options?: { priority?: NetworkFetchPriority },
 ): Promise<TelegramEmojiAsset | null> {
-  const key = cacheKey(ref);
-  if (unavailableCache.has(key)) {
-    telegramEmojiDebug.fetchUnavailableCached(ref);
-    return null;
-  }
-  const cached = bytesCache.get(key);
-  if (cached) {
-    telegramEmojiDebug.fetchCacheHit(ref, cached.mime, cached.bytes.length);
-    return cached;
-  }
-
   const params = new URLSearchParams();
   if (ref.kind === "custom") {
     params.set("custom_emoji_id", ref.customEmojiId);
@@ -77,18 +68,14 @@ export async function fetchTelegramEmojiAsset(
   try {
     return await runQueuedNetworkFetch(async () => {
       let response = await fetch(url, { credentials: "include" });
-      if (response.status === 403 || response.status === 503 || response.status === 404) {
-        await sleep(response.status === 404 ? 1800 : 800);
-        response = await fetch(url, { credentials: "include" });
-      }
-      if (!response.ok && (response.status === 403 || response.status === 503 || response.status === 404)) {
-        await sleep(response.status === 404 ? 2400 : 1200);
+      if (!response.ok && isTransientEmojiHttpStatus(response.status)) {
+        await sleep(800);
         response = await fetch(url, { credentials: "include" });
       }
       const contentType = response.headers.get("Content-Type");
       if (!response.ok) {
         telegramEmojiDebug.fetchHttpResult(ref, response.status, contentType, 0);
-        if (!isTransientEmojiHttpStatus(response.status) && response.status !== 404) {
+        if (response.status === 404 || !isTransientEmojiHttpStatus(response.status)) {
           unavailableCache.add(key);
         }
         return null;
@@ -110,6 +97,31 @@ export async function fetchTelegramEmojiAsset(
     telegramEmojiDebug.fetchNetworkError(ref, err);
     return null;
   }
+}
+
+export async function fetchTelegramEmojiAsset(
+  ref: TelegramEmojiFetchRef,
+  options?: { priority?: NetworkFetchPriority },
+): Promise<TelegramEmojiAsset | null> {
+  const key = cacheKey(ref);
+  if (unavailableCache.has(key)) {
+    telegramEmojiDebug.fetchUnavailableCached(ref);
+    return null;
+  }
+  const cached = bytesCache.get(key);
+  if (cached) {
+    telegramEmojiDebug.fetchCacheHit(ref, cached.mime, cached.bytes.length);
+    return cached;
+  }
+
+  const inflight = inflightFetches.get(key);
+  if (inflight) return inflight;
+
+  const promise = fetchTelegramEmojiAssetOnce(ref, key, options).finally(() => {
+    inflightFetches.delete(key);
+  });
+  inflightFetches.set(key, promise);
+  return promise;
 }
 
 /** @deprecated Use {@link fetchTelegramEmojiAsset}. */

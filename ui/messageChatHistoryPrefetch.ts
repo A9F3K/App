@@ -19,10 +19,13 @@ import {
 } from "./messageChatHistoryCache";
 import { getChatScrollPosition } from "./messageChatScrollCache";
 import { logPageDisplay } from "./pageDisplayLog";
+import { isChatListSyncInProgress } from "./components/messages/chatListSyncStatus";
 
 /** Max visible chats we warm in the background (viewport-driven). */
 const PREFETCH_VISIBLE_MAX = 7;
 const MAX_BACKGROUND_CONCURRENT = 2;
+/** Stagger between background list prefetches (telegram-tt). */
+const TOP_CHAT_PREFETCH_INTERVAL_MS = 100;
 
 type LoadSpec = {
   warmup: boolean;
@@ -67,11 +70,18 @@ function toCacheAnchorSpec(spec: LoadSpec): ChatHistoryCacheAnchorSpec {
   };
 }
 
-/** Always load the latest tail; scroll position is restored client-side. */
+/** Load around the inbox read cursor when the chat has unreads on first open. */
 export function shouldPrefetchHistoryAroundUnread(
-  _chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count">,
+  chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count">,
 ): boolean {
-  return false;
+  const unread = Math.max(
+    0,
+    Math.trunc(Number.isFinite(chat.unread_count) ? chat.unread_count : 0),
+  );
+  if (unread <= 0) return false;
+  const scrollPos = getChatScrollPosition(chat.telegram_chat_id);
+  if (scrollPos != null) return false;
+  return true;
 }
 
 function resolveOpenLoadSpec(
@@ -98,6 +108,25 @@ function resolveOpenLoadSpec(
       aroundMessageId: anchorId,
       olderAbove: MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER,
       newerBelow: MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER,
+    };
+  }
+
+  if (aroundUnread) {
+    const unread = Math.max(
+      0,
+      Math.trunc(Number.isFinite(chat.unread_count) ? chat.unread_count : 0),
+    );
+    return {
+      warmup: true,
+      limit: Math.min(
+        100,
+        Math.max(
+          MESSAGE_CHAT_HISTORY_PAGE_SIZE,
+          unread + MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER + 8,
+        ),
+      ),
+      previewOnly: false,
+      aroundUnread: true,
     };
   }
 
@@ -219,31 +248,33 @@ function startSharedLoad(
 }
 
 function scheduleBackgroundDrain(): void {
-  if (openChatLoadingId != null) return;
-  while (backgroundActive < MAX_BACKGROUND_CONCURRENT && queued.length > 0) {
-    const next = queued.shift();
-    if (!next) break;
+  if (openChatLoadingId != null || isChatListSyncInProgress()) return;
+  if (backgroundActive >= MAX_BACKGROUND_CONCURRENT || queued.length === 0) return;
 
-    const freshMs = next.spec.previewOnly ? PREVIEW_FRESH_MS : undefined;
-    if (
-      isChatHistoryCacheFresh(next.chatId, freshMs) &&
-      isChatHistoryCacheAnchorMatch(next.chatId, toCacheAnchorSpec(next.spec))
-    ) {
-      continue;
-    }
-    if (sharedLoads.has(next.chatId)) {
-      continue;
-    }
+  const next = queued.shift();
+  if (!next) return;
 
-    backgroundActive += 1;
-    const promise = startSharedLoad(next.chatId, next.peerUserId, next.spec)
-      .finally(() => {
-        backgroundActive -= 1;
-        inFlightBackground.delete(next.chatId);
-        scheduleBackgroundDrain();
-      });
-    inFlightBackground.set(next.chatId, promise.then(() => undefined));
+  const freshMs = next.spec.previewOnly ? PREVIEW_FRESH_MS : undefined;
+  if (
+    isChatHistoryCacheFresh(next.chatId, freshMs) &&
+    isChatHistoryCacheAnchorMatch(next.chatId, toCacheAnchorSpec(next.spec))
+  ) {
+    scheduleBackgroundDrain();
+    return;
   }
+  if (sharedLoads.has(next.chatId)) {
+    scheduleBackgroundDrain();
+    return;
+  }
+
+  backgroundActive += 1;
+  const promise = startSharedLoad(next.chatId, next.peerUserId, next.spec)
+    .finally(() => {
+      backgroundActive -= 1;
+      inFlightBackground.delete(next.chatId);
+      setTimeout(() => scheduleBackgroundDrain(), TOP_CHAT_PREFETCH_INTERVAL_MS);
+    });
+  inFlightBackground.set(next.chatId, promise.then(() => undefined));
 }
 
 function enqueueBackgroundPrefetch(
@@ -252,7 +283,7 @@ function enqueueBackgroundPrefetch(
   spec: LoadSpec,
 ): void {
   if (!Number.isFinite(chatId)) return;
-  if (openChatLoadingId != null) return;
+  if (openChatLoadingId != null || isChatListSyncInProgress()) return;
 
   const freshMs = spec.previewOnly ? PREVIEW_FRESH_MS : undefined;
   if (
@@ -292,6 +323,7 @@ export async function loadOpenChatHistoryFirstPage(
       hasMoreOlder: false,
       nextBeforeMessageId: null,
       lastReadOutboxMessageId: null,
+      lastReadInboxMessageId: null,
       memberCount: null,
       selfUserId: null,
     };
@@ -329,7 +361,7 @@ export function isOpenChatHistoryLoading(): boolean {
 export function prefetchChatHistory(
   chat: Pick<MessageChatRowData, "telegram_chat_id" | "peer_user_id" | "unread_count">,
 ): void {
-  if (openChatLoadingId != null) return;
+  if (openChatLoadingId != null || isChatListSyncInProgress()) return;
   enqueueBackgroundPrefetch(
     chat.telegram_chat_id,
     chat.peer_user_id ?? null,

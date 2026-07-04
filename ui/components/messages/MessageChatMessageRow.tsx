@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Platform, Pressable, Text, View, type GestureResponderEvent, type TextLayoutEvent } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { typographyRect15 } from "../../theme";
@@ -20,6 +20,7 @@ import {
   measureLongestWrappedBodyLineWidth,
   measureMessageBubbleMetaWidthPx,
   measureTextGlyphWidth,
+  adjustBubbleLineWidthsForInlineEmoji,
   resolveBubbleMetaPlacementFromLineWidths,
   resolveMessageBubbleLayout,
   type BubbleMetaPlacement,
@@ -55,6 +56,7 @@ import {
   setMessageChatComposeEdit,
   setMessageChatComposeReply,
 } from "../../messageChatCompose";
+import { useElementVisible } from "./useElementVisible";
 
 function fittedBubbleLayoutFromTextLayout(
   event: TextLayoutEvent,
@@ -69,18 +71,21 @@ function fittedBubbleLayoutFromTextLayout(
     return { width: 0, innerWidthPx: 0, placement: "stacked" };
   }
   const trimmed = bodyText.trim();
-  const lineWidths = lines.map((line, index, all) => {
-    const width = line.width;
-    if (all.length === 1 && trimmed.length > 0) {
-      const glyphWidth = measureTextGlyphWidth(
-        trimmed,
-        MESSAGE_BUBBLE_FONT_SIZE_PX,
-        MESSAGE_BUBBLE_LINE_HEIGHT_PX,
-      );
-      if (glyphWidth > 0) return Math.min(width, glyphWidth);
-    }
-    return width;
-  });
+  const lineWidths = adjustBubbleLineWidthsForInlineEmoji(
+    lines.map((line, index, all) => {
+      const width = line.width;
+      if (all.length === 1 && trimmed.length > 0) {
+        const glyphWidth = measureTextGlyphWidth(
+          trimmed,
+          MESSAGE_BUBBLE_FONT_SIZE_PX,
+          MESSAGE_BUBBLE_LINE_HEIGHT_PX,
+        );
+        if (glyphWidth > 0) return Math.min(width, glyphWidth);
+      }
+      return width;
+    }),
+    bodyText,
+  );
   const placement = resolveBubbleMetaPlacementFromLineWidths(
     lineWidths,
     innerMaxWidth,
@@ -139,7 +144,13 @@ export function MessageChatMessageRow({
   const [menuAnchor, setMenuAnchor] = useState<MessageContextMenuAnchor | null>(null);
   const lastPointerRef = useRef<MessageContextMenuAnchor | null>(null);
   const bubblePressableRef = useRef<View | null>(null);
+  const rowRef = useRef<View | null>(null);
   const { colorScheme } = useTelegram();
+  const rowInView = useElementVisible(rowRef as RefObject<Element | null>, {
+    rootMargin: "160px",
+  });
+  const isProxyAvatar = Boolean(iconUrl?.includes("/api/telegram-messages-avatar"));
+  const avatarFetchEnabled = !isProxyAvatar || rowInView;
 
   const bubbleMaxWidth = Math.max(
     0,
@@ -336,13 +347,14 @@ export function MessageChatMessageRow({
           }
         : nativeBubbleLayout ?? syncTextBubbleLayout;
   const metaPlacement = bubbleLayout?.placement ?? "stacked";
-  const bubbleContentWidthPx = bubbleLayout?.innerWidthPx ?? bubbleInnerMaxWidth;
   const useWebFitContent =
     Platform.OS === "web" &&
     columnWidthPx > 0 &&
     !isBareMediaMessage &&
-    !(showMedia && hasMediaCaption) &&
-    metaPlacement === "inline";
+    !(showMedia && hasMediaCaption);
+  const bubbleContentWidthPx = useWebFitContent
+    ? bubbleInnerMaxWidth
+    : bubbleLayout?.innerWidthPx ?? bubbleInnerMaxWidth;
   const bubbleWidth = useWebFitContent ? null : bubbleLayout?.width ?? null;
   const measureText = bodyText || " ";
   const showChannelBadge = Boolean(item.sender_is_channel) && chatKind !== "channel";
@@ -386,7 +398,7 @@ export function MessageChatMessageRow({
     }
   }, []);
 
-  const onBubblePress = useCallback(
+  const onBubbleLongPress = useCallback(
     (event: GestureResponderEvent) => {
       if (!showActionSheet) return;
       capturePointer(event);
@@ -442,6 +454,7 @@ export function MessageChatMessageRow({
 
   return (
     <View
+      ref={rowRef}
       style={{
         flexDirection: "row",
         alignItems: isCompactSingleLineRow ? "center" : "flex-end",
@@ -464,6 +477,7 @@ export function MessageChatMessageRow({
           sizePx={MESSAGE_BUBBLE_AVATAR_PX}
           colors={colors}
           scheme={colorScheme}
+          loadEnabled={avatarFetchEnabled}
           fetchPriority="high"
         />
       </View>
@@ -497,12 +511,9 @@ export function MessageChatMessageRow({
             </Text>
           ) : null}
           <Pressable
-            onPress={onBubblePress}
-            onLongPress={showActionSheet ? onBubblePress : undefined}
-            onContextMenu={onContextMenu}
-            style={({ pressed }) => ({
-              opacity: pressed && showActionSheet ? 0.92 : 1,
-            })}
+            onLongPress={showActionSheet ? onBubbleLongPress : undefined}
+            onContextMenu={showActionSheet ? onContextMenu : undefined}
+            delayLongPress={400}
           >
           <View
             style={[

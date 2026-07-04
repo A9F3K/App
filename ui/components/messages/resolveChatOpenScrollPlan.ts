@@ -11,6 +11,8 @@ export type ChatOpenScrollPlan = {
   followingBottom: boolean;
   pendingInitialScroll: boolean;
   pendingScrollRestore: CachedChatScrollPosition | null;
+  /** Open at the first unread bubble (Telegram-style) instead of the latest tail. */
+  scrollToFirstUnread: boolean;
 };
 
 /** Resolve where the chat should open before the first paint (no useEffect lag). */
@@ -32,6 +34,19 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
       followingBottom,
       pendingInitialScroll: false,
       pendingScrollRestore: cachedScroll,
+      scrollToFirstUnread: false,
+    };
+  }
+
+  if (openingUnreadCount > 0) {
+    return {
+      openingUnreadCount,
+      openAnchor: "top",
+      pinMessagesToBottom: false,
+      followingBottom: false,
+      pendingInitialScroll: true,
+      pendingScrollRestore: null,
+      scrollToFirstUnread: true,
     };
   }
 
@@ -44,5 +59,6 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
     followingBottom,
     pendingInitialScroll: true,
     pendingScrollRestore: null,
+    scrollToFirstUnread: false,
   };
 }

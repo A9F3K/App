@@ -892,6 +892,10 @@ export async function syncRemainingChatsInBackground(
   return merged;
 }
 
+export function isBackgroundChatSyncInProgress(telegramUsername: string): boolean {
+  return backgroundSyncInflight.has(telegramUsername);
+}
+
 export function scheduleBackgroundChatSync(client: Client, telegramUsername: string): void {
   if (backgroundSyncInflight.has(telegramUsername)) return;
   backgroundSyncInflight.add(telegramUsername);

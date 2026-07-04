@@ -183,6 +183,7 @@ function MessageChatBubbleTextContent({
             {
               textAlign: "left",
               paddingRight: metaPadRight,
+              ...(Platform.OS === "web" ? ({ boxSizing: "border-box" } as object) : null),
             },
           ]}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
@@ -198,6 +199,8 @@ function MessageChatBubbleTextContent({
             flexDirection: "row",
             justifyContent: "flex-end",
             alignItems: "baseline",
+            zIndex: 1,
+            pointerEvents: "none",
           }}
         >
           {timeRow}

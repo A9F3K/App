@@ -3,7 +3,7 @@ import { View } from "react-native";
 import type { ThemeColors, ThemeName } from "../../theme";
 import { ChatAvatarFallback } from "./ChatAvatarFallback";
 import type { NetworkFetchPriority } from "./networkFetchQueue";
-import { isMessageChatAvatarBlobCached, MessageChatAvatarImage } from "./MessageChatAvatarImage";
+import { isMessageChatAvatarBlobCached, isMessageChatAvatarFetchFailed, MessageChatAvatarImage } from "./MessageChatAvatarImage";
 
 type Props = {
   iconUrl: string | null;
@@ -40,7 +40,8 @@ export function MessageChatAvatarSlot({
     setImageReady(Boolean(iconUrl && isMessageChatAvatarBlobCached(iconUrl)));
   }, [iconUrl]);
 
-  const tryImage = Boolean(iconUrl) && !loadFailed;
+  const tryImage =
+    Boolean(iconUrl) && !loadFailed && !isMessageChatAvatarFetchFailed(iconUrl ?? "");
 
   return (
     <View

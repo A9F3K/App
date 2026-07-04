@@ -17,6 +17,16 @@ import {
 import { prefetchChatHistory } from "../messageChatHistoryPrefetch";
 import { getCachedChatHistory } from "../messageChatHistoryCache";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
+import { MessageChatOlderHistoryLoadLine } from "./messages/MessageChatOlderHistoryLoadLine";
+import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
+import {
+  setChatListSyncStatus,
+  type ChatListSyncStatus,
+} from "./messages/chatListSyncStatus";
+import {
+  CHAT_LIST_INITIAL_SYNC_LIMIT,
+  useChatListViewport,
+} from "../hooks/useChatListViewport";
 import { telegramEmojiDebug } from "./messages/telegramEmojiDebug";
 import { homeListShellStyle } from "./messages/messageListLayout";
 import { useTelegramMessagesChatListStream } from "./messages/useTelegramMessagesChatListStream";
@@ -254,6 +264,7 @@ function mergeChatRows(
 
   const byId = new Map(incoming.map((row) => [row.telegram_chat_id, row]));
   const merged: MessageChatRowData[] = [];
+  const mergedIds = new Set<number>();
 
   for (const row of prev) {
     const fresh = byId.get(row.telegram_chat_id);
@@ -267,6 +278,20 @@ function mergeChatRows(
       });
     } else {
       merged.push(row);
+    }
+    mergedIds.add(row.telegram_chat_id);
+  }
+
+  for (const row of incoming) {
+    if (!mergedIds.has(row.telegram_chat_id)) {
+      merged.push({
+        ...row,
+        unread_count: resolveAuthenticatedHomeOpenChatUnread(
+          row.unread_count,
+          row.telegram_chat_id,
+        ),
+      });
+      mergedIds.add(row.telegram_chat_id);
     }
   }
 
@@ -289,6 +314,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const { authReady, isAuthenticated } = useAuth();
   const { isTelegramMessagesConnected, refreshStatus } = useTelegramMessagesConnection();
   const [chats, setChats] = useState<MessageChatRowData[]>([]);
+  const [chatListSync, setChatListSync] = useState<ChatListSyncStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [gatewayWarming, setGatewayWarming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -316,6 +342,36 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const pollInFlightRef = useRef(false);
   const unchangedPollStreakRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { viewportCount, expandViewport, canExpandViewport } = useChatListViewport(chats.length);
+  const loadChatsRef = useRef<(options?: { allowAvatarResync?: boolean; silent?: boolean }) => Promise<void>>(
+    async () => {},
+  );
+
+  const applyChatListSync = useCallback((status: ChatListSyncStatus | null | undefined) => {
+    if (!status) return;
+    setChatListSync(status);
+    setChatListSyncStatus(status);
+  }, []);
+
+  const requestLoadMoreChats = useCallback(async () => {
+    try {
+      const response = await fetch(buildApiUrl("/api/telegram-messages-chats-load-more"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const json = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        chatListSync?: ChatListSyncStatus;
+      };
+      if (json.chatListSync) {
+        applyChatListSync(json.chatListSync);
+      }
+    } catch {
+      /* poll / SSE will pick up background pages */
+    }
+  }, [applyChatListSync]);
 
   const triggerGatewayResync = useCallback(async (reason: string) => {
     const url = buildApiUrl("/api/telegram-messages-resync");
@@ -397,6 +453,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         error?: string;
         source?: string;
         revision?: number;
+        chatListSync?: ChatListSyncStatus;
       };
       if (!response.ok || !json.ok) {
         throw new Error(json.error || `HTTP_${response.status}`);
@@ -405,6 +462,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         if (typeof json.revision === "number") {
           lastLiveRevisionRef.current = json.revision;
         }
+        applyChatListSync(json.chatListSync);
         unchangedPollStreakRef.current += 1;
         if (options?.silent && pollCountRef.current % 10 === 0) {
           logPageDisplay("messages_chats_poll_unchanged", {
@@ -428,6 +486,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       if (json.source === "live" && typeof json.revision === "number") {
         lastLiveRevisionRef.current = json.revision;
       }
+      applyChatListSync(json.chatListSync);
       setChats((prev) => {
         const next = mergeChatRows(prev, rows);
         const changed = chatsChanged(prev, next);
@@ -489,7 +548,11 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     } finally {
       if (!options?.silent) setLoading(false);
     }
-  }, [isAuthenticated, isTelegramMessagesConnected]);
+  }, [applyChatListSync, isAuthenticated, isTelegramMessagesConnected]);
+
+  useEffect(() => {
+    loadChatsRef.current = loadChats;
+  }, [loadChats]);
 
   const streamRevisionPendingRef = useRef<number | null>(null);
   const streamLoadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -660,6 +723,47 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     clearAuthenticatedHomeSelectedChat();
   }, [chatSelectionEnabled]);
 
+  const visibleChats = chats.slice(0, viewportCount);
+  const mayHaveMoreOnServer =
+    chatListSync?.inProgress === true ||
+    (chats.length >= CHAT_LIST_INITIAL_SYNC_LIMIT && chatListSync?.inProgress !== false);
+  const showBottomLoader =
+    chatListSync?.inProgress === true ||
+    (mayHaveMoreOnServer && !canExpandViewport);
+
+  const handleChatListNearBottom = useCallback(() => {
+    if (canExpandViewport) {
+      expandViewport();
+      return;
+    }
+    void requestLoadMoreChats();
+    void loadChatsRef.current({ silent: true });
+  }, [canExpandViewport, expandViewport, requestLoadMoreChats]);
+
+  const renderChatRows = (items: MessageChatRowData[]) => (
+    <>
+      {items.map((item, index) => (
+        <MessageChatRow
+          key={item.telegram_chat_id}
+          item={item}
+          isLast={index === items.length - 1 && !showBottomLoader}
+          isActive={chatSelectionEnabled && selectedChatId === item.telegram_chat_id}
+          colors={colors}
+          timePendingLabel={t("feed.timePending")}
+          onPress={chatSelectionEnabled ? () => handleChatPress(item) : undefined}
+          onPrefetch={() => handleRowPrefetch(item)}
+        />
+      ))}
+      <ChatListBottomSentinel
+        enabled={chats.length > 0}
+        onNearBottom={handleChatListNearBottom}
+      />
+      {showBottomLoader ? (
+        <MessageChatOlderHistoryLoadLine active edge="bottom" color={colors.accent} />
+      ) : null}
+    </>
+  );
+
   const listShellStyle = homeListShellStyle(wideListChrome);
 
   if (!isTelegramMessagesConnected) {
@@ -711,18 +815,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const list = (
     <View style={{ width: "100%", alignSelf: "stretch" }} pointerEvents="box-none">
       <View style={listShellStyle} pointerEvents="box-none">
-        {chats.map((item, index) => (
-          <MessageChatRow
-            key={item.telegram_chat_id}
-            item={item}
-            isLast={index === chats.length - 1}
-            isActive={chatSelectionEnabled && selectedChatId === item.telegram_chat_id}
-            colors={colors}
-            timePendingLabel={t("feed.timePending")}
-            onPress={chatSelectionEnabled ? () => handleChatPress(item) : undefined}
-            onPrefetch={() => handleRowPrefetch(item)}
-          />
-        ))}
+        {renderChatRows(visibleChats)}
       </View>
     </View>
   );
@@ -737,18 +830,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       contentContainerStyle={{ ...listShellStyle, flexGrow: 1 }}
       onScrollBeginDrag={handleClearSelection}
     >
-      {chats.map((item, index) => (
-        <MessageChatRow
-          key={item.telegram_chat_id}
-          item={item}
-          isLast={index === chats.length - 1}
-          isActive={chatSelectionEnabled && selectedChatId === item.telegram_chat_id}
-          colors={colors}
-          timePendingLabel={t("feed.timePending")}
-          onPress={chatSelectionEnabled ? () => handleChatPress(item) : undefined}
-          onPrefetch={() => handleRowPrefetch(item)}
-        />
-      ))}
+      {renderChatRows(visibleChats)}
       <Pressable style={{ flexGrow: 1, minHeight: 1 }} onPress={handleClearSelection} />
     </ScrollView>
   );

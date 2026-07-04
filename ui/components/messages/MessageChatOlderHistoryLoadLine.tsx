@@ -6,10 +6,12 @@ import { layout } from "../../theme";
 type Props = {
   active: boolean;
   color: string;
+  /** `top` = below chat header; `bottom` = above input / FAB seam. */
+  edge?: "top" | "bottom";
 };
 
-/** 1px accent line at the chat header seam while older history pages load (native). */
-export function MessageChatOlderHistoryLoadLine({ active, color }: Props) {
+/** 1px accent line while history pages load (native). */
+export function MessageChatOlderHistoryLoadLine({ active, color, edge = "top" }: Props) {
   const lineH = scrollIndicatorHairlineBorderWidthPx();
   const widthAnim = useRef(new Animated.Value(0)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
@@ -64,6 +66,11 @@ export function MessageChatOlderHistoryLoadLine({ active, color }: Props) {
 
   if (!mounted) return null;
 
+  const seamStyle =
+    edge === "bottom"
+      ? { bottom: -lineH as const }
+      : { top: -lineH as const };
+
   return (
     <View
       pointerEvents="none"
@@ -71,10 +78,10 @@ export function MessageChatOlderHistoryLoadLine({ active, color }: Props) {
         position: "absolute",
         left: 0,
         right: 0,
-        top: -lineH,
         height: lineH,
         zIndex: layout.authenticatedHome.scrollIndicatorOverlayZIndex + 1,
         overflow: "hidden",
+        ...seamStyle,
       }}
     >
       <Animated.View

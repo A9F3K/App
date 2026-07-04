@@ -4,6 +4,7 @@ import { getGatewayBindHost, getGatewayPort, getGatewaySecret, getTdlibDbRoot } 
 import { logGateway } from "./gatewayLog.js";
 import { safeTelegramUserIdForLog } from "../../shared/appLog.js";
 import { serveLiveChatRevisionStream } from "./liveChatStream.js";
+import { isBackgroundChatSyncInProgress } from "./syncChats.js";
 import {
   disconnectUserSession,
   gatewayHealth,
@@ -17,6 +18,7 @@ import {
   getLiveChatListRevision,
   getUserConnectSnapshot,
   resyncUserChats,
+  requestBackgroundChatSync,
   restorePersistedGatewaySessions,
   resumeExistingSession,
   hasPersistedTdlibSession,
@@ -244,6 +246,10 @@ export function startTdlibGatewayServer(): http.Server {
               unchanged: true,
               source: "live",
               revision,
+              chatListSync: {
+                inProgress: isBackgroundChatSyncInProgress(telegramUsername),
+                cachedCount: getLiveChatList(telegramUsername)?.length ?? 0,
+              },
             });
             return;
           }
@@ -269,6 +275,29 @@ export function startTdlibGatewayServer(): http.Server {
             source: "live",
             revision: currentRevision,
             chats: chats ?? [],
+            chatListSync: {
+              inProgress: isBackgroundChatSyncInProgress(telegramUsername),
+              cachedCount: chats?.length ?? 0,
+            },
+          });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chats/load-more") {
+          const body = (await readJson(req)) as { telegramUsername?: string };
+          const telegramUsername = (body.telegramUsername || "").trim();
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "username_required" });
+            return;
+          }
+          const result = requestBackgroundChatSync(telegramUsername);
+          sendJson(res, 200, {
+            ok: true,
+            started: result.started,
+            chatListSync: {
+              inProgress: result.inProgress,
+              cachedCount: getLiveChatList(telegramUsername)?.length ?? 0,
+            },
           });
           return;
         }
@@ -396,6 +425,7 @@ export function startTdlibGatewayServer(): http.Server {
             has_more_older: !result.error && result.has_more_older,
             next_before_message_id: result.next_before_message_id,
             last_read_outbox_message_id: result.last_read_outbox_message_id,
+            last_read_inbox_message_id: result.last_read_inbox_message_id,
             error: result.error,
           });
           return;

@@ -1,5 +1,4 @@
 import { emitLiveChatRevision } from "./liveChatRevisionNotify.js";
-import { specialUserForceIncludedPeerUserIds } from "../../shared/specialTelegramUsers.js";
 import {
   CHAT_ACTION_TTL_MS,
   chatTitle,
@@ -197,13 +196,7 @@ export function mergeLiveChatRows(
   rows: Omit<LiveChatRow, "revision">[],
 ): number {
   const cache = userCache(telegramUsername);
-  const forcedPeerIds = new Set(specialUserForceIncludedPeerUserIds());
-  const filtered = rows.filter((row) => {
-    if (cache.chats.has(row.telegram_chat_id)) return true;
-    if (row.pin_order !== "0") return true;
-    const peerUserId = row.peer_user_id;
-    return peerUserId != null && forcedPeerIds.has(peerUserId);
-  });
+  const filtered = rows.filter((row) => Number.isFinite(row.telegram_chat_id));
   if (filtered.length === 0) return cache.revision;
   const rev = bumpRevision(cache, telegramUsername);
   for (const row of filtered) {
