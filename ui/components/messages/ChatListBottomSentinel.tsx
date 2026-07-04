@@ -3,8 +3,8 @@ import { View } from "react-native";
 import { debounceLeading } from "../../util/debounceLeading";
 import { useElementVisible } from "./useElementVisible";
 
-const CHAT_LIST_SENTINEL_ROOT_MARGIN_PX = "800px";
-const CHAT_LIST_SENTINEL_DEBOUNCE_MS = 600;
+const CHAT_LIST_SENTINEL_ROOT_MARGIN_PX = "240px";
+const CHAT_LIST_SENTINEL_DEBOUNCE_MS = 200;
 
 type Props = {
   enabled: boolean;

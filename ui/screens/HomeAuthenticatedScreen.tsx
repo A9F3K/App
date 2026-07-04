@@ -22,6 +22,12 @@ import { AuthenticatedHomeLeftNavStrip } from "../components/AuthenticatedHomeLe
 import { AuthenticatedHomeFeedPanel } from "../components/AuthenticatedHomeFeedPanel";
 import { AuthenticatedHomeMessagesPanel } from "../components/AuthenticatedHomeMessagesPanel";
 import { MessageChatPanel } from "../components/messages/MessageChatPanel";
+import { MessageChatOlderHistoryLoadLine } from "../components/messages/MessageChatOlderHistoryLoadLine";
+import {
+  isChatListBottomLoaderActive,
+  subscribeChatListBottomLoaderActive,
+} from "../components/messages/chatListBottomLoaderStatus";
+import { invokeChatListNearBottom } from "../components/messages/chatListNearBottom";
 import { MessageChatWriteBottomBar } from "../components/messages/MessageChatWriteBottomBar";
 import { GetPanelContent } from "../components/get/GetPanelContent";
 import { SendPanelContent } from "../components/send/SendPanelContent";
@@ -33,7 +39,7 @@ import {
   readAuthenticatedHomeLayoutWidthPx,
 } from "../authenticatedHomeLayoutWidth";
 import { AuthenticatedHomePersistedPanelSlot } from "../components/AuthenticatedHomePersistedPanelSlot";
-import { HspScrollColumn } from "../components/HspScrollColumn";
+import { HspScrollColumn, type HspScrollColumnHandle } from "../components/HspScrollColumn";
 import { Address } from "@ton/core";
 import { type TelegramWalletRow, useTelegram } from "../components/Telegram";
 import { logPageDisplay } from "../pageDisplayLog";
@@ -562,6 +568,20 @@ export function HomeAuthenticatedScreen() {
   const router = useRouter();
   const { t, tf, translateFlowError } = useAppStrings();
   const homeNavIndex = useAuthenticatedHomeLeftNavIndex();
+  const chatListBottomLoaderActive = useSyncExternalStore(
+    subscribeChatListBottomLoaderActive,
+    isChatListBottomLoaderActive,
+    () => false,
+  );
+  const showChatListBottomLoader = chatListBottomLoaderActive && homeNavIndex === 1;
+  const homeLeftScrollRef = useRef<HspScrollColumnHandle | null>(null);
+  const handleHomeLeftScrollNearBottom = useCallback(() => {
+    if (homeNavIndex !== 1) return;
+    invokeChatListNearBottom();
+    requestAnimationFrame(() => {
+      homeLeftScrollRef.current?.clearNearBottomLatch();
+    });
+  }, [homeNavIndex]);
   const selectedMessageChat = useAuthenticatedHomeSelectedChat();
   const middleColumnFocus = useAuthenticatedHomeMiddleColumnFocus();
   const rightPanel = useAuthenticatedHomeRightPanel();
@@ -1527,23 +1547,42 @@ export function HomeAuthenticatedScreen() {
     </>
   );
 
+  const homeLeftScrollShell = (scrollColumn: ReactNode) => (
+    <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
+      {scrollColumn}
+      {showChatListBottomLoader ? (
+        <MessageChatOlderHistoryLoadLine active edge="bottom" color={colors.accent} />
+      ) : null}
+    </View>
+  );
+
   const homeLeftColumn = isWideHome ? (
     <>
       {homeLeftNavStrip}
-      <HspScrollColumn
-        style={{ flex: 1, minHeight: 0 }}
-        contentContainerStyle={homeWideScrollContentStyle}
-      >
-        {homeMainColumnBlocks}
-      </HspScrollColumn>
+      {homeLeftScrollShell(
+        <HspScrollColumn
+          style={{ flex: 1, minHeight: 0 }}
+          contentContainerStyle={homeWideScrollContentStyle}
+          nearBottomThresholdPx={240}
+          onNearBottom={handleHomeLeftScrollNearBottom}
+          scrollControllerRef={homeLeftScrollRef}
+        >
+          {homeMainColumnBlocks}
+        </HspScrollColumn>,
+      )}
     </>
   ) : (
-    <HspScrollColumn
-      style={{ flex: 1, minHeight: 0 }}
-      contentContainerStyle={homeCompactScrollContentStyle}
-    >
-      {homeCompactMainBlock}
-    </HspScrollColumn>
+    homeLeftScrollShell(
+      <HspScrollColumn
+        style={{ flex: 1, minHeight: 0 }}
+        contentContainerStyle={homeCompactScrollContentStyle}
+        nearBottomThresholdPx={240}
+        onNearBottom={handleHomeLeftScrollNearBottom}
+        scrollControllerRef={homeLeftScrollRef}
+      >
+        {homeCompactMainBlock}
+      </HspScrollColumn>,
+    )
   );
 
   const homeWideRightColumn = (

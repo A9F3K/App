@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Text, View, type LayoutChangeEvent } from "react-native";
+import { ActivityIndicator, Platform, Text, View, type LayoutChangeEvent } from "react-native";
 import { useAuth } from "../../../auth/AuthContext";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { useAuthenticatedHomeHistoryLoadTarget } from "../../authenticatedHomeSelectedChat";
@@ -62,7 +62,7 @@ import { resolveChatOpenScrollPlan } from "./resolveChatOpenScrollPlan";
 import { prefetchOpenChatAvatars, setOpenChatAvatarPriority, isOpenChatAvatarPriority } from "./messageChatAvatarPrefetch";
 import type { MessageChatRowData } from "./MessageChatRow";
 import {
-  collectNextUnreadMessageIdToMark,
+  collectFullyVisibleUnreadMessageIds,
   minIntersectingMessageId,
   resolveFirstUnreadMessageId,
   computeRemainingUnreadCount,
@@ -72,6 +72,8 @@ import {
   topViewportAnchorMessageId,
   type MessageScrollLayoutEntry,
 } from "./messageListLayout";
+import { resolveMessageListVirtualWindow } from "./messageListVirtualWindow";
+import { prefetchTelegramEmojiAssetsFromMessages } from "./fetchTelegramEmojiBytes";
 import { telegramEmojiDebug } from "./telegramEmojiDebug";
 
 type Props = {
@@ -251,6 +253,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const historySyncKeyRef = useRef("");
   const chatScrollPaintReadyRef = useRef(false);
   const messageLayoutsRef = useRef<Map<number, MessageScrollLayoutEntry>>(new Map());
+  const messageRowHeightCacheRef = useRef<Map<number, number>>(new Map());
+  const lastDisplayedUnreadRemainingRef = useRef<number | null>(null);
+  const virtualScrollTickRef = useRef(0);
+  const virtualScrollRafRef = useRef<number | null>(null);
+  const [virtualScrollTick, setVirtualScrollTick] = useState(0);
   const displayMessagesRef = useRef<MessageChatHistoryItem[]>([]);
   const syncScrollBelowUnreadRef = useRef<(metrics: HspScrollMetrics) => void>(() => {});
   const scheduleSyncScrollBelowUnreadRef = useRef<() => void>(() => {});
@@ -327,6 +334,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       lastAppliedCacheSignatureRef.current = "";
       lastAvatarPrefetchGenerationRef.current = 0;
       messageLayoutsRef.current.clear();
+      messageRowHeightCacheRef.current.clear();
+      lastDisplayedUnreadRemainingRef.current = null;
       fullyReadUnreadIdsRef.current.clear();
       unreadMarkingArmedRef.current = false;
       unreadViewportBaselineMessageIdRef.current = 0;
@@ -636,10 +645,21 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     }
   }, []);
 
+  const scheduleVirtualScrollWindowUpdate = useCallback(() => {
+    if (Platform.OS !== "web") return;
+    if (virtualScrollRafRef.current != null) return;
+    virtualScrollRafRef.current = requestAnimationFrame(() => {
+      virtualScrollRafRef.current = null;
+      virtualScrollTickRef.current += 1;
+      setVirtualScrollTick(virtualScrollTickRef.current);
+    });
+  }, []);
+
   const handleScrollPositionChange = useCallback(
     (metrics: HspScrollMetrics) => {
       if (metrics.contentH <= 0) return;
       pinnedScrollYRef.current = metrics.scrollY;
+      scheduleVirtualScrollWindowUpdate();
       const nearBottom = isScrollNearBottom(metrics);
 
       tryUnlockPagedLoad(metrics);
@@ -735,6 +755,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     [
       chat.last_message_telegram_id,
       loadedDisplayTailId,
+      scheduleVirtualScrollWindowUpdate,
       tryArmUnreadMarking,
       tryUnlockPagedLoad,
       isScrollNearBottom,
@@ -962,6 +983,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       for (const id of messageLayoutsRef.current.keys()) {
         if (!liveIds.has(id)) messageLayoutsRef.current.delete(id);
       }
+      for (const id of messageRowHeightCacheRef.current.keys()) {
+        if (!liveIds.has(id)) messageRowHeightCacheRef.current.delete(id);
+      }
     }
   }, [displayMessages]);
 
@@ -984,15 +1008,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         );
       }
 
-      const nextUnreadId = collectNextUnreadMessageIdToMark(
+      const newlyReadIds = collectFullyVisibleUnreadMessageIds(
         displayMessagesRef.current,
         messageLayoutsRef.current,
         metrics,
         unreadViewportBaselineMessageIdRef.current,
         fullyReadUnreadIdsRef.current,
       );
-      if (nextUnreadId != null) {
-        fullyReadUnreadIdsRef.current.add(nextUnreadId);
+      if (newlyReadIds.length > 0) {
+        for (const id of newlyReadIds) {
+          fullyReadUnreadIdsRef.current.add(id);
+        }
       }
 
       const remaining = computeRemainingUnreadCount(
@@ -1011,8 +1037,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         atTrueTail &&
         allowUnreadResetAtBottomRef.current
       ) {
-        setScrollUnreadRemaining(0);
-        patchAuthenticatedHomeSelectedChatUnread(0);
+        if (lastDisplayedUnreadRemainingRef.current !== 0) {
+          lastDisplayedUnreadRemainingRef.current = 0;
+          setScrollUnreadRemaining(0);
+          patchAuthenticatedHomeSelectedChatUnread(0);
+        }
         return;
       }
 
@@ -1034,7 +1063,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         0,
         Math.trunc(Number.isFinite(chat.unread_count) ? chat.unread_count : 0),
       );
-      if (nextUnreadId != null) {
+      if (newlyReadIds.length > 0) {
         logPageDisplay("messages_scroll_unread_sync", {
           ...chatLogFields({
             chatId: chat.telegram_chat_id,
@@ -1042,28 +1071,18 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             title: chat.title,
           }),
           openingUnread,
-          newlyRead: 1,
+          newlyRead: newlyReadIds.length,
           fullyRead: fullyReadUnreadIdsRef.current.size,
           remaining,
           baseline: unreadViewportBaselineMessageIdRef.current,
         });
       }
-      setScrollUnreadRemaining(remaining);
-      if (remaining <= currentUnread && remaining !== currentUnread) {
-        patchAuthenticatedHomeSelectedChatUnread(remaining);
-      }
-
-      if (
-        nextUnreadId != null &&
-        collectNextUnreadMessageIdToMark(
-          displayMessagesRef.current,
-          messageLayoutsRef.current,
-          metrics,
-          unreadViewportBaselineMessageIdRef.current,
-          fullyReadUnreadIdsRef.current,
-        ) != null
-      ) {
-        scheduleSyncScrollBelowUnreadRef.current();
+      if (lastDisplayedUnreadRemainingRef.current !== remaining) {
+        lastDisplayedUnreadRemainingRef.current = remaining;
+        setScrollUnreadRemaining(remaining);
+        if (remaining <= currentUnread && remaining !== currentUnread) {
+          patchAuthenticatedHomeSelectedChatUnread(remaining);
+        }
       }
     },
     [chat.telegram_chat_id, chat.peer_user_id, chat.title, chat.unread_count, isScrollNearBottom, loadedDisplayTailId],
@@ -1203,6 +1222,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const handleMessageLayout = useCallback((messageId: number, event: LayoutChangeEvent) => {
     const { y, height } = event.nativeEvent.layout;
     messageLayoutsRef.current.set(messageId, { y, height });
+    if (height > 0) {
+      messageRowHeightCacheRef.current.set(messageId, height);
+    }
     if (pendingTvScrollMessageIdRef.current === messageId) {
       if (tryScrollToFollowLiveTail(messageId)) {
         pendingTvScrollMessageIdRef.current = null;
@@ -1598,6 +1620,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             result.messages,
             chat.peer_emoji_status_custom_emoji_id ?? null,
           );
+          prefetchTelegramEmojiAssetsFromMessages(result.messages);
           lastLiveSignatureRef.current = chatLiveSignature(chat);
           lastMessageTailSigRef.current = chatMessageTailSignature(chat);
         } catch (e) {
@@ -2243,9 +2266,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       if (budgetBeforeId != null && budgetBeforeId > 0) {
         void fetchTelegramChatHistoryPage(
           chat.telegram_chat_id,
-          budgetBeforeId,
           MESSAGE_CHAT_HISTORY_PAGE_SIZE,
           chat.peer_user_id,
+          budgetBeforeId,
         ).then((budget) => {
           if (!budget.error && budget.messages.length > 0) {
             const merged = mergeHistoryMessages([], budget.messages, historyMessageContext);
@@ -2448,6 +2471,25 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     columnWidthPx - MESSAGE_CHAT_BODY_PADDING_PX * 2,
   );
 
+  const listVirtualWindow = useMemo(() => {
+    const metrics = scrollControllerRef.current?.getMetrics();
+    const scrollMetrics = metrics && metrics.layoutH > 0
+      ? metrics
+      : { scrollY: pinnedScrollYRef.current, layoutH: 1 };
+    return resolveMessageListVirtualWindow(
+      displayMessages,
+      messageLayoutsRef.current,
+      messageRowHeightCacheRef.current,
+      scrollMetrics,
+      MESSAGE_BUBBLE_ROW_GAP_PX,
+    );
+  }, [displayMessages, displayMessagesLayoutSig, virtualScrollTick]);
+
+  const renderedMessages = listVirtualWindow.enabled
+    ? displayMessages.slice(listVirtualWindow.startIndex, listVirtualWindow.endIndex + 1)
+    : displayMessages;
+  const renderedMessageStartIndex = listVirtualWindow.enabled ? listVirtualWindow.startIndex : 0;
+
   if (!shouldLoadHistory) {
     return (
       <View
@@ -2540,7 +2582,13 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           />
         ) : null}
 
-        {displayMessages.map((item, index) => (
+        {listVirtualWindow.enabled && listVirtualWindow.topSpacerPx > 0 ? (
+          <View style={{ height: listVirtualWindow.topSpacerPx }} />
+        ) : null}
+
+        {renderedMessages.map((item, sliceIndex) => {
+          const index = renderedMessageStartIndex + sliceIndex;
+          return (
           <View
             key={item.telegram_message_id}
             onLayout={(event) => handleMessageLayout(item.telegram_message_id, event)}
@@ -2555,7 +2603,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
               selfUserId={selfUserId}
             />
           </View>
-        ))}
+          );
+        })}
+
+        {listVirtualWindow.enabled && listVirtualWindow.bottomSpacerPx > 0 ? (
+          <View style={{ height: listVirtualWindow.bottomSpacerPx }} />
+        ) : null}
         {displayMessages.length > 0 && hasMoreNewerBelow ? (
           <MessageHistoryLoadSentinel
             edge="bottom"

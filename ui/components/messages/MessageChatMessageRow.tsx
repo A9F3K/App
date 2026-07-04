@@ -568,6 +568,7 @@ export function MessageChatMessageRow({
               onMediaDisplaySizeChange={(widthPx) => setLiveMediaWidthPx(widthPx)}
               peerUserId={chat.peer_user_id}
               selfUserId={selfUserId}
+              emojiContentActive={rowInView}
             />
           </View>
           </Pressable>

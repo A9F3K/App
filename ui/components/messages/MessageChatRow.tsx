@@ -191,7 +191,6 @@ export function MessageChatRow({
       isActive={isActive}
       colors={colors}
       onPress={onPress}
-      onHoverIn={onPrefetch}
     >
       <View
         ref={rowRef}

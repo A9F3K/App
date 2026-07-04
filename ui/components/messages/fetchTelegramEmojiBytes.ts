@@ -129,3 +129,38 @@ export async function fetchCustomEmojiBytes(customEmojiId: string): Promise<Uint
   const asset = await fetchTelegramEmojiAsset({ kind: "custom", customEmojiId });
   return asset?.bytes ?? null;
 }
+
+type EmojiPrefetchMessage = {
+  text_segments?: Array<{ kind: string; custom_emoji_id?: string | null; emoji?: string | null }> | null;
+  reply_to?: {
+    text_segments?: Array<{ kind: string; custom_emoji_id?: string | null; emoji?: string | null }> | null;
+  } | null;
+};
+
+function collectEmojiRefsFromSegments(
+  segments: EmojiPrefetchMessage["text_segments"],
+  refs: Map<string, TelegramEmojiFetchRef>,
+): void {
+  if (!segments) return;
+  for (const segment of segments) {
+    if (segment.kind === "custom_emoji") {
+      const customEmojiId = segment.custom_emoji_id?.trim();
+      if (customEmojiId) refs.set(`custom:${customEmojiId}`, { kind: "custom", customEmojiId });
+    } else if (segment.kind === "animated_emoji") {
+      const emoji = segment.emoji?.trim();
+      if (emoji) refs.set(`animated:${emoji}`, { kind: "animated", emoji });
+    }
+  }
+}
+
+/** Warm the emoji byte cache once per history page instead of per inline component. */
+export function prefetchTelegramEmojiAssetsFromMessages(messages: readonly EmojiPrefetchMessage[]): void {
+  const refs = new Map<string, TelegramEmojiFetchRef>();
+  for (const message of messages) {
+    collectEmojiRefsFromSegments(message.text_segments, refs);
+    collectEmojiRefsFromSegments(message.reply_to?.text_segments ?? null, refs);
+  }
+  for (const ref of refs.values()) {
+    void fetchTelegramEmojiAsset(ref, { priority: "normal" });
+  }
+}

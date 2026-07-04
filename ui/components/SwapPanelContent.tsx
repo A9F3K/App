@@ -29,7 +29,7 @@ export function SwapPanelContent() {
     setSelectedPointIndex,
     marketStats,
     effectiveTonPriceUsd,
-  } = useSwapChart("d");
+  } = useSwapChart("d", { deferInitialLoad: true });
 
   const { width: windowWidth } = useWindowDimensions();
   const showSwapActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;

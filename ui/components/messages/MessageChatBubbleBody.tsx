@@ -145,7 +145,7 @@ function MessageChatBubbleTextContent({
           numberOfLines={1}
           nowrap
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
-          emojiFetchPriority
+          emojiFetchEnabled={emojiContentActive}
           enrichStandardEmojis
           chatId={chatId}
         />
@@ -187,7 +187,7 @@ function MessageChatBubbleTextContent({
             },
           ]}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
-          emojiFetchPriority
+          emojiFetchEnabled={emojiContentActive}
           enrichStandardEmojis
           chatId={chatId}
         />
@@ -224,7 +224,7 @@ function MessageChatBubbleTextContent({
           segments={bodyTextSegments}
           style={[textStyle, { textAlign: "left" }]}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
-          emojiFetchPriority
+          emojiFetchEnabled={emojiContentActive}
           enrichStandardEmojis
           chatId={chatId}
         />
@@ -383,7 +383,7 @@ function MessageChatReplyBlock({
           numberOfLines={2}
           chatId={telegramChatId}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
-          emojiFetchPriority
+          emojiFetchEnabled={emojiContentActive}
           enrichStandardEmojis
           style={[
             typographyRect15,
@@ -586,6 +586,8 @@ export function MessageChatBubbleBody({
             maxWidthPx={mediaLayoutMaxWidthPx}
             colors={colors}
             onDisplaySizeChange={handleMediaDisplaySizeChange}
+            mediaFetchEnabled={emojiContentActive}
+            deferFullMediaFetch={!emojiContentActive}
           />
           {contentKind === "animation" && overlayMediaMeta ? (
             <View

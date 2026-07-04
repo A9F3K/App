@@ -14,7 +14,10 @@ import {
 import { loadSwapChartSeriesCached, peekSwapChartSeriesCache } from "./swapChartSeriesCache";
 import { swapChartLog, swapChartWarn } from "./swapChartDebug";
 
-export function useSwapChart(initialInterval: SwapIntervalKey = "m") {
+export function useSwapChart(
+  initialInterval: SwapIntervalKey = "m",
+  options?: { deferInitialLoad?: boolean },
+) {
   const [intervalKey, setIntervalKey] = useState<SwapIntervalKey>(initialInterval);
   const resolution = SWAP_INTERVAL_TO_RESOLUTION[intervalKey];
 
@@ -108,8 +111,19 @@ export function useSwapChart(initialInterval: SwapIntervalKey = "m") {
   );
 
   useEffect(() => {
+    if (options?.deferInitialLoad) {
+      const runLoad = () => {
+        void loadChart(false);
+      };
+      if (typeof requestIdleCallback === "function") {
+        const idleId = requestIdleCallback(runLoad, { timeout: 2500 });
+        return () => cancelIdleCallback(idleId);
+      }
+      const timeoutId = setTimeout(runLoad, 1500);
+      return () => clearTimeout(timeoutId);
+    }
     void loadChart(false);
-  }, [loadChart]);
+  }, [loadChart, options?.deferInitialLoad]);
 
   useEffect(() => {
     void fetchSwapMarketStats().then((stats) => {

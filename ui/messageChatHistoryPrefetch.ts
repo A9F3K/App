@@ -119,7 +119,7 @@ function resolveOpenLoadSpec(
     return {
       warmup: true,
       limit: Math.min(
-        100,
+        MESSAGE_CHAT_HISTORY_PAGE_SIZE * 2,
         Math.max(
           MESSAGE_CHAT_HISTORY_PAGE_SIZE,
           unread + MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER + 8,

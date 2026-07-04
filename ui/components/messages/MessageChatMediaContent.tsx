@@ -32,6 +32,10 @@ type Props = {
   maxWidthPx?: number;
   colors: ThemeColors;
   onDisplaySizeChange?: (widthPx: number, heightPx: number) => void;
+  /** When false, skip preview/full fetches until the message row is visible. */
+  mediaFetchEnabled?: boolean;
+  /** When true, only load preview bytes until {@link mediaFetchEnabled} is set. */
+  deferFullMediaFetch?: boolean;
 };
 
 function sleep(ms: number): Promise<void> {
@@ -680,6 +684,8 @@ export function MessageChatMediaContent({
   maxWidthPx,
   colors,
   onDisplaySizeChange,
+  mediaFetchEnabled = true,
+  deferFullMediaFetch = false,
 }: Props) {
   const [mediaUri, setMediaUri] = useState<string | null>(null);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
@@ -705,6 +711,11 @@ export function MessageChatMediaContent({
   }, [widthPx, heightPx, maxWidthPx, mediaUri]);
 
   useEffect(() => {
+    if (!mediaFetchEnabled) {
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
     let mediaObjectUrl: string | null = null;
     let previewObjectUrl: string | null = null;
@@ -803,7 +814,9 @@ export function MessageChatMediaContent({
             if (!cancelled && !hasPreviewRef.current) setFailed(true);
           };
 
-          void loadFullVideo();
+          if (!deferFullMediaFetch) {
+            void loadFullVideo();
+          }
           return;
         }
 
@@ -830,6 +843,7 @@ export function MessageChatMediaContent({
             }
           })();
 
+          if (!deferFullMediaFetch) {
           for (let attempt = 0; attempt < PHOTO_FULL_MAX_ATTEMPTS && !cancelled; attempt++) {
             try {
               const { bytes, mime } = await fetchMediaBlob(uri, "full", {
@@ -895,6 +909,7 @@ export function MessageChatMediaContent({
               break;
             }
           }
+          }
 
           await previewPromise;
           if (cancelled) return;
@@ -903,7 +918,7 @@ export function MessageChatMediaContent({
           }
           setLoading(false);
           photoLoadSettled = true;
-        } else {
+        } else if (!deferFullMediaFetch) {
           const { bytes, mime } = await fetchMediaBlob(uri, "full", debugContext);
           if (cancelled) return;
           const kind = resolveMediaKind(bytes, contentKind, mime);
@@ -929,7 +944,7 @@ export function MessageChatMediaContent({
       deferRevokeObjectUrl(mediaObjectUrl);
       deferRevokeObjectUrl(previewObjectUrl);
     };
-  }, [contentKind, uri, usesVideoPreview]);
+  }, [contentKind, uri, usesVideoPreview, mediaFetchEnabled, deferFullMediaFetch]);
 
   const frameStyle = {
     width: displayWidthPx,

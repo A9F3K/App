@@ -17,12 +17,13 @@ import {
 import { prefetchChatHistory } from "../messageChatHistoryPrefetch";
 import { getCachedChatHistory } from "../messageChatHistoryCache";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
-import { MessageChatOlderHistoryLoadLine } from "./messages/MessageChatOlderHistoryLoadLine";
 import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
 import {
   setChatListSyncStatus,
   type ChatListSyncStatus,
 } from "./messages/chatListSyncStatus";
+import { setChatListBottomLoaderActive } from "./messages/chatListBottomLoaderStatus";
+import { setChatListNearBottomHandler } from "./messages/chatListNearBottom";
 import {
   CHAT_LIST_INITIAL_SYNC_LIMIT,
   useChatListViewport,
@@ -342,10 +343,11 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const pollInFlightRef = useRef(false);
   const unchangedPollStreakRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chatListAtBottomRef = useRef(false);
   const { viewportCount, expandViewport, canExpandViewport } = useChatListViewport(chats.length);
-  const loadChatsRef = useRef<(options?: { allowAvatarResync?: boolean; silent?: boolean }) => Promise<void>>(
-    async () => {},
-  );
+  const loadChatsRef = useRef<
+    (options?: { allowAvatarResync?: boolean; silent?: boolean; forceFull?: boolean }) => Promise<void>
+  >(async () => {});
 
   const applyChatListSync = useCallback((status: ChatListSyncStatus | null | undefined) => {
     if (!status) return;
@@ -422,7 +424,11 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     }
   }, [refreshStatus]);
 
-  const loadChats = useCallback(async (options?: { allowAvatarResync?: boolean; silent?: boolean }) => {
+  const loadChats = useCallback(async (options?: {
+    allowAvatarResync?: boolean;
+    silent?: boolean;
+    forceFull?: boolean;
+  }) => {
     if (!isAuthenticated || !isTelegramMessagesConnected) {
       setChats([]);
       setError(null);
@@ -436,6 +442,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     const params = new URLSearchParams();
     if (
       options?.silent &&
+      !options?.forceFull &&
       lastLiveRevisionRef.current != null &&
       lastLiveRevisionRef.current > 0
     ) {
@@ -724,21 +731,69 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   }, [chatSelectionEnabled]);
 
   const visibleChats = chats.slice(0, viewportCount);
+  const syncInProgress = chatListSync?.inProgress === true;
+  const cachedChatCount = chatListSync?.cachedCount ?? chats.length;
   const mayHaveMoreOnServer =
-    chatListSync?.inProgress === true ||
+    syncInProgress ||
+    cachedChatCount > chats.length ||
     (chats.length >= CHAT_LIST_INITIAL_SYNC_LIMIT && chatListSync?.inProgress !== false);
-  const showBottomLoader =
-    chatListSync?.inProgress === true ||
-    (mayHaveMoreOnServer && !canExpandViewport);
+  const showBottomLoader = syncInProgress || (mayHaveMoreOnServer && !canExpandViewport);
+
+  useEffect(() => {
+    setChatListBottomLoaderActive(showBottomLoader);
+    return () => {
+      setChatListBottomLoaderActive(false);
+    };
+  }, [showBottomLoader]);
+
+  const prevChatListSyncRef = useRef(false);
+  useEffect(() => {
+    const inProgress = chatListSync?.inProgress === true;
+    if (prevChatListSyncRef.current && !inProgress) {
+      void loadChatsRef.current({ silent: true, forceFull: true });
+    }
+    prevChatListSyncRef.current = inProgress;
+  }, [chatListSync?.inProgress]);
+
+  useEffect(() => {
+    if (!chatListAtBottomRef.current) return;
+    if (viewportCount >= chats.length) return;
+    expandViewport();
+  }, [chats.length, expandViewport, viewportCount]);
 
   const handleChatListNearBottom = useCallback(() => {
-    if (canExpandViewport) {
+    chatListAtBottomRef.current = true;
+    const needsLocalExpand = viewportCount < chats.length;
+    if (needsLocalExpand) {
       expandViewport();
-      return;
     }
-    void requestLoadMoreChats();
-    void loadChatsRef.current({ silent: true });
-  }, [canExpandViewport, expandViewport, requestLoadMoreChats]);
+    const needsServerPage =
+      syncInProgress ||
+      mayHaveMoreOnServer ||
+      chats.length >= CHAT_LIST_INITIAL_SYNC_LIMIT;
+    void loadChatsRef.current({
+      silent: true,
+      forceFull: needsLocalExpand || cachedChatCount > chats.length,
+    });
+    if (needsServerPage) {
+      void requestLoadMoreChats();
+    }
+  }, [
+    cachedChatCount,
+    chats.length,
+    expandViewport,
+    mayHaveMoreOnServer,
+    requestLoadMoreChats,
+    syncInProgress,
+    viewportCount,
+  ]);
+
+  useEffect(() => {
+    setChatListNearBottomHandler(handleChatListNearBottom);
+    return () => {
+      setChatListNearBottomHandler(null);
+    };
+  }, [handleChatListNearBottom]);
 
   const renderChatRows = (items: MessageChatRowData[]) => (
     <>
@@ -758,9 +813,6 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         enabled={chats.length > 0}
         onNearBottom={handleChatListNearBottom}
       />
-      {showBottomLoader ? (
-        <MessageChatOlderHistoryLoadLine active edge="bottom" color={colors.accent} />
-      ) : null}
     </>
   );
 

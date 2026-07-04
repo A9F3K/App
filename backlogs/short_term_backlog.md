@@ -1,3 +1,6 @@
+Messages count and scrolling bugs
+Desktop does not update on background
+Search in the first column
 Emoji indents
 Reply, edit, msgs loading speed
 Msg write in 2 and 1 columns
