@@ -62,22 +62,29 @@ export function sha256Base64Url(input: string): string {
   return base64UrlEncode(crypto.createHash("sha256").update(input).digest());
 }
 
+export function resolveTelegramBotId(): string {
+  const fromEnv = process.env.TELEGRAM_CLIENT_ID?.trim() ?? "";
+  if (/^\d+$/.test(fromEnv)) return fromEnv;
+  const fromToken = process.env.BOT_TOKEN?.split(":")[0]?.trim() ?? "";
+  if (/^\d+$/.test(fromToken)) return fromToken;
+  return fromEnv || fromToken;
+}
+
 export function buildTelegramAuthorizeUrl(input: {
   clientId: string;
   redirectUri: string;
-  origin?: string;
   state: string;
   nonce: string;
   codeChallenge: string;
 }): string {
+  const botId = input.clientId.trim();
   const url = new URL(AUTH_URL);
-  url.searchParams.set("client_id", input.clientId);
+  // OIDC spec uses client_id; Telegram's authorize UI also requires bot_id (numeric bot id).
+  url.searchParams.set("client_id", botId);
+  url.searchParams.set("bot_id", botId);
   url.searchParams.set("redirect_uri", input.redirectUri);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", "openid profile phone");
-  if (input.origin && input.origin.trim().length > 0) {
-    url.searchParams.set("origin", input.origin.trim());
-  }
   url.searchParams.set("state", input.state);
   url.searchParams.set("nonce", input.nonce);
   url.searchParams.set("code_challenge", input.codeChallenge);

@@ -178,6 +178,10 @@ export function WelcomeAuthButtons() {
         body: JSON.stringify({
           source: "welcome",
           redirect_uri: redirectUri,
+          page_origin:
+            typeof window !== "undefined" && window.location?.origin
+              ? window.location.origin
+              : undefined,
         }),
       });
       const json = (await response.json().catch(() => ({}))) as {

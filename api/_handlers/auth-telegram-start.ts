@@ -1,6 +1,7 @@
 import {
   buildTelegramAuthorizeUrl,
   randomUrlSafe,
+  resolveTelegramBotId,
   sha256Base64Url,
   sha256Hex,
 } from "../_lib/telegram-oidc.js";
@@ -8,6 +9,7 @@ import { appError, appLogEvent, appWarn } from "../../shared/appLog.js";
 import { createEphemeralAttempt } from "../_lib/telegram-attempt-store.js";
 import { createLoginAttempt } from "../../database/telegramAuth.js";
 import { applyAuthApiCors, authApiPreflightResponse } from "../_lib/auth-cors.js";
+import { parseRequestJsonBody } from "../_lib/parse-request-body.js";
 
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const ATTEMPT_TTL_MS = 10 * 60 * 1000;
@@ -71,15 +73,24 @@ function normalizeRedirectEnvValue(raw: string): string | null {
 }
 
 function getRedirectUri(request: AnyRequest): string {
+  const derived = `${getRequestOrigin(request)}${CALLBACK_PATH}`;
   const explicitRaw = process.env.TELEGRAM_OIDC_REDIRECT_URI?.trim();
   if (explicitRaw) {
     const normalized = normalizeRedirectEnvValue(explicitRaw);
     const parsed = normalized ? tryParseClientRedirectUri(normalized) : null;
-    if (parsed) return parsed;
-    appWarn("[auth-telegram-start]", "invalid_env", { key: "TELEGRAM_OIDC_REDIRECT_URI" });
+    if (parsed) {
+      if (new URL(parsed).origin === new URL(derived).origin) {
+        return parsed;
+      }
+      appWarn("[auth-telegram-start]", "env_redirect_origin_mismatch_using_request", {
+        envOrigin: new URL(parsed).origin,
+        requestOrigin: new URL(derived).origin,
+      });
+    } else {
+      appWarn("[auth-telegram-start]", "invalid_env", { key: "TELEGRAM_OIDC_REDIRECT_URI" });
+    }
   }
-  const origin = getRequestOrigin(request);
-  return `${origin}/api/auth/telegram/callback`;
+  return derived;
 }
 
 const CALLBACK_PATH = "/api/auth/telegram/callback";
@@ -125,11 +136,29 @@ function getClientMeta(request: AnyRequest): { ip: string | null; userAgent: str
   return { ip, userAgent };
 }
 
-function resolveRedirectUri(request: AnyRequest, bodyRedirectUri: unknown): string {
+function tryParsePageOrigin(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim();
+  if (!s) return null;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
+function resolveRedirectUri(request: AnyRequest, bodyRedirectUri: unknown, pageOrigin: unknown): string {
   const fromClient = tryParseClientRedirectUri(bodyRedirectUri);
   if (fromClient) {
+    const clientOrigin = new URL(fromClient).origin;
     const serverOrigin = getRequestOrigin(request);
-    if (new URL(fromClient).origin === serverOrigin) {
+    if (clientOrigin === serverOrigin) {
+      return fromClient;
+    }
+    const page = tryParsePageOrigin(pageOrigin);
+    if (page && page === clientOrigin) {
       return fromClient;
     }
   }
@@ -172,38 +201,32 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
     return sendJson(body, 405, request);
   }
 
-  let bodyJson: { redirect_uri?: unknown; source?: unknown } = {};
+  let bodyJson: { redirect_uri?: unknown; source?: unknown; page_origin?: unknown } = {};
   try {
-    const webReq = request as Request;
-    if (typeof webReq.text === "function") {
-      const ct = getHeader(request, "content-type") ?? "";
-      if (ct.includes("application/json")) {
-        const raw = await webReq.text();
-        bodyJson = raw
-          ? (JSON.parse(raw) as { redirect_uri?: unknown; source?: unknown })
-          : {};
-      }
-    }
+    bodyJson = await parseRequestJsonBody<{
+      redirect_uri?: unknown;
+      source?: unknown;
+      page_origin?: unknown;
+    }>(request);
   } catch {
     bodyJson = {};
   }
 
   const requestOrigin = getRequestOrigin(request);
+  const pageOrigin = tryParsePageOrigin(bodyJson.page_origin);
   const { ip, userAgent } = getClientMeta(request);
   appLogEvent("[auth-telegram-start]", {
       event: "request",
       origin: requestOrigin,
       source: typeof bodyJson.source === "string" ? bodyJson.source : null,
       hasClientRedirectUri: Boolean(tryParseClientRedirectUri(bodyJson.redirect_uri)),
+      pageOrigin,
       ip,
       userAgent: userAgent ? userAgent.slice(0, 120) : null,
     });
 
-  const clientId =
-    process.env.TELEGRAM_CLIENT_ID?.trim() ??
-    process.env.BOT_TOKEN?.split(":")[0]?.trim() ??
-    "";
-  if (!clientId) {
+  const clientId = resolveTelegramBotId();
+  if (!clientId || !/^\d+$/.test(clientId)) {
     const body = { ok: false, error: "telegram_client_id_not_configured" };
     if (res) return sendJsonViaRes(res, body, 500, request);
     return sendJson(body, 500, request);
@@ -215,7 +238,7 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
   const codeChallenge = sha256Base64Url(codeVerifier);
   let redirectUri: string;
   try {
-    redirectUri = resolveRedirectUri(request, bodyJson.redirect_uri);
+    redirectUri = resolveRedirectUri(request, bodyJson.redirect_uri, bodyJson.page_origin);
     assertValidRedirectUri(redirectUri);
   } catch (e) {
     const code = e instanceof Error ? e.message : "redirect_uri_invalid";
@@ -223,7 +246,6 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
     if (res) return sendJsonViaRes(res, body, 400, request);
     return sendJson(body, 400, request);
   }
-  const origin = requestOrigin;
   const { id, expiresAtIso } = createEphemeralAttempt({
     stateHash: sha256Hex(state),
     nonceHash: sha256Hex(nonce),
@@ -254,7 +276,6 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
   const authUrl = buildTelegramAuthorizeUrl({
     clientId,
     redirectUri,
-    origin,
     state,
     nonce,
     codeChallenge,

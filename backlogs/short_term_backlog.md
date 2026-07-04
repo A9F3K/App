@@ -46,6 +46,7 @@ Not all avatars are displayed and messages, instant update, instant chat loads o
 Instant messages update
 Telegram connect vs. Telegram login (preferable)
 1 wallet >
+Deeplink login for Android and iOS(setup in bot)
 Connect telegram seccion store
 Real time sync with TDLib without DB.
 Apple styled button, revert to how it has been

@@ -26,7 +26,7 @@ export function WelcomeEmailCodeSheet({
   onSubmit,
 }: Props) {
   const colors = useColors();
-  const { t } = useAppStrings();
+  const { t, tf } = useAppStrings();
 
   return (
     <AppModalSheet
@@ -36,7 +36,7 @@ export function WelcomeEmailCodeSheet({
       footer={<AppModalSheetBackFooter onClose={onClose} label={t("common.back")} />}
     >
       <Text style={[typographyRect15, appModalSheetStyles.body, { color: colors.secondary }]}>
-        {t("welcome.auth.emailCodeHint", { email })}
+        {tf("welcome.auth.emailCodeHint", { email })}
       </Text>
       <WelcomeAuthFormField
         value={code}

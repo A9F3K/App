@@ -1,5 +1,6 @@
 import {
   exchangeCodeForTokens,
+  resolveTelegramBotId,
   sha256Hex,
   validateTelegramIdToken,
   randomUrlSafe,
@@ -246,12 +247,9 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
     return response;
   }
 
-  const clientId =
-    process.env.TELEGRAM_CLIENT_ID?.trim() ??
-    process.env.BOT_TOKEN?.split(":")[0]?.trim() ??
-    "";
+  const clientId = resolveTelegramBotId();
   const clientSecret = process.env.TELEGRAM_CLIENT_SECRET?.trim() ?? "";
-  if (!clientId || !clientSecret) {
+  if (!clientId || !/^\d+$/.test(clientId) || !clientSecret) {
     markAttemptStatus(stateHash, attempt.id, "failed", "oidc_not_configured");
     const response = failRedirect(request, "oidc_not_configured");
     if (res) {
