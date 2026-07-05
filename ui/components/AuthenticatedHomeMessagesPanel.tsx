@@ -296,7 +296,7 @@ function mergeChatRows(
     }
   }
 
-  if (incoming.length >= prev.length * 0.9) {
+  if (incoming.length >= prev.length) {
     return applyOpenChatUnreadToRows(sortChatRows(incoming));
   }
 
@@ -497,6 +497,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       setChats((prev) => {
         const next = mergeChatRows(prev, rows);
         const changed = chatsChanged(prev, next);
+        queueMicrotask(() => syncAuthenticatedHomeSelectedChat(next));
         if (rows.length > 0) {
           setGatewayWarming(false);
         }
@@ -525,7 +526,6 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         }
         return next;
       });
-      syncAuthenticatedHomeSelectedChat(rows);
       if (!options?.silent) {
         logPageDisplay("messages_chats_loaded", {
           count: rows.length,

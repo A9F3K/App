@@ -1,3 +1,4 @@
+import { MESSAGE_CHAT_CACHE_MESSAGES_MAX } from "./components/messages/messageChatLayout";
 import type { ChatHistoryPageResult } from "./telegram/fetchTelegramChatHistoryPage";
 
 export type CachedChatHistoryPage = ChatHistoryPageResult & {
@@ -247,11 +248,14 @@ export function mergeCachedChatHistoryTail(
   for (const row of tail.messages) {
     byId.set(row.telegram_message_id, row);
   }
-  const messages = [...byId.values()].sort((a, b) => {
+  let messages = [...byId.values()].sort((a, b) => {
     const byTime = Date.parse(a.sent_at) - Date.parse(b.sent_at);
     if (byTime !== 0) return byTime;
     return a.telegram_message_id - b.telegram_message_id;
   });
+  if (messages.length > MESSAGE_CHAT_CACHE_MESSAGES_MAX) {
+    messages = messages.slice(messages.length - MESSAGE_CHAT_CACHE_MESSAGES_MAX);
+  }
   setCachedChatHistory(
     chatId,
     {

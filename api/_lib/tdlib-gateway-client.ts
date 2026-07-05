@@ -320,6 +320,57 @@ export async function gatewayFocusChat(
   }
 }
 
+export async function gatewayViewChatInboxMessages(
+  telegramUsername: string,
+  chatId: number,
+  messageId: number,
+): Promise<{
+  unread_count: number;
+  last_read_inbox_message_id: number | null;
+  error: string | null;
+}> {
+  const base = getGatewayBaseUrl();
+  const secret = getGatewaySecret();
+  const url = `${base}/v1/chats/view-inbox`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gateway-Secret": secret,
+      },
+      body: JSON.stringify({ telegramUsername, chatId, messageId }),
+    });
+    const json = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      unread_count?: number;
+      last_read_inbox_message_id?: number;
+      error?: string;
+    };
+    if (!response.ok || !json.ok) {
+      return {
+        unread_count: 0,
+        last_read_inbox_message_id: null,
+        error: json.error ?? "view_inbox_failed",
+      };
+    }
+    const unreadRaw = Number(json.unread_count);
+    const lastReadRaw = Number(json.last_read_inbox_message_id);
+    return {
+      unread_count: Number.isFinite(unreadRaw) && unreadRaw >= 0 ? Math.floor(unreadRaw) : 0,
+      last_read_inbox_message_id:
+        Number.isFinite(lastReadRaw) && lastReadRaw > 0 ? Math.trunc(lastReadRaw) : null,
+      error: null,
+    };
+  } catch (err) {
+    return {
+      unread_count: 0,
+      last_read_inbox_message_id: null,
+      error: err instanceof Error ? err.message : "view_inbox_failed",
+    };
+  }
+}
+
 export type ChatListSyncStatus = {
   inProgress: boolean;
   cachedCount: number;
@@ -420,7 +471,13 @@ export async function gatewayFetchLiveChats(
 
 export async function gatewayLoadMoreChats(
   telegramUsername: string,
-): Promise<{ ok: boolean; started?: boolean; chatListSync?: ChatListSyncStatus; error?: string }> {
+): Promise<{
+  ok: boolean;
+  started?: boolean;
+  warming?: boolean;
+  chatListSync?: ChatListSyncStatus;
+  error?: string;
+}> {
   const base = getGatewayBaseUrl();
   const secret = getGatewaySecret();
   const url = `${base}/v1/chats/load-more`;
@@ -433,18 +490,25 @@ export async function gatewayLoadMoreChats(
       },
       body: JSON.stringify({ telegramUsername }),
     });
-    if (!response.ok) {
-      return { ok: false, error: `HTTP_${response.status}` };
-    }
-    const json = (await response.json()) as {
+    const json = (await response.json().catch(() => ({}))) as {
       ok?: boolean;
       started?: boolean;
+      warming?: boolean;
       chatListSync?: ChatListSyncStatus;
       error?: string;
     };
+    if (!response.ok) {
+      return {
+        ok: false,
+        warming: json.warming === true,
+        chatListSync: json.chatListSync,
+        error: json.error ?? `HTTP_${response.status}`,
+      };
+    }
     return {
       ok: json.ok === true,
       started: json.started,
+      warming: json.warming === true,
       chatListSync: json.chatListSync,
       error: json.error,
     };

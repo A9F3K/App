@@ -180,6 +180,29 @@ export function collectFullyVisibleUnreadMessageIds(
   return newlyRead;
 }
 
+/** Highest newer-than-baseline message intersecting the viewport — TDLib read cursor advances to max. */
+export function maxIntersectingUnreadMessageId(
+  messages: readonly { telegram_message_id: number }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+  minUnreadMessageIdExclusive: number,
+): number | null {
+  const viewportTop = metrics.scrollY;
+  const viewportBottom = metrics.scrollY + metrics.layoutH;
+  let maxId: number | null = null;
+
+  for (const msg of messages) {
+    const id = msg.telegram_message_id;
+    if (id <= minUnreadMessageIdExclusive) continue;
+    const entry = layouts.get(id);
+    if (!entry) continue;
+    if (!isMessageIntersectingViewport(entry, viewportTop, viewportBottom)) continue;
+    if (maxId == null || id > maxId) maxId = id;
+  }
+
+  return maxId;
+}
+
 /** Lowest newer-than-baseline message intersecting the viewport — one mark per scroll tick. */
 export function collectNextUnreadMessageIdToMark(
   messages: readonly { telegram_message_id: number }[],

@@ -326,8 +326,8 @@ export function patchAuthenticatedHomeSelectedChatReadOutbox(messageId: number |
 }
 
 /**
- * Chat-list unread for the open chat: scroll marking owns the badge while the chat is open.
- * Poll cannot overwrite a client-lowered count with a stale higher server value.
+ * Chat-list unread for the open chat — uses the selected-chat store updated by
+ * TDLib view-inbox responses; other rows use the polled server value.
  */
 export function resolveAuthenticatedHomeOpenChatUnread(
   incomingUnread: number,
@@ -412,8 +412,8 @@ export function syncAuthenticatedHomeSelectedChat(chats: readonly MessageChatRow
     const nextTailId = fresh.last_message_telegram_id ?? 0;
     const tailBumped = nextTailId > prevTailId;
     const resolvedUnread = tailBumped
-      ? Math.max(selectedChat.unread_count, fresh.unread_count)
-      : selectedChat.unread_count;
+      ? Math.max(fresh.unread_count, selectedChat.unread_count)
+      : Math.min(fresh.unread_count, selectedChat.unread_count);
     selectedChat = { ...fresh, unread_count: resolvedUnread };
     writeStoredChat(selectedChat);
     emit();

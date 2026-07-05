@@ -452,6 +452,38 @@ export async function fetchChatHistorySince(
   };
 }
 
+/** Mark inbox read up to messageId via TDLib viewMessages (authoritative unread_count). */
+export async function viewChatInboxMessagesUpTo(
+  client: Client,
+  chatId: number,
+  messageId: number,
+): Promise<{ unread_count: number; last_read_inbox_message_id: number | null }> {
+  const mid = Math.trunc(messageId);
+  if (!Number.isFinite(mid) || mid <= 0) {
+    return { unread_count: 0, last_read_inbox_message_id: null };
+  }
+
+  try {
+    await client.invoke({ _: "openChat", chat_id: chatId });
+  } catch {
+    /* already open */
+  }
+
+  await client.invoke({
+    _: "viewMessages",
+    chat_id: chatId,
+    message_ids: [mid],
+    source: { _: "messageSourceChatHistory" },
+    force_read: true,
+  });
+
+  const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+  return {
+    unread_count: normalizeUnreadCount(chat),
+    last_read_inbox_message_id: lastReadInboxMessageIdFromChat(chat),
+  };
+}
+
 /** Mark inbox messages as read (clears unread badge like Telegram when a chat is opened). */
 export async function markChatInboxRead(client: Client, chatId: number): Promise<void> {
   try {

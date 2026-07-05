@@ -18,7 +18,7 @@ import {
   scheduleBackgroundChatSync,
   isBackgroundChatSyncInProgress,
 } from "./syncChats.js";
-import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, markChatInboxRead, sendChatTextMessage, editChatTextMessage } from "./chatHistory.js";
+import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, sendChatTextMessage, editChatTextMessage, viewChatInboxMessagesUpTo } from "./chatHistory.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
 import { getLiveChatList, getLiveChatListRevision } from "./liveChatCache.js";
 
@@ -832,6 +832,22 @@ async function requireReadySession(
   return record;
 }
 
+async function requireReadySessionFast(
+  telegramUsername: string,
+): Promise<AttemptRecord | null> {
+  const active = getActiveRecord(telegramUsername);
+  if (active?.client && active.authState === "ready") return active;
+  return requireReadySession(telegramUsername, 8_000);
+}
+
+type AvatarImageResult = { data: Buffer; mime: string } | "no_avatar" | null;
+const userAvatarCache = new Map<string, AvatarImageResult>();
+const chatAvatarCache = new Map<string, AvatarImageResult>();
+
+function avatarCacheKey(telegramUsername: string, id: number): string {
+  return `${telegramUsername}:${id}`;
+}
+
 /** Active in-memory connect attempt for a user, if any. */
 export function getUserConnectSnapshot(telegramUsername: string): ConnectAttemptSnapshot | null {
   const record = getActiveRecord(telegramUsername);
@@ -1108,13 +1124,19 @@ export async function resyncUserChats(
 export function requestBackgroundChatSync(telegramUsername: string): {
   started: boolean;
   inProgress: boolean;
+  warming?: boolean;
 } {
   const record = getActiveRecord(telegramUsername);
   if (!record?.client || record.authState !== "ready") {
-    return {
-      started: false,
-      inProgress: isBackgroundChatSyncInProgress(telegramUsername),
-    };
+    const inProgress = isBackgroundChatSyncInProgress(telegramUsername);
+    if (!inProgress) {
+      void ensureGatewayUserSession(telegramUsername, 20_000).then((restored) => {
+        if (restored?.client && restored.authState === "ready") {
+          scheduleBackgroundChatSync(restored.client, telegramUsername);
+        }
+      });
+    }
+    return { started: false, inProgress, warming: true };
   }
   const wasInProgress = isBackgroundChatSyncInProgress(telegramUsername);
   scheduleBackgroundChatSync(record.client, telegramUsername);
@@ -1170,22 +1192,34 @@ export async function getChatAvatarImageForUser(
   telegramUsername: string,
   chatId: number,
 ): Promise<{ data: Buffer; mime: string } | "no_avatar" | null> {
-  const record = await requireReadySession(telegramUsername, 30_000);
+  const cacheKey = avatarCacheKey(telegramUsername, chatId);
+  const cached = chatAvatarCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const record = await requireReadySessionFast(telegramUsername);
   if (!record) return null;
   const result = await readChatAvatarBytes(record.client, chatId);
-  if (result === TELEGRAM_THREAD_NO_AVATAR) return "no_avatar";
-  return result;
+  const resolved: AvatarImageResult =
+    result === TELEGRAM_THREAD_NO_AVATAR ? "no_avatar" : result;
+  chatAvatarCache.set(cacheKey, resolved);
+  return resolved;
 }
 
 export async function getUserAvatarImageForUser(
   telegramUsername: string,
   userId: number,
 ): Promise<{ data: Buffer; mime: string } | "no_avatar" | null> {
-  const record = await requireReadySession(telegramUsername, 30_000);
+  const cacheKey = avatarCacheKey(telegramUsername, userId);
+  const cached = userAvatarCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const record = await requireReadySessionFast(telegramUsername);
   if (!record) return null;
   const result = await readUserAvatarBytes(record.client, userId);
-  if (result === TELEGRAM_THREAD_NO_AVATAR) return "no_avatar";
-  return result;
+  const resolved: AvatarImageResult =
+    result === TELEGRAM_THREAD_NO_AVATAR ? "no_avatar" : result;
+  userAvatarCache.set(cacheKey, resolved);
+  return resolved;
 }
 
 export async function getChatHistoryForUser(
@@ -1407,7 +1441,6 @@ export async function focusChatForUser(
 
   try {
     await record.client.invoke({ _: "openChat", chat_id: chatId });
-    await markChatInboxRead(record.client, chatId);
     const chatPreview = await import("./chatPreview.js");
     const chat = (await record.client.invoke({ _: "getChat", chat_id: chatId })) as chatPreview.TdChat;
     const { patchLiveChatFromTdlib } = await import("./liveChatCache.js");
@@ -1421,6 +1454,39 @@ export async function focusChatForUser(
   } catch (err) {
     const message = err instanceof Error ? err.message : "open_chat_failed";
     return { ok: false, error: message };
+  }
+}
+
+export async function viewChatInboxMessagesForUser(
+  telegramUsername: string,
+  chatId: number,
+  messageId: number,
+): Promise<{
+  unread_count: number;
+  last_read_inbox_message_id: number | null;
+  error: string | null;
+}> {
+  if (!Number.isFinite(chatId)) {
+    return { unread_count: 0, last_read_inbox_message_id: null, error: "invalid_chat_id" };
+  }
+  const mid = Math.trunc(messageId);
+  if (!Number.isFinite(mid) || mid <= 0) {
+    return { unread_count: 0, last_read_inbox_message_id: null, error: "message_id_required" };
+  }
+
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { unread_count: 0, last_read_inbox_message_id: null, error: "session_not_ready" };
+  }
+
+  try {
+    const result = await viewChatInboxMessagesUpTo(record.client, chatId, mid);
+    const { patchLiveChatReadInbox } = await import("./liveChatCache.js");
+    patchLiveChatReadInbox(telegramUsername, chatId, result.unread_count);
+    return { ...result, error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "view_messages_failed";
+    return { unread_count: 0, last_read_inbox_message_id: null, error: message };
   }
 }
 
@@ -1440,7 +1506,7 @@ export async function getTelegramEmojiForUser(
   telegramUsername: string,
   options: { customEmojiId?: string; emoji?: string },
 ): Promise<{ data: Buffer; mime: string } | null> {
-  const record = await requireReadySession(telegramUsername, 30_000);
+  const record = await requireReadySessionFast(telegramUsername);
   if (!record) return null;
   const { readTelegramEmojiBytes } = await import("./customEmoji.js");
   return readTelegramEmojiBytes(record.client, options);

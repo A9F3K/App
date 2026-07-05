@@ -92,6 +92,25 @@ function normalizeAnimatedEmojiInput(emoji: string): string[] {
   return [...variants];
 }
 
+function expandAnimatedEmojiCandidates(emoji: string): string[] {
+  const variants = new Set<string>();
+  const push = (value: string) => {
+    for (const candidate of normalizeAnimatedEmojiInput(value)) {
+      variants.add(candidate);
+    }
+  };
+  push(emoji);
+  const beforeZwj = emoji.split("\u200D")[0];
+  if (beforeZwj && beforeZwj !== emoji) push(beforeZwj);
+  const withoutSkinTone = emoji.replace(/[\u{1F3FB}-\u{1F3FF}]/gu, "");
+  if (withoutSkinTone && withoutSkinTone !== emoji) push(withoutSkinTone);
+  const withoutSkinToneBeforeZwj = withoutSkinTone.split("\u200D")[0];
+  if (withoutSkinToneBeforeZwj && withoutSkinToneBeforeZwj !== withoutSkinTone) {
+    push(withoutSkinToneBeforeZwj);
+  }
+  return [...variants];
+}
+
 const EMOJI_DOWNLOAD_TIMEOUT_MS = 20_000;
 
 function sleep(ms: number): Promise<void> {
@@ -174,6 +193,7 @@ async function readDownloadedFile(
 }
 
 const bytesCache = new Map<string, { data: Buffer; mime: string }>();
+const unavailableCache = new Set<string>();
 
 function cacheKey(kind: "custom" | "animated", id: string): string {
   return `${kind}:${id}`;
@@ -211,6 +231,7 @@ export async function readCustomEmojiBytes(
   if (!id) return null;
 
   const key = cacheKey("custom", id);
+  if (unavailableCache.has(key)) return null;
   const cached = bytesCache.get(key);
   if (cached) return cached;
 
@@ -232,6 +253,7 @@ export async function readCustomEmojiBytes(
           await sleep(500 * (attempt + 1));
           continue;
         }
+        unavailableCache.add(key);
         return null;
       }
 
@@ -250,6 +272,7 @@ export async function readCustomEmojiBytes(
         await sleep(500 * (attempt + 1));
         continue;
       }
+      unavailableCache.add(key);
       return null;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -258,10 +281,12 @@ export async function readCustomEmojiBytes(
         await sleep(500 * (attempt + 1));
         continue;
       }
+      unavailableCache.add(key);
       return null;
     }
   }
 
+  unavailableCache.add(key);
   return null;
 }
 
@@ -269,11 +294,12 @@ export async function readAnimatedEmojiBytes(
   client: Client,
   emoji: string,
 ): Promise<{ data: Buffer; mime: string } | null> {
-  const candidates = normalizeAnimatedEmojiInput(emoji);
+  const candidates = expandAnimatedEmojiCandidates(emoji);
   if (candidates.length === 0) return null;
 
   for (const value of candidates) {
     const key = cacheKey("animated", value);
+    if (unavailableCache.has(key)) continue;
     const cached = bytesCache.get(key);
     if (cached) return cached;
 
@@ -304,8 +330,12 @@ export async function readAnimatedEmojiBytes(
       const message = err instanceof Error ? err.message : String(err);
       logGateway("animated_emoji_error", { emoji: value, message });
     }
+    unavailableCache.add(key);
   }
 
+  for (const value of candidates) {
+    unavailableCache.add(cacheKey("animated", value));
+  }
   return null;
 }
 

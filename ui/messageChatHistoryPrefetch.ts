@@ -2,6 +2,7 @@ import type { MessageChatRowData } from "./components/messages/MessageChatRow";
 import {
   MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER,
   MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER,
+  MESSAGE_CHAT_HISTORY_OPEN_UNREAD_LIMIT_MAX,
   MESSAGE_CHAT_HISTORY_PAGE_SIZE,
   MESSAGE_CHAT_HISTORY_PREVIEW_SIZE,
 } from "./components/messages/messageChatLayout";
@@ -119,7 +120,7 @@ function resolveOpenLoadSpec(
     return {
       warmup: true,
       limit: Math.min(
-        MESSAGE_CHAT_HISTORY_PAGE_SIZE * 2,
+        MESSAGE_CHAT_HISTORY_OPEN_UNREAD_LIMIT_MAX,
         Math.max(
           MESSAGE_CHAT_HISTORY_PAGE_SIZE,
           unread + MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER + 8,

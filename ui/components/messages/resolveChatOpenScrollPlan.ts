@@ -23,15 +23,15 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
   );
 
   const cachedScroll = getChatScrollPosition(chat.telegram_chat_id);
-  if (cachedScroll) {
+
+  // Reload while reading unreads: restore the saved viewport instead of jumping to first unread.
+  if (openingUnreadCount > 0 && cachedScroll != null) {
     const restoreAtBottom = cachedScroll.followingBottom;
-    // Cached "at bottom" is a scroll position only — keep FAB visible while unreads remain.
-    const followingBottom = restoreAtBottom && openingUnreadCount <= 0;
     return {
       openingUnreadCount,
       openAnchor: restoreAtBottom ? "bottom" : "top",
       pinMessagesToBottom: restoreAtBottom,
-      followingBottom,
+      followingBottom: restoreAtBottom,
       pendingInitialScroll: false,
       pendingScrollRestore: cachedScroll,
       scrollToFirstUnread: false,
@@ -47,6 +47,21 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
       pendingInitialScroll: true,
       pendingScrollRestore: null,
       scrollToFirstUnread: true,
+    };
+  }
+
+  if (cachedScroll) {
+    const restoreAtBottom = cachedScroll.followingBottom;
+    // Cached "at bottom" is a scroll position only — keep FAB visible while unreads remain.
+    const followingBottom = restoreAtBottom && openingUnreadCount <= 0;
+    return {
+      openingUnreadCount,
+      openAnchor: restoreAtBottom ? "bottom" : "top",
+      pinMessagesToBottom: restoreAtBottom,
+      followingBottom,
+      pendingInitialScroll: false,
+      pendingScrollRestore: cachedScroll,
+      scrollToFirstUnread: false,
     };
   }
 

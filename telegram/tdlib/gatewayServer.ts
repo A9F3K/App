@@ -28,6 +28,7 @@ import {
   searchChatsForUser,
   searchContactsForUser,
   focusChatForUser,
+  viewChatInboxMessagesForUser,
   startConnectAttempt,
   resendConnectCode,
   submitConnectCode,
@@ -294,6 +295,7 @@ export function startTdlibGatewayServer(): http.Server {
           sendJson(res, 200, {
             ok: true,
             started: result.started,
+            warming: result.warming === true,
             chatListSync: {
               inProgress: result.inProgress,
               cachedCount: getLiveChatList(telegramUsername)?.length ?? 0,
@@ -332,6 +334,39 @@ export function startTdlibGatewayServer(): http.Server {
           }
           const result = await focusChatForUser(telegramUsername, chatId);
           sendJson(res, result.ok ? 200 : 503, { ok: result.ok, error: result.error ?? null });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chats/view-inbox") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            chatId?: number;
+            messageId?: number;
+          };
+          const telegramUsername = (body.telegramUsername || "").trim();
+          const chatId = Number(body.chatId);
+          const messageId = Number(body.messageId);
+          if (!telegramUsername || !Number.isFinite(chatId) || !Number.isFinite(messageId)) {
+            sendJson(res, 400, { ok: false, error: "username_chat_id_and_message_id_required" });
+            return;
+          }
+          const result = await viewChatInboxMessagesForUser(
+            telegramUsername,
+            chatId,
+            messageId,
+          );
+          if (result.error) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 502, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, {
+            ok: true,
+            unread_count: result.unread_count,
+            last_read_inbox_message_id: result.last_read_inbox_message_id,
+          });
           return;
         }
 

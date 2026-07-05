@@ -113,6 +113,8 @@ type Props = {
   colors: ThemeColors;
   columnWidthPx: number;
   selfUserId?: number | null;
+  /** When false, defer emoji/media fetches until open scroll has settled. */
+  contentActive?: boolean;
 };
 
 export function MessageChatMessageRow({
@@ -122,6 +124,7 @@ export function MessageChatMessageRow({
   colors,
   columnWidthPx,
   selfUserId = null,
+  contentActive = true,
 }: Props) {
   const { t } = useAppStrings();
   const iconUrl = resolveTelegramThreadAvatarUrl(chat, item, chatKind);
@@ -568,7 +571,7 @@ export function MessageChatMessageRow({
               onMediaDisplaySizeChange={(widthPx) => setLiveMediaWidthPx(widthPx)}
               peerUserId={chat.peer_user_id}
               selfUserId={selfUserId}
-              emojiContentActive={rowInView}
+              emojiContentActive={contentActive && rowInView}
             />
           </View>
           </Pressable>

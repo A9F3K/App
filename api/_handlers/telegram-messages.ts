@@ -7,7 +7,7 @@ import { revokeMtprotoSession } from "../../database/telegramMtproto.js";
 import { applyAuthApiCors, authApiPreflightResponse } from "../_lib/auth-cors.js";
 import { telegramUsernameFromSessionCookie } from "../_lib/session-auth.js";
 import { appLog, safeTelegramUserIdForLog, telegramUserIdLogField } from "../../shared/appLog.js";
-import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayResyncChats, gatewaySendChatMessage, gatewayEditChatMessage, gatewayResolvePublicChat, gatewayUserHasPersistedSession, gatewayWarmupSession } from "../_lib/tdlib-gateway-client.js";
+import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayResyncChats, gatewaySendChatMessage, gatewayEditChatMessage, gatewayResolvePublicChat, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
 
 type NodeRes = {
   status: (code: number) => void;
@@ -437,17 +437,20 @@ export async function telegramMessagesChatsLoadMoreHandler(
   }
 
   const result = await gatewayLoadMoreChats(userOrRes);
+  const warming =
+    result.warming === true || isGatewaySessionWarmingError(result.error);
   return finishJson(
     request,
     res,
     {
-      ok: result.ok,
+      ok: result.ok || warming || result.chatListSync?.inProgress === true,
       connected: true,
       started: result.started ?? false,
+      warming,
       chatListSync: result.chatListSync,
       error: result.error,
     },
-    result.ok ? 200 : 502,
+    200,
   );
 }
 
@@ -703,7 +706,21 @@ export async function telegramMessagesAvatarHandler(
       ...telegramUserIdLogField(hasUserId ? userId : null),
       elapsedMs: Date.now() - started,
     });
-    return finishJson(request, res, { ok: false, error: "no_avatar" }, 404);
+    if (res) {
+      res.status(404);
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      if (request) {
+        const headers = new Headers();
+        applyAuthApiCors(request, headers);
+        headers.forEach((v, k) => res.setHeader(k, v));
+      }
+      res.end(JSON.stringify({ ok: false, error: "no_avatar" }));
+      return;
+    }
+    const headers = new Headers({ ...JSON_HEADERS, "Cache-Control": "public, max-age=86400" });
+    if (request) applyAuthApiCors(request, headers);
+    return new Response(JSON.stringify({ ok: false, error: "no_avatar" }), { status: 404, headers });
   }
   if (!avatar) {
     logTelegramMessagesApi("messages_avatar_unavailable", {
@@ -989,7 +1006,24 @@ export async function telegramMessagesCustomEmojiHandler(
       customEmojiId: customEmojiId || null,
       emoji: emoji || null,
     });
-    return finishJson(request, res, { ok: false, error: "custom_emoji_unavailable" }, 404);
+    if (res) {
+      res.status(404);
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      if (request) {
+        const headers = new Headers();
+        applyAuthApiCors(request, headers);
+        headers.forEach((v, k) => res.setHeader(k, v));
+      }
+      res.end(JSON.stringify({ ok: false, error: "custom_emoji_unavailable" }));
+      return;
+    }
+    const headers = new Headers({ ...JSON_HEADERS, "Cache-Control": "public, max-age=86400" });
+    if (request) applyAuthApiCors(request, headers);
+    return new Response(JSON.stringify({ ok: false, error: "custom_emoji_unavailable" }), {
+      status: 404,
+      headers,
+    });
   }
 
   const headers = new Headers({
@@ -1351,6 +1385,72 @@ export async function telegramMessagesWarmupHandler(
     authState: warm.authState,
     focusOk,
     error: warm.error ?? null,
+  });
+}
+
+export async function telegramMessagesViewInboxHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
+  }
+
+  const body = await parseRequestBody<{
+    chat_id?: unknown;
+    message_id?: unknown;
+  }>(request);
+  const chatId = Number(body.chat_id);
+  const messageId = Number(body.message_id);
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
+  }
+  if (!Number.isFinite(messageId) || messageId <= 0) {
+    return finishJson(request, res, { ok: false, error: "message_id_required" }, 400);
+  }
+
+  const started = Date.now();
+  const result = await gatewayViewChatInboxMessages(userOrRes, chatId, Math.trunc(messageId));
+  logTelegramMessagesApi("messages_view_inbox", {
+    telegramUsername: userOrRes,
+    chatId,
+    messageId: Math.trunc(messageId),
+    unreadCount: result.unread_count,
+    error: result.error,
+    elapsedMs: Date.now() - started,
+  });
+
+  if (result.error) {
+    return finishJson(
+      request,
+      res,
+      { ok: false, error: result.error },
+      result.error === "session_not_ready" ? 503 : 502,
+    );
+  }
+
+  return finishJson(request, res, {
+    ok: true,
+    unread_count: result.unread_count,
+    last_read_inbox_message_id: result.last_read_inbox_message_id,
   });
 }
 

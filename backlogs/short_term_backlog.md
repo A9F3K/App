@@ -1,3 +1,4 @@
+Connection lost
 Messages count and scrolling bugs
 Desktop does not update on background
 Search in the first column

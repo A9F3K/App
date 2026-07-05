@@ -90,7 +90,9 @@ async function loadChatsFromList(
   const collected = new Map<number, TdChat>();
   let offsetOrder = "9223372036854775807";
   let offsetChatId = 0;
-  let warmedUp = false;
+  let emptyListWarmedUp = false;
+  let partialPageRetries = 0;
+  const maxPartialPageRetries = 6;
   const pageSize = maxChats != null ? Math.min(100, Math.max(maxChats, 20)) : 100;
 
   for (let round = 0; round < 80; round++) {
@@ -111,8 +113,8 @@ async function loadChatsFromList(
 
     const ids = list.chat_ids ?? [];
     if (ids.length === 0) {
-      if (warmedUp) break;
-      warmedUp = true;
+      if (emptyListWarmedUp) break;
+      emptyListWarmedUp = true;
       try {
         const loadLimit =
           maxChats != null ? Math.min(pageSize, maxChats) : 100;
@@ -136,7 +138,25 @@ async function loadChatsFromList(
     }
 
     if (maxChats != null && collected.size >= maxChats) break;
-    if (ids.length < pageSize) break;
+    if (ids.length < pageSize) {
+      const wantsMore = maxChats == null || collected.size < maxChats;
+      if (partialPageRetries < maxPartialPageRetries && wantsMore) {
+        partialPageRetries += 1;
+        try {
+          const loadLimit =
+            maxChats != null ? Math.min(pageSize, maxChats - collected.size) : pageSize;
+          if (loadLimit > 0) {
+            await client.invoke({ _: "loadChats", chat_list: chatList, limit: loadLimit });
+          }
+        } catch {
+          /* best effort */
+        }
+        await sleep(400 + partialPageRetries * 300);
+        continue;
+      }
+      break;
+    }
+    partialPageRetries = 0;
     const lastChat = [...ids]
       .reverse()
       .map((chatId) => collected.get(chatId))
@@ -429,9 +449,9 @@ export async function readUserAvatarBytes(
         /* try next size */
       }
     }
-    return null;
+    return TELEGRAM_THREAD_NO_AVATAR;
   } catch {
-    return null;
+    return TELEGRAM_THREAD_NO_AVATAR;
   }
 }
 
@@ -687,7 +707,17 @@ export async function syncChatThreads(
   if (options?.replaceCache === false) {
     mergeLiveChatRows(telegramUsername, liveRows);
   } else {
-    seedLiveChatList(telegramUsername, liveRows);
+    const existingCount = getLiveChatList(telegramUsername)?.length ?? 0;
+    if (existingCount === 0 || liveRows.length >= existingCount) {
+      seedLiveChatList(telegramUsername, liveRows);
+    } else {
+      logGateway("sync_chat_threads_merge_instead_of_shrink", {
+        telegramUsername,
+        existingCount,
+        newCount: liveRows.length,
+      });
+      mergeLiveChatRows(telegramUsername, liveRows);
+    }
   }
   await touchMtprotoSync(telegramUsername);
 
@@ -805,7 +835,9 @@ export async function syncRemainingChatsInBackground(
   ): Promise<void> => {
     let offsetOrder = "9223372036854775807";
     let offsetChatId = 0;
-    let warmedUp = false;
+    let emptyListWarmedUp = false;
+    let partialPageRetries = 0;
+    const maxPartialPageRetries = 6;
 
     for (let round = 0; round < 80; round++) {
       let list: { chat_ids?: number[] };
@@ -824,8 +856,8 @@ export async function syncRemainingChatsInBackground(
       const rawIds = list.chat_ids ?? [];
       const ids = rawIds.filter((id) => !cachedIds.has(id));
       if (rawIds.length === 0) {
-        if (warmedUp) break;
-        warmedUp = true;
+        if (emptyListWarmedUp) break;
+        emptyListWarmedUp = true;
         try {
           await client.invoke({ _: "loadChats", chat_list: chatList, limit: 100 });
         } catch {
@@ -858,7 +890,63 @@ export async function syncRemainingChatsInBackground(
         }
       }
 
-      if (rawIds.length < 100) break;
+      const advanceFromRawIds = async (): Promise<boolean> => {
+        const lastId = rawIds[rawIds.length - 1];
+        if (lastId == null) return false;
+        let anchor: TdChat | null = pageChats.find((c) => c.id === lastId) ?? null;
+        if (!anchor) {
+          try {
+            anchor = (await client.invoke({ _: "getChat", chat_id: lastId })) as TdChat;
+          } catch {
+            anchor = null;
+          }
+        }
+        if (!anchor) return false;
+        const nextOffsetOrder = mainListOrderKey(anchor);
+        if (!nextOffsetOrder || nextOffsetOrder === "0") return false;
+        if (nextOffsetOrder === offsetOrder && anchor.id === offsetChatId) return false;
+        offsetOrder = nextOffsetOrder;
+        offsetChatId = anchor.id;
+        return true;
+      };
+
+      if (ids.length === 0) {
+        if (rawIds.length >= 100) {
+          const advanced = await advanceFromRawIds();
+          if (advanced) {
+            partialPageRetries = 0;
+            continue;
+          }
+        }
+        if (rawIds.length < 100) {
+          if (partialPageRetries < maxPartialPageRetries) {
+            partialPageRetries += 1;
+            try {
+              await client.invoke({ _: "loadChats", chat_list: chatList, limit: 100 });
+            } catch {
+              /* best effort */
+            }
+            await sleep(400 + partialPageRetries * 300);
+            continue;
+          }
+        }
+        break;
+      }
+
+      if (rawIds.length < 100) {
+        if (partialPageRetries < maxPartialPageRetries) {
+          partialPageRetries += 1;
+          try {
+            await client.invoke({ _: "loadChats", chat_list: chatList, limit: 100 });
+          } catch {
+            /* best effort */
+          }
+          await sleep(400 + partialPageRetries * 300);
+          continue;
+        }
+        break;
+      }
+      partialPageRetries = 0;
       const lastId = rawIds[rawIds.length - 1];
       let anchor: TdChat | null = pageChats.find((c) => c.id === lastId) ?? null;
       if (!anchor && lastId != null) {

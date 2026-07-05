@@ -118,8 +118,18 @@ export const MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER = 5;
 export const MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER = 10;
 /** Batch size when scrolling down into newer history below the loaded window. */
 export const MESSAGE_CHAT_HISTORY_NEWER_PAGE_SIZE = 15;
+/** Larger batch when catching up a big unread backlog on scroll-down. */
+export const MESSAGE_CHAT_HISTORY_NEWER_CATCHUP_PAGE_SIZE = 30;
+/** Max first-page window when opening a chat with many unreads. */
+export const MESSAGE_CHAT_HISTORY_OPEN_UNREAD_LIMIT_MAX = 120;
+/** Max rows kept in the open-chat message list (sliding window around the viewport). */
+export const MESSAGE_CHAT_LOADED_WINDOW_MAX = 120;
+/** Max rows stored per chat in the session history cache. */
+export const MESSAGE_CHAT_CACHE_MESSAGES_MAX = 150;
 /** Distance from bottom (px) that triggers loading the next newer page. */
 export const MESSAGE_CHAT_LOAD_NEWER_THRESHOLD_PX = 120;
+/** Back off newer-page retries after a failed fetch to avoid scroll/layout churn. */
+export const MESSAGE_CHAT_LOAD_NEWER_ERROR_BACKOFF_MS = 2500;
 
 /** IntersectionObserver preload margin for history sentinels (telegram-tt). */
 export const MESSAGE_LIST_SENSITIVE_AREA_PX = 250;

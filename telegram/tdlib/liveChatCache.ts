@@ -287,6 +287,50 @@ export function patchLiveChatFromTdlib(
   return upsertLiveChatRow(telegramUsername, row);
 }
 
+/** Apply TDLib updateChatReadInbox without a full getChat round-trip. */
+export function patchLiveChatReadInbox(
+  telegramUsername: string,
+  chatId: number,
+  unreadCount: number,
+): LiveChatRow | null {
+  const cache = caches.get(telegramUsername);
+  if (!cache) return null;
+  const existing = cache.chats.get(chatId);
+  if (!existing) return null;
+  const nextUnread = Math.max(0, Math.trunc(unreadCount));
+  if (existing.unread_count === nextUnread) return existing;
+  return upsertLiveChatRow(telegramUsername, {
+    telegram_chat_id: existing.telegram_chat_id,
+    title: existing.title,
+    subtitle: existing.subtitle,
+    ...(existing.subtitle_segments ? { subtitle_segments: existing.subtitle_segments } : {}),
+    avatar_url: existing.avatar_url,
+    last_message_at: existing.last_message_at,
+    unread_count: nextUnread,
+    peer_user_id: existing.peer_user_id,
+    peer_username: existing.peer_username ?? null,
+    chat_username: existing.chat_username ?? null,
+    chat_kind: existing.chat_kind ?? null,
+    member_count: existing.member_count ?? null,
+    peer_emoji_status_custom_emoji_id: existing.peer_emoji_status_custom_emoji_id ?? null,
+    peer_accent_color_light: existing.peer_accent_color_light ?? null,
+    peer_accent_color_dark: existing.peer_accent_color_dark ?? null,
+    presence_kind: existing.presence_kind ?? null,
+    presence_at: existing.presence_at ?? null,
+    chat_action: existing.chat_action ?? null,
+    chat_action_user_id: existing.chat_action_user_id ?? null,
+    chat_action_user_name: existing.chat_action_user_name ?? null,
+    chat_action_expires_at: existing.chat_action_expires_at ?? null,
+    last_read_outbox_message_id: existing.last_read_outbox_message_id ?? null,
+    last_message_is_outgoing: existing.last_message_is_outgoing,
+    last_message_outgoing_status: existing.last_message_outgoing_status,
+    last_message_telegram_id: existing.last_message_telegram_id,
+    last_message_sender_user_id: existing.last_message_sender_user_id,
+    is_pinned: existing.is_pinned,
+    pin_order: existing.pin_order,
+  });
+}
+
 export function patchLiveChatAction(
   telegramUsername: string,
   chatId: number,
