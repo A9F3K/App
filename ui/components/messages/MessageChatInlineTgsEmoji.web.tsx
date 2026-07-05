@@ -187,7 +187,7 @@ export function MessageChatInlineTgsEmoji(props: Props) {
     return () => {
       cancelled = true;
     };
-  }, [fetchRef, shouldFetch, emojiFetchEpoch, fetchEnabled, lowPriority, priority, visible, props]);
+  }, [fetchRef, shouldFetch, emojiFetchEpoch]);
 
   useEffect(() => {
     if (!fetchRef || !fetchSettled || animationData || mediaUrl) return;

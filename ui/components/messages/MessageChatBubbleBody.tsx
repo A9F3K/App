@@ -146,7 +146,7 @@ function MessageChatBubbleTextContent({
           nowrap
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchEnabled={emojiContentActive}
-          enrichStandardEmojis
+          enrichStandardEmojis={emojiContentActive}
           chatId={chatId}
         />
         <View
@@ -188,7 +188,7 @@ function MessageChatBubbleTextContent({
           ]}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchEnabled={emojiContentActive}
-          enrichStandardEmojis
+          enrichStandardEmojis={emojiContentActive}
           chatId={chatId}
         />
         <View
@@ -225,7 +225,7 @@ function MessageChatBubbleTextContent({
           style={[textStyle, { textAlign: "left" }]}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchEnabled={emojiContentActive}
-          enrichStandardEmojis
+          enrichStandardEmojis={emojiContentActive}
           chatId={chatId}
         />
       ) : null}
@@ -384,7 +384,7 @@ function MessageChatReplyBlock({
           chatId={telegramChatId}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchEnabled={emojiContentActive}
-          enrichStandardEmojis
+          enrichStandardEmojis={emojiContentActive}
           style={[
             typographyRect15,
             {

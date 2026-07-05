@@ -416,7 +416,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       if (json.ok && (json.chatCount ?? 0) > 0) {
         setGatewayWarming(false);
       }
-      return response.ok && (json.ok !== false || json.warming === true);
+      return response.ok && json.ok !== false;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       logPageDisplay("messages_gateway_resync_error", { reason, message });

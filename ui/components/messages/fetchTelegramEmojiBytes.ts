@@ -14,8 +14,11 @@ export type TelegramEmojiAsset = {
 
 const bytesCache = new Map<string, TelegramEmojiAsset>();
 const unavailableCache = new Set<string>();
+const transientFailureUntil = new Map<string, number>();
 const inflightFetches = new Map<string, Promise<TelegramEmojiAsset | null>>();
 let fetchGeneration = 0;
+
+const TRANSIENT_EMOJI_FAILURE_COOLDOWN_MS = 30_000;
 
 function isTransientEmojiHttpStatus(status: number): boolean {
   return status === 403 || status === 429 || status === 502 || status === 503 || status === 504;
@@ -24,6 +27,7 @@ function isTransientEmojiHttpStatus(status: number): boolean {
 /** Clear failed-fetch blacklist so emojis retry after Telegram connects or gateway warms up. */
 export function resetTelegramEmojiFetchCaches(): void {
   unavailableCache.clear();
+  transientFailureUntil.clear();
   fetchGeneration += 1;
 }
 
@@ -75,7 +79,11 @@ async function fetchTelegramEmojiAssetOnce(
       const contentType = response.headers.get("Content-Type");
       if (!response.ok) {
         telegramEmojiDebug.fetchHttpResult(ref, response.status, contentType, 0);
-        if (response.status === 404 || !isTransientEmojiHttpStatus(response.status)) {
+        if (isTransientEmojiHttpStatus(response.status)) {
+          transientFailureUntil.set(key, Date.now() + TRANSIENT_EMOJI_FAILURE_COOLDOWN_MS);
+        } else if (response.status === 404) {
+          unavailableCache.add(key);
+        } else {
           unavailableCache.add(key);
         }
         return null;
@@ -104,6 +112,11 @@ export async function fetchTelegramEmojiAsset(
   options?: { priority?: NetworkFetchPriority },
 ): Promise<TelegramEmojiAsset | null> {
   const key = cacheKey(ref);
+  const cooldownUntil = transientFailureUntil.get(key);
+  if (cooldownUntil != null && Date.now() < cooldownUntil) {
+    telegramEmojiDebug.fetchUnavailableCached(ref);
+    return null;
+  }
   if (unavailableCache.has(key)) {
     telegramEmojiDebug.fetchUnavailableCached(ref);
     return null;

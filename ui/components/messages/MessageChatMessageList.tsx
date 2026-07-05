@@ -262,6 +262,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const syncScrollBelowUnreadRef = useRef<(metrics: HspScrollMetrics) => void>(() => {});
   const scheduleSyncScrollBelowUnreadRef = useRef<() => void>(() => {});
   const loadNewerMessagesRef = useRef<() => Promise<void>>(async () => {});
+  const loadOlderMessagesRef = useRef<() => Promise<void>>(async () => {});
   const unreadSyncScheduledRef = useRef(false);
   const loadOlderEnabledRef = useRef(false);
   const loadNewerEnabledRef = useRef(false);
@@ -699,6 +700,13 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           )
         ) {
           void loadNewerMessagesRef.current();
+        }
+        if (
+          metrics.scrollY <= MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX &&
+          !loadingOlderRef.current
+        ) {
+          loadOlderEnabledRef.current = true;
+          void loadOlderMessagesRef.current();
         }
         return;
       }
@@ -1934,10 +1942,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     if (
       loadingInitial ||
       loadingOlderRef.current ||
-      loadingNewerRef.current ||
       !hasMoreOlder ||
       beforeMessageId == null
     ) {
+      scrollControllerRef.current?.clearNearTopLatch();
       return;
     }
 
@@ -2087,6 +2095,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         hasMoreOlder: result.hasMoreOlder,
         nextBeforeMessageId: result.nextBeforeMessageId,
       });
+      prefetchTelegramEmojiAssetsFromMessages(result.messages);
       const loadedTailId =
         displayMessagesRef.current[displayMessagesRef.current.length - 1]
           ?.telegram_message_id ?? 0;
@@ -2323,6 +2332,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     loadNewerMessagesRef.current = loadNewerMessages;
   }, [loadNewerMessages]);
 
+  useEffect(() => {
+    loadOlderMessagesRef.current = loadOlderMessages;
+  }, [loadOlderMessages]);
+
   const historyLoadIoEnabled =
     !initialScrollInProgress &&
     !loadingInitial &&
@@ -2335,7 +2348,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       tryUnlockPagedLoad(metrics);
       loadOlderEnabledRef.current = true;
     }
-    if (!hasMoreOlder) return;
+    if (!hasMoreOlder || loadingOlderRef.current) {
+      scrollControllerRef.current?.clearNearTopLatch();
+      return;
+    }
     followingBottomRef.current = false;
     setIsFollowingBottom(false);
     setAuthenticatedHomeOpenChatFollowingBottom(false);
@@ -2371,12 +2387,19 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         loadOlderEnabledRef.current = true;
       }
     }
-    if (!loadOlderEnabledRef.current) return;
+    if (!loadOlderEnabledRef.current) {
+      scrollControllerRef.current?.clearNearTopLatch();
+      return;
+    }
+    if (!hasMoreOlder || loadingOlderRef.current) {
+      scrollControllerRef.current?.clearNearTopLatch();
+      return;
+    }
     followingBottomRef.current = false;
     setIsFollowingBottom(false);
     setAuthenticatedHomeOpenChatFollowingBottom(false);
     void loadOlderMessages();
-  }, [loadOlderMessages, tryUnlockPagedLoad]);
+  }, [hasMoreOlder, loadOlderMessages, tryUnlockPagedLoad]);
 
   const handleNearBottom = useCallback(() => {
     const metrics = scrollControllerRef.current?.getMetrics();
