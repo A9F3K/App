@@ -28,6 +28,7 @@ import {
   subscribeChatListBottomLoaderActive,
 } from "../components/messages/chatListBottomLoaderStatus";
 import { invokeChatListNearBottom } from "../components/messages/chatListNearBottom";
+import { setChatListScrollMetrics } from "../components/messages/chatListScrollMetrics";
 import { MessageChatWriteBottomBar } from "../components/messages/MessageChatWriteBottomBar";
 import { GetPanelContent } from "../components/get/GetPanelContent";
 import { SendPanelContent } from "../components/send/SendPanelContent";
@@ -582,6 +583,13 @@ export function HomeAuthenticatedScreen() {
       homeLeftScrollRef.current?.clearNearBottomLatch();
     });
   }, [homeNavIndex]);
+  const handleHomeLeftScrollPositionChange = useCallback(
+    (metrics: { scrollY: number; layoutH: number; contentH: number }) => {
+      if (homeNavIndex !== 1) return;
+      setChatListScrollMetrics({ scrollY: metrics.scrollY, layoutH: metrics.layoutH });
+    },
+    [homeNavIndex],
+  );
   const selectedMessageChat = useAuthenticatedHomeSelectedChat();
   const middleColumnFocus = useAuthenticatedHomeMiddleColumnFocus();
   const rightPanel = useAuthenticatedHomeRightPanel();
@@ -1565,6 +1573,7 @@ export function HomeAuthenticatedScreen() {
           contentContainerStyle={homeWideScrollContentStyle}
           nearBottomThresholdPx={240}
           onNearBottom={handleHomeLeftScrollNearBottom}
+          onScrollPositionChange={handleHomeLeftScrollPositionChange}
           scrollControllerRef={homeLeftScrollRef}
         >
           {homeMainColumnBlocks}
@@ -1578,6 +1587,7 @@ export function HomeAuthenticatedScreen() {
         contentContainerStyle={homeCompactScrollContentStyle}
         nearBottomThresholdPx={240}
         onNearBottom={handleHomeLeftScrollNearBottom}
+        onScrollPositionChange={handleHomeLeftScrollPositionChange}
         scrollControllerRef={homeLeftScrollRef}
       >
         {homeCompactMainBlock}

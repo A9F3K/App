@@ -374,6 +374,9 @@ export async function gatewayViewChatInboxMessages(
 export type ChatListSyncStatus = {
   inProgress: boolean;
   cachedCount: number;
+  positionedComplete?: boolean;
+  tier3Available?: boolean;
+  tier3InProgress?: boolean;
 };
 
 export async function gatewayFetchLiveChats(
@@ -471,10 +474,12 @@ export async function gatewayFetchLiveChats(
 
 export async function gatewayLoadMoreChats(
   telegramUsername: string,
+  tier: "positioned" | "unpositioned" = "positioned",
 ): Promise<{
   ok: boolean;
   started?: boolean;
   warming?: boolean;
+  tier?: "positioned" | "unpositioned";
   chatListSync?: ChatListSyncStatus;
   error?: string;
 }> {
@@ -488,7 +493,7 @@ export async function gatewayLoadMoreChats(
         "Content-Type": "application/json",
         "X-Gateway-Secret": secret,
       },
-      body: JSON.stringify({ telegramUsername }),
+      body: JSON.stringify({ telegramUsername, tier }),
     });
     const json = (await response.json().catch(() => ({}))) as {
       ok?: boolean;

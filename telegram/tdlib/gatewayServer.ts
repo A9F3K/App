@@ -4,7 +4,7 @@ import { getGatewayBindHost, getGatewayPort, getGatewaySecret, getTdlibDbRoot } 
 import { logGateway } from "./gatewayLog.js";
 import { safeTelegramUserIdForLog } from "../../shared/appLog.js";
 import { serveLiveChatRevisionStream } from "./liveChatStream.js";
-import { isBackgroundChatSyncInProgress } from "./syncChats.js";
+import { buildChatListSyncStatus } from "./chatListSyncState.js";
 import {
   disconnectUserSession,
   gatewayHealth,
@@ -247,10 +247,7 @@ export function startTdlibGatewayServer(): http.Server {
               unchanged: true,
               source: "live",
               revision,
-              chatListSync: {
-                inProgress: isBackgroundChatSyncInProgress(telegramUsername),
-                cachedCount: getLiveChatList(telegramUsername)?.length ?? 0,
-              },
+              chatListSync: buildChatListSyncStatus(telegramUsername),
             });
             return;
           }
@@ -276,30 +273,29 @@ export function startTdlibGatewayServer(): http.Server {
             source: "live",
             revision: currentRevision,
             chats: chats ?? [],
-            chatListSync: {
-              inProgress: isBackgroundChatSyncInProgress(telegramUsername),
-              cachedCount: chats?.length ?? 0,
-            },
+            chatListSync: buildChatListSyncStatus(telegramUsername),
           });
           return;
         }
 
         if (req.method === "POST" && pathname === "/v1/chats/load-more") {
-          const body = (await readJson(req)) as { telegramUsername?: string };
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            tier?: "positioned" | "unpositioned";
+          };
           const telegramUsername = (body.telegramUsername || "").trim();
           if (!telegramUsername) {
             sendJson(res, 400, { ok: false, error: "username_required" });
             return;
           }
-          const result = requestBackgroundChatSync(telegramUsername);
+          const tier = body.tier === "unpositioned" ? "unpositioned" : "positioned";
+          const result = requestBackgroundChatSync(telegramUsername, tier);
           sendJson(res, 200, {
             ok: true,
             started: result.started,
             warming: result.warming === true,
-            chatListSync: {
-              inProgress: result.inProgress,
-              cachedCount: getLiveChatList(telegramUsername)?.length ?? 0,
-            },
+            tier,
+            chatListSync: buildChatListSyncStatus(telegramUsername),
           });
           return;
         }

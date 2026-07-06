@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { buildApiUrl } from "../../api/_base";
 import { normalizeFormattedTextSegments, type FormattedTextSegment } from "../../shared/formattedTextSegments";
@@ -25,11 +25,17 @@ import {
 import { setChatListBottomLoaderActive } from "./messages/chatListBottomLoaderStatus";
 import { setChatListNearBottomHandler } from "./messages/chatListNearBottom";
 import {
-  CHAT_LIST_INITIAL_SYNC_LIMIT,
-  useChatListViewport,
-} from "../hooks/useChatListViewport";
+  getChatListScrollMetrics,
+  subscribeChatListScrollMetrics,
+} from "./messages/chatListScrollMetrics";
+import {
+  pruneTier3ChatRows,
+  resolveChatListTier,
+  resolveChatListVirtualWindow,
+  sortChatRowsTierAware,
+} from "./messages/chatListVirtualWindow";
+import { MESSAGE_ROW_HEIGHT_PX, chatListRowStridePx, chatListShellTopInsetPx, homeListShellStyle } from "./messages/messageListLayout";
 import { telegramEmojiDebug } from "./messages/telegramEmojiDebug";
-import { homeListShellStyle } from "./messages/messageListLayout";
 import { useTelegramMessagesChatListStream } from "./messages/useTelegramMessagesChatListStream";
 
 type Props = {
@@ -152,6 +158,13 @@ function normalizeChat(raw: unknown): MessageChatRowData | null {
       return Number.isFinite(raw) && raw > 0 ? raw : null;
     })(),
     is_pinned: Boolean(row.is_pinned),
+    pin_order: typeof row.pin_order === "string" ? row.pin_order : "0",
+    list_tier:
+      row.list_tier === "pinned" ||
+      row.list_tier === "positioned" ||
+      row.list_tier === "unpositioned"
+        ? row.list_tier
+        : null,
   };
 }
 
@@ -212,23 +225,14 @@ function chatsChanged(prev: MessageChatRowData[], next: MessageChatRowData[]): b
       a.last_message_outgoing_status !== b.last_message_outgoing_status ||
       a.last_message_telegram_id !== b.last_message_telegram_id ||
       a.last_message_sender_user_id !== b.last_message_sender_user_id ||
-      Boolean(a.is_pinned) !== Boolean(b.is_pinned)
+      Boolean(a.is_pinned) !== Boolean(b.is_pinned) ||
+      a.pin_order !== b.pin_order ||
+      a.list_tier !== b.list_tier
     ) {
       return true;
     }
   }
   return false;
-}
-
-function sortChatRows(rows: MessageChatRowData[]): MessageChatRowData[] {
-  return [...rows].sort((a, b) => {
-    const aPinned = Boolean(a.is_pinned);
-    const bPinned = Boolean(b.is_pinned);
-    if (aPinned !== bPinned) return aPinned ? -1 : 1;
-    const ta = a.last_message_at ? Date.parse(a.last_message_at) : 0;
-    const tb = b.last_message_at ? Date.parse(b.last_message_at) : 0;
-    return tb - ta;
-  });
 }
 
 /** Keep stable rows when the gateway returns a truncated snapshot during resync. */
@@ -253,17 +257,30 @@ function mergeChatRows(
   incoming: MessageChatRowData[],
 ): MessageChatRowData[] {
   if (incoming.length === 0) return prev;
+  const sortedIncoming = sortChatRowsTierAware(incoming);
   if (prev.length === 0) {
-    return applyOpenChatUnreadToRows(sortChatRows(incoming));
+    return applyOpenChatUnreadToRows(sortedIncoming);
   }
+
+  const prevTier3Count = prev.filter((row) => resolveChatListTier(row) === "unpositioned").length;
+  const incomingTier3Count = incoming.filter(
+    (row) => resolveChatListTier(row) === "unpositioned",
+  ).length;
+  const tier3Shrinking = incomingTier3Count < prevTier3Count;
+
   if (
+    !tier3Shrinking &&
     prev.length >= CHAT_LIST_OVERSIZED_THRESHOLD &&
     incoming.length < prev.length * 0.25
   ) {
-    return applyOpenChatUnreadToRows(sortChatRows(incoming));
+    return applyOpenChatUnreadToRows(sortedIncoming);
   }
 
-  const byId = new Map(incoming.map((row) => [row.telegram_chat_id, row]));
+  if (incoming.length >= prev.length) {
+    return applyOpenChatUnreadToRows(sortedIncoming);
+  }
+
+  const byId = new Map(sortedIncoming.map((row) => [row.telegram_chat_id, row]));
   const merged: MessageChatRowData[] = [];
   const mergedIds = new Set<number>();
 
@@ -277,13 +294,13 @@ function mergeChatRows(
           fresh.telegram_chat_id,
         ),
       });
-    } else {
+    } else if (resolveChatListTier(row) !== "unpositioned") {
       merged.push(row);
     }
     mergedIds.add(row.telegram_chat_id);
   }
 
-  for (const row of incoming) {
+  for (const row of sortedIncoming) {
     if (!mergedIds.has(row.telegram_chat_id)) {
       merged.push({
         ...row,
@@ -296,11 +313,7 @@ function mergeChatRows(
     }
   }
 
-  if (incoming.length >= prev.length) {
-    return applyOpenChatUnreadToRows(sortChatRows(incoming));
-  }
-
-  return sortChatRows(merged);
+  return sortChatRowsTierAware(merged);
 }
 
 const MESSAGES_POLL_FAST_MS = 2_000;
@@ -344,7 +357,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const unchangedPollStreakRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatListAtBottomRef = useRef(false);
-  const { viewportCount, expandViewport, canExpandViewport } = useChatListViewport(chats.length);
+  const loadMoreTierRef = useRef<"positioned" | "unpositioned">("positioned");
+  const [chatListScrollTick, setChatListScrollTick] = useState(0);
+  const chatListScrollRafRef = useRef<number | null>(null);
+  const chatListVirtualStickyRef = useRef({ startIndex: 0, endIndex: 0 });
+  const chatListPruneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chatListVirtualWindowRef = useRef<ReturnType<typeof resolveChatListVirtualWindow> | null>(null);
   const loadChatsRef = useRef<
     (options?: { allowAvatarResync?: boolean; silent?: boolean; forceFull?: boolean }) => Promise<void>
   >(async () => {});
@@ -355,13 +373,14 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     setChatListSyncStatus(status);
   }, []);
 
-  const requestLoadMoreChats = useCallback(async () => {
+  const requestLoadMoreChats = useCallback(async (tier: "positioned" | "unpositioned" = "positioned") => {
+    loadMoreTierRef.current = tier;
     try {
       const response = await fetch(buildApiUrl("/api/telegram-messages-chats-load-more"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ tier }),
       });
       const json = (await response.json().catch(() => ({}))) as {
         ok?: boolean;
@@ -730,14 +749,100 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     clearAuthenticatedHomeSelectedChat();
   }, [chatSelectionEnabled]);
 
-  const visibleChats = chats.slice(0, viewportCount);
-  const syncInProgress = chatListSync?.inProgress === true;
+  const sortedChats = useMemo(() => sortChatRowsTierAware(chats), [chats]);
   const cachedChatCount = chatListSync?.cachedCount ?? chats.length;
-  const mayHaveMoreOnServer =
+  const chatListRowStride = chatListRowStridePx(wideListChrome);
+  const chatListShellTopInset = chatListShellTopInsetPx(wideListChrome);
+
+  useEffect(() => {
+    return subscribeChatListScrollMetrics(() => {
+      if (chatListScrollRafRef.current != null) return;
+      chatListScrollRafRef.current = requestAnimationFrame(() => {
+        chatListScrollRafRef.current = null;
+        setChatListScrollTick((tick) => tick + 1);
+      });
+    });
+  }, []);
+
+  const chatListScrollMetrics = getChatListScrollMetrics();
+  const chatListVirtualTotalCount = Math.max(sortedChats.length, cachedChatCount);
+  const chatListVirtualWindow = useMemo(() => {
+    const next = resolveChatListVirtualWindow(chatListVirtualTotalCount, {
+      scrollY: chatListScrollMetrics.scrollY,
+      layoutH: chatListScrollMetrics.layoutH,
+    }, {
+      rowStridePx: chatListRowStride,
+      contentTopInsetPx: chatListShellTopInset,
+      stickyWindow: chatListVirtualStickyRef.current,
+    });
+    chatListVirtualStickyRef.current = {
+      startIndex: next.startIndex,
+      endIndex: next.endIndex,
+    };
+    return next;
+  }, [
+    chatListRowStride,
+    chatListScrollTick,
+    chatListShellTopInset,
+    chatListVirtualTotalCount,
+    chatListScrollMetrics.layoutH,
+    chatListScrollMetrics.scrollY,
+  ]);
+  chatListVirtualWindowRef.current = chatListVirtualWindow;
+
+  useEffect(() => {
+    if (!chatListVirtualWindow.enabled) return;
+    if (chatListPruneTimerRef.current) {
+      clearTimeout(chatListPruneTimerRef.current);
+    }
+    chatListPruneTimerRef.current = setTimeout(() => {
+      chatListPruneTimerRef.current = null;
+      const window = chatListVirtualWindowRef.current;
+      if (!window?.enabled) return;
+      setChats((prev) => {
+        const sorted = sortChatRowsTierAware(prev);
+        const pruned = pruneTier3ChatRows(sorted, window, chatListRowStride);
+        return chatsChanged(prev, pruned) ? pruned : prev;
+      });
+    }, 350);
+    return () => {
+      if (chatListPruneTimerRef.current) {
+        clearTimeout(chatListPruneTimerRef.current);
+        chatListPruneTimerRef.current = null;
+      }
+    };
+  }, [chatListRowStride, chatListVirtualWindow.enabled, chatListVirtualWindow.endIndex, chatListVirtualWindow.startIndex]);
+
+  const positionedComplete = chatListSync?.positionedComplete === true;
+  const tier3Available = chatListSync?.tier3Available === true;
+  const tier3InProgress = chatListSync?.tier3InProgress === true;
+  const syncInProgress = chatListSync?.inProgress === true;
+  const positionedChatCount = sortedChats.filter(
+    (row) => resolveChatListTier(row) !== "unpositioned",
+  ).length;
+  const needsPositionedPage =
+    cachedChatCount > positionedChatCount ||
+    (!positionedComplete && (syncInProgress || tier3InProgress));
+  const needsTier3Page =
+    (positionedComplete || (!syncInProgress && !needsPositionedPage)) && tier3Available;
+  const mayHaveMoreOnServer = needsPositionedPage || needsTier3Page;
+  const showBottomLoader =
     syncInProgress ||
-    cachedChatCount > chats.length ||
-    (chats.length >= CHAT_LIST_INITIAL_SYNC_LIMIT && chatListSync?.inProgress !== false);
-  const showBottomLoader = syncInProgress || (mayHaveMoreOnServer && !canExpandViewport);
+    tier3InProgress ||
+    (chatListAtBottomRef.current && mayHaveMoreOnServer);
+
+  const firstTier3Index = sortedChats.findIndex(
+    (row) => resolveChatListTier(row) === "unpositioned",
+  );
+  const showTier3Divider =
+    positionedComplete && tier3Available && firstTier3Index >= 0;
+
+  const visibleChats = chatListVirtualWindow.enabled
+    ? sortedChats.slice(chatListVirtualWindow.startIndex, chatListVirtualWindow.endIndex + 1)
+    : sortedChats;
+  const visibleChatStartIndex = chatListVirtualWindow.enabled
+    ? chatListVirtualWindow.startIndex
+    : 0;
 
   useEffect(() => {
     setChatListBottomLoaderActive(showBottomLoader);
@@ -757,35 +862,28 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
 
   useEffect(() => {
     if (!chatListAtBottomRef.current) return;
-    if (viewportCount >= chats.length) return;
-    expandViewport();
-  }, [chats.length, expandViewport, viewportCount]);
+    if (mayHaveMoreOnServer) {
+      void requestLoadMoreChats(needsPositionedPage ? "positioned" : "unpositioned");
+    }
+  }, [mayHaveMoreOnServer, needsPositionedPage, requestLoadMoreChats, sortedChats.length]);
 
   const handleChatListNearBottom = useCallback(() => {
     chatListAtBottomRef.current = true;
-    const needsLocalExpand = viewportCount < chats.length;
-    if (needsLocalExpand) {
-      expandViewport();
-    }
-    const needsServerPage =
-      syncInProgress ||
-      mayHaveMoreOnServer ||
-      chats.length >= CHAT_LIST_INITIAL_SYNC_LIMIT;
     void loadChatsRef.current({
       silent: true,
-      forceFull: needsLocalExpand || cachedChatCount > chats.length,
+      forceFull: cachedChatCount > chats.length,
     });
-    if (needsServerPage) {
-      void requestLoadMoreChats();
+    if (needsPositionedPage) {
+      void requestLoadMoreChats("positioned");
+    } else if (needsTier3Page) {
+      void requestLoadMoreChats("unpositioned");
     }
   }, [
     cachedChatCount,
     chats.length,
-    expandViewport,
-    mayHaveMoreOnServer,
+    needsPositionedPage,
+    needsTier3Page,
     requestLoadMoreChats,
-    syncInProgress,
-    viewportCount,
   ]);
 
   useEffect(() => {
@@ -795,22 +893,53 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     };
   }, [handleChatListNearBottom]);
 
-  const renderChatRows = (items: MessageChatRowData[]) => (
+  const renderChatRows = (items: MessageChatRowData[], startIndex: number) => (
     <>
-      {items.map((item, index) => (
-        <MessageChatRow
-          key={item.telegram_chat_id}
-          item={item}
-          isLast={index === items.length - 1 && !showBottomLoader}
-          isActive={chatSelectionEnabled && selectedChatId === item.telegram_chat_id}
-          colors={colors}
-          timePendingLabel={t("feed.timePending")}
-          onPress={chatSelectionEnabled ? () => handleChatPress(item) : undefined}
-          onPrefetch={() => handleRowPrefetch(item)}
-        />
-      ))}
+      {chatListVirtualWindow.enabled && chatListVirtualWindow.topSpacerPx > 0 ? (
+        <View style={{ height: chatListVirtualWindow.topSpacerPx }} />
+      ) : null}
+      {items.map((item, index) => {
+        const absoluteIndex = startIndex + index;
+        const showDivider =
+          showTier3Divider && absoluteIndex === firstTier3Index && firstTier3Index > 0;
+        return (
+          <View key={item.telegram_chat_id}>
+            {showDivider ? (
+              <View
+                style={{
+                  height: MESSAGE_ROW_HEIGHT_PX,
+                  justifyContent: "center",
+                  paddingHorizontal: 16,
+                }}
+              >
+                <Text
+                  style={{
+                    color: colors.secondary,
+                    fontSize: 13,
+                    lineHeight: 18,
+                  }}
+                >
+                  {t("messages.moreChats")}
+                </Text>
+              </View>
+            ) : null}
+            <MessageChatRow
+              item={item}
+              isLast={absoluteIndex === sortedChats.length - 1 && !showBottomLoader}
+              isActive={chatSelectionEnabled && selectedChatId === item.telegram_chat_id}
+              colors={colors}
+              timePendingLabel={t("feed.timePending")}
+              onPress={chatSelectionEnabled ? () => handleChatPress(item) : undefined}
+              onPrefetch={() => handleRowPrefetch(item)}
+            />
+          </View>
+        );
+      })}
+      {chatListVirtualWindow.enabled && chatListVirtualWindow.bottomSpacerPx > 0 ? (
+        <View style={{ height: chatListVirtualWindow.bottomSpacerPx }} />
+      ) : null}
       <ChatListBottomSentinel
-        enabled={chats.length > 0}
+        enabled={sortedChats.length > 0}
         onNearBottom={handleChatListNearBottom}
       />
     </>
@@ -867,7 +996,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const list = (
     <View style={{ width: "100%", alignSelf: "stretch" }} pointerEvents="box-none">
       <View style={listShellStyle} pointerEvents="box-none">
-        {renderChatRows(visibleChats)}
+        {renderChatRows(visibleChats, visibleChatStartIndex)}
       </View>
     </View>
   );
@@ -882,7 +1011,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       contentContainerStyle={{ ...listShellStyle, flexGrow: 1 }}
       onScrollBeginDrag={handleClearSelection}
     >
-      {renderChatRows(visibleChats)}
+      {renderChatRows(visibleChats, visibleChatStartIndex)}
       <Pressable style={{ flexGrow: 1, minHeight: 1 }} onPress={handleClearSelection} />
     </ScrollView>
   );

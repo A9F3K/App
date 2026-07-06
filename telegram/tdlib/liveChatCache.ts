@@ -24,7 +24,7 @@ import {
   lastMessageListRowMetaFromMessage,
   type MessageOutgoingStatus,
 } from "./messageHistoryMap.js";
-import { shouldIncludeChatInList } from "./chatListFilter.js";
+import { chatListTier, shouldIncludeChatInList, type ChatListTier } from "./chatListFilter.js";
 import { isPrivateTdChat } from "./chatPreview.js";
 import type { FormattedTextSegment } from "../../shared/formattedTextSegments.js";
 
@@ -57,6 +57,7 @@ export type LiveChatRow = {
   last_message_sender_user_id: number | null;
   is_pinned: boolean;
   pin_order: string;
+  list_tier: ChatListTier;
   /** Monotonic version bumped on each update (for client diffing). */
   revision: number;
 };
@@ -73,12 +74,31 @@ function comparePinOrderDesc(a: string, b: string): number {
   }
 }
 
+function tierRank(tier: ChatListTier): number {
+  switch (tier) {
+    case "pinned":
+      return 0;
+    case "positioned":
+      return 1;
+    case "unpositioned":
+      return 2;
+    default:
+      return 3;
+  }
+}
+
 function sortLiveChatRows(rows: LiveChatRow[]): LiveChatRow[] {
   return [...rows].sort((a, b) => {
+    const tierDiff = tierRank(a.list_tier) - tierRank(b.list_tier);
+    if (tierDiff !== 0) return tierDiff;
     if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1;
     if (a.is_pinned && b.is_pinned) {
       const byPinOrder = comparePinOrderDesc(a.pin_order, b.pin_order);
       if (byPinOrder !== 0) return byPinOrder;
+    }
+    if (a.list_tier === "positioned" && b.list_tier === "positioned") {
+      const byMainOrder = comparePinOrderDesc(a.pin_order, b.pin_order);
+      if (byMainOrder !== 0) return byMainOrder;
     }
     return Date.parse(b.last_message_at) - Date.parse(a.last_message_at);
   });
@@ -190,6 +210,24 @@ export function seedLiveChatList(
   }
 }
 
+/** Drop tier-3 rows not in keepIds (viewport eviction). Pinned/positioned rows are always kept. */
+export function pruneLiveChatRows(
+  telegramUsername: string,
+  keepUnpositionedIds: ReadonlySet<number>,
+): number {
+  const cache = caches.get(telegramUsername);
+  if (!cache || cache.chats.size === 0) return cache?.revision ?? 0;
+  let pruned = 0;
+  for (const [chatId, row] of cache.chats) {
+    if (row.list_tier !== "unpositioned") continue;
+    if (keepUnpositionedIds.has(chatId)) continue;
+    cache.chats.delete(chatId);
+    pruned += 1;
+  }
+  if (pruned === 0) return cache.revision;
+  return bumpRevision(cache, telegramUsername);
+}
+
 /** Merge rows into the live cache with a single revision bump (background paging). */
 export function mergeLiveChatRows(
   telegramUsername: string,
@@ -281,9 +319,10 @@ export function patchLiveChatFromTdlib(
     last_read_outbox_message_id:
       lastReadOutboxMessageIdFromChat(chat) ?? existing?.last_read_outbox_message_id ?? null,
     ...lastMessageListRowMetaFromChat(chat, getLiveChatSelfUserId(telegramUsername)),
-    is_pinned: isChatPinnedInMainList(chat),
-    pin_order: mainListOrderKey(chat),
-  };
+      is_pinned: isChatPinnedInMainList(chat),
+      pin_order: mainListOrderKey(chat),
+      list_tier: existing?.list_tier ?? chatListTier(chat),
+    };
   return upsertLiveChatRow(telegramUsername, row);
 }
 

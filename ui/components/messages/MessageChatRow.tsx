@@ -81,6 +81,8 @@ export type MessageChatRowData = {
   last_message_telegram_id?: number | null;
   last_message_sender_user_id?: number | null;
   is_pinned?: boolean;
+  pin_order?: string | null;
+  list_tier?: "pinned" | "positioned" | "unpositioned" | null;
 };
 
 function resolveAvatarUrl(item: MessageChatRowData): string | null {

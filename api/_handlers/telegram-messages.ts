@@ -208,6 +208,12 @@ function mapLiveChats(live: { chats: Record<string, unknown>[]; revision: number
     chat_action_expires_at: row.chat_action_expires_at ?? null,
     is_pinned: Boolean(row.is_pinned),
     pin_order: typeof row.pin_order === "string" ? row.pin_order : "0",
+    list_tier:
+      row.list_tier === "pinned" ||
+      row.list_tier === "positioned" ||
+      row.list_tier === "unpositioned"
+        ? row.list_tier
+        : null,
     last_read_outbox_message_id:
       typeof row.last_read_outbox_message_id === "number" &&
       Number.isFinite(row.last_read_outbox_message_id) &&
@@ -436,7 +442,9 @@ export async function telegramMessagesChatsLoadMoreHandler(
     return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
   }
 
-  const result = await gatewayLoadMoreChats(userOrRes);
+  const body = await parseRequestBody<{ tier?: string }>(request);
+  const tier = body.tier === "unpositioned" ? "unpositioned" : "positioned";
+  const result = await gatewayLoadMoreChats(userOrRes, tier);
   const warming =
     result.warming === true || isGatewaySessionWarmingError(result.error);
   return finishJson(
@@ -447,6 +455,7 @@ export async function telegramMessagesChatsLoadMoreHandler(
       connected: true,
       started: result.started ?? false,
       warming,
+      tier: result.tier ?? tier,
       chatListSync: result.chatListSync,
       error: result.error,
     },

@@ -1,6 +1,9 @@
 export type ChatListSyncStatus = {
   inProgress: boolean;
   cachedCount: number;
+  positionedComplete?: boolean;
+  tier3Available?: boolean;
+  tier3InProgress?: boolean;
 };
 
 let currentStatus: ChatListSyncStatus | null = null;

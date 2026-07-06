@@ -35,13 +35,23 @@ import {
 import { resolveMyUserId } from "./chatHistory.js";
 import { logGateway } from "./gatewayLog.js";
 import { emojiStatusCustomIdFromChat } from "./emojiStatus.js";
-import { lastMessageListRowMetaFromChat } from "./messageHistoryMap.js";
+import { filterChatsForList, chatListTier, type ChatListTier } from "./chatListFilter.js";
+import {
+  markBackgroundChatSyncEnd,
+  markBackgroundChatSyncStart,
+  markTier3ChatSyncEnd,
+  markTier3ChatSyncStart,
+  resetChatListSyncMeta,
+  setPositionedComplete,
+  setTier3Available,
+  getTier3ListCursor,
+} from "./chatListSyncState.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
 import {
   specialUserForceIncludedPeerUserIds,
   SUPPLEMENTARY_CONTACT_SEARCH_QUERIES,
 } from "../../shared/specialTelegramUsers.js";
-import { filterChatsForList } from "./chatListFilter.js";
+import { chatKindFromTdChat, lastMessageListRowMetaFromChat } from "./messageHistoryMap.js";
 
 type TdFile = {
   id?: number;
@@ -58,10 +68,14 @@ const PREVIEW_SYNC_CONCURRENCY = 8;
 const PRESENCE_SYNC_CONCURRENCY = 8;
 const MEMBER_COUNT_SYNC_CONCURRENCY = 6;
 
-/** First paint: only the top of {@link chatListMain} via TDLib `loadChats` / `getChats`. */
-export const INITIAL_MAIN_CHAT_SYNC_LIMIT = 50;
+/** First paint: positioned main-list chats after all pins. */
+export const INITIAL_POSITIONED_SYNC_LIMIT = 40;
+/** @deprecated Use INITIAL_POSITIONED_SYNC_LIMIT — kept for client constant parity. */
+export const INITIAL_MAIN_CHAT_SYNC_LIMIT = INITIAL_POSITIONED_SYNC_LIMIT;
 /** Each deferred page after the initial snapshot. */
 export const BACKGROUND_CHAT_SYNC_PAGE_SIZE = 35;
+/** Unpositioned supplementary chats per on-demand batch. */
+export const TIER3_CHAT_SYNC_BATCH_SIZE = 25;
 const BACKGROUND_CHAT_SYNC_PAGE_DELAY_MS = 2_500;
 const BACKGROUND_CHAT_SYNC_START_DELAY_MS = 1_500;
 
@@ -79,6 +93,127 @@ export type SyncChatThreadsOptions = {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Re-fetch chat until TDLib populates `positions` (or retries exhaust). */
+export async function hydrateChatPositions(
+  client: Client,
+  chatId: number,
+  retries = 2,
+): Promise<TdChat | null> {
+  let last: TdChat | null = null;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+      last = chat;
+      const positions = chat.positions;
+      if (Array.isArray(positions) && positions.length > 0) return chat;
+      if (attempt < retries) await sleep(150 + attempt * 100);
+    } catch {
+      return last;
+    }
+  }
+  return last;
+}
+
+async function loadPinnedAndPositionedChats(
+  client: Client,
+  maxPositioned: number,
+): Promise<{ chats: TdChat[]; positionedComplete: boolean }> {
+  const result: TdChat[] = [];
+  const seen = new Set<number>();
+  let positionedCount = 0;
+  let offsetOrder = "9223372036854775807";
+  let offsetChatId = 0;
+  let emptyListWarmedUp = false;
+  let partialPageRetries = 0;
+  const maxPartialPageRetries = 6;
+  let positionedComplete = false;
+
+  outer: for (let round = 0; round < 80; round += 1) {
+    let list: { chat_ids?: number[] };
+    try {
+      list = (await client.invoke({
+        _: "getChats",
+        chat_list: { _: "chatListMain" },
+        offset_order: offsetOrder,
+        offset_chat_id: offsetChatId,
+        limit: 100,
+      })) as { chat_ids?: number[] };
+    } catch {
+      break;
+    }
+
+    const rawIds = list.chat_ids ?? [];
+    if (rawIds.length === 0) {
+      if (emptyListWarmedUp) {
+        positionedComplete = true;
+        break;
+      }
+      emptyListWarmedUp = true;
+      try {
+        await client.invoke({ _: "loadChats", chat_list: { _: "chatListMain" }, limit: 100 });
+      } catch {
+        break;
+      }
+      await sleep(400);
+      continue;
+    }
+
+    for (const chatId of rawIds) {
+      if (seen.has(chatId)) continue;
+      const chat = await hydrateChatPositions(client, chatId);
+      if (!chat) continue;
+      const tier = chatListTier(chat);
+      if (tier === "pinned") {
+        result.push(chat);
+        seen.add(chatId);
+      } else if (tier === "positioned") {
+        result.push(chat);
+        seen.add(chatId);
+        positionedCount += 1;
+        if (positionedCount >= maxPositioned) {
+          break outer;
+        }
+      }
+    }
+
+    if (rawIds.length < 100) {
+      if (partialPageRetries < maxPartialPageRetries) {
+        partialPageRetries += 1;
+        try {
+          await client.invoke({ _: "loadChats", chat_list: { _: "chatListMain" }, limit: 100 });
+        } catch {
+          /* best effort */
+        }
+        await sleep(400 + partialPageRetries * 300);
+        continue;
+      }
+      positionedComplete = true;
+      break;
+    }
+    partialPageRetries = 0;
+
+    const lastId = rawIds[rawIds.length - 1];
+    if (lastId == null) break;
+    let anchor: TdChat | null = null;
+    try {
+      anchor = await hydrateChatPositions(client, lastId);
+    } catch {
+      anchor = null;
+    }
+    if (!anchor) break;
+    const nextOffsetOrder = mainListOrderKey(anchor);
+    if (!nextOffsetOrder || nextOffsetOrder === "0") {
+      positionedComplete = true;
+      break;
+    }
+    if (nextOffsetOrder === offsetOrder && anchor.id === offsetChatId) break;
+    offsetOrder = nextOffsetOrder;
+    offsetChatId = anchor.id;
+  }
+
+  return { chats: result, positionedComplete };
 }
 
 async function loadChatsFromList(
@@ -130,8 +265,8 @@ async function loadChatsFromList(
       if (maxChats != null && collected.size >= maxChats) break;
       if (collected.has(chatId)) continue;
       try {
-        const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
-        collected.set(chatId, chat);
+        const chat = await hydrateChatPositions(client, chatId);
+        if (chat) collected.set(chatId, chat);
       } catch {
         /* skip unreadable chat */
       }
@@ -296,7 +431,10 @@ async function loadAllChats(client: Client, options?: LoadAllChatsOptions): Prom
   }
 
   const allowSupplementaryPrivate = options?.includeSupplementarySearch !== false;
-  return filterChatsForList([...collected.values()], { allowSupplementaryPrivate });
+  return filterChatsForList([...collected.values()], {
+    allowSupplementaryPrivate,
+    includeUnpositioned: allowSupplementaryPrivate,
+  });
 }
 
 function mimeFromPath(filePath: string): string {
@@ -694,11 +832,31 @@ export async function syncChatThreads(
   options?: SyncChatThreadsOptions,
 ): Promise<number> {
   setLiveChatSelfUserId(telegramUsername, await resolveMyUserId(client));
-  const chats = await loadAllChats(client, {
-    maxMainChats: options?.maxMainChats ?? null,
-    includeArchive: options?.includeArchive,
-    includeSupplementarySearch: options?.includeSupplementarySearch,
-  });
+
+  const maxPositioned = options?.maxMainChats ?? null;
+  let chats: TdChat[];
+  let positionedComplete = false;
+
+  if (maxPositioned != null) {
+    const loaded = await loadPinnedAndPositionedChats(client, maxPositioned);
+    chats = loaded.chats;
+    positionedComplete = loaded.positionedComplete;
+    resetChatListSyncMeta(telegramUsername, {
+      positionedComplete,
+      tier3Available: true,
+    });
+  } else {
+    chats = await loadAllChats(client, {
+      maxMainChats: options?.maxMainChats ?? null,
+      includeArchive: options?.includeArchive,
+      includeSupplementarySearch: options?.includeSupplementarySearch,
+    });
+    positionedComplete = true;
+    resetChatListSyncMeta(telegramUsername, {
+      positionedComplete: true,
+      tier3Available: true,
+    });
+  }
 
   const liveRows = await buildLiveRowsForChats(client, chats, {
     skipMemberCounts: options?.skipMemberCounts === true,
@@ -719,6 +877,8 @@ export async function syncChatThreads(
       mergeLiveChatRows(telegramUsername, liveRows);
     }
   }
+  setPositionedComplete(telegramUsername, positionedComplete);
+  setTier3Available(telegramUsername, true);
   await touchMtprotoSync(telegramUsername);
 
   logGateway("sync_chat_threads_done", {
@@ -726,6 +886,7 @@ export async function syncChatThreads(
     chatCount: chats.length,
     rowCount: liveRows.length,
     maxMainChats: options?.maxMainChats ?? null,
+    positionedComplete,
     includeArchive: options?.includeArchive !== false,
     replaceCache: options?.replaceCache !== false,
   });
@@ -804,14 +965,13 @@ async function buildLiveRowsForChats(
       ...lastMessageListRowMetaFromChat(chat, myUserId),
       is_pinned: isChatPinnedInMainList(chat),
       pin_order: mainListOrderKey(chat),
+      list_tier: chatListTier(chat),
     });
   }
   return liveRows;
 }
 
-const backgroundSyncInflight = new Set<string>();
-
-/** Load archive + remaining main-list chats in small TDLib pages (non-blocking). */
+/** Load remaining positioned main-list chats in small TDLib pages (non-blocking). */
 export async function syncRemainingChatsInBackground(
   client: Client,
   telegramUsername: string,
@@ -870,7 +1030,10 @@ export async function syncRemainingChatsInBackground(
       const pageChats: TdChat[] = [];
       for (const chatId of ids) {
         try {
-          const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+          const chat = await hydrateChatPositions(client, chatId);
+          if (!chat) continue;
+          const tier = chatListTier(chat);
+          if (tier !== "pinned" && tier !== "positioned") continue;
           if (!filterChatsForList([chat]).length) continue;
           pageChats.push(chat);
           cachedIds.add(chatId);
@@ -971,6 +1134,8 @@ export async function syncRemainingChatsInBackground(
 
   await syncChatList({ _: "chatListMain" });
 
+  setPositionedComplete(telegramUsername, true);
+  setTier3Available(telegramUsername, true);
   await touchMtprotoSync(telegramUsername);
   logGateway("sync_chat_background_done", {
     telegramUsername,
@@ -980,13 +1145,158 @@ export async function syncRemainingChatsInBackground(
   return merged;
 }
 
-export function isBackgroundChatSyncInProgress(telegramUsername: string): boolean {
-  return backgroundSyncInflight.has(telegramUsername);
+/** On-demand batch of supplementary / unpositioned chats (tier 3 tail). */
+export async function syncUnpositionedChatBatch(
+  client: Client,
+  telegramUsername: string,
+  options?: { limit?: number },
+): Promise<number> {
+  const limit = options?.limit ?? TIER3_CHAT_SYNC_BATCH_SIZE;
+  const cachedIds = new Set(
+    (getLiveChatList(telegramUsername) ?? []).map((row) => row.telegram_chat_id),
+  );
+
+  const candidates: TdChat[] = [];
+  const seen = new Set<number>();
+
+  const tryAddChat = (chat: TdChat) => {
+    if (seen.has(chat.id) || cachedIds.has(chat.id)) return;
+    const tier = chatListTier(chat, { allowSupplementaryPrivate: true });
+    if (tier !== "unpositioned") return;
+    candidates.push(chat);
+    seen.add(chat.id);
+  };
+
+  for (const chat of await loadForcedPrivateChats(client)) {
+    if (candidates.length >= limit) break;
+    const hydrated = await hydrateChatPositions(client, chat.id);
+    if (hydrated) tryAddChat(hydrated);
+  }
+
+  for (const chat of await discoverPrivateChatsByContactSearch(
+    client,
+    SUPPLEMENTARY_CONTACT_SEARCH_QUERIES,
+  )) {
+    if (candidates.length >= limit) break;
+    const hydrated = await hydrateChatPositions(client, chat.id);
+    if (hydrated) tryAddChat(hydrated);
+  }
+
+  const cursor = getTier3ListCursor(telegramUsername);
+  if (candidates.length < limit && !cursor.exhausted) {
+    let offsetOrder = cursor.offsetOrder;
+    let offsetChatId = cursor.offsetChatId;
+    let emptyListWarmedUp = false;
+
+    outer: for (let round = 0; round < 40 && candidates.length < limit; round += 1) {
+      let list: { chat_ids?: number[] };
+      try {
+        list = (await client.invoke({
+          _: "getChats",
+          chat_list: { _: "chatListMain" },
+          offset_order: offsetOrder,
+          offset_chat_id: offsetChatId,
+          limit: 100,
+        })) as { chat_ids?: number[] };
+      } catch {
+        cursor.exhausted = true;
+        break;
+      }
+
+      const rawIds = list.chat_ids ?? [];
+      if (rawIds.length === 0) {
+        if (emptyListWarmedUp) {
+          cursor.exhausted = true;
+          break;
+        }
+        emptyListWarmedUp = true;
+        try {
+          await client.invoke({ _: "loadChats", chat_list: { _: "chatListMain" }, limit: 100 });
+        } catch {
+          cursor.exhausted = true;
+          break;
+        }
+        await sleep(400);
+        continue;
+      }
+
+      for (const chatId of rawIds) {
+        if (candidates.length >= limit) break;
+        if (seen.has(chatId) || cachedIds.has(chatId)) continue;
+        try {
+          const hydrated = await hydrateChatPositions(client, chatId);
+          if (hydrated) tryAddChat(hydrated);
+        } catch {
+          /* skip */
+        }
+      }
+
+      const lastId = rawIds[rawIds.length - 1];
+      if (lastId == null) {
+        cursor.exhausted = true;
+        break;
+      }
+      let anchor: TdChat | null = null;
+      try {
+        anchor = await hydrateChatPositions(client, lastId);
+      } catch {
+        anchor = null;
+      }
+      if (!anchor) {
+        cursor.exhausted = true;
+        break;
+      }
+      const nextOffsetOrder = mainListOrderKey(anchor);
+      if (!nextOffsetOrder || nextOffsetOrder === "0") {
+        cursor.exhausted = true;
+        break;
+      }
+      if (nextOffsetOrder === offsetOrder && anchor.id === offsetChatId) {
+        cursor.exhausted = true;
+        break;
+      }
+      offsetOrder = nextOffsetOrder;
+      offsetChatId = anchor.id;
+
+      if (rawIds.length < 100) {
+        cursor.exhausted = true;
+        break outer;
+      }
+    }
+
+    cursor.offsetOrder = offsetOrder;
+    cursor.offsetChatId = offsetChatId;
+  }
+
+  const batch = candidates.slice(0, limit);
+  if (batch.length === 0) {
+    if (cursor.exhausted) {
+      setTier3Available(telegramUsername, false);
+    }
+    return 0;
+  }
+
+  const rows = await buildLiveRowsForChats(client, batch);
+  const tieredRows = rows.map((row) => ({ ...row, list_tier: "unpositioned" as ChatListTier }));
+  mergeLiveChatRows(telegramUsername, tieredRows);
+  await touchMtprotoSync(telegramUsername);
+
+  logGateway("sync_chat_tier3_batch_done", {
+    telegramUsername,
+    mergedCount: tieredRows.length,
+    totalCached: getLiveChatList(telegramUsername)?.length ?? 0,
+    listExhausted: cursor.exhausted,
+  });
+  return tieredRows.length;
 }
 
+export {
+  isBackgroundChatSyncInProgress,
+  isTier3ChatSyncInProgress,
+} from "./chatListSyncState.js";
+
 export function scheduleBackgroundChatSync(client: Client, telegramUsername: string): void {
-  if (backgroundSyncInflight.has(telegramUsername)) return;
-  backgroundSyncInflight.add(telegramUsername);
+  if (!markBackgroundChatSyncStart(telegramUsername)) return;
   void (async () => {
     try {
       await syncRemainingChatsInBackground(client, telegramUsername);
@@ -994,7 +1304,21 @@ export function scheduleBackgroundChatSync(client: Client, telegramUsername: str
       const message = err instanceof Error ? err.message : String(err);
       logGateway("sync_chat_background_error", { telegramUsername, message });
     } finally {
-      backgroundSyncInflight.delete(telegramUsername);
+      markBackgroundChatSyncEnd(telegramUsername);
+    }
+  })();
+}
+
+export function scheduleTier3ChatSync(client: Client, telegramUsername: string): void {
+  if (!markTier3ChatSyncStart(telegramUsername)) return;
+  void (async () => {
+    try {
+      await syncUnpositionedChatBatch(client, telegramUsername);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logGateway("sync_chat_tier3_error", { telegramUsername, message });
+    } finally {
+      markTier3ChatSyncEnd(telegramUsername);
     }
   })();
 }

@@ -195,6 +195,22 @@ async function runHistoryLoad(
       lane: spec.previewOnly ? "preview" : "full",
     });
   } else if (result.error) {
+    const shouldFallbackFromAroundUnread =
+      spec.aroundUnread &&
+      !spec.previewOnly &&
+      (result.error.includes("offset must be non-positive") ||
+        result.error.includes("history_failed"));
+    if (shouldFallbackFromAroundUnread) {
+      const fallback: LoadSpec = {
+        ...spec,
+        aroundUnread: false,
+        aroundMessageId: null,
+        olderAbove: null,
+        newerBelow: null,
+        limit: Math.min(spec.limit, MESSAGE_CHAT_HISTORY_PAGE_SIZE),
+      };
+      return runHistoryLoad(chatId, peerUserId, fallback);
+    }
     logPageDisplay("messages_history_prefetch_skip", {
       chatId,
       error: result.error,

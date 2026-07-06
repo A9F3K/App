@@ -1,5 +1,6 @@
 Connection lost
 Messages count and scrolling bugs
+Date in the chat
 Desktop does not update on background
 Search in the first column
 Emoji indents

@@ -16,10 +16,13 @@ import {
   syncChatThreads,
   INITIAL_MAIN_CHAT_SYNC_LIMIT,
   scheduleBackgroundChatSync,
+  scheduleTier3ChatSync,
   isBackgroundChatSyncInProgress,
+  isTier3ChatSyncInProgress,
 } from "./syncChats.js";
 import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, sendChatTextMessage, editChatTextMessage, viewChatInboxMessagesUpTo } from "./chatHistory.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
+import { isPositionedComplete } from "./chatListSyncState.js";
 import { getLiveChatList, getLiveChatListRevision } from "./liveChatCache.js";
 
 export type ConnectAuthMethod = "qr" | "phone";
@@ -1121,23 +1124,46 @@ export async function resyncUserChats(
 }
 
 /** Nudge background chat paging (idempotent — no-op if already running). */
-export function requestBackgroundChatSync(telegramUsername: string): {
+export function requestBackgroundChatSync(
+  telegramUsername: string,
+  tier: "positioned" | "unpositioned" = "positioned",
+): {
   started: boolean;
   inProgress: boolean;
   warming?: boolean;
 } {
   const record = getActiveRecord(telegramUsername);
+  const tierInProgress =
+    tier === "unpositioned"
+      ? isTier3ChatSyncInProgress(telegramUsername)
+      : isBackgroundChatSyncInProgress(telegramUsername);
+
   if (!record?.client || record.authState !== "ready") {
-    const inProgress = isBackgroundChatSyncInProgress(telegramUsername);
-    if (!inProgress) {
+    if (!tierInProgress) {
       void ensureGatewayUserSession(telegramUsername, 20_000).then((restored) => {
         if (restored?.client && restored.authState === "ready") {
-          scheduleBackgroundChatSync(restored.client, telegramUsername);
+          if (tier === "unpositioned") {
+            scheduleTier3ChatSync(restored.client, telegramUsername);
+          } else {
+            scheduleBackgroundChatSync(restored.client, telegramUsername);
+          }
         }
       });
     }
-    return { started: false, inProgress, warming: true };
+    return { started: false, inProgress: tierInProgress, warming: true };
   }
+
+  if (tier === "unpositioned") {
+    if (!isPositionedComplete(telegramUsername)) {
+      const wasInProgress = isBackgroundChatSyncInProgress(telegramUsername);
+      scheduleBackgroundChatSync(record.client, telegramUsername);
+      return { started: !wasInProgress, inProgress: true };
+    }
+    const wasInProgress = isTier3ChatSyncInProgress(telegramUsername);
+    scheduleTier3ChatSync(record.client, telegramUsername);
+    return { started: !wasInProgress, inProgress: true };
+  }
+
   const wasInProgress = isBackgroundChatSyncInProgress(telegramUsername);
   scheduleBackgroundChatSync(record.client, telegramUsername);
   return { started: !wasInProgress, inProgress: true };

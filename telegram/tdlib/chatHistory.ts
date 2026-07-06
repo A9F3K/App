@@ -283,11 +283,12 @@ export async function fetchChatHistoryAroundMessage(
   }
 
   if (contextBefore > 0) {
+    // TDLib requires offset <= 0; offset 0 returns from_message_id and older messages.
     const olderHistory = (await client.invoke({
       _: "getChatHistory",
       chat_id: chatId,
       from_message_id: anchorId,
-      offset: contextBefore,
+      offset: 0,
       limit: Math.min(100, contextBefore + 1),
       only_local: false,
     })) as { messages?: TdMessage[] };
@@ -373,7 +374,7 @@ export async function fetchChatHistoryAroundUnread(
     Math.max(2, Math.floor(pageLimit * 0.35)),
     pageLimit - 1,
   );
-  const newerWanted = Math.min(pageLimit - contextBefore, unreadCount + 6);
+  const newerWanted = Math.min(pageLimit - contextBefore, 20, unreadCount + 6);
   const olderAbove = contextBefore;
   const aroundLimit = Math.min(pageLimit, contextBefore + newerWanted + 1);
 
