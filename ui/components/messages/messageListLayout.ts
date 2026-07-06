@@ -20,6 +20,8 @@ export const MESSAGE_CHAT_SCROLL_TO_BOTTOM_ICON_BOTTOM_INSET_PX = 7.5;
 export const MESSAGE_CHAT_SCROLL_TO_BOTTOM_BADGE_TOP_PX = 5;
 export const MESSAGE_CHAT_LIST_UNREAD_MAX_DISPLAY = 99;
 export const MESSAGE_CHAT_SCROLL_TO_BOTTOM_UNREAD_MAX_DISPLAY = 999;
+/** Show the scroll-to-bottom FAB without waiting for scroll when unreads exceed this count. */
+export const MESSAGE_CHAT_FAB_ALWAYS_SHOW_UNREAD_THRESHOLD = 7;
 /** Debounce before TDLib viewMessages while scrolling through unreads. */
 export const VIEW_INBOX_DEBOUNCE_MS = 100;
 
@@ -295,6 +297,36 @@ export function resolveLastReadMessageId(
   return prior;
 }
 
+/** Count inbox-unread messages whose bottom edge is below the viewport (FAB badge). */
+export function countUnreadMessagesBelowViewport(
+  messages: readonly { telegram_message_id: number }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+  lastReadInboxMessageId: number | null | undefined,
+): number {
+  const floor =
+    typeof lastReadInboxMessageId === "number" &&
+    Number.isFinite(lastReadInboxMessageId) &&
+    lastReadInboxMessageId > 0
+      ? Math.trunc(lastReadInboxMessageId)
+      : 0;
+  const viewportBottom = metrics.scrollY + metrics.layoutH;
+  let count = 0;
+  for (const msg of messages) {
+    const id = msg.telegram_message_id;
+    if (id <= floor) continue;
+    const entry = layouts.get(id);
+    if (!entry) {
+      count += 1;
+      continue;
+    }
+    if (entry.y + entry.height > viewportBottom + 0.5) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 /** Scroll offset that places a message block's bottom edge on the viewport bottom. */
 export function scrollYToAlignMessageBottomEdge(
   entry: { y: number; height: number },
@@ -304,6 +336,23 @@ export function scrollYToAlignMessageBottomEdge(
   const messageBottom = entry.y + entry.height;
   const maxScroll = Math.max(0, contentHeight - viewportHeight);
   return Math.min(maxScroll, Math.max(0, messageBottom - viewportHeight));
+}
+
+/** telegram-tt UNREAD_DIVIDER_TOP — gap above the unread divider when opening a chat. */
+export const UNREAD_DIVIDER_TOP_PX = 10;
+/** Approximate rendered height of the unread divider row. */
+export const UNREAD_DIVIDER_ROW_HEIGHT_PX = 28;
+
+/** Scroll offset that places the unread divider near the top of the viewport (telegram-tt open). */
+export function scrollYToAlignUnreadDivider(
+  firstUnreadEntry: { y: number; height: number },
+  viewportHeight: number,
+  contentHeight: number,
+): number {
+  const dividerTop = firstUnreadEntry.y - UNREAD_DIVIDER_ROW_HEIGHT_PX;
+  const targetY = dividerTop - UNREAD_DIVIDER_TOP_PX;
+  const maxScroll = Math.max(0, contentHeight - viewportHeight);
+  return Math.min(maxScroll, Math.max(0, targetY));
 }
 
 /** Loaded history includes the chat's latest message (not a stale preview tail). */

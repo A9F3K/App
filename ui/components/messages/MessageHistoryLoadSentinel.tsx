@@ -4,7 +4,7 @@ import { debounceLeading } from "../../util/debounceLeading";
 import { MESSAGE_LIST_SENSITIVE_AREA_PX } from "./messageChatLayout";
 import { useElementVisible } from "./useElementVisible";
 
-const MESSAGE_HISTORY_SENTINEL_DEBOUNCE_MS = 300;
+const MESSAGE_HISTORY_SENTINEL_DEBOUNCE_MS = 1000;
 
 type Props = {
   edge: "top" | "bottom";

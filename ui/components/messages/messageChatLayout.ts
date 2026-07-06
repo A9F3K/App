@@ -133,3 +133,14 @@ export const MESSAGE_CHAT_LOAD_NEWER_ERROR_BACKOFF_MS = 2500;
 
 /** IntersectionObserver preload margin for history sentinels (telegram-tt). */
 export const MESSAGE_LIST_SENSITIVE_AREA_PX = 250;
+
+/** Character budget above and below the scroll anchor for rendered messages. */
+export const MESSAGE_CHAT_VIEWPORT_CHAR_RANGE = 10_000;
+/** Character budget loaded per pagination step (older or newer). */
+export const MESSAGE_CHAT_PAGINATION_CHAR_RANGE = 20_000;
+/** Characters kept above/below the anchor in the in-memory history buffer. */
+export const MESSAGE_CHAT_LOADED_CHAR_BUDGET_PER_SIDE =
+  MESSAGE_CHAT_VIEWPORT_CHAR_RANGE + MESSAGE_CHAT_PAGINATION_CHAR_RANGE;
+/** @deprecated Use {@link MESSAGE_CHAT_LOADED_CHAR_BUDGET_PER_SIDE} per side. */
+export const MESSAGE_CHAT_LOADED_CHAR_BUDGET =
+  MESSAGE_CHAT_LOADED_CHAR_BUDGET_PER_SIDE * 2;

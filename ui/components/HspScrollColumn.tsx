@@ -83,6 +83,8 @@ type Props = {
   /** Fired when the user scrolls within {@link nearBottomThresholdPx} of the bottom. */
   onNearBottom?: () => void;
   nearBottomThresholdPx?: number;
+  /** Wheel, touch-drag, or scrollbar drag — not layout/programmatic scroll. */
+  onUserScrollIntent?: () => void;
   /** Optional imperative scroll API (scroll-to-end, preserve position on prepend). */
   scrollControllerRef?: React.MutableRefObject<HspScrollColumnHandle | null>;
 };
@@ -105,6 +107,7 @@ export function HspScrollColumn({
   nearTopThresholdPx = 120,
   onNearBottom,
   nearBottomThresholdPx = 120,
+  onUserScrollIntent,
   scrollControllerRef,
 }: Props) {
   const colors = useColors();
@@ -259,6 +262,9 @@ export function HspScrollColumn({
         if (isBrowserZoomWheelEvent(e)) return;
         const { scrollTop, scrollHeight, clientHeight } = el;
         if (scrollHeight <= clientHeight + 0.5) return;
+        if (Math.abs(e.deltaY) > 0.5) {
+          onUserScrollIntent?.();
+        }
         const atTop = scrollTop <= SCROLL_INDICATOR_SCROLL_EPS;
         const atBottom = scrollTop + clientHeight >= scrollHeight - SCROLL_INDICATOR_SCROLL_EPS;
         if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) {
@@ -280,7 +286,7 @@ export function HspScrollColumn({
         scrollEl.removeEventListener("wheel", onWheel);
       }
     };
-  }, [containOverscroll, scrollEnabled, children]);
+  }, [containOverscroll, onUserScrollIntent, scrollEnabled, children]);
 
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   useEffect(() => {
@@ -554,6 +560,7 @@ export function HspScrollColumn({
         scrollEnabled={scrollEnabled}
         showsVerticalScrollIndicator={false}
         onScroll={onScroll}
+        onScrollBeginDrag={() => onUserScrollIntent?.()}
         onLayout={onLayout}
         onContentSizeChange={onContentSizeChange}
         scrollEventThrottle={16}
@@ -574,7 +581,10 @@ export function HspScrollColumn({
             thumbSpan={indicator.thumbH}
             thumbOffset={indicator.thumbTop}
             scrollRange={indicator.maxScroll}
-            onScrollTo={scrollToY}
+            onScrollTo={(y) => {
+              onUserScrollIntent?.();
+              scrollToY(y);
+            }}
             crossAxisVisualSpan={scrollIndicatorHairlineBorderWidthPx()}
           >
             <View

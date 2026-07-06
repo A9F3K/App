@@ -11,9 +11,21 @@ export type ChatOpenScrollPlan = {
   followingBottom: boolean;
   pendingInitialScroll: boolean;
   pendingScrollRestore: CachedChatScrollPosition | null;
-  /** Open with the last read message's bottom edge at the viewport bottom. */
-  scrollToLastReadBottom: boolean;
+  /** Open scrolled to the unread divider (telegram-tt MessageList). */
+  scrollToUnreadDivider: boolean;
 };
+
+/** Ignore stale cache at scroll top — that is not a deliberate mid-read position. */
+const RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX = 48;
+
+function isMeaningfulCachedUnreadScroll(cached: CachedChatScrollPosition): boolean {
+  if (cached.followingBottom) return true;
+  if (cached.scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX) return true;
+  if (cached.anchorMessageId != null && cached.anchorMessageId > 0) {
+    return cached.scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX;
+  }
+  return false;
+}
 
 /** Resolve where the chat should open before the first paint (no useEffect lag). */
 export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScrollPlan {
@@ -25,7 +37,11 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
   const cachedScroll = getChatScrollPosition(chat.telegram_chat_id);
 
   // Reload while reading unreads: restore the saved viewport instead of jumping to first unread.
-  if (openingUnreadCount > 0 && cachedScroll != null) {
+  if (
+    openingUnreadCount > 0 &&
+    cachedScroll != null &&
+    isMeaningfulCachedUnreadScroll(cachedScroll)
+  ) {
     const restoreAtBottom = cachedScroll.followingBottom;
     return {
       openingUnreadCount,
@@ -34,7 +50,7 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
       followingBottom: restoreAtBottom,
       pendingInitialScroll: false,
       pendingScrollRestore: cachedScroll,
-      scrollToLastReadBottom: false,
+      scrollToUnreadDivider: false,
     };
   }
 
@@ -46,7 +62,7 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
       followingBottom: false,
       pendingInitialScroll: true,
       pendingScrollRestore: null,
-      scrollToLastReadBottom: true,
+      scrollToUnreadDivider: true,
     };
   }
 
@@ -61,7 +77,7 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
       followingBottom,
       pendingInitialScroll: false,
       pendingScrollRestore: cachedScroll,
-      scrollToLastReadBottom: false,
+      scrollToUnreadDivider: false,
     };
   }
 
@@ -74,6 +90,6 @@ export function resolveChatOpenScrollPlan(chat: MessageChatRowData): ChatOpenScr
     followingBottom,
     pendingInitialScroll: true,
     pendingScrollRestore: null,
-    scrollToLastReadBottom: false,
+    scrollToUnreadDivider: false,
   };
 }

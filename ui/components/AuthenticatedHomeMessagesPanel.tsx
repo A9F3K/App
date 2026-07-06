@@ -29,6 +29,7 @@ import {
   subscribeChatListScrollMetrics,
 } from "./messages/chatListScrollMetrics";
 import {
+  CHAT_LIST_VIRTUALIZE_MIN_ROWS,
   pruneTier3ChatRows,
   resolveChatListTier,
   resolveChatListVirtualWindow,
@@ -277,6 +278,31 @@ function mergeChatRows(
   }
 
   if (incoming.length >= prev.length) {
+    const prevTopId = prev[0]?.telegram_chat_id ?? 0;
+    const incomingTopId = sortedIncoming[0]?.telegram_chat_id ?? 0;
+    const prevIdSet = new Set(prev.map((row) => row.telegram_chat_id));
+    const hasNewIds = sortedIncoming.some((row) => !prevIdSet.has(row.telegram_chat_id));
+    if (
+      prev.length >= CHAT_LIST_VIRTUALIZE_MIN_ROWS &&
+      !hasNewIds &&
+      prevTopId > 0 &&
+      prevTopId === incomingTopId
+    ) {
+      const byId = new Map(sortedIncoming.map((row) => [row.telegram_chat_id, row]));
+      return applyOpenChatUnreadToRows(
+        prev.map((row) => {
+          const fresh = byId.get(row.telegram_chat_id);
+          if (!fresh) return row;
+          return {
+            ...fresh,
+            unread_count: resolveAuthenticatedHomeOpenChatUnread(
+              fresh.unread_count,
+              fresh.telegram_chat_id,
+            ),
+          };
+        }),
+      );
+    }
     return applyOpenChatUnreadToRows(sortedIncoming);
   }
 
@@ -765,11 +791,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   }, []);
 
   const chatListScrollMetrics = getChatListScrollMetrics();
-  const chatListVirtualTotalCount = Math.max(sortedChats.length, cachedChatCount);
+  const chatListEffectiveLayoutH =
+    chatListScrollMetrics.layoutH > 0 ? chatListScrollMetrics.layoutH : 480;
+  const chatListVirtualTotalCount = sortedChats.length;
   const chatListVirtualWindow = useMemo(() => {
     const next = resolveChatListVirtualWindow(chatListVirtualTotalCount, {
       scrollY: chatListScrollMetrics.scrollY,
-      layoutH: chatListScrollMetrics.layoutH,
+      layoutH: chatListEffectiveLayoutH,
     }, {
       rowStridePx: chatListRowStride,
       contentTopInsetPx: chatListShellTopInset,
@@ -785,10 +813,58 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     chatListScrollTick,
     chatListShellTopInset,
     chatListVirtualTotalCount,
-    chatListScrollMetrics.layoutH,
+    chatListEffectiveLayoutH,
     chatListScrollMetrics.scrollY,
   ]);
   chatListVirtualWindowRef.current = chatListVirtualWindow;
+
+  const chatListVirtualLogRef = useRef({
+    enabled: false,
+    startIndex: 0,
+    endIndex: 0,
+    scrollY: 0,
+    totalCount: 0,
+  });
+  useEffect(() => {
+    const prev = chatListVirtualLogRef.current;
+    const changed =
+      prev.enabled !== chatListVirtualWindow.enabled ||
+      prev.startIndex !== chatListVirtualWindow.startIndex ||
+      prev.endIndex !== chatListVirtualWindow.endIndex ||
+      Math.abs(prev.scrollY - chatListScrollMetrics.scrollY) > chatListRowStride ||
+      prev.totalCount !== chatListVirtualTotalCount;
+    if (!changed) return;
+    chatListVirtualLogRef.current = {
+      enabled: chatListVirtualWindow.enabled,
+      startIndex: chatListVirtualWindow.startIndex,
+      endIndex: chatListVirtualWindow.endIndex,
+      scrollY: chatListScrollMetrics.scrollY,
+      totalCount: chatListVirtualTotalCount,
+    };
+    logPageDisplay("messages_chat_list_virtual_window", {
+      enabled: chatListVirtualWindow.enabled,
+      startIndex: chatListVirtualWindow.startIndex,
+      endIndex: chatListVirtualWindow.endIndex,
+      topSpacerPx: chatListVirtualWindow.topSpacerPx,
+      bottomSpacerPx: chatListVirtualWindow.bottomSpacerPx,
+      scrollY: chatListScrollMetrics.scrollY,
+      layoutH: chatListEffectiveLayoutH,
+      totalCount: chatListVirtualTotalCount,
+      loadedCount: sortedChats.length,
+      rowStridePx: chatListRowStride,
+    });
+  }, [
+    chatListEffectiveLayoutH,
+    chatListRowStride,
+    chatListScrollMetrics.scrollY,
+    chatListVirtualTotalCount,
+    chatListVirtualWindow.bottomSpacerPx,
+    chatListVirtualWindow.enabled,
+    chatListVirtualWindow.endIndex,
+    chatListVirtualWindow.startIndex,
+    chatListVirtualWindow.topSpacerPx,
+    sortedChats.length,
+  ]);
 
   useEffect(() => {
     if (!chatListVirtualWindow.enabled) return;
@@ -838,7 +914,10 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     positionedComplete && tier3Available && firstTier3Index >= 0;
 
   const visibleChats = chatListVirtualWindow.enabled
-    ? sortedChats.slice(chatListVirtualWindow.startIndex, chatListVirtualWindow.endIndex + 1)
+    ? sortedChats.slice(
+        Math.min(chatListVirtualWindow.startIndex, sortedChats.length),
+        Math.min(sortedChats.length, chatListVirtualWindow.endIndex + 1),
+      )
     : sortedChats;
   const visibleChatStartIndex = chatListVirtualWindow.enabled
     ? chatListVirtualWindow.startIndex
