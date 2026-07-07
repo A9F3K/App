@@ -327,6 +327,17 @@ export function countUnreadMessagesBelowViewport(
   return count;
 }
 
+/** Keep a message at the same distance from the viewport top after prepending history. */
+export function scrollYToPreserveViewportOffset(
+  entry: MessageScrollLayoutEntry,
+  offsetFromViewportTop: number,
+  viewportHeight: number,
+  contentHeight: number,
+): number {
+  const maxScroll = Math.max(0, contentHeight - viewportHeight);
+  return Math.min(maxScroll, Math.max(0, entry.y - offsetFromViewportTop));
+}
+
 /** Scroll offset that places a message block's bottom edge on the viewport bottom. */
 export function scrollYToAlignMessageBottomEdge(
   entry: { y: number; height: number },

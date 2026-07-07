@@ -18,11 +18,20 @@ export type ChatOpenScrollPlan = {
 /** Ignore stale cache at scroll top — that is not a deliberate mid-read position. */
 const RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX = 48;
 
+function cachedScrollY(cached: CachedChatScrollPosition): number {
+  if (Number.isFinite(cached.scrollY)) return cached.scrollY!;
+  if (Number.isFinite(cached.distanceFromBottom) && Number.isFinite(cached.contentH)) {
+    return Math.max(0, cached.contentH - cached.distanceFromBottom);
+  }
+  return 0;
+}
+
 function isMeaningfulCachedUnreadScroll(cached: CachedChatScrollPosition): boolean {
   if (cached.followingBottom) return true;
-  if (cached.scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX) return true;
+  const scrollY = cachedScrollY(cached);
+  if (scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX) return true;
   if (cached.anchorMessageId != null && cached.anchorMessageId > 0) {
-    return cached.scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX;
+    return scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX;
   }
   return false;
 }

@@ -32,6 +32,25 @@ export function useElementVisible(
       return;
     }
 
+    const findScrollRoot = (start: Element): Element | null => {
+      let el: Element | null = start.parentElement;
+      while (el) {
+        const style = getComputedStyle(el);
+        const overflowY = style.overflowY;
+        if (
+          overflowY === "auto" ||
+          overflowY === "scroll" ||
+          overflowY === "overlay"
+        ) {
+          return el;
+        }
+        el = el.parentElement;
+      }
+      return null;
+    };
+
+    const scrollRoot = findScrollRoot(node);
+
     let intersecting = false;
     const observer = new IntersectionObserver(
       (entries) => {
@@ -39,20 +58,24 @@ export function useElementVisible(
         setVisible(intersecting);
       },
       {
-        root: null,
+        root: scrollRoot,
         rootMargin: options?.rootMargin ?? "64px",
         threshold: options?.threshold ?? 0.01,
       },
     );
     observer.observe(node);
+    const rootRect = scrollRoot?.getBoundingClientRect();
     const rect = node.getBoundingClientRect();
+    const margin = 250;
+    const rootTop = rootRect?.top ?? 0;
+    const rootBottom = rootRect?.bottom ?? window.innerHeight;
     if (
       rect.width > 0 &&
       rect.height > 0 &&
-      rect.bottom > 0 &&
-      rect.top < window.innerHeight &&
-      rect.right > 0 &&
-      rect.left < window.innerWidth
+      rect.bottom > rootTop - margin &&
+      rect.top < rootBottom + margin &&
+      rect.right > (rootRect?.left ?? 0) &&
+      rect.left < (rootRect?.right ?? window.innerWidth)
     ) {
       setVisible(true);
     }

@@ -1,5 +1,8 @@
 export type CachedChatScrollPosition = {
-  scrollY: number;
+  /** Distance from viewport bottom — survives media resize (telegram-tt). */
+  distanceFromBottom: number;
+  /** Legacy field — kept for session cache migration. */
+  scrollY?: number;
   contentH: number;
   followingBottom: boolean;
   /** Top-of-viewport message when scroll was saved — used to load a tight window on reopen. */
@@ -58,13 +61,26 @@ function normalizeAnchorMessageId(raw: unknown): number | undefined {
   return Math.trunc(id);
 }
 
+function normalizeDistanceFromBottom(entry: CachedChatScrollPosition): number {
+  if (Number.isFinite(entry.distanceFromBottom)) {
+    return Math.max(0, entry.distanceFromBottom);
+  }
+  const scrollY = Number(entry.scrollY);
+  const contentH = Number(entry.contentH);
+  if (Number.isFinite(scrollY) && Number.isFinite(contentH) && contentH > 0) {
+    return Math.max(0, contentH - scrollY);
+  }
+  return 0;
+}
+
 function hydrateFromSession(chatId: number): CachedChatScrollPosition | null {
   const entry = readSessionCache()[String(chatId)];
-  if (!entry || !Number.isFinite(entry.scrollY) || !Number.isFinite(entry.contentH)) return null;
+  if (!entry || !Number.isFinite(entry.contentH)) return null;
   if (Date.now() - entry.savedAt > MAX_AGE_MS) return null;
   const anchorMessageId = normalizeAnchorMessageId(entry.anchorMessageId);
   const normalized: CachedChatScrollPosition = {
     ...entry,
+    distanceFromBottom: normalizeDistanceFromBottom(entry),
     ...(anchorMessageId != null ? { anchorMessageId } : {}),
   };
   memory.set(chatId, normalized);
@@ -76,9 +92,30 @@ export function saveChatScrollPosition(
   state: Omit<CachedChatScrollPosition, "savedAt">,
 ): void {
   if (!Number.isFinite(chatId)) return;
-  const entry: CachedChatScrollPosition = { ...state, savedAt: Date.now() };
+  const distanceFromBottom = Number.isFinite(state.distanceFromBottom)
+    ? Math.max(0, state.distanceFromBottom)
+    : Math.max(0, state.contentH - (state.scrollY ?? 0));
+  const entry: CachedChatScrollPosition = {
+    ...state,
+    distanceFromBottom,
+    savedAt: Date.now(),
+  };
   memory.set(chatId, entry);
   writeSessionCache(chatId, entry);
+}
+
+/** Compute scrollY from persisted distance-from-bottom for the current content height. */
+export function scrollYFromCachedPosition(
+  state: CachedChatScrollPosition,
+  layoutH: number,
+  contentH: number,
+): number {
+  if (contentH <= 0 || layoutH <= 0) return 0;
+  if (state.followingBottom && contentH <= layoutH + 0.5) return 0;
+  const maxScroll = Math.max(0, contentH - layoutH);
+  if (state.followingBottom) return maxScroll;
+  const distance = normalizeDistanceFromBottom(state);
+  return Math.min(Math.max(0, contentH - distance), maxScroll);
 }
 
 export function getChatScrollPosition(chatId: number): CachedChatScrollPosition | null {

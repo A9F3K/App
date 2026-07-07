@@ -44,12 +44,27 @@ export type HspScrollAnchor = {
   scrollHeight: number;
 };
 
+/** Per-message anchor for prepend stability (telegram-tt getBoundingClientRect delta). */
+export type HspItemAnchor = {
+  messageId: number;
+  /** Row top relative to viewport at capture (web). */
+  viewportTopPx: number;
+  /** Row offset from viewport top at capture (native layout map). */
+  offsetFromViewportTop?: number;
+};
+
 export type HspScrollColumnHandle = {
   scrollToEnd: () => void;
   scrollToY: (y: number) => void;
   getMetrics: () => HspScrollMetrics;
+  /** Apply open-scroll position once before reveal. */
+  applyInitialScroll: (targetY: number) => void;
   captureScrollAnchor: () => HspScrollAnchor | null;
+  /** One synchronous scrollTop += scrollHeight delta — keeps the viewport fixed on prepend. */
+  keepScrollPositionOnPrepend: (anchor: HspScrollAnchor) => boolean;
   restoreScrollAnchor: (anchor: HspScrollAnchor) => void;
+  captureItemAnchor: (messageId: number) => HspItemAnchor | null;
+  restoreItemAnchor: (anchor: HspItemAnchor) => boolean;
   /** Allow {@link onNearTop} to fire again after prepending content near the top. */
   clearNearTopLatch: () => void;
   /** Allow {@link onNearBottom} to fire again after appending content near the bottom. */
@@ -77,6 +92,8 @@ type Props = {
   scrollEnabled?: boolean;
   /** Where to place the viewport on first mount; chat panes use `bottom`. */
   initialScrollPosition?: "top" | "bottom";
+  /** When true, skip the mount-time scrollTop=0 reset (controller applies initial scroll). */
+  skipInitialTopReset?: boolean;
   /** Fired when the user scrolls within {@link nearTopThresholdPx} of the top. */
   onNearTop?: () => void;
   nearTopThresholdPx?: number;
@@ -87,6 +104,12 @@ type Props = {
   onUserScrollIntent?: () => void;
   /** Optional imperative scroll API (scroll-to-end, preserve position on prepend). */
   scrollControllerRef?: React.MutableRefObject<HspScrollColumnHandle | null>;
+  /**
+   * When true, content-size changes (e.g. media resolving heights) keep the viewport stable:
+   * stick to bottom if the user was at the bottom, otherwise pin the top-visible message row.
+   * Enable only after the open-scroll has settled so it doesn't fight the initial positioning.
+   */
+  preserveViewportOnResize?: boolean;
 };
 
 /**
@@ -103,12 +126,14 @@ export function HspScrollColumn({
   containOverscroll = true,
   scrollEnabled = true,
   initialScrollPosition = "top",
+  skipInitialTopReset = false,
   onNearTop,
   nearTopThresholdPx = 120,
   onNearBottom,
   nearBottomThresholdPx = 120,
   onUserScrollIntent,
   scrollControllerRef,
+  preserveViewportOnResize = false,
 }: Props) {
   const colors = useColors();
   const thumbColor = indicatorColor ?? colors.accent;
@@ -185,6 +210,45 @@ export function HspScrollColumn({
       return next;
     });
   }, [emitScrollPosition, getScrollElement, syncNearBottomLatch, syncNearTopLatch]);
+
+  // --- Viewport preservation across content-size changes (opt-in) ---
+  const preserveViewportOnResizeRef = useRef(preserveViewportOnResize);
+  preserveViewportOnResizeRef.current = preserveViewportOnResize;
+  const stableAnchorRef = useRef<HspItemAnchor | null>(null);
+  const wasAtBottomRef = useRef(true);
+  const resizeHandlerRef = useRef<() => void>(() => {});
+
+  /** First message row whose bottom is still within the viewport (web only). */
+  const captureTopVisibleAnchor = useCallback((): HspItemAnchor | null => {
+    if (Platform.OS !== "web") return null;
+    const scrollEl = getScrollElement();
+    if (!scrollEl) return null;
+    const rows = scrollEl.querySelectorAll<HTMLElement>('[id^="message-row-"]');
+    if (rows.length === 0) return null;
+    const viewportTop = scrollEl.getBoundingClientRect().top;
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i]!;
+      const rect = row.getBoundingClientRect();
+      if (rect.bottom > viewportTop + 1) {
+        const messageId = Number(row.id.replace("message-row-", ""));
+        if (!Number.isFinite(messageId) || messageId <= 0) return null;
+        return { messageId, viewportTopPx: rect.top };
+      }
+    }
+    return null;
+  }, [getScrollElement]);
+
+  /** Record whether we're at the bottom and, if not, which row anchors the viewport. */
+  const recordStableAnchor = useCallback(() => {
+    if (Platform.OS !== "web") return;
+    if (!preserveViewportOnResizeRef.current) return;
+    const el = getScrollElement();
+    if (!el) return;
+    const atBottom =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_INDICATOR_SCROLL_EPS;
+    wasAtBottomRef.current = atBottom;
+    stableAnchorRef.current = atBottom ? null : captureTopVisibleAnchor();
+  }, [captureTopVisibleAnchor, getScrollElement]);
 
   /** Reset scroll only on first mount — not when `children` change (e.g. split-pane resize reflow). */
   const didMountScrollResetRef = useRef(false);
@@ -298,7 +362,7 @@ export function HspScrollColumn({
       } | null;
       const scrollEl = instance?.getScrollableNode?.();
       if (!scrollEl) return;
-      const ro = new ResizeObserver(() => syncScrollMetricsFromDom());
+      const ro = new ResizeObserver(() => resizeHandlerRef.current());
       resizeObserverRef.current = ro;
       ro.observe(scrollEl);
       const inner = scrollEl.firstElementChild;
@@ -355,13 +419,14 @@ export function HspScrollColumn({
     syncNearBottomLatch(y, layoutH, contentH);
     if (Platform.OS === "web") {
       syncScrollMetricsFromDom();
+      recordStableAnchor();
     }
   };
 
   const onLayout = (e: LayoutChangeEvent) => {
     const lh = e.nativeEvent.layout.height;
     setScroll((prev) => ({ ...prev, layoutH: lh }));
-    if (initialScrollPosition === "top" && !didInitialTopResetRef.current) {
+    if (initialScrollPosition === "top" && !skipInitialTopReset && !didInitialTopResetRef.current) {
       didInitialTopResetRef.current = true;
       requestAnimationFrame(() => {
         if (Platform.OS === "web") {
@@ -385,7 +450,7 @@ export function HspScrollColumn({
   const onContentSizeChange = (_w: number, h: number) => {
     setScroll((prev) => ({ ...prev, contentH: h }));
     if (Platform.OS === "web") {
-      requestAnimationFrame(syncScrollMetricsFromDom);
+      requestAnimationFrame(() => resizeHandlerRef.current());
     }
   };
 
@@ -407,8 +472,9 @@ export function HspScrollColumn({
       syncNearTopLatch(clamped);
       syncNearBottomLatch(clamped, scrollMetricsRef.current.layoutH, scrollMetricsRef.current.contentH);
       setScroll((prev) => ({ ...prev, scrollY: clamped }));
+      recordStableAnchor();
     },
-    [syncNearBottomLatch, syncNearTopLatch],
+    [recordStableAnchor, syncNearBottomLatch, syncNearTopLatch],
   );
 
   const scrollToEnd = useCallback(() => {
@@ -427,11 +493,115 @@ export function HspScrollColumn({
         }));
         syncNearTopLatch(y);
         syncNearBottomLatch(y, layoutH, contentH);
+        recordStableAnchor();
         return;
       }
     }
     scrollRef.current?.scrollToEnd({ animated: false });
-  }, [getScrollElement, syncNearBottomLatch, syncNearTopLatch]);
+  }, [getScrollElement, recordStableAnchor, syncNearBottomLatch, syncNearTopLatch]);
+
+  const messageRowNativeId = (messageId: number) => `message-row-${messageId}`;
+
+  const findMessageRowElement = useCallback(
+    (messageId: number): HTMLElement | null => {
+      if (Platform.OS !== "web") return null;
+      const scrollEl = getScrollElement();
+      if (!scrollEl) return null;
+      const id = messageRowNativeId(messageId);
+      return (
+        scrollEl.querySelector(`#${CSS.escape(id)}`) ??
+        scrollEl.querySelector(`[nativeid="${id}"]`) ??
+        scrollEl.querySelector(`[data-message-id="${messageId}"]`)
+      );
+    },
+    [getScrollElement],
+  );
+
+  const captureItemAnchor = useCallback(
+    (messageId: number): HspItemAnchor | null => {
+      if (messageId <= 0) return null;
+      if (Platform.OS === "web") {
+        const rowEl = findMessageRowElement(messageId);
+        if (!rowEl) return null;
+        return {
+          messageId,
+          viewportTopPx: rowEl.getBoundingClientRect().top,
+        };
+      }
+      return { messageId, viewportTopPx: 0 };
+    },
+    [findMessageRowElement],
+  );
+
+  const restoreItemAnchor = useCallback(
+    (anchor: HspItemAnchor): boolean => {
+      if (anchor.messageId <= 0) return false;
+      if (Platform.OS === "web") {
+        const rowEl = findMessageRowElement(anchor.messageId);
+        const scrollEl = getScrollElement();
+        if (!rowEl || !scrollEl) return false;
+        const delta = rowEl.getBoundingClientRect().top - anchor.viewportTopPx;
+        if (Math.abs(delta) < 0.5) return true;
+        const nextTop = scrollEl.scrollTop + delta;
+        scrollEl.scrollTop = nextTop;
+        setScroll((prev) => ({
+          ...prev,
+          layoutH: scrollEl.clientHeight > 0 ? scrollEl.clientHeight : prev.layoutH,
+          contentH: scrollEl.scrollHeight > 0 ? scrollEl.scrollHeight : prev.contentH,
+          scrollY: nextTop,
+        }));
+        syncNearTopLatch(nextTop);
+        syncNearBottomLatch(nextTop, scrollEl.clientHeight, scrollEl.scrollHeight);
+        return true;
+      }
+      return false;
+    },
+    [findMessageRowElement, getScrollElement, syncNearBottomLatch, syncNearTopLatch],
+  );
+
+  const applyInitialScroll = useCallback(
+    (targetY: number) => {
+      scrollToY(targetY);
+      recordStableAnchor();
+    },
+    [recordStableAnchor, scrollToY],
+  );
+
+  /**
+   * Keep the viewport visually stable when content resizes (media resolving heights,
+   * async layout). Sticks to the bottom if the user was at the bottom pre-resize;
+   * otherwise re-pins the recorded top-visible row. Falls back to a plain metrics sync.
+   */
+  const handleContentResize = useCallback(() => {
+    if (Platform.OS !== "web") {
+      syncScrollMetricsFromDom();
+      return;
+    }
+    if (preserveViewportOnResizeRef.current) {
+      const el = getScrollElement();
+      if (el) {
+        if (wasAtBottomRef.current) {
+          const targetY = Math.max(0, el.scrollHeight - el.clientHeight);
+          if (Math.abs(el.scrollTop - targetY) > 0.5) {
+            el.scrollTop = targetY;
+          }
+        } else if (stableAnchorRef.current) {
+          restoreItemAnchor(stableAnchorRef.current);
+        }
+      }
+    }
+    syncScrollMetricsFromDom();
+  }, [getScrollElement, restoreItemAnchor, syncScrollMetricsFromDom]);
+
+  resizeHandlerRef.current = handleContentResize;
+
+  // Seed the stable anchor as soon as preservation is enabled, before the first
+  // scroll event, so an early media resize has something to pin to.
+  useEffect(() => {
+    if (!preserveViewportOnResize) return;
+    const id = requestAnimationFrame(() => recordStableAnchor());
+    return () => cancelAnimationFrame(id);
+  }, [preserveViewportOnResize, recordStableAnchor]);
 
   const captureScrollAnchor = useCallback((): HspScrollAnchor | null => {
     if (Platform.OS === "web") {
@@ -476,6 +646,11 @@ export function HspScrollColumn({
     [getScrollElement, syncNearBottomLatch, syncNearTopLatch],
   );
 
+  const keepScrollPositionOnPrepend = useCallback(
+    (anchor: HspScrollAnchor) => applyScrollAnchorRestore(anchor),
+    [applyScrollAnchorRestore],
+  );
+
   const restoreScrollAnchor = useCallback(
     (anchor: HspScrollAnchor) => {
       let attempts = 0;
@@ -500,13 +675,17 @@ export function HspScrollColumn({
     const controller: HspScrollColumnHandle = {
       scrollToEnd,
       scrollToY,
+      applyInitialScroll,
       getMetrics: () => ({
         layoutH: scrollMetricsRef.current.layoutH,
         contentH: scrollMetricsRef.current.contentH,
         scrollY: scrollMetricsRef.current.scrollY,
       }),
       captureScrollAnchor,
+      keepScrollPositionOnPrepend,
       restoreScrollAnchor,
+      captureItemAnchor,
+      restoreItemAnchor,
       clearNearTopLatch: () => {
         nearTopFiredRef.current = false;
       },
@@ -520,7 +699,7 @@ export function HspScrollColumn({
         scrollControllerRef.current = null;
       }
     };
-  }, [scrollControllerRef, scrollToEnd, scrollToY, captureScrollAnchor, restoreScrollAnchor]);
+  }, [scrollControllerRef, scrollToEnd, scrollToY, applyInitialScroll, captureScrollAnchor, keepScrollPositionOnPrepend, restoreScrollAnchor, captureItemAnchor, restoreItemAnchor]);
 
   useLayoutEffect(() => {
     if (initialScrollPosition !== "bottom" || didInitialBottomScrollRef.current) return;

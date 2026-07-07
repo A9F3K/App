@@ -16,6 +16,41 @@ const baseUrl =
 
 const WEBHOOK_PATH = '/api/bot';
 const FETCH_TIMEOUT_MS = 15_000;
+const SET_WEBHOOK_MAX_ATTEMPTS = 3;
+const SET_WEBHOOK_RETRY_DELAY_MS = 2_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatFetchError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const cause = err.cause;
+  if (cause instanceof Error) {
+    return `${err.message} (${cause.name}: ${cause.message})`;
+  }
+  return err.message;
+}
+
+async function postSetWebhook(
+  botToken: string,
+  webhookUrl: string,
+): Promise<{ ok: boolean; description?: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${botToken}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: webhookUrl }),
+      signal: controller.signal,
+    });
+    return (await res.json()) as { ok?: boolean; description?: string };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 async function setWebhook(): Promise<void> {
   console.log(
@@ -38,30 +73,45 @@ async function setWebhook(): Promise<void> {
   const url = `${baseUrl}${WEBHOOK_PATH}`;
   console.log('[set-webhook] Setting webhook to:', url);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let lastNetworkError: string | null = null;
+  for (let attempt = 1; attempt <= SET_WEBHOOK_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const data = await postSetWebhook(BOT_TOKEN, url);
+      if (data.ok) {
+        console.log('[set-webhook] OK:', url);
+        return;
+      }
 
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url }),
-    signal: controller.signal,
-  });
-  clearTimeout(timeout);
-
-  const data = (await res.json()) as { ok?: boolean; description?: string };
-  if (data.ok) {
-    console.log('[set-webhook] OK:', url);
-    return;
+      console.error('[set-webhook] Telegram setWebhook failed:', data.description ?? data);
+      process.exit(1);
+    } catch (err: unknown) {
+      lastNetworkError = formatFetchError(err);
+      const retrying = attempt < SET_WEBHOOK_MAX_ATTEMPTS;
+      console.error(
+        '[set-webhook] Network error (attempt %d/%d): %s%s',
+        attempt,
+        SET_WEBHOOK_MAX_ATTEMPTS,
+        lastNetworkError,
+        retrying ? ` — retrying in ${SET_WEBHOOK_RETRY_DELAY_MS}ms` : '',
+      );
+      if (retrying) {
+        await sleep(SET_WEBHOOK_RETRY_DELAY_MS);
+      }
+    }
   }
 
-  console.error('[set-webhook] Telegram setWebhook failed:', data.description ?? data);
-  process.exit(1);
+  console.warn(
+    '[set-webhook] Could not reach api.telegram.org after %d attempts. Deploy will continue; re-run `npm run set-webhook` or redeploy when Telegram API is reachable.',
+    SET_WEBHOOK_MAX_ATTEMPTS,
+  );
+  if (lastNetworkError) {
+    console.warn('[set-webhook] Last error:', lastNetworkError);
+  }
 }
 
 setWebhook()
   .then(() => process.exit(0))
-  .catch((err: Error) => {
-    console.error('[set-webhook] Error:', err.message);
+  .catch((err: unknown) => {
+    console.error('[set-webhook] Unexpected error:', formatFetchError(err));
     process.exit(1);
   });
