@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
-import { ActivityIndicator, Text, View, type LayoutChangeEvent } from "react-native";
+import { ActivityIndicator, PixelRatio, Text, View, type LayoutChangeEvent } from "react-native";
 import { useAuth } from "../../../auth/AuthContext";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { useAuthenticatedHomeHistoryLoadTarget } from "../../authenticatedHomeSelectedChat";
@@ -74,7 +74,6 @@ import { MessageChatMessageRow } from "./MessageChatMessageRow";
 import { MessageChatOlderHistoryLoadLine } from "./MessageChatOlderHistoryLoadLine";
 import { MessageHistoryLoadSentinel } from "./MessageHistoryLoadSentinel";
 import { MessageChatScrollToBottomButton } from "./MessageChatScrollToBottomButton";
-import { MessageDateDivider } from "./MessageDateDivider";
 import { resolveChatOpenScrollPlan } from "./resolveChatOpenScrollPlan";
 import { prefetchOpenChatAvatars, setOpenChatAvatarPriority, isOpenChatAvatarPriority } from "./messageChatAvatarPrefetch";
 import type { MessageChatRowData } from "./MessageChatRow";
@@ -137,6 +136,7 @@ const DATE_DIVIDER_OTHER_YEAR_FORMATTER = new Intl.DateTimeFormat("en-US", {
   month: "long",
   year: "numeric",
 });
+const DATE_DIVIDER_LINE_PX = 1 / Math.max(1, PixelRatio.get());
 
 function startOfLocalDayMs(date: Date): number {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
@@ -148,6 +148,7 @@ function formatMessageDateDividerLabel(sentAt: string, now: Date): string {
   const dayDiff = Math.floor(
     (startOfLocalDayMs(now) - startOfLocalDayMs(sentDate)) / 86_400_000,
   );
+  if (dayDiff === 0) return "Today";
   if (dayDiff === 1) return "Yesterday";
   if (dayDiff === 2) return "The Day Before Yesterday";
   if (sentDate.getFullYear() === now.getFullYear()) {
@@ -160,6 +161,50 @@ function messageDayKey(sentAt: string): string {
   const sentDate = new Date(sentAt);
   if (!Number.isFinite(sentDate.getTime())) return sentAt;
   return `${sentDate.getFullYear()}-${sentDate.getMonth()}-${sentDate.getDate()}`;
+}
+
+function MessageDateDivider({ label, colors }: { label: string; colors: ThemeColors }) {
+  return (
+    <View
+      style={{
+        alignSelf: "stretch",
+        flexDirection: "row",
+        alignItems: "center",
+        paddingVertical: 6,
+        gap: 8,
+      }}
+      accessibilityRole="text"
+    >
+      <View
+        style={{
+          flex: 1,
+          height: DATE_DIVIDER_LINE_PX,
+          minHeight: DATE_DIVIDER_LINE_PX,
+          maxHeight: DATE_DIVIDER_LINE_PX,
+          backgroundColor: colors.highlight,
+        }}
+      />
+      <Text
+        style={{
+          color: colors.secondary,
+          fontSize: 13,
+          lineHeight: 16,
+          fontWeight: "400",
+        }}
+      >
+        {label}
+      </Text>
+      <View
+        style={{
+          flex: 1,
+          height: DATE_DIVIDER_LINE_PX,
+          minHeight: DATE_DIVIDER_LINE_PX,
+          maxHeight: DATE_DIVIDER_LINE_PX,
+          backgroundColor: colors.highlight,
+        }}
+      />
+    </View>
+  );
 }
 
 function chatLiveSignature(chat: MessageChatRowData): string {
@@ -3079,6 +3124,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           result.nextBeforeMessageId ??
           Math.min(...result.messages.map((row) => row.telegram_message_id));
         if (nextCursor != null && nextCursor < beforeMessageId) {
+          loadOlderAdvanceChainRef.current = result.hasMoreOlder;
           applyOlderPaginationCursor(result.hasMoreOlder, nextCursor);
           logPageDisplay("messages_history_load_older_advance_cursor", {
             ...chatLogFields({
@@ -3174,6 +3220,16 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         tryUnlockPagedLoad(metrics);
         bumpViewportSliceTick();
       });
+      if (loadOlderAdvanceChainRef.current) {
+        loadOlderAdvanceChainRef.current = false;
+        requestAnimationFrame(() => {
+          const metrics = scrollControllerRef.current?.getMetrics();
+          if (!metrics || metrics.layoutH <= 0 || metrics.contentH <= 0) return;
+          if (metrics.scrollY > MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX + 24) return;
+          if (loadingOlderRef.current || loadingInitial) return;
+          void loadOlderMessagesRef.current();
+        });
+      }
     }
   }, [
     chat.peer_user_id,
