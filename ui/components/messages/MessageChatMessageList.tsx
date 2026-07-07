@@ -74,7 +74,7 @@ import { MessageChatMessageRow } from "./MessageChatMessageRow";
 import { MessageChatOlderHistoryLoadLine } from "./MessageChatOlderHistoryLoadLine";
 import { MessageHistoryLoadSentinel } from "./MessageHistoryLoadSentinel";
 import { MessageChatScrollToBottomButton } from "./MessageChatScrollToBottomButton";
-import { MessageUnreadDivider } from "./MessageUnreadDivider";
+import { MessageDateDivider } from "./MessageDateDivider";
 import { resolveChatOpenScrollPlan } from "./resolveChatOpenScrollPlan";
 import { prefetchOpenChatAvatars, setOpenChatAvatarPriority, isOpenChatAvatarPriority } from "./messageChatAvatarPrefetch";
 import type { MessageChatRowData } from "./MessageChatRow";
@@ -128,6 +128,39 @@ const LOAD_OLDER_ANCHOR_MAX_DRIFT_PX = 80;
 const FAB_VISIBILITY_THRESHOLD_PX = 50;
 /** telegram-tt NOTCH_THRESHOLD — unread chats hide FAB only at exact bottom. */
 const FAB_NOTCH_THRESHOLD_PX = 0;
+const DATE_DIVIDER_CURRENT_YEAR_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  day: "numeric",
+  month: "long",
+});
+const DATE_DIVIDER_OTHER_YEAR_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  day: "numeric",
+  month: "long",
+  year: "numeric",
+});
+
+function startOfLocalDayMs(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function formatMessageDateDividerLabel(sentAt: string, now: Date): string {
+  const sentDate = new Date(sentAt);
+  if (!Number.isFinite(sentDate.getTime())) return "";
+  const dayDiff = Math.floor(
+    (startOfLocalDayMs(now) - startOfLocalDayMs(sentDate)) / 86_400_000,
+  );
+  if (dayDiff === 1) return "Yesterday";
+  if (dayDiff === 2) return "The Day Before Yesterday";
+  if (sentDate.getFullYear() === now.getFullYear()) {
+    return DATE_DIVIDER_CURRENT_YEAR_FORMATTER.format(sentDate);
+  }
+  return DATE_DIVIDER_OTHER_YEAR_FORMATTER.format(sentDate);
+}
+
+function messageDayKey(sentAt: string): string {
+  const sentDate = new Date(sentAt);
+  if (!Number.isFinite(sentDate.getTime())) return sentAt;
+  return `${sentDate.getFullYear()}-${sentDate.getMonth()}-${sentDate.getDate()}`;
+}
 
 function chatLiveSignature(chat: MessageChatRowData): string {
   return [
@@ -3712,24 +3745,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
         {renderedMessages.map((item, sliceIndex) => {
           const index = renderedMessageStartIndex + sliceIndex;
-          const showUnreadDivider =
-            frozenUnreadDividerBeforeId != null &&
-            item.telegram_message_id === frozenUnreadDividerBeforeId;
+          const previous = index > 0 ? displayMessages[index - 1] : null;
+          const showDateDivider =
+            previous == null ||
+            messageDayKey(previous.sent_at) !== messageDayKey(item.sent_at);
+          const dateDividerLabel = showDateDivider
+            ? formatMessageDateDividerLabel(item.sent_at, new Date())
+            : "";
           return (
           <View
             key={item.telegram_message_id}
             onLayout={(event) => handleMessageLayout(item.telegram_message_id, event)}
           >
             {index > 0 ? <View style={{ height: MESSAGE_BUBBLE_ROW_GAP_PX }} /> : null}
-            {showUnreadDivider ? (
+            {showDateDivider ? (
               <>
-                <MessageUnreadDivider
-                  unreadCount={Math.max(
-                    openScrollPlan.openingUnreadCount,
-                    fabUnreadCount,
-                  )}
-                  colors={colors}
-                />
+                <MessageDateDivider label={dateDividerLabel} colors={colors} />
                 <View style={{ height: MESSAGE_BUBBLE_ROW_GAP_PX }} />
               </>
             ) : null}
