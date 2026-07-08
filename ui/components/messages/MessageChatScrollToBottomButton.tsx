@@ -19,6 +19,7 @@ type Props = {
 export function MessageChatScrollToBottomButton({ unreadLabel, colors, onPress }: Props) {
   const innerRadius = MESSAGE_CHAT_SCROLL_TO_BOTTOM_INNER_PX / 2;
   const outerRadius = MESSAGE_CHAT_SCROLL_TO_BOTTOM_OUTER_PX / 2;
+  const showUnreadBadge = unreadLabel.length > 0;
 
   return (
     <Pressable
@@ -31,7 +32,7 @@ export function MessageChatScrollToBottomButton({ unreadLabel, colors, onPress }
         opacity: pressed ? 0.88 : 1,
       })}
     >
-      {unreadLabel ? (
+      {showUnreadBadge ? (
         <View
           pointerEvents="none"
           style={{
@@ -65,8 +66,10 @@ export function MessageChatScrollToBottomButton({ unreadLabel, colors, onPress }
             borderRadius: innerRadius,
             backgroundColor: colors.undercover,
             alignItems: "center",
-            justifyContent: "flex-end",
-            paddingBottom: MESSAGE_CHAT_SCROLL_TO_BOTTOM_ICON_BOTTOM_INSET_PX,
+            justifyContent: showUnreadBadge ? "flex-end" : "center",
+            ...(showUnreadBadge
+              ? { paddingBottom: MESSAGE_CHAT_SCROLL_TO_BOTTOM_ICON_BOTTOM_INSET_PX }
+              : null),
           }}
         >
           <MessageChatDownIcon color={colors.primary} />

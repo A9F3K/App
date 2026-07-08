@@ -173,6 +173,7 @@ export function collectFullyVisibleUnreadMessageIds(
   for (const msg of messages) {
     const id = msg.telegram_message_id;
     if (id <= minUnreadMessageIdExclusive) continue;
+    if ((msg as { is_outgoing?: boolean }).is_outgoing) continue;
     if (readIds.has(id)) continue;
     const entry = layouts.get(id);
     if (!entry) continue;
@@ -198,6 +199,7 @@ export function maxIntersectingUnreadMessageId(
   for (const msg of messages) {
     const id = msg.telegram_message_id;
     if (id <= minUnreadMessageIdExclusive) continue;
+    if ((msg as { is_outgoing?: boolean }).is_outgoing) continue;
     const entry = layouts.get(id);
     if (!entry) continue;
     if (!isMessageIntersectingViewport(entry, viewportTop, viewportBottom)) continue;
@@ -223,6 +225,7 @@ export function collectNextUnreadMessageIdToMark(
   for (const msg of messages) {
     const id = msg.telegram_message_id;
     if (id <= minUnreadMessageIdExclusive) continue;
+    if ((msg as { is_outgoing?: boolean }).is_outgoing) continue;
     if (readIds.has(id)) continue;
     const entry = layouts.get(id);
     if (!entry) continue;
@@ -244,9 +247,9 @@ export function computeRemainingUnreadCount(
   return Math.max(0, openingUnread - readCount);
 }
 
-/** First unread message in a loaded history page (id strictly after inbox read cursor). */
+/** First unread incoming message in a loaded history page (id strictly after inbox read cursor). */
 export function resolveFirstUnreadMessageId(
-  messages: readonly { telegram_message_id: number }[],
+  messages: readonly { telegram_message_id: number; is_outgoing?: boolean }[],
   lastReadInboxMessageId: number | null | undefined,
 ): number | null {
   if (messages.length === 0) return null;
@@ -257,6 +260,7 @@ export function resolveFirstUnreadMessageId(
       ? Math.trunc(lastReadInboxMessageId)
       : 0;
   for (const msg of messages) {
+    if (msg.is_outgoing) continue;
     if (msg.telegram_message_id > floor) {
       return msg.telegram_message_id;
     }
@@ -297,32 +301,65 @@ export function resolveLastReadMessageId(
   return prior;
 }
 
-/** Count inbox-unread messages whose bottom edge is below the viewport (FAB badge). */
-export function countUnreadMessagesBelowViewport(
-  messages: readonly { telegram_message_id: number }[],
-  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
-  metrics: { scrollY: number; layoutH: number },
+/** Incoming inbox row still unread for the current user (outgoing rows never count). */
+export function isInboxUnreadIncomingMessage(
+  msg: { telegram_message_id: number; is_outgoing?: boolean },
   lastReadInboxMessageId: number | null | undefined,
-): number {
+): boolean {
+  if (msg.is_outgoing) return false;
   const floor =
     typeof lastReadInboxMessageId === "number" &&
     Number.isFinite(lastReadInboxMessageId) &&
     lastReadInboxMessageId > 0
       ? Math.trunc(lastReadInboxMessageId)
       : 0;
+  return msg.telegram_message_id > floor;
+}
+
+/** Count inbox-unread messages whose bottom edge is below the viewport (FAB badge). */
+export function countUnreadMessagesBelowViewport(
+  messages: readonly { telegram_message_id: number; is_outgoing?: boolean }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+  lastReadInboxMessageId: number | null | undefined,
+): number {
   const viewportBottom = metrics.scrollY + metrics.layoutH;
   let count = 0;
   for (const msg of messages) {
-    const id = msg.telegram_message_id;
-    if (id <= floor) continue;
-    const entry = layouts.get(id);
-    if (!entry) {
-      count += 1;
-      continue;
-    }
+    if (!isInboxUnreadIncomingMessage(msg, lastReadInboxMessageId)) continue;
+    const entry = layouts.get(msg.telegram_message_id);
+    if (!entry) continue;
     if (entry.y + entry.height > viewportBottom + 0.5) {
       count += 1;
     }
+  }
+  return count;
+}
+
+/**
+ * Inbox-unread messages in the loaded buffer newer than the viewport (FAB when scrolled up).
+ * Uses message ids so rows outside the display slice or without layout still count correctly.
+ */
+export function countUnreadMessagesNewerThanViewport(
+  messages: readonly { telegram_message_id: number; is_outgoing?: boolean }[],
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
+  metrics: { scrollY: number; layoutH: number },
+  lastReadInboxMessageId: number | null | undefined,
+): number {
+  const maxVisibleId = maxFullyVisibleMessageId(messages, layouts, metrics);
+  if (maxVisibleId <= 0) {
+    return countUnreadMessagesBelowViewport(
+      messages,
+      layouts,
+      metrics,
+      lastReadInboxMessageId,
+    );
+  }
+  let count = 0;
+  for (const msg of messages) {
+    if (!isInboxUnreadIncomingMessage(msg, lastReadInboxMessageId)) continue;
+    if (msg.telegram_message_id <= maxVisibleId) continue;
+    count += 1;
   }
   return count;
 }

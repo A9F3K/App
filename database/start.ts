@@ -366,6 +366,18 @@ async function runSchemaMigrations() {
       last_sync_at          TIMESTAMPTZ
     );
   `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS app_deploy_version (
+      id      INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      version INT NOT NULL DEFAULT 0
+    );
+  `;
+  await sql`
+    INSERT INTO app_deploy_version (id, version)
+    VALUES (1, 0)
+    ON CONFLICT (id) DO NOTHING;
+  `;
 }
 
 let schemaInitPromise: Promise<void> | null = null;

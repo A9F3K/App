@@ -50,6 +50,7 @@
     "deploy:railway:tdlib-gateway": "npx @railway/cli up --detach",
     "set-webhook": "npx tsx scripts/set-webhook.ts",
     "db:migrate": "npx tsx scripts/migrate-db.ts",
+    "build:vercel": "npm run db:migrate && npx tsx scripts/vercel-export-web.ts && npx tsx scripts/set-webhook.ts",
     "build:win": "node windows/build-with-progress.cjs",
     "build:win:raw": "npm run build && node windows/run-win-electron-builder.cjs",
     "pack:win": "node windows/build-with-progress.cjs --pack",

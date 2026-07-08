@@ -460,13 +460,27 @@ export function HspScrollColumn({
 
   const scrollToY = useCallback(
     (y: number) => {
-      const clamped = Math.max(0, y);
+      let clamped = Math.max(0, y);
       if (Platform.OS === "web") {
         const instance = scrollRef.current as unknown as {
           getScrollableNode?: () => HTMLElement | null | undefined;
         } | null;
         const el = instance?.getScrollableNode?.();
-        if (el) el.scrollTop = clamped;
+        if (el) {
+          const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+          clamped = Math.min(maxScroll, clamped);
+          el.scrollTop = clamped;
+          setScroll((prev) => ({
+            ...prev,
+            layoutH: el.clientHeight > 0 ? el.clientHeight : prev.layoutH,
+            contentH: el.scrollHeight > 0 ? el.scrollHeight : prev.contentH,
+            scrollY: clamped,
+          }));
+          syncNearTopLatch(clamped);
+          syncNearBottomLatch(clamped, el.clientHeight, el.scrollHeight);
+          recordStableAnchor();
+          return;
+        }
       }
       scrollRef.current?.scrollTo({ y: clamped, animated: false });
       syncNearTopLatch(clamped);
