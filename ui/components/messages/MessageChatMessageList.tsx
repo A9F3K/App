@@ -64,7 +64,7 @@ import {
   type CountSliceBounds,
 } from "./messageChatViewportSlice";
 import type { MessageChatHistoryItem, MessageChatKind } from "./messageChatHistoryTypes";
-import { patchAuthenticatedHomeSelectedChatReadOutbox, patchAuthenticatedHomeSelectedChatGroupMeta, patchAuthenticatedHomeSelectedChatUnread, setAuthenticatedHomeOpenChatFollowingBottom } from "../../authenticatedHomeSelectedChat";
+import { patchAuthenticatedHomeSelectedChatReadInbox, patchAuthenticatedHomeSelectedChatReadOutbox, patchAuthenticatedHomeSelectedChatGroupMeta, patchAuthenticatedHomeSelectedChatUnread, setAuthenticatedHomeOpenChatFollowingBottom } from "../../authenticatedHomeSelectedChat";
 import {
   effectiveReadOutboxMessageId as mergeReadOutboxCursor,
   enrichHistoryMessageDisplay,
@@ -528,6 +528,25 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     },
     [],
   );
+  const mergeOlderPaginationCursor = useCallback(
+    (
+      incomingHasMore: boolean,
+      incomingNextBefore: number | null,
+      incomingHeadId: number,
+    ) => {
+      const loadedHeadId = loadedMessagesRef.current[0]?.telegram_message_id ?? 0;
+      if (
+        !incomingHasMore &&
+        loadedHeadId > 0 &&
+        incomingHeadId > 0 &&
+        loadedHeadId < incomingHeadId
+      ) {
+        return;
+      }
+      applyOlderPaginationCursor(incomingHasMore, incomingNextBefore);
+    },
+    [applyOlderPaginationCursor],
+  );
   const pendingScrollRestoreRef = useRef<CachedChatScrollPosition | null>(null);
   /** Cached scroll to re-apply once message layouts (and content height) are ready. */
   const displaySliceBoundsRef = useRef<CountSliceBounds>({ startIndex: 0, endIndex: -1 });
@@ -566,6 +585,23 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const openUnreadAnchorReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const programmaticScrollRef = useRef(false);
   const lastReadInboxMessageIdRef = useRef<number | null>(null);
+  const appliedHistoryFromPreviewCacheRef = useRef(false);
+  const historyLoadedAroundUnreadRef = useRef(false);
+  const [readInboxCursorTick, setReadInboxCursorTick] = useState(0);
+  const bumpReadInboxCursorTick = useCallback(() => {
+    setReadInboxCursorTick((tick) => tick + 1);
+  }, []);
+
+  const applyLastReadInboxMessageId = useCallback(
+    (lastReadInboxMessageId: number | null | undefined) => {
+      if (lastReadInboxMessageId == null) return;
+      if (lastReadInboxMessageIdRef.current === lastReadInboxMessageId) return;
+      lastReadInboxMessageIdRef.current = lastReadInboxMessageId;
+      patchAuthenticatedHomeSelectedChatReadInbox(lastReadInboxMessageId);
+      bumpReadInboxCursorTick();
+    },
+    [bumpReadInboxCursorTick],
+  );
   const lastViewedInboxMarkRef = useRef(0);
   const viewInboxInFlightRef = useRef(false);
   const pendingViewInboxMessageIdRef = useRef<number | null>(null);
@@ -815,7 +851,15 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       olderPrependSettleUntilRef.current = 0;
       prevChatTailForOpeningUnreadRef.current = chat.last_message_telegram_id ?? 0;
       prevChatUnreadForOpeningRef.current = plan.openingUnreadCount;
-      lastReadInboxMessageIdRef.current = null;
+      lastReadInboxMessageIdRef.current = (() => {
+        const raw = Number(chat.last_read_inbox_message_id);
+        return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : null;
+      })();
+      if (lastReadInboxMessageIdRef.current != null) {
+        bumpReadInboxCursorTick();
+      }
+      appliedHistoryFromPreviewCacheRef.current = false;
+      historyLoadedAroundUnreadRef.current = false;
       lastViewedInboxMarkRef.current = 0;
       pendingViewInboxMessageIdRef.current = null;
     } else if (generationChanged) {
@@ -847,6 +891,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         openScrollForceRevealTimerRef.current = null;
       }
     }
+
+    historyLoadedAroundUnreadRef.current = plan.scrollToUnreadDivider;
   }, [assignPendingScrollAnchor, chat.telegram_chat_id, historyLoad.generation]);
 
   useEffect(() => {
@@ -859,6 +905,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
     };
   }, []);
+
+  useEffect(() => {
+    applyLastReadInboxMessageId(chat.last_read_inbox_message_id);
+  }, [applyLastReadInboxMessageId, chat.last_read_inbox_message_id, chat.telegram_chat_id]);
 
   useEffect(() => {
     const tailId = chat.last_message_telegram_id;
@@ -913,7 +963,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     (result: { unread_count: number; last_read_inbox_message_id: number | null }, viewedUpTo: number) => {
       lastViewedInboxMarkRef.current = Math.max(lastViewedInboxMarkRef.current, viewedUpTo);
       if (result.last_read_inbox_message_id != null) {
-        lastReadInboxMessageIdRef.current = result.last_read_inbox_message_id;
+        applyLastReadInboxMessageId(result.last_read_inbox_message_id);
       }
       patchAuthenticatedHomeSelectedChatUnread(result.unread_count);
       setFabUnreadDisplayTick((tick) => tick + 1);
@@ -921,7 +971,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         openingUnreadCountRef.current = 0;
       }
     },
-    [],
+    [applyLastReadInboxMessageId],
   );
 
   const flushViewInboxMessages = useCallback(async () => {
@@ -1329,12 +1379,15 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const capturePrependItemAnchor = useCallback((): HspItemAnchor | null => {
     const display = displayMessagesRef.current;
     if (display.length === 0) return null;
+    const fallbackId = display[0]!.telegram_message_id;
+    if (fallbackId <= 0) return null;
     const metrics = scrollControllerRef.current?.getMetrics();
-    if (!metrics || metrics.layoutH <= 0) return null;
+    if (!metrics || metrics.layoutH <= 0) {
+      return { messageId: fallbackId, viewportTopPx: 0, offsetFromViewportTop: 0 };
+    }
     const layoutMap = resolveScrollLayoutMap(metrics);
     const anchorId =
-      topViewportAnchorMessageId(display, layoutMap, metrics) ??
-      display[0]!.telegram_message_id;
+      topViewportAnchorMessageId(display, layoutMap, metrics) ?? fallbackId;
     if (anchorId <= 0) return null;
     const entry = layoutMap.get(anchorId);
     const offsetFromViewportTop =
@@ -1415,14 +1468,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   const settleOpenUnreadDividerScroll = useCallback((): boolean => {
     const messages = displayMessagesRef.current;
-    const lastReadId = resolveLastReadMessageId(
-      messages,
-      lastReadInboxMessageIdRef.current,
-    );
-    const firstUnreadId = resolveFirstUnreadMessageId(
-      messages,
-      lastReadInboxMessageIdRef.current,
-    );
+    const readCursor = lastReadInboxMessageIdRef.current;
+    if (readCursor == null) return false;
+
+    const lastReadId = resolveLastReadMessageId(messages, readCursor);
+    const firstUnreadId = resolveFirstUnreadMessageId(messages, readCursor);
     if (firstUnreadId == null && lastReadId == null) {
       settleOpenBottomScroll();
       return true;
@@ -1934,6 +1984,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         });
       }
       lastAppliedCacheSignatureRef.current = cacheSignature;
+      appliedHistoryFromPreviewCacheRef.current = cached.previewOnly === true;
+      historyLoadedAroundUnreadRef.current =
+        cached.aroundUnread === true && cached.previewOnly !== true;
       setChatKind(cached.chatKind);
       if (cached.selfUserId != null) {
         setSelfUserId(cached.selfUserId);
@@ -1944,19 +1997,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         cached.memberCount,
       );
       if (!cached.previewOnly) {
-        setHasMoreOlder(cached.hasMoreOlder);
-        setNextBeforeMessageId(cached.nextBeforeMessageId);
+        mergeOlderPaginationCursor(
+          cached.hasMoreOlder,
+          cached.nextBeforeMessageId,
+          cacheHead,
+        );
       }
       setLastReadOutboxFromHistory((prev) =>
         mergeReadOutboxCursor(prev, cached.lastReadOutboxMessageId),
       );
       if (cached.lastReadInboxMessageId != null) {
-        lastReadInboxMessageIdRef.current = cached.lastReadInboxMessageId;
+        applyLastReadInboxMessageId(cached.lastReadInboxMessageId);
       }
       setLoadingInitial(false);
       setError(null);
     },
-    [bumpViewportSliceTick, chat.telegram_chat_id, historyMessageContext, mergeHistoryWithWindow],
+    [bumpViewportSliceTick, chat.telegram_chat_id, applyLastReadInboxMessageId, historyMessageContext, mergeHistoryWithWindow, mergeOlderPaginationCursor],
   );
 
   const readOutboxCursor = useMemo(
@@ -2095,14 +2151,39 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   }, [displayMessages]);
 
   useEffect(() => {
-    if (loadedMessages.length === 0) return;
-    if (frozenUnreadDividerBeforeId != null) return;
-    const firstUnread = resolveFirstUnreadMessageId(
-      loadedMessages,
-      lastReadInboxMessageIdRef.current,
-    );
-    if (firstUnread == null) return;
-    const unreadIndex = loadedMessages.findIndex(
+    const messages = loadedMessages;
+    if (messages.length === 0) return;
+
+    const serverUnread = Math.max(0, Math.trunc(chat.unread_count ?? 0));
+    const openingUnread = openingUnreadCountRef.current;
+    const hasUnreads = serverUnread > 0 || openingUnread > 0;
+    if (!hasUnreads) {
+      if (frozenUnreadDividerBeforeId != null) {
+        setFrozenUnreadDividerBeforeId(null);
+        memoFirstUnreadIdRef.current = null;
+        memoUnreadDividerBeforeIdRef.current = null;
+      }
+      return;
+    }
+
+    if (appliedHistoryFromPreviewCacheRef.current) return;
+
+    const readCursor = lastReadInboxMessageIdRef.current;
+    if (readCursor == null) return;
+
+    const firstUnread = resolveFirstUnreadMessageId(messages, readCursor);
+    if (firstUnread == null) {
+      if (frozenUnreadDividerBeforeId != null) {
+        setFrozenUnreadDividerBeforeId(null);
+        memoFirstUnreadIdRef.current = null;
+        memoUnreadDividerBeforeIdRef.current = null;
+      }
+      return;
+    }
+
+    if (frozenUnreadDividerBeforeId === firstUnread) return;
+
+    const unreadIndex = messages.findIndex(
       (row) => row.telegram_message_id === firstUnread,
     );
     if (unreadIndex >= 0) {
@@ -2111,7 +2192,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         bounds.endIndex >= bounds.startIndex &&
         unreadIndex >= bounds.startIndex &&
         unreadIndex <= bounds.endIndex;
-      if (!inSlice && openingUnreadCountRef.current > 0) {
+      if (!inSlice && openingUnread > 0) {
         scrollAnchorMessageIdRef.current = firstUnread;
         viewportSliceTickRef.current += 1;
         setViewportSliceTick(viewportSliceTickRef.current);
@@ -2120,7 +2201,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     memoFirstUnreadIdRef.current = firstUnread;
     memoUnreadDividerBeforeIdRef.current = firstUnread;
     setFrozenUnreadDividerBeforeId(firstUnread);
-  }, [loadedMessages, frozenUnreadDividerBeforeId]);
+  }, [loadedMessages, frozenUnreadDividerBeforeId, chat.unread_count, readInboxCursorTick]);
 
   const syncScrollBelowUnread = useCallback(
     (metrics: HspScrollMetrics) => {
@@ -2545,9 +2626,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   useLayoutEffect(() => {
     const itemAnchor = pendingItemAnchorRef.current;
-    if (!itemAnchor) return;
-    pendingItemAnchorRef.current = null;
     const loadOlderBeforeId = loadOlderAfterExpandSnapshotRef.current;
+    if (!itemAnchor && loadOlderBeforeId == null) return;
+    pendingItemAnchorRef.current = null;
     loadOlderAfterExpandSnapshotRef.current = null;
     let attempts = 0;
     let released = false;
@@ -2560,7 +2641,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       logMessagesScrollAction(
         restored ? "prepend_keep_release" : "prepend_keep_miss",
         {
-          messageId: itemAnchor.messageId,
+          messageId: itemAnchor?.messageId ?? 0,
           attempts,
           loadOlderAfterExpand: loadOlderBeforeId != null,
         },
@@ -2575,6 +2656,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         });
       }
     };
+    if (!itemAnchor) {
+      release(false);
+      return;
+    }
     const run = () => {
       let restored = restorePrependDomAnchor();
       if (!restored) {
@@ -2899,13 +2984,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             result.chatKind,
             result.memberCount,
           );
-          setHasMoreOlder(result.hasMoreOlder);
-          setNextBeforeMessageId(result.nextBeforeMessageId);
+          const resultHeadId =
+            result.messages.length > 0 ? result.messages[0]!.telegram_message_id : 0;
+          mergeOlderPaginationCursor(
+            result.hasMoreOlder,
+            result.nextBeforeMessageId,
+            resultHeadId,
+          );
           setLastReadOutboxFromHistory((prev) =>
             mergeReadOutboxCursor(prev, result.lastReadOutboxMessageId),
           );
           if (result.lastReadInboxMessageId != null) {
-            lastReadInboxMessageIdRef.current = result.lastReadInboxMessageId;
+            applyLastReadInboxMessageId(result.lastReadInboxMessageId);
+          }
+          appliedHistoryFromPreviewCacheRef.current = false;
+          if (plan.scrollToUnreadDivider) {
+            historyLoadedAroundUnreadRef.current = true;
           }
           logPageDisplay(cacheHit ? "messages_history_cache_revalidated" : "messages_history_load_ok", {
             ...chatLogFields({
@@ -3023,6 +3117,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     isTelegramMessagesConnected,
     shouldLoadHistory,
     applyCachedHistoryPage,
+    applyLastReadInboxMessageId,
   ]);
 
   useEffect(() => {
@@ -3755,6 +3850,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     if (initialScrollInProgressRef.current) return;
     if (loadingOlderRef.current || loadingNewerRef.current) return;
     if (pendingItemAnchorRef.current) return;
+    if (olderPrependInProgressRef.current || prependAnchorRestorePending) return;
     if (!chatScrollPaintReadyRef.current || loadingInitial) return;
     if (Date.now() - lastOlderLoadFinishedAtRef.current < LOAD_OLDER_PAGE_COOLDOWN_MS) {
       return;
@@ -3776,24 +3872,37 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       void loadOlderMessages();
       return;
     }
-    if (displayHeadId > 0 && loadedHeadId > 0 && displayHeadId > loadedHeadId) {
-      expandDisplaySliceTowardOlder();
-      return;
-    }
     if (
-      !viewportAtLoadedTopRef.current &&
-      displaySliceBoundsRef.current.startIndex > 0
+      displaySliceBoundsRef.current.startIndex > 0 ||
+      (displayHeadId > 0 &&
+        loadedHeadId > 0 &&
+        displayHeadId > loadedHeadId)
     ) {
       expandDisplaySliceTowardOlder();
       return;
     }
     if (!hasMoreOlderRef.current) return;
     void loadOlderMessages();
-  }, [expandDisplaySliceTowardOlder, loadOlderMessages, loadingInitial]);
+  }, [
+    expandDisplaySliceTowardOlder,
+    loadOlderMessages,
+    loadingInitial,
+    prependAnchorRestorePending,
+  ]);
 
   useEffect(() => {
     tryTriggerOlderHistoryLoadRef.current = tryTriggerOlderHistoryLoad;
   }, [tryTriggerOlderHistoryLoad]);
+
+  const canExpandOlderInBuffer = useMemo(() => {
+    if (loadedMessages.length === 0 || displayMessages.length === 0) return false;
+    return (
+      displayMessages[0]!.telegram_message_id > loadedMessages[0]!.telegram_message_id
+    );
+  }, [loadedMessages, displayMessages]);
+
+  const showTopHistoryLoadSentinel =
+    hasMoreOlder || canExpandOlderInBuffer;
 
   const triggerLoadOlderFromSentinel = useCallback(() => {
     tryTriggerOlderHistoryLoad();
@@ -4098,7 +4207,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           </Text>
         ) : null}
 
-        {displayMessages.length > 0 && hasMoreOlder ? (
+        {displayMessages.length > 0 && showTopHistoryLoadSentinel ? (
           <MessageHistoryLoadSentinel
             edge="top"
             enabled={historyLoadIoEnabled}

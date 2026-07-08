@@ -95,8 +95,12 @@ function applyPageMeta(
   target.chatKind = page.chatKind ?? target.chatKind;
   target.hasMoreOlder = page.hasMoreOlder;
   target.nextBeforeMessageId = page.nextBeforeMessageId;
-  target.lastReadOutboxMessageId = page.lastReadOutboxMessageId;
-  target.lastReadInboxMessageId = page.lastReadInboxMessageId;
+  if (page.lastReadOutboxMessageId != null) {
+    target.lastReadOutboxMessageId = page.lastReadOutboxMessageId;
+  }
+  if (page.lastReadInboxMessageId != null) {
+    target.lastReadInboxMessageId = page.lastReadInboxMessageId;
+  }
   target.memberCount = page.memberCount ?? target.memberCount;
   target.selfUserId = page.selfUserId ?? target.selfUserId;
 }
@@ -123,8 +127,8 @@ export async function fetchChatHistoryTailCharBudget(
       return { ...result, messages, anchorMessageId: null };
     }
     chatKind = result.chatKind;
-    lastReadOutboxMessageId = result.lastReadOutboxMessageId;
-    lastReadInboxMessageId = result.lastReadInboxMessageId;
+    lastReadOutboxMessageId = result.lastReadOutboxMessageId ?? lastReadOutboxMessageId;
+    lastReadInboxMessageId = result.lastReadInboxMessageId ?? lastReadInboxMessageId;
     memberCount = result.memberCount;
     selfUserId = result.selfUserId;
     if (result.messages.length === 0) {
@@ -183,8 +187,8 @@ export async function fetchChatHistoryHeadCharBudget(
       return { ...result, messages, anchorMessageId: null };
     }
     chatKind = result.chatKind;
-    lastReadOutboxMessageId = result.lastReadOutboxMessageId;
-    lastReadInboxMessageId = result.lastReadInboxMessageId;
+    lastReadOutboxMessageId = result.lastReadOutboxMessageId ?? lastReadOutboxMessageId;
+    lastReadInboxMessageId = result.lastReadInboxMessageId ?? lastReadInboxMessageId;
     memberCount = result.memberCount;
     selfUserId = result.selfUserId;
     if (result.messages.length === 0) break;
@@ -258,29 +262,20 @@ export async function fetchChatHistoryAroundCharBudget(
 ): Promise<CharacterRangeHistoryResult> {
   const anchorId = Math.trunc(anchorMessageId);
   let messages: MessageChatHistoryItem[] = [];
-  let chatKind: ChatHistoryPageResult["chatKind"] = null;
-  let hasMoreOlder = false;
-  let nextBeforeMessageId: number | null = null;
-  let lastReadOutboxMessageId: number | null = null;
-  let lastReadInboxMessageId: number | null = null;
-  let memberCount: number | null = null;
-  let selfUserId: number | null = null;
+  const pageMeta = {
+    chatKind: null as ChatHistoryPageResult["chatKind"],
+    hasMoreOlder: false,
+    nextBeforeMessageId: null as number | null,
+    lastReadOutboxMessageId: null as number | null,
+    lastReadInboxMessageId: null as number | null,
+    memberCount: null as number | null,
+    selfUserId: null as number | null,
+  };
 
   const seed = options?.seedResult;
   if (seed && !seed.error) {
     messages = seed.messages;
-    applyPageMeta(
-      {
-        chatKind,
-        hasMoreOlder,
-        nextBeforeMessageId,
-        lastReadOutboxMessageId,
-        lastReadInboxMessageId,
-        memberCount,
-        selfUserId,
-      },
-      seed,
-    );
+    applyPageMeta(pageMeta, seed);
   } else {
     const contextUp = seedContextMessageCount(charBudgetUp);
     const contextDown = seedContextMessageCount(charBudgetDown);
@@ -298,18 +293,7 @@ export async function fetchChatHistoryAroundCharBudget(
       return { ...aroundSeed, anchorMessageId: anchorId };
     }
     messages = aroundSeed.messages;
-    applyPageMeta(
-      {
-        chatKind,
-        hasMoreOlder,
-        nextBeforeMessageId,
-        lastReadOutboxMessageId,
-        lastReadInboxMessageId,
-        memberCount,
-        selfUserId,
-      },
-      aroundSeed,
-    );
+    applyPageMeta(pageMeta, aroundSeed);
   }
 
   if (!messages.some((row) => row.telegram_message_id === anchorId)) {
@@ -329,22 +313,11 @@ export async function fetchChatHistoryAroundCharBudget(
       return { ...aroundSeed, anchorMessageId: anchorId };
     }
     messages = mergeSortedMessages(messages, aroundSeed.messages);
-    applyPageMeta(
-      {
-        chatKind,
-        hasMoreOlder,
-        nextBeforeMessageId,
-        lastReadOutboxMessageId,
-        lastReadInboxMessageId,
-        memberCount,
-        selfUserId,
-      },
-      aroundSeed,
-    );
+    applyPageMeta(pageMeta, aroundSeed);
   }
 
   let olderCursor =
-    nextBeforeMessageId ??
+    pageMeta.nextBeforeMessageId ??
     (messages.length > 0 ? messages[0]!.telegram_message_id : null);
   for (let round = 0; round < MAX_FETCH_ROUNDS; round += 1) {
     const anchorIndex = messages.findIndex(
@@ -359,35 +332,24 @@ export async function fetchChatHistoryAroundCharBudget(
     if (olderCursor == null) break;
     const older = await fetchPageWithWarmup(chatId, peerUserId, olderCursor);
     if (older.error) {
-      hasMoreOlder = older.hasMoreOlder;
-      nextBeforeMessageId = older.nextBeforeMessageId;
+      pageMeta.hasMoreOlder = older.hasMoreOlder;
+      pageMeta.nextBeforeMessageId = older.nextBeforeMessageId;
       break;
     }
     if (older.messages.length === 0) {
-      hasMoreOlder = older.hasMoreOlder;
-      nextBeforeMessageId = older.nextBeforeMessageId;
+      pageMeta.hasMoreOlder = older.hasMoreOlder;
+      pageMeta.nextBeforeMessageId = older.nextBeforeMessageId;
       break;
     }
     messages = mergeSortedMessages(older.messages, messages);
-    hasMoreOlder = older.hasMoreOlder;
-    nextBeforeMessageId = older.nextBeforeMessageId;
+    pageMeta.hasMoreOlder = older.hasMoreOlder;
+    pageMeta.nextBeforeMessageId = older.nextBeforeMessageId;
     olderCursor =
       older.nextBeforeMessageId ??
       older.messages[0]?.telegram_message_id ??
       messages[0]?.telegram_message_id ??
       null;
-    applyPageMeta(
-      {
-        chatKind,
-        hasMoreOlder,
-        nextBeforeMessageId,
-        lastReadOutboxMessageId,
-        lastReadInboxMessageId,
-        memberCount,
-        selfUserId,
-      },
-      older,
-    );
+    applyPageMeta(pageMeta, older);
   }
 
   for (let round = 0; round < MAX_FETCH_ROUNDS; round += 1) {
@@ -405,18 +367,7 @@ export async function fetchChatHistoryAroundCharBudget(
     const newer = await fetchPageWithWarmup(chatId, peerUserId, null, tailId);
     if (newer.error || newer.messages.length === 0) break;
     messages = mergeSortedMessages(messages, newer.messages);
-    applyPageMeta(
-      {
-        chatKind,
-        hasMoreOlder,
-        nextBeforeMessageId,
-        lastReadOutboxMessageId,
-        lastReadInboxMessageId,
-        memberCount,
-        selfUserId,
-      },
-      newer,
-    );
+    applyPageMeta(pageMeta, newer);
   }
 
   messages = trimMessagesAroundAnchorCharBudget(
@@ -428,19 +379,19 @@ export async function fetchChatHistoryAroundCharBudget(
 
   const oldestId = messages[0]?.telegram_message_id ?? null;
   if (oldestId != null) {
-    nextBeforeMessageId = oldestId;
+    pageMeta.nextBeforeMessageId = oldestId;
   }
 
   return {
     messages,
-    chatKind,
+    chatKind: pageMeta.chatKind,
     error: null,
-    hasMoreOlder,
-    nextBeforeMessageId,
-    lastReadOutboxMessageId,
-    lastReadInboxMessageId,
-    memberCount,
-    selfUserId,
+    hasMoreOlder: pageMeta.hasMoreOlder,
+    nextBeforeMessageId: pageMeta.nextBeforeMessageId,
+    lastReadOutboxMessageId: pageMeta.lastReadOutboxMessageId,
+    lastReadInboxMessageId: pageMeta.lastReadInboxMessageId,
+    memberCount: pageMeta.memberCount,
+    selfUserId: pageMeta.selfUserId,
     anchorMessageId: anchorId,
   };
 }
@@ -528,8 +479,8 @@ export async function fetchOlderHistoryCharBudget(
       return { ...result, messages };
     }
     chatKind = result.chatKind;
-    lastReadOutboxMessageId = result.lastReadOutboxMessageId;
-    lastReadInboxMessageId = result.lastReadInboxMessageId;
+    lastReadOutboxMessageId = result.lastReadOutboxMessageId ?? lastReadOutboxMessageId;
+    lastReadInboxMessageId = result.lastReadInboxMessageId ?? lastReadInboxMessageId;
     memberCount = result.memberCount;
     selfUserId = result.selfUserId;
     if (result.messages.length === 0) {
@@ -592,8 +543,8 @@ export async function fetchNewerHistoryCharBudget(
       return { ...result, messages };
     }
     chatKind = result.chatKind;
-    lastReadOutboxMessageId = result.lastReadOutboxMessageId;
-    lastReadInboxMessageId = result.lastReadInboxMessageId;
+    lastReadOutboxMessageId = result.lastReadOutboxMessageId ?? lastReadOutboxMessageId;
+    lastReadInboxMessageId = result.lastReadInboxMessageId ?? lastReadInboxMessageId;
     memberCount = result.memberCount;
     selfUserId = result.selfUserId;
     if (result.messages.length === 0) break;

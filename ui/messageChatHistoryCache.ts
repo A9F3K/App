@@ -22,7 +22,8 @@ const FRESH_MS = 45_000;
 /** Background list preview stays valid longer — avoids competing with the open chat. */
 export const PREVIEW_FRESH_MS = 2 * 60_000;
 const MAX_AGE_MS = 10 * 60_000;
-const SESSION_STORAGE_KEY = "hyperlinks_chat_history_cache_v1";
+/** Bump when cached page shape changes (e.g. lastReadInboxMessageId required for unread divider). */
+const SESSION_STORAGE_KEY = "hyperlinks_chat_history_cache_v2";
 
 const cacheListeners = new Set<(chatId: number) => void>();
 
@@ -131,6 +132,7 @@ function cachePageSignature(
     page.hasMoreOlder ? 1 : 0,
     page.nextBeforeMessageId ?? "",
     page.lastReadOutboxMessageId ?? "",
+    page.lastReadInboxMessageId ?? "",
     page.chatKind ?? "",
     page.selfUserId ?? "",
   ].join("|");
@@ -170,7 +172,7 @@ export function isChatHistoryCacheAnchorMatch(
   }
 
   if (spec.aroundUnread === true) {
-    return entry.aroundUnread === true;
+    return entry.aroundUnread === true && !entry.previewOnly;
   }
 
   if (entry.aroundMessageId != null && entry.aroundMessageId > 0) {
@@ -266,6 +268,8 @@ export function mergeCachedChatHistoryTail(
       nextBeforeMessageId: existing.nextBeforeMessageId ?? tail.nextBeforeMessageId,
       lastReadOutboxMessageId:
         tail.lastReadOutboxMessageId ?? existing.lastReadOutboxMessageId,
+      lastReadInboxMessageId:
+        tail.lastReadInboxMessageId ?? existing.lastReadInboxMessageId,
     },
     { previewOnly: existing.previewOnly, aroundUnread: existing.aroundUnread, aroundMessageId: existing.aroundMessageId ?? null },
   );

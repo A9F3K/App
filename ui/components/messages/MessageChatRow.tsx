@@ -76,6 +76,7 @@ export type MessageChatRowData = {
   chat_action_user_name?: string | null;
   chat_action_expires_at?: string | null;
   last_read_outbox_message_id?: number | null;
+  last_read_inbox_message_id?: number | null;
   last_message_is_outgoing?: boolean;
   last_message_outgoing_status?: MessageOutgoingStatus | null;
   last_message_telegram_id?: number | null;

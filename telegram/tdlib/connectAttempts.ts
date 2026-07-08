@@ -1508,7 +1508,12 @@ export async function viewChatInboxMessagesForUser(
   try {
     const result = await viewChatInboxMessagesUpTo(record.client, chatId, mid);
     const { patchLiveChatReadInbox } = await import("./liveChatCache.js");
-    patchLiveChatReadInbox(telegramUsername, chatId, result.unread_count);
+    patchLiveChatReadInbox(
+      telegramUsername,
+      chatId,
+      result.unread_count,
+      result.last_read_inbox_message_id,
+    );
     return { ...result, error: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : "view_messages_failed";

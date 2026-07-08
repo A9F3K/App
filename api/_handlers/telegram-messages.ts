@@ -220,6 +220,12 @@ function mapLiveChats(live: { chats: Record<string, unknown>[]; revision: number
       row.last_read_outbox_message_id > 0
         ? row.last_read_outbox_message_id
         : null,
+    last_read_inbox_message_id:
+      typeof row.last_read_inbox_message_id === "number" &&
+      Number.isFinite(row.last_read_inbox_message_id) &&
+      row.last_read_inbox_message_id > 0
+        ? row.last_read_inbox_message_id
+        : null,
     last_message_is_outgoing: Boolean(row.last_message_is_outgoing),
     last_message_outgoing_status:
       row.last_message_outgoing_status === "pending" ||

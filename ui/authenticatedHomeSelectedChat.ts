@@ -93,6 +93,10 @@ function readStoredChat(): MessageChatRowData | null {
           const raw = Number(row.last_read_outbox_message_id);
           return Number.isFinite(raw) && raw > 0 ? raw : null;
         })(),
+        last_read_inbox_message_id: (() => {
+          const raw = Number(row.last_read_inbox_message_id);
+          return Number.isFinite(raw) && raw > 0 ? raw : null;
+        })(),
         peer_emoji_status_custom_emoji_id:
           typeof row.peer_emoji_status_custom_emoji_id === "string" &&
           row.peer_emoji_status_custom_emoji_id.trim()
@@ -191,7 +195,8 @@ export function selectAuthenticatedHomeChat(chat: MessageChatRowData | null) {
     selectedChat.chat_action_user_id === chat.chat_action_user_id &&
     selectedChat.chat_action_user_name === chat.chat_action_user_name &&
     selectedChat.chat_action_expires_at === chat.chat_action_expires_at &&
-    selectedChat.last_read_outbox_message_id === chat.last_read_outbox_message_id
+    selectedChat.last_read_outbox_message_id === chat.last_read_outbox_message_id &&
+    selectedChat.last_read_inbox_message_id === chat.last_read_inbox_message_id
   ) {
     return;
   }
@@ -313,6 +318,18 @@ export function patchAuthenticatedHomeSelectedChatGroupMeta(
   emit();
 }
 
+/** Keep inbox read cursor in sync after history loads, view-inbox, or live updates. */
+export function patchAuthenticatedHomeSelectedChatReadInbox(messageId: number | null | undefined) {
+  hydrateFromStorageIfNeeded();
+  const id = Number(messageId);
+  if (!Number.isFinite(id) || id <= 0 || selectedChat == null) return;
+  const prev = selectedChat.last_read_inbox_message_id;
+  if (prev != null && prev >= id) return;
+  selectedChat = { ...selectedChat, last_read_inbox_message_id: id };
+  writeStoredChat(selectedChat);
+  emit();
+}
+
 /** Keep read-receipt cursor in sync after history loads or live updates. */
 export function patchAuthenticatedHomeSelectedChatReadOutbox(messageId: number | null | undefined) {
   hydrateFromStorageIfNeeded();
@@ -406,7 +423,8 @@ export function syncAuthenticatedHomeSelectedChat(chats: readonly MessageChatRow
     fresh.chat_action_user_id !== selectedChat.chat_action_user_id ||
     fresh.chat_action_user_name !== selectedChat.chat_action_user_name ||
     fresh.chat_action_expires_at !== selectedChat.chat_action_expires_at ||
-    fresh.last_read_outbox_message_id !== selectedChat.last_read_outbox_message_id
+    fresh.last_read_outbox_message_id !== selectedChat.last_read_outbox_message_id ||
+    fresh.last_read_inbox_message_id !== selectedChat.last_read_inbox_message_id
   ) {
     const prevTailId = selectedChat.last_message_telegram_id ?? 0;
     const nextTailId = fresh.last_message_telegram_id ?? 0;

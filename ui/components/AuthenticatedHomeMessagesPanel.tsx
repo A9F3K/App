@@ -142,6 +142,10 @@ function normalizeChat(raw: unknown): MessageChatRowData | null {
       const raw = Number(row.last_read_outbox_message_id);
       return Number.isFinite(raw) && raw > 0 ? raw : null;
     })(),
+    last_read_inbox_message_id: (() => {
+      const raw = Number(row.last_read_inbox_message_id);
+      return Number.isFinite(raw) && raw > 0 ? raw : null;
+    })(),
     last_message_is_outgoing: Boolean(row.last_message_is_outgoing),
     last_message_outgoing_status:
       row.last_message_outgoing_status === "pending" ||
@@ -222,6 +226,7 @@ function chatsChanged(prev: MessageChatRowData[], next: MessageChatRowData[]): b
       a.chat_action_user_name !== b.chat_action_user_name ||
       a.chat_action_expires_at !== b.chat_action_expires_at ||
       a.last_read_outbox_message_id !== b.last_read_outbox_message_id ||
+      a.last_read_inbox_message_id !== b.last_read_inbox_message_id ||
       Boolean(a.last_message_is_outgoing) !== Boolean(b.last_message_is_outgoing) ||
       a.last_message_outgoing_status !== b.last_message_outgoing_status ||
       a.last_message_telegram_id !== b.last_message_telegram_id ||

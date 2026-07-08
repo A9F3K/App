@@ -156,7 +156,17 @@ async function applyLiveUpdate(record: LiveSyncRecord, update: Record<string, un
     const unreadRaw = Number(update.unread_count);
     if (Number.isFinite(unreadRaw) && unreadRaw >= 0) {
       const { patchLiveChatReadInbox } = await import("./liveChatCache.js");
-      patchLiveChatReadInbox(record.telegramUsername, chatId, Math.floor(unreadRaw));
+      const lastReadInboxRaw = Number(update.last_read_inbox_message_id);
+      const lastReadInbox =
+        Number.isFinite(lastReadInboxRaw) && lastReadInboxRaw > 0
+          ? Math.trunc(lastReadInboxRaw)
+          : undefined;
+      patchLiveChatReadInbox(
+        record.telegramUsername,
+        chatId,
+        Math.floor(unreadRaw),
+        lastReadInbox,
+      );
       logLiveSync(record, "live_chat_read_inbox_applied", {
         chatId,
         unreadCount: Math.floor(unreadRaw),
