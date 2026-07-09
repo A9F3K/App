@@ -9,12 +9,24 @@ export type TradeCollectionItem = {
   subtitle: string;
 };
 
-/** Up to four collections for the responsive first-row grid (2–4 columns). */
+/**
+ * Collections used by the first-row grid.
+ *
+ * Ordering is defined per-slide by duplicating the same sample items with changed order.
+ * Current slide 0 uses indices 0..3; slide 1 uses indices 4..7.
+ */
 export const TRADE_SAMPLE_COLLECTIONS: TradeCollectionItem[] = [
+  // Slide 0
   { image: tradePixakatsImage, title: "pixa kats", subtitle: "Tandam" },
   { image: tradeHaramartaImage, title: "Haramarta", subtitle: "Bid Raits" },
   { image: tradePixakatsImage, title: "pixa kats", subtitle: "Tandam" },
   { image: tradeHaramartaImage, title: "Haramarta", subtitle: "Bid Raits" },
+
+  // Slide 1 (reversed order)
+  { image: tradeHaramartaImage, title: "Haramarta", subtitle: "Bid Raits" },
+  { image: tradePixakatsImage, title: "pixa kats", subtitle: "Tandam" },
+  { image: tradeHaramartaImage, title: "Haramarta", subtitle: "Bid Raits" },
+  { image: tradePixakatsImage, title: "pixa kats", subtitle: "Tandam" },
 ];
 
 export type TradeFeedItem = {

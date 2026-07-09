@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useMemo, useState } from "react";
-import { Text, View, type LayoutChangeEvent } from "react-native";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Pressable, Text, View, type LayoutChangeEvent } from "react-native";
 import { Image } from "expo-image";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import { TradeCollectionColumn } from "./TradeCollectionColumn";
@@ -19,25 +19,44 @@ const PAGINATION_DOT_GAP_PX = 11;
 const TABS_AFTER_DOTS_GAP_PX = 33;
 const TABS_TO_FILTERS_GAP_PX = 19;
 
-function TradePaginationDots({ activeIndex }: { activeIndex: number }) {
+function TradePaginationDots({
+  activeIndex,
+  count,
+  onPressIndex,
+}: {
+  activeIndex: number;
+  count: number;
+  onPressIndex: (index: number) => void;
+}) {
   const colors = useColors();
   return (
     <View style={{ height: PAGINATION_DOT_PX, alignItems: "center", justifyContent: "center" }}>
       <View style={{ flexDirection: "row", alignItems: "center" }}>
-        {[0, 1, 2].map((i) => (
-          <View key={i} style={{ flexDirection: "row", alignItems: "center" }}>
-            {i > 0 ? <View style={{ width: PAGINATION_DOT_GAP_PX }} /> : null}
-            <View
-              style={{
-                width: PAGINATION_DOT_PX,
-                height: PAGINATION_DOT_PX,
-                backgroundColor: i === activeIndex ? colors.primary : "transparent",
-                borderWidth: i === activeIndex ? 0 : 1,
-                borderColor: colors.secondary,
-              }}
-            />
-          </View>
-        ))}
+        {Array.from({ length: count }).map((_, i) => {
+          const isActive = i === activeIndex;
+          return (
+            <View key={i} style={{ flexDirection: "row", alignItems: "center" }}>
+              {i > 0 ? <View style={{ width: PAGINATION_DOT_GAP_PX }} /> : null}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Trade slide ${i + 1}`}
+                onPress={() => onPressIndex(i)}
+                style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+              >
+                <View
+                  style={{
+                    width: PAGINATION_DOT_PX,
+                    height: PAGINATION_DOT_PX,
+                    backgroundColor: isActive ? colors.primary : "transparent",
+                    borderWidth: isActive ? 0 : 1,
+
+                    borderColor: colors.secondary,
+                  }}
+                />
+              </Pressable>
+            </View>
+          );
+        })}
       </View>
     </View>
   );
@@ -69,10 +88,22 @@ export function TradePanelContent() {
     () => resolveTradeCollectionColumnCount(collectionsRowWidth, contentInset),
     [collectionsRowWidth, contentInset],
   );
-  const visibleCollections = useMemo(
-    () => TRADE_SAMPLE_COLLECTIONS.slice(0, collectionColumnCount),
-    [collectionColumnCount],
-  );
+
+  const slidesCount = 2;
+  const [activeSlideIndex, setActiveSlideIndex] = useState(0);
+
+  // Start auto-sliding only while this screen is mounted/visible.
+  useEffect(() => {
+    const id = setInterval(() => {
+      setActiveSlideIndex((v) => (v + 1) % slidesCount);
+    }, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  const visibleCollections = useMemo(() => {
+    const baseIndex = activeSlideIndex * 4; // per slide uses 4 items
+    return TRADE_SAMPLE_COLLECTIONS.slice(baseIndex, baseIndex + collectionColumnCount);
+  }, [activeSlideIndex, collectionColumnCount]);
 
   const onViewportLayout = useCallback((e: LayoutChangeEvent) => {
     setViewportH(e.nativeEvent.layout.height);
@@ -83,7 +114,7 @@ export function TradePanelContent() {
   }, []);
 
   const onScrollMetrics = useCallback(
-    (metrics: HspScrollMetrics) => {
+    (metrics: Omit<HspScrollMetrics, "scrollY">) => {
       if (needsScroll !== null) return;
       const overflow = metrics.layoutH > 0 && metrics.contentH > metrics.layoutH + 0.5;
       setNeedsScroll(overflow);
@@ -136,7 +167,11 @@ export function TradePanelContent() {
         </View>
 
         <View style={{ height: SECTION_GAP_PX }} />
-        <TradePaginationDots activeIndex={0} />
+        <TradePaginationDots
+          activeIndex={activeSlideIndex}
+          count={slidesCount}
+          onPressIndex={setActiveSlideIndex}
+        />
 
         <View style={{ height: TABS_AFTER_DOTS_GAP_PX }} />
         <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
@@ -181,3 +216,4 @@ export function TradePanelContent() {
     </View>
   );
 }
+
