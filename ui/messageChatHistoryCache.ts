@@ -189,6 +189,44 @@ export function isChatHistoryCacheComplete(chatId: number): boolean {
   return !entry.previewOnly;
 }
 
+function resolveMergedOlderCursor(
+  existing: CachedChatHistoryPage | null | undefined,
+  incoming: Pick<ChatHistoryPageResult, "messages" | "hasMoreOlder" | "nextBeforeMessageId">,
+): { hasMoreOlder: boolean; nextBeforeMessageId: number | null } {
+  const existingHead = existing?.messages[0]?.telegram_message_id ?? 0;
+  const incomingHead = incoming.messages[0]?.telegram_message_id ?? 0;
+  const mergedHead =
+    existingHead > 0 && incomingHead > 0
+      ? Math.min(existingHead, incomingHead)
+      : existingHead || incomingHead;
+  const existingNext = existing?.nextBeforeMessageId ?? null;
+  const incomingNext = incoming.nextBeforeMessageId;
+  let nextBeforeMessageId: number | null = null;
+  for (const candidate of [existingNext, incomingNext, mergedHead > 0 ? mergedHead : null]) {
+    if (candidate == null || candidate <= 0) continue;
+    if (nextBeforeMessageId == null || candidate < nextBeforeMessageId) {
+      nextBeforeMessageId = candidate;
+    }
+  }
+  const hasMoreOlder =
+    Boolean(existing?.hasMoreOlder) ||
+    Boolean(incoming.hasMoreOlder) ||
+    (mergedHead > 0 &&
+      nextBeforeMessageId != null &&
+      nextBeforeMessageId <= mergedHead);
+  return { hasMoreOlder, nextBeforeMessageId };
+}
+
+function commitCachedChatHistoryEntry(chatId: number, entry: CachedChatHistoryPage): void {
+  const prev = cache.get(chatId);
+  const contentChanged = !prev || cachePageSignature(prev) !== cachePageSignature(entry);
+  cache.set(chatId, entry);
+  if (!contentChanged) return;
+  writeSessionCache(chatId, entry);
+  trimCache();
+  emitCacheUpdate(chatId);
+}
+
 export function setCachedChatHistory(
   chatId: number,
   page: ChatHistoryPageResult,
@@ -204,6 +242,7 @@ export function setCachedChatHistory(
       ? Math.trunc(options.aroundMessageId)
       : null;
   const existing = getCachedChatHistory(chatId);
+  // Never let a shorter overlapping page wipe a longer thread (prefetch 30 vs open 197).
   if (
     existing &&
     !previewOnly &&
@@ -214,25 +253,27 @@ export function setCachedChatHistory(
     const existingMax =
       existing.messages[existing.messages.length - 1]!.telegram_message_id;
     const pageMax = page.messages[page.messages.length - 1]!.telegram_message_id;
-    if (pageMax < existingMax) {
+    const existingMin = existing.messages[0]!.telegram_message_id;
+    const pageMin = page.messages[0]!.telegram_message_id;
+    const pageIsSubsetOrOverlap =
+      page.messages.length <= existing.messages.length &&
+      pageMax <= existingMax &&
+      pageMin >= existingMin;
+    if (pageMax < existingMax || pageIsSubsetOrOverlap || page.messages.length < existing.messages.length) {
       mergeCachedChatHistoryTail(chatId, page);
       return;
     }
   }
-  const entry = {
+  const olderCursor = resolveMergedOlderCursor(existing, page);
+  commitCachedChatHistoryEntry(chatId, {
     ...page,
+    hasMoreOlder: olderCursor.hasMoreOlder,
+    nextBeforeMessageId: olderCursor.nextBeforeMessageId,
     fetchedAt: Date.now(),
     previewOnly,
     aroundUnread,
     ...(aroundMessageId != null ? { aroundMessageId } : {}),
-  };
-  const prev = cache.get(chatId);
-  const contentChanged = !prev || cachePageSignature(prev) !== cachePageSignature(entry);
-  cache.set(chatId, entry);
-  if (!contentChanged) return;
-  writeSessionCache(chatId, entry);
-  trimCache();
-  emitCacheUpdate(chatId);
+  });
 }
 
 /** Merge a live tail poll into the cached first page without shrinking history. */
@@ -255,24 +296,36 @@ export function mergeCachedChatHistoryTail(
     if (byTime !== 0) return byTime;
     return a.telegram_message_id - b.telegram_message_id;
   });
-  if (messages.length > MESSAGE_CHAT_CACHE_MESSAGES_MAX) {
-    messages = messages.slice(messages.length - MESSAGE_CHAT_CACHE_MESSAGES_MAX);
+  const trimmedFromOlder =
+    messages.length > MESSAGE_CHAT_CACHE_MESSAGES_MAX
+      ? messages.length - MESSAGE_CHAT_CACHE_MESSAGES_MAX
+      : 0;
+  if (trimmedFromOlder > 0) {
+    messages = messages.slice(trimmedFromOlder);
   }
-  setCachedChatHistory(
-    chatId,
-    {
-      ...existing,
-      ...tail,
-      messages,
-      hasMoreOlder: existing.hasMoreOlder || tail.hasMoreOlder,
-      nextBeforeMessageId: existing.nextBeforeMessageId ?? tail.nextBeforeMessageId,
-      lastReadOutboxMessageId:
-        tail.lastReadOutboxMessageId ?? existing.lastReadOutboxMessageId,
-      lastReadInboxMessageId:
-        tail.lastReadInboxMessageId ?? existing.lastReadInboxMessageId,
-    },
-    { previewOnly: existing.previewOnly, aroundUnread: existing.aroundUnread, aroundMessageId: existing.aroundMessageId ?? null },
-  );
+  const olderCursor = resolveMergedOlderCursor(existing, tail);
+  const nextBeforeFromHead =
+    messages.length > 0 ? messages[0]!.telegram_message_id : null;
+  commitCachedChatHistoryEntry(chatId, {
+    ...existing,
+    ...tail,
+    messages,
+    hasMoreOlder:
+      olderCursor.hasMoreOlder ||
+      trimmedFromOlder > 0 ||
+      (existing.messages.length > 0 &&
+        messages.length > 0 &&
+        messages[0]!.telegram_message_id < existing.messages[0]!.telegram_message_id),
+    nextBeforeMessageId: olderCursor.nextBeforeMessageId ?? nextBeforeFromHead,
+    lastReadOutboxMessageId:
+      tail.lastReadOutboxMessageId ?? existing.lastReadOutboxMessageId,
+    lastReadInboxMessageId:
+      tail.lastReadInboxMessageId ?? existing.lastReadInboxMessageId,
+    fetchedAt: Date.now(),
+    previewOnly: existing.previewOnly,
+    aroundUnread: existing.aroundUnread,
+    ...(existing.aroundMessageId != null ? { aroundMessageId: existing.aroundMessageId } : {}),
+  });
 }
 
 /** Append or update rows after send/edit without wiping a longer cached thread. */

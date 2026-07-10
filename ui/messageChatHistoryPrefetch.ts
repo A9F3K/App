@@ -19,6 +19,7 @@ import {
   setCachedChatHistory,
 } from "./messageChatHistoryCache";
 import { getChatScrollPosition } from "./messageChatScrollCache";
+import { isMeaningfulCachedUnreadScroll } from "./components/messages/resolveChatOpenScrollPlan";
 import { logPageDisplay } from "./pageDisplayLog";
 import { isChatListSyncInProgress } from "./components/messages/chatListSyncStatus";
 
@@ -81,7 +82,8 @@ export function shouldPrefetchHistoryAroundUnread(
   );
   if (unread <= 0) return false;
   const scrollPos = getChatScrollPosition(chat.telegram_chat_id);
-  if (scrollPos != null) return false;
+  // Match resolveChatOpenScrollPlan: only skip around-unread when restoring a real mid-read viewport.
+  if (scrollPos != null && isMeaningfulCachedUnreadScroll(scrollPos)) return false;
   return true;
 }
 

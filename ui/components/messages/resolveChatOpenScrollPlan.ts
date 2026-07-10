@@ -26,7 +26,8 @@ function cachedScrollY(cached: CachedChatScrollPosition): number {
   return 0;
 }
 
-function isMeaningfulCachedUnreadScroll(cached: CachedChatScrollPosition): boolean {
+/** True when saved scroll is a real mid-thread position (not a stale top/empty entry). */
+export function isMeaningfulCachedUnreadScroll(cached: CachedChatScrollPosition): boolean {
   if (cached.followingBottom) return true;
   const scrollY = cachedScrollY(cached);
   if (scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX) return true;

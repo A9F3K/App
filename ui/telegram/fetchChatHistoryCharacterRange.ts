@@ -9,6 +9,10 @@ import {
 import { resolveFirstUnreadMessageId, resolveLastReadMessageId } from "../components/messages/messageListLayout";
 import { MESSAGE_CHAT_HISTORY_PAGE_SIZE } from "../components/messages/messageChatLayout";
 import {
+  MESSAGE_LIST_VIEWPORT_LIMIT,
+  trimMessagesAroundAnchorCount,
+} from "../components/messages/messageChatViewportSlice";
+import {
   fetchTelegramChatHistoryPage,
   type ChatHistoryPageResult,
 } from "./fetchTelegramChatHistoryPage";
@@ -147,7 +151,26 @@ export async function fetchChatHistoryTailCharBudget(
     cursor = result.nextBeforeMessageId;
   }
 
+  const preTrimCount = messages.length;
+  const preTrimHeadId = messages[0]?.telegram_message_id ?? 0;
   messages = trimMessagesToTailCharBudget(messages, charBudget);
+  const trimmedHeadId =
+    messages.length > 0 ? messages[0]!.telegram_message_id : null;
+  const trimmedOlderLocally =
+    messages.length < preTrimCount ||
+    (trimmedHeadId != null &&
+      preTrimHeadId > 0 &&
+      trimmedHeadId > preTrimHeadId);
+  if (trimmedOlderLocally && trimmedHeadId != null) {
+    hasMoreOlder = true;
+    nextBeforeMessageId = trimmedHeadId;
+  } else if (
+    hasMoreOlder &&
+    trimmedHeadId != null &&
+    (nextBeforeMessageId == null || nextBeforeMessageId > trimmedHeadId)
+  ) {
+    nextBeforeMessageId = trimmedHeadId;
+  }
   const anchorMessageId =
     messages.length > 0 ? messages[messages.length - 1]!.telegram_message_id : null;
 
@@ -370,6 +393,8 @@ export async function fetchChatHistoryAroundCharBudget(
     applyPageMeta(pageMeta, newer);
   }
 
+  const preTrimHeadId = messages[0]?.telegram_message_id ?? null;
+  const preTrimCount = messages.length;
   messages = trimMessagesAroundAnchorCharBudget(
     messages,
     anchorId,
@@ -380,6 +405,14 @@ export async function fetchChatHistoryAroundCharBudget(
   const oldestId = messages[0]?.telegram_message_id ?? null;
   if (oldestId != null) {
     pageMeta.nextBeforeMessageId = oldestId;
+  }
+  // Char-budget trim must not close older pagination mid-thread (telegram-tt style).
+  if (
+    oldestId != null &&
+    preTrimHeadId != null &&
+    (oldestId > preTrimHeadId || messages.length < preTrimCount)
+  ) {
+    pageMeta.hasMoreOlder = true;
   }
 
   return {
@@ -396,12 +429,17 @@ export async function fetchChatHistoryAroundCharBudget(
   };
 }
 
-/** Open on the unread divider: one around-unread seed, then expand around last-read. */
+/**
+ * Open on the unread divider (telegram-tt loadViewportMessages Around).
+ * Prefer the around-unread seed trimmed to MESSAGE_LIST_VIEWPORT_LIMIT so the
+ * first paint targets the oldest unread instead of expanding a huge char window.
+ */
 export async function fetchChatHistoryAroundUnreadCharBudget(
   chatId: number,
   peerUserId: number | null | undefined,
   charBudgetUp: number,
   charBudgetDown: number,
+  options?: { lastReadInboxHint?: number | null },
 ): Promise<CharacterRangeHistoryResult> {
   const unreadSeed = await fetchPageWithWarmup(
     chatId,
@@ -414,34 +452,90 @@ export async function fetchChatHistoryAroundUnreadCharBudget(
     return { ...unreadSeed, anchorMessageId: null };
   }
 
+  const hintRaw = Number(options?.lastReadInboxHint);
+  const lastReadHint =
+    Number.isFinite(hintRaw) && hintRaw > 0 ? Math.trunc(hintRaw) : null;
+  const readCursor =
+    unreadSeed.lastReadInboxMessageId ?? lastReadHint ?? null;
+
   const firstUnread = resolveFirstUnreadMessageId(
     unreadSeed.messages,
-    unreadSeed.lastReadInboxMessageId,
+    readCursor,
   );
   const lastReadId = resolveLastReadMessageId(
     unreadSeed.messages,
-    unreadSeed.lastReadInboxMessageId,
+    readCursor,
   );
-  const anchorId = lastReadId ?? firstUnread;
-  if (anchorId == null) {
-    const messages = trimMessagesToTailCharBudget(
-      unreadSeed.messages,
-      charBudgetUp + charBudgetDown,
+  let anchorId = lastReadId ?? firstUnread;
+
+  // Seed was a tail fallback (no inbox cursor) but the chat list knows last-read — reload around it.
+  if (
+    anchorId == null &&
+    lastReadHint != null &&
+    !unreadSeed.messages.some((row) => row.telegram_message_id === lastReadHint)
+  ) {
+    return fetchChatHistoryAroundCharBudget(
+      chatId,
+      peerUserId,
+      lastReadHint,
+      charBudgetUp,
+      charBudgetDown,
     );
+  }
+  if (anchorId == null && lastReadHint != null) {
+    anchorId = lastReadHint;
+  }
+
+  if (anchorId == null) {
+    // Still no unread boundary in the seed — keep the window, anchor at first incoming (not chat tail).
+    const fallbackAnchor =
+      resolveFirstUnreadMessageId(unreadSeed.messages, null) ??
+      (unreadSeed.messages.length > 0
+        ? unreadSeed.messages[0]!.telegram_message_id
+        : null);
+    if (fallbackAnchor == null) {
+      return { ...unreadSeed, anchorMessageId: null };
+    }
+    return fetchChatHistoryAroundCharBudget(
+      chatId,
+      peerUserId,
+      fallbackAnchor,
+      charBudgetUp,
+      charBudgetDown,
+      {
+        seedResult: {
+          ...unreadSeed,
+          lastReadInboxMessageId: readCursor ?? unreadSeed.lastReadInboxMessageId,
+        },
+      },
+    );
+  }
+
+  // Fast path: seed already contains the unread boundary — paint that viewport first.
+  const paintAnchor = firstUnread ?? anchorId;
+  const seedHasBoundary = unreadSeed.messages.some(
+    (row) => row.telegram_message_id === paintAnchor,
+  );
+  if (seedHasBoundary) {
+    const trimmed = trimMessagesAroundAnchorCount(
+      unreadSeed.messages,
+      paintAnchor,
+      MESSAGE_LIST_VIEWPORT_LIMIT,
+    );
+    const trimmedHead = trimmed[0]?.telegram_message_id ?? null;
+    const seedHead = unreadSeed.messages[0]?.telegram_message_id ?? null;
     return {
-      messages,
-      chatKind: unreadSeed.chatKind,
-      error: null,
-      hasMoreOlder: unreadSeed.hasMoreOlder,
-      nextBeforeMessageId: unreadSeed.nextBeforeMessageId,
-      lastReadOutboxMessageId: unreadSeed.lastReadOutboxMessageId,
-      lastReadInboxMessageId: unreadSeed.lastReadInboxMessageId,
-      memberCount: unreadSeed.memberCount,
-      selfUserId: unreadSeed.selfUserId,
-      anchorMessageId:
-        messages.length > 0
-          ? messages[messages.length - 1]!.telegram_message_id
-          : null,
+      ...unreadSeed,
+      messages: trimmed,
+      hasMoreOlder:
+        unreadSeed.hasMoreOlder ||
+        (trimmedHead != null &&
+          seedHead != null &&
+          (trimmedHead > seedHead || trimmed.length < unreadSeed.messages.length)),
+      nextBeforeMessageId:
+        trimmedHead ?? unreadSeed.nextBeforeMessageId,
+      lastReadInboxMessageId: readCursor ?? unreadSeed.lastReadInboxMessageId,
+      anchorMessageId: paintAnchor,
     };
   }
 
@@ -451,7 +545,12 @@ export async function fetchChatHistoryAroundUnreadCharBudget(
     anchorId,
     charBudgetUp,
     charBudgetDown,
-    { seedResult: unreadSeed },
+    {
+      seedResult: {
+        ...unreadSeed,
+        lastReadInboxMessageId: readCursor ?? unreadSeed.lastReadInboxMessageId,
+      },
+    },
   );
 }
 
@@ -501,7 +600,7 @@ export async function fetchOlderHistoryCharBudget(
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const weight = messageCharacterWeight(messages[index]!);
     if (used > 0 && used + weight > charBudget) {
-      startIndex = index;
+      startIndex = index + 1;
       break;
     }
     used += weight;
@@ -509,8 +608,22 @@ export async function fetchOlderHistoryCharBudget(
     if (used >= charBudget) break;
   }
 
+  const sliced = messages.slice(startIndex);
+  const slicedHeadId =
+    sliced.length > 0 ? sliced[0]!.telegram_message_id : null;
+  if (startIndex > 0 && slicedHeadId != null) {
+    hasMoreOlder = true;
+    nextBeforeMessageId = slicedHeadId;
+  } else if (
+    hasMoreOlder &&
+    slicedHeadId != null &&
+    (nextBeforeMessageId == null || nextBeforeMessageId > slicedHeadId)
+  ) {
+    nextBeforeMessageId = slicedHeadId;
+  }
+
   return {
-    messages: messages.slice(startIndex),
+    messages: sliced,
     chatKind,
     error: null,
     hasMoreOlder,

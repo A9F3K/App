@@ -227,6 +227,7 @@ export async function fetchChatHistoryAroundMessage(
   has_more_older: boolean;
   next_before_message_id: number | null;
   last_read_outbox_message_id: number | null;
+  last_read_inbox_message_id: number | null;
   member_count: number | null;
 }> {
   const anchorId = Math.trunc(anchorMessageId);
@@ -345,6 +346,7 @@ export async function fetchChatHistoryAroundUnread(
   client: Client,
   chatId: number,
   limit = 50,
+  lastReadInboxHint?: number | null,
 ): Promise<{
   chat_kind: ChatKind;
   self_user_id: number | null;
@@ -352,6 +354,7 @@ export async function fetchChatHistoryAroundUnread(
   has_more_older: boolean;
   next_before_message_id: number | null;
   last_read_outbox_message_id: number | null;
+  last_read_inbox_message_id: number | null;
   member_count: number | null;
 }> {
   try {
@@ -362,12 +365,33 @@ export async function fetchChatHistoryAroundUnread(
 
   const pageLimit = Math.min(Math.max(limit, 1), 100);
   const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
-  const lastReadInbox = lastReadInboxMessageIdFromChat(chat);
   const unreadCount = normalizeUnreadCount(chat);
+  const hintRaw = Number(lastReadInboxHint);
+  const hint =
+    Number.isFinite(hintRaw) && hintRaw > 0 ? Math.trunc(hintRaw) : null;
+  const lastReadInbox =
+    lastReadInboxMessageIdFromChat(chat) ?? hint;
 
-  if (unreadCount <= 0 || lastReadInbox == null) {
+  if (unreadCount <= 0) {
     const fallback = await fetchChatHistory(client, chatId, limit);
-    return { ...fallback, member_count: await memberCountFromChat(client, chat) };
+    return {
+      ...fallback,
+      last_read_inbox_message_id: lastReadInboxMessageIdFromChat(
+        (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat,
+      ),
+      member_count: await memberCountFromChat(client, chat),
+    };
+  }
+
+  if (lastReadInbox == null) {
+    // Unreads exist but TDLib has no inbox cursor yet — still avoid a blind tail open.
+    // Anchor near the newest messages with room above so the client can scroll to first unread in-window.
+    const fallback = await fetchChatHistory(client, chatId, limit);
+    return {
+      ...fallback,
+      last_read_inbox_message_id: null,
+      member_count: await memberCountFromChat(client, chat),
+    };
   }
 
   const contextBefore = Math.min(
@@ -378,7 +402,18 @@ export async function fetchChatHistoryAroundUnread(
   const olderAbove = contextBefore;
   const aroundLimit = Math.min(pageLimit, contextBefore + newerWanted + 1);
 
-  return fetchChatHistoryAroundMessage(client, chatId, lastReadInbox, aroundLimit, olderAbove);
+  const around = await fetchChatHistoryAroundMessage(
+    client,
+    chatId,
+    lastReadInbox,
+    aroundLimit,
+    olderAbove,
+  );
+  return {
+    ...around,
+    last_read_inbox_message_id:
+      around.last_read_inbox_message_id ?? lastReadInbox,
+  };
 }
 
 /** Messages newer than sinceMessageId — for live tail sync without re-fetching the whole page. */

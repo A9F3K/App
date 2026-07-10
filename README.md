@@ -203,6 +203,12 @@ From the repository root, deploy the static web build to Vercel production:
 vercel --prod
 ```
 
+Cache erasing
+
+```bash
+sessionStorage.clear(); localStorage.clear(); location.reload(true);
+```
+
 Deploying from repository root makes this folder the project root, so `api/bot` is deployed and no Root Directory setting is needed. The project is configured so Vercel runs `npx expo export -p web` and serves the `dist/` output. Link the project first with `vercel` if needed.
 
 ## Deploy TDLib gateway to Railway

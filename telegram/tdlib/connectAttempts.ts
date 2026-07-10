@@ -1305,7 +1305,12 @@ export async function getChatHistoryForUser(
             typeof newerBelow === "number" && Number.isFinite(newerBelow) ? newerBelow : undefined,
           )
       : aroundUnread
-        ? await fetchChatHistoryAroundUnread(record.client, chatId, limit)
+        ? await fetchChatHistoryAroundUnread(
+            record.client,
+            chatId,
+            limit,
+            liveRow?.last_read_inbox_message_id ?? null,
+          )
         : await fetchChatHistory(record.client, chatId, limit, beforeMessageId);
     const memberCount =
       typeof liveRow?.member_count === "number" && liveRow.member_count > 0
