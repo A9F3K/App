@@ -12,7 +12,8 @@ export function useElementVisible(
   ref: RefObject<Element | null>,
   options?: Options,
 ): boolean {
-  const [visible, setVisible] = useState(true);
+  // Default false — true would fire history sentinels on unlock while mid-list.
+  const [visible, setVisible] = useState(false);
   const [observedNode, setObservedNode] = useState<Element | null>(null);
   const enabled = options?.enabled !== false;
 
@@ -22,13 +23,13 @@ export function useElementVisible(
 
   useEffect(() => {
     if (!enabled) {
-      setVisible(true);
+      setVisible(false);
       return;
     }
 
     const node = observedNode ?? ref.current;
     if (!node || typeof IntersectionObserver === "undefined") {
-      setVisible(true);
+      setVisible(false);
       return;
     }
 

@@ -110,6 +110,13 @@ type Props = {
    * Enable only after the open-scroll has settled so it doesn't fight the initial positioning.
    */
   preserveViewportOnResize?: boolean;
+  /**
+   * When true with {@link preserveViewportOnResize}, content growth while the viewport was at
+   * the scroll bottom sticks to the new bottom. Mid-history chat reading must pass false:
+   * the display-window bottom is not the chat tail, and sticking jumps the viewport down when
+   * newer rows are expanded/loaded below.
+   */
+  stickToBottomOnResize?: boolean;
 };
 
 /**
@@ -134,6 +141,7 @@ export function HspScrollColumn({
   onUserScrollIntent,
   scrollControllerRef,
   preserveViewportOnResize = false,
+  stickToBottomOnResize = true,
 }: Props) {
   const colors = useColors();
   const thumbColor = indicatorColor ?? colors.accent;
@@ -145,6 +153,8 @@ export function HspScrollColumn({
   const scrollMetricsRef = useRef({ layoutH: 0, contentH: 0, scrollY: 0 });
   const [scroll, setScroll] = useState({ layoutH: 0, contentH: 0, scrollY: 0 });
   scrollMetricsRef.current = scroll;
+  const stickToBottomOnResizeRef = useRef(stickToBottomOnResize);
+  stickToBottomOnResizeRef.current = stickToBottomOnResize;
 
   const getScrollElement = useCallback((): HTMLElement | null => {
     if (Platform.OS !== "web") return null;
@@ -245,8 +255,11 @@ export function HspScrollColumn({
     const el = getScrollElement();
     if (!el) return;
     const atBottom =
+      stickToBottomOnResizeRef.current &&
       el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_INDICATOR_SCROLL_EPS;
     wasAtBottomRef.current = atBottom;
+    // Always keep a row pin when not sticking to bottom — mid-history display growth
+    // must re-pin the visible message instead of jumping to the new scroll end.
     stableAnchorRef.current = atBottom ? null : captureTopVisibleAnchor();
   }, [captureTopVisibleAnchor, getScrollElement]);
 

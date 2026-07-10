@@ -84,3 +84,29 @@ export function expandDisplaySliceOlder(
   const startIndex = Math.max(0, currentBounds.startIndex - expandBy);
   return { startIndex, endIndex: currentBounds.endIndex };
 }
+
+/** Expand display slice toward newer rows already in the buffer (no API fetch). */
+export function canExpandDisplaySliceNewer(
+  loadedMessages: readonly MessageChatHistoryItem[],
+  displayEndIndex: number,
+): boolean {
+  return (
+    loadedMessages.length > 0 &&
+    displayEndIndex >= 0 &&
+    displayEndIndex < loadedMessages.length - 1
+  );
+}
+
+export function expandDisplaySliceNewer(
+  loadedMessages: readonly MessageChatHistoryItem[],
+  currentBounds: CountSliceBounds,
+  expandBy = MESSAGE_LIST_SLICE,
+): CountSliceBounds {
+  if (currentBounds.endIndex < currentBounds.startIndex) return currentBounds;
+  if (loadedMessages.length === 0) return currentBounds;
+  const endIndex = Math.min(
+    loadedMessages.length - 1,
+    currentBounds.endIndex + expandBy,
+  );
+  return { startIndex: currentBounds.startIndex, endIndex };
+}

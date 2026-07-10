@@ -394,11 +394,16 @@ export async function fetchChatHistoryAroundUnread(
     };
   }
 
+  // telegram-tt Around: roughly half the viewport above the read cursor and
+  // enough newer rows to cover the unread band (not a hard 20-message cap).
   const contextBefore = Math.min(
     Math.max(2, Math.floor(pageLimit * 0.35)),
     pageLimit - 1,
   );
-  const newerWanted = Math.min(pageLimit - contextBefore, 20, unreadCount + 6);
+  const newerWanted = Math.min(
+    pageLimit - contextBefore,
+    Math.max(Math.floor(pageLimit * 0.5), unreadCount + 6),
+  );
   const olderAbove = contextBefore;
   const aroundLimit = Math.min(pageLimit, contextBefore + newerWanted + 1);
 
