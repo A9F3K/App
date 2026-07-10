@@ -635,6 +635,8 @@ export function HomeAuthenticatedScreen() {
   const headerPanelVisibleOnWide = isWideHome && middleColumnFocus === "headerPanel";
   const messagesChatOpen =
     isWideHome && selectedMessageChat != null && middleColumnFocus === "chat";
+  const tradePanelActive =
+    !messagesChatOpen && headerPanelVisibleOnWide && rightPanel === "trade";
   // Left nav only switches the first column; chat pane is independent until header menu is used.
   const leftNavSelectedIndex = homeNavIndex;
 
@@ -1626,7 +1628,7 @@ export function HomeAuthenticatedScreen() {
           </AuthenticatedHomePersistedPanelSlot>
         </View>
       </AuthenticatedHomePersistedPanelSlot>
-      <AuthenticatedHomePersistedPanelSlot active={!messagesChatOpen && headerPanelVisibleOnWide && rightPanel === "trade"}>
+      <AuthenticatedHomePersistedPanelSlot active={tradePanelActive}>
         <View
           style={{
             flex: 1,
@@ -1635,7 +1637,7 @@ export function HomeAuthenticatedScreen() {
             minHeight: 0,
           }}
         >
-          <TradePanelContent />
+          <TradePanelContent isActive={tradePanelActive} />
         </View>
       </AuthenticatedHomePersistedPanelSlot>
       <AuthenticatedHomePersistedPanelSlot active={!messagesChatOpen && headerPanelVisibleOnWide && rightPanel === "smart"}>

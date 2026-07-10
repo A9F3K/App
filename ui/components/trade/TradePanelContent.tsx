@@ -18,6 +18,15 @@ const PAGINATION_DOT_PX = 11;
 const PAGINATION_DOT_GAP_PX = 11;
 const TABS_AFTER_DOTS_GAP_PX = 33;
 const TABS_TO_FILTERS_GAP_PX = 19;
+const COLLECTION_AUTO_SLIDE_MS = 5000;
+
+type TradeFeedTab = "trending" | "cap" | "reach";
+
+const TRADE_FEED_TABS: { key: TradeFeedTab; label: string }[] = [
+  { key: "trending", label: "Trending" },
+  { key: "cap", label: "Cap" },
+  { key: "reach", label: "Reach" },
+];
 
 function TradePaginationDots({
   activeIndex,
@@ -76,7 +85,7 @@ function TradeFilterChip({ label }: { label: string }) {
 }
 
 /** Trade panel body (prev-main `TradePage`): collections, tabs, filters, and sample feed rows. */
-export function TradePanelContent() {
+export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
   const colors = useColors();
   const contentInset = layout.contentSideInsetPx;
   const [viewportH, setViewportH] = useState(0);
@@ -91,14 +100,39 @@ export function TradePanelContent() {
 
   const slidesCount = 2;
   const [activeSlideIndex, setActiveSlideIndex] = useState(0);
+  const [autoSlidePausedByUser, setAutoSlidePausedByUser] = useState(false);
+  const [activeFeedTab, setActiveFeedTab] = useState<TradeFeedTab>("trending");
 
-  // Start auto-sliding only while this screen is mounted/visible.
-  useEffect(() => {
-    const id = setInterval(() => {
-      setActiveSlideIndex((v) => (v + 1) % slidesCount);
-    }, 5000);
-    return () => clearInterval(id);
+  const onSelectSlide = useCallback((index: number) => {
+    setAutoSlidePausedByUser(true);
+    setActiveSlideIndex(index);
   }, []);
+
+  // Leaving trade clears a manual dot selection so auto-slide resumes on return.
+  useEffect(() => {
+    if (isActive) return;
+    setAutoSlidePausedByUser(false);
+  }, [isActive]);
+
+  const collectionAutoSlideRunning = isActive && !autoSlidePausedByUser;
+
+  // First auto-advance waits COLLECTION_AUTO_SLIDE_MS; later ones repeat on that interval.
+  useEffect(() => {
+    if (!collectionAutoSlideRunning) return;
+
+    let intervalId: ReturnType<typeof setInterval> | undefined;
+    const timeoutId = setTimeout(() => {
+      setActiveSlideIndex((v) => (v + 1) % slidesCount);
+      intervalId = setInterval(() => {
+        setActiveSlideIndex((v) => (v + 1) % slidesCount);
+      }, COLLECTION_AUTO_SLIDE_MS);
+    }, COLLECTION_AUTO_SLIDE_MS);
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (intervalId != null) clearInterval(intervalId);
+    };
+  }, [collectionAutoSlideRunning, slidesCount]);
 
   const visibleCollections = useMemo(() => {
     const baseIndex = activeSlideIndex * 4; // per slide uses 4 items
@@ -170,22 +204,35 @@ export function TradePanelContent() {
         <TradePaginationDots
           activeIndex={activeSlideIndex}
           count={slidesCount}
-          onPressIndex={setActiveSlideIndex}
+          onPressIndex={onSelectSlide}
         />
 
         <View style={{ height: TABS_AFTER_DOTS_GAP_PX }} />
         <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
-          <Text style={[typographyRect15, { fontSize: 20, lineHeight: 15, color: colors.primary }]}>
-            Trending
-          </Text>
-          <View style={{ width: TAB_GAP_PX }} />
-          <Text style={[typographyRect15, { fontSize: 20, lineHeight: 15, color: colors.secondary }]}>
-            Cap
-          </Text>
-          <View style={{ width: TAB_GAP_PX }} />
-          <Text style={[typographyRect15, { fontSize: 20, lineHeight: 15, color: colors.secondary }]}>
-            Reach
-          </Text>
+          {TRADE_FEED_TABS.map((tab, index) => (
+            <Fragment key={tab.key}>
+              {index > 0 ? <View style={{ width: TAB_GAP_PX }} /> : null}
+              <Pressable
+                onPress={() => setActiveFeedTab(tab.key)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: activeFeedTab === tab.key }}
+              >
+                <Text
+                  selectable={false}
+                  style={[
+                    typographyRect15,
+                    {
+                      fontSize: 20,
+                      lineHeight: 15,
+                      color: activeFeedTab === tab.key ? colors.primary : colors.secondary,
+                    },
+                  ]}
+                >
+                  {tab.label}
+                </Text>
+              </Pressable>
+            </Fragment>
+          ))}
         </View>
 
         <View style={{ height: TABS_TO_FILTERS_GAP_PX }} />
