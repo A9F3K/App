@@ -1395,13 +1395,14 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         return true;
       }
       if (!domAnchor) return live.scrollTop > 0;
-      if (domAnchor.scrollTop <= 80) {
-        return live.scrollTop <= domAnchor.scrollTop + 120;
-      }
       const heightDelta = live.scrollHeight - domAnchor.scrollHeight;
-      if (heightDelta <= 0) return false;
-      const minExpected = domAnchor.scrollTop + heightDelta - 80;
-      return live.scrollTop >= minExpected;
+      // Mid-history opens often sit at scrollY≈0. A near-top soft pass would
+      // accept an uncompensated prepend and jump the viewport to older rows.
+      if (heightDelta > 0) {
+        const minExpected = domAnchor.scrollTop + heightDelta - 80;
+        return live.scrollTop >= minExpected;
+      }
+      return false;
     },
     [],
   );
@@ -2889,7 +2890,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         },
       );
       scrollControllerRef.current?.clearNearTopLatch();
-      if (loadOlderBeforeId != null) {
+      // Only chain API older after a successful keep — chaining on miss
+      // reloads while the viewport is already wrong and amplifies jumps.
+      if (restored && loadOlderBeforeId != null) {
         requestAnimationFrame(() => {
           void loadOlderMessagesRef.current({
             expandArmed: true,
@@ -4291,9 +4294,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   }, [tryTriggerNewerHistoryLoad]);
 
   /**
-   * telegram-tt loads edges from scroll/sentinels only — never force older+newer in one
-   * frame. Prefetching both made prepend height-delta restore include newer appends and
-   * jumped the viewport down when the user first scrolled.
+   * After mid-history open settles, widen the display window toward already-loaded
+   * older/newer rows (telegram-tt Around). API paging stays scroll/overscroll-driven
+   * so open settle is not fighting a prepend restore.
    */
   const scheduleMidHistoryEdgePrefetch = useCallback(() => {
     if (midHistoryEdgePrefetchArmedRef.current) return;
@@ -4311,6 +4314,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       (hasMoreOlderRef.current && !atChatTail);
     if (!midHistory) return;
     midHistoryEdgePrefetchArmedRef.current = true;
+    const bounds = displaySliceBoundsRef.current;
     logPageDisplay("messages_mid_history_edge_prefetch", {
       ...chatLogFields({
         chatId: chat.telegram_chat_id,
@@ -4321,13 +4325,34 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       atChatTail,
       loadedCount: loaded.length,
       aroundUnread: historyLoadedAroundUnreadRef.current,
-      mode: "scroll_driven_only",
+      displayStart: bounds.startIndex,
+      displayEnd: bounds.endIndex,
+      mode: "widen_display_around_open",
+    });
+    requestAnimationFrame(() => {
+      if (displaySliceBoundsRef.current.startIndex > 0) {
+        expandDisplaySliceTowardOlder();
+      }
+      requestAnimationFrame(() => {
+        const loadedNow = loadedMessagesRef.current;
+        const displayNow = displayMessagesRef.current;
+        if (loadedNow.length === 0 || displayNow.length === 0) return;
+        const displayTail =
+          displayNow[displayNow.length - 1]!.telegram_message_id;
+        const loadedTail =
+          loadedNow[loadedNow.length - 1]!.telegram_message_id;
+        if (displayTail > 0 && loadedTail > 0 && displayTail < loadedTail) {
+          expandDisplaySliceTowardNewer();
+        }
+      });
     });
   }, [
     chat.last_message_telegram_id,
     chat.peer_user_id,
     chat.telegram_chat_id,
     chat.title,
+    expandDisplaySliceTowardNewer,
+    expandDisplaySliceTowardOlder,
     loadingInitial,
   ]);
 

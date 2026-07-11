@@ -338,14 +338,30 @@ export function HspScrollColumn({
       onWheel = (e: WheelEvent) => {
         if (isBrowserZoomWheelEvent(e)) return;
         const { scrollTop, scrollHeight, clientHeight } = el;
-        if (scrollHeight <= clientHeight + 0.5) return;
-        if (Math.abs(e.deltaY) > 0.5) {
-          onUserScrollIntent?.();
-        }
+        if (Math.abs(e.deltaY) <= 0.5) return;
+
+        onUserScrollIntent?.();
+
+        const contentFits = scrollHeight <= clientHeight + 0.5;
         const atTop = scrollTop <= SCROLL_INDICATOR_SCROLL_EPS;
-        const atBottom = scrollTop + clientHeight >= scrollHeight - SCROLL_INDICATOR_SCROLL_EPS;
-        if ((e.deltaY < 0 && atTop) || (e.deltaY > 0 && atBottom)) {
+        const atBottom =
+          contentFits ||
+          scrollTop + clientHeight >= scrollHeight - SCROLL_INDICATOR_SCROLL_EPS;
+
+        // Mid-history opens often sit at scrollY=0 (top of the display window).
+        // Wheel-up then cannot move scrollTop, so onScroll/onNearTop never re-fire.
+        // Treat edge overscroll (and short content) as an explicit older/newer intent.
+        if (e.deltaY < 0 && (atTop || contentFits)) {
           e.preventDefault();
+          nearTopFiredRef.current = false;
+          onNearTop?.();
+          return;
+        }
+        if (e.deltaY > 0 && (atBottom || contentFits)) {
+          e.preventDefault();
+          nearBottomFiredRef.current = false;
+          onNearBottom?.();
+          return;
         }
       };
       el.addEventListener("wheel", onWheel, { passive: false });
@@ -363,7 +379,14 @@ export function HspScrollColumn({
         scrollEl.removeEventListener("wheel", onWheel);
       }
     };
-  }, [containOverscroll, onUserScrollIntent, scrollEnabled, children]);
+  }, [
+    children,
+    containOverscroll,
+    onNearBottom,
+    onNearTop,
+    onUserScrollIntent,
+    scrollEnabled,
+  ]);
 
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   useEffect(() => {
