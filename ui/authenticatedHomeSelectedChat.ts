@@ -208,9 +208,16 @@ export function selectAuthenticatedHomeChat(chat: MessageChatRowData | null) {
 /** Select chat and start (or restart) paginated history load for that chat. */
 export function openAuthenticatedHomeChatHistory(chat: MessageChatRowData) {
   hydrateFromStorageIfNeeded();
+  const sameChatAlreadyOpen =
+    historyLoadChatId === chat.telegram_chat_id && historyLoadGeneration > 0;
   selectedChat = chat;
   middleColumnFocus = "chat";
   writeStoredChat(chat);
+  if (sameChatAlreadyOpen) {
+    syncHistoryLoadSnapshot();
+    emit();
+    return;
+  }
   historyLoadChatId = chat.telegram_chat_id;
   historyLoadGeneration += 1;
   syncHistoryLoadSnapshot();
@@ -281,7 +288,7 @@ function getHistoryLoadServerSnapshot(): AuthenticatedHomeHistoryLoadTarget {
   return HISTORY_LOAD_SNAPSHOT_IDLE;
 }
 
-/** Resumes from storage on reload and increments on explicit chat clicks. */
+/** Resumes from storage on reload; generation bumps when switching chats, not on re-click. */
 export function useAuthenticatedHomeHistoryLoadTarget(): AuthenticatedHomeHistoryLoadTarget {
   return useSyncExternalStore(
     subscribe,

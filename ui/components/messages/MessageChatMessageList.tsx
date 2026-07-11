@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
-import { ActivityIndicator, PixelRatio, Platform, Text, View, type LayoutChangeEvent } from "react-native";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, Platform, Text, View, type LayoutChangeEvent } from "react-native";
 import { useAuth } from "../../../auth/AuthContext";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { useAuthenticatedHomeHistoryLoadTarget } from "../../authenticatedHomeSelectedChat";
@@ -52,19 +52,53 @@ import {
   MESSAGE_CHAT_PAGINATION_CHAR_RANGE,
   MESSAGE_CHAT_VIEWPORT_CHAR_RANGE,
   MESSAGE_CHAT_LOAD_NEWER_ERROR_BACKOFF_MS,
-  MESSAGE_CHAT_LOAD_NEWER_THRESHOLD_PX,
   MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX,
   MESSAGE_LIST_SENSITIVE_AREA_PX,
 } from "./messageChatLayout";
 import {
-  sliceMessagesByCountAroundId,
-  trimMessagesAroundAnchorCount,
-  expandDisplaySliceOlder,
-  expandDisplaySliceNewer,
+  resolveChatOpenSession,
+  resolveOpenHistoryFetchAnchor,
+  type ChatOpenScrollPlan,
+} from "./chatOpenSession";
+import {
+  afterOlderPrepend,
+  expandOlder as expandWindowOlder,
+  resolveDisplayWindow,
+  sliceDisplayMessages,
+  trimLoadedAroundAnchor,
   MESSAGE_LIST_SLICE,
   MESSAGE_LIST_VIEWPORT_LIMIT,
   type CountSliceBounds,
-} from "./messageChatViewportSlice";
+} from "./chatMessageWindow";
+import {
+  beginOpenSettlePhase,
+  beginPrependPhase,
+  canEdgeLoad as canEdgeLoadInPhase,
+  createChatScrollControllerState,
+  endOpenSettlePhase,
+  endPrependPhase,
+  isReplacingHistory,
+  rememberBeforeUpdate,
+  restoreAfterUpdate,
+  syncPinnedFromMetrics,
+  type ChatScrollControllerState,
+} from "./chatScrollController";
+import {
+  applyMergeTrimResult,
+  historyTailSignature,
+  mergeHistoryMessages,
+  mergeTrimHistoryMessages,
+} from "./chatHistoryMerge";
+import { chatLiveSignature, chatMessageTailSignature } from "./chatListSignatures";
+import {
+  formatMessageDateDividerLabel,
+  MessageDateDivider,
+  messageDayKey,
+  shouldShowMessageDateDivider,
+  todayDayKey,
+} from "./MessageDateDivider";
+import { useChatScrollHooks } from "./useChatScrollHooks";
+import { expandDisplaySliceNewer } from "./messageChatViewportSlice";
 import type { MessageChatHistoryItem, MessageChatKind } from "./messageChatHistoryTypes";
 import { patchAuthenticatedHomeSelectedChatReadInbox, patchAuthenticatedHomeSelectedChatReadOutbox, patchAuthenticatedHomeSelectedChatGroupMeta, patchAuthenticatedHomeSelectedChatUnread, setAuthenticatedHomeOpenChatFollowingBottom } from "../../authenticatedHomeSelectedChat";
 import {
@@ -72,7 +106,6 @@ import {
   enrichHistoryMessageDisplay,
   isPrivateChatForReadReceipts,
   maxReadOutboxMessageIdFromItems,
-  mergeHistoryMessageRow,
   patchOutgoingStatusesWithReadOutbox,
   resolveHistoryMessageIsOutgoing,
   type HistoryMessageContext,
@@ -82,7 +115,6 @@ import { MessageChatOlderHistoryLoadLine } from "./MessageChatOlderHistoryLoadLi
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import { MessageHistoryLoadSentinel } from "./MessageHistoryLoadSentinel";
 import { MessageChatScrollToBottomButton } from "./MessageChatScrollToBottomButton";
-import { resolveChatOpenScrollPlan } from "./resolveChatOpenScrollPlan";
 import { prefetchOpenChatAvatars, setOpenChatAvatarPriority, isOpenChatAvatarPriority } from "./messageChatAvatarPrefetch";
 import type { MessageChatRowData } from "./MessageChatRow";
 import {
@@ -108,6 +140,7 @@ import {
   estimateMessageListBlockTotalHeight,
   isMessageListVirtualizationActive,
   MESSAGE_LIST_VIRTUAL_ESTIMATED_ROW_PX,
+  MESSAGE_LIST_VIRTUAL_OVERSCAN_PX,
   MESSAGE_LIST_VIRTUALIZE_MIN_ROWS,
   resolveMessageListVirtualWindow,
 } from "./messageListVirtualWindow";
@@ -130,287 +163,19 @@ const LOAD_OLDER_PAGE_COOLDOWN_MS = 500;
 const FAB_VISIBILITY_THRESHOLD_PX = 50;
 /** telegram-tt NOTCH_THRESHOLD — unread chats hide FAB only at exact bottom. */
 const FAB_NOTCH_THRESHOLD_PX = 0;
-const DATE_DIVIDER_CURRENT_YEAR_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  day: "numeric",
-  month: "long",
-});
-const DATE_DIVIDER_OTHER_YEAR_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  day: "numeric",
-  month: "long",
-  year: "numeric",
-});
-const DATE_DIVIDER_LINE_PX = 1 / Math.max(1, PixelRatio.get());
 
-function startOfLocalDayMs(date: Date): number {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-}
-
-function formatMessageDateDividerLabel(sentAt: string, now: Date): string {
-  const sentDate = new Date(sentAt);
-  if (!Number.isFinite(sentDate.getTime())) return "";
-  const dayDiff = Math.floor(
-    (startOfLocalDayMs(now) - startOfLocalDayMs(sentDate)) / 86_400_000,
-  );
-  if (dayDiff === 0) return "Today";
-  if (dayDiff === 1) return "Yesterday";
-  if (dayDiff === 2) return "The Day Before Yesterday";
-  if (sentDate.getFullYear() === now.getFullYear()) {
-    return DATE_DIVIDER_CURRENT_YEAR_FORMATTER.format(sentDate);
-  }
-  return DATE_DIVIDER_OTHER_YEAR_FORMATTER.format(sentDate);
-}
-
-function messageDayKey(sentAt: string): string {
-  const sentDate = new Date(sentAt);
-  if (!Number.isFinite(sentDate.getTime())) return sentAt;
-  return `${sentDate.getFullYear()}-${sentDate.getMonth()}-${sentDate.getDate()}`;
-}
-
-/** Hide a date divider when older loaded history still has messages on the same day. */
-function shouldShowMessageDateDivider(
-  item: { sent_at: string; telegram_message_id: number },
-  previousInDisplay: { sent_at: string } | null,
-  loadedMessages: readonly { sent_at: string; telegram_message_id: number }[],
-  allLoadedMessagesAreFromToday: boolean,
-): boolean {
-  if (allLoadedMessagesAreFromToday) return false;
-  const itemDay = messageDayKey(item.sent_at);
-  if (previousInDisplay != null && messageDayKey(previousInDisplay.sent_at) === itemDay) {
-    return false;
-  }
-  const loadedIndex = loadedMessages.findIndex(
-    (row) => row.telegram_message_id === item.telegram_message_id,
-  );
-  if (loadedIndex > 0) {
-    const olderNeighbor = loadedMessages[loadedIndex - 1]!;
-    if (messageDayKey(olderNeighbor.sent_at) === itemDay) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function todayDayKey(now: Date = new Date()): string {
-  return `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
-}
-
-function MessageDateDivider({ label, colors }: { label: string; colors: ThemeColors }) {
-  return (
-    <View
-      style={{
-        alignSelf: "stretch",
-        flexDirection: "row",
-        alignItems: "center",
-        paddingVertical: 6,
-        gap: 8,
-      }}
-      accessibilityRole="text"
-    >
-      <View
-        style={{
-          flex: 1,
-          height: DATE_DIVIDER_LINE_PX,
-          minHeight: DATE_DIVIDER_LINE_PX,
-          maxHeight: DATE_DIVIDER_LINE_PX,
-          backgroundColor: colors.highlight,
-        }}
-      />
-      <Text
-        style={{
-          color: colors.secondary,
-          fontSize: 13,
-          lineHeight: 16,
-          fontWeight: "400",
-        }}
-      >
-        {label}
-      </Text>
-      <View
-        style={{
-          flex: 1,
-          height: DATE_DIVIDER_LINE_PX,
-          minHeight: DATE_DIVIDER_LINE_PX,
-          maxHeight: DATE_DIVIDER_LINE_PX,
-          backgroundColor: colors.highlight,
-        }}
-      />
-    </View>
-  );
-}
-
-function chatLiveSignature(chat: MessageChatRowData): string {
-  return [
-    chat.last_message_at ?? "",
-    chat.subtitle,
-    chat.unread_count,
-    chat.last_read_outbox_message_id ?? "",
-    chat.chat_action ?? "",
-    chat.chat_action_expires_at ?? "",
-    chat.presence_kind ?? "",
-  ].join("|");
-}
-
-function chatMessageTailSignature(chat: MessageChatRowData): string {
-  return `${chat.last_message_at ?? ""}|${chat.subtitle}`;
-}
-
-function collapseOutgoingEchoDuplicates(
-  items: MessageChatHistoryItem[],
-  ctx?: HistoryMessageContext,
-): MessageChatHistoryItem[] {
-  const result: MessageChatHistoryItem[] = [];
-  for (const item of items) {
-    if (!item.is_outgoing) {
-      result.push(item);
-      continue;
-    }
-    const textKey = item.text.trim();
-    const sentAt = Date.parse(item.sent_at);
-    const dupIdx = result.findIndex((row) => {
-      if (!row.is_outgoing || row.telegram_message_id === item.telegram_message_id) return false;
-      if (row.text.trim() !== textKey) return false;
-      const rowSent = Date.parse(row.sent_at);
-      if (!Number.isFinite(sentAt) || !Number.isFinite(rowSent)) return true;
-      return Math.abs(sentAt - rowSent) < 60_000;
-    });
-    if (dupIdx >= 0) {
-      const prev = result[dupIdx]!;
-      result[dupIdx] =
-        item.telegram_message_id >= prev.telegram_message_id
-          ? mergeHistoryMessageRow(prev, item, ctx)
-          : mergeHistoryMessageRow(item, prev, ctx);
-      continue;
-    }
-    result.push(item);
-  }
-  return result;
-}
-
-function mergeHistoryMessages(
-  existing: MessageChatHistoryItem[],
-  incoming: MessageChatHistoryItem[],
-  ctx?: HistoryMessageContext,
-): MessageChatHistoryItem[] {
-  const byId = new Map<number, MessageChatHistoryItem>();
-  for (const row of existing) {
-    byId.set(row.telegram_message_id, enrichHistoryMessageDisplay(row));
-  }
-  for (const row of incoming) {
-    const prev = byId.get(row.telegram_message_id);
-    byId.set(row.telegram_message_id, mergeHistoryMessageRow(prev, row, ctx));
-  }
-  const sorted = [...byId.values()].sort((a, b) => {
-    const byTime = Date.parse(a.sent_at) - Date.parse(b.sent_at);
-    if (byTime !== 0) return byTime;
-    return a.telegram_message_id - b.telegram_message_id;
-  });
-  return collapseOutgoingEchoDuplicates(sorted, ctx);
-}
-
-type MergeTrimHistoryResult = {
-  messages: MessageChatHistoryItem[];
-  removedFromTop: number;
-  adjustScrollYByPx: number;
-  hasMoreOlder: boolean;
-  nextBeforeMessageId: number | null;
-};
-
-function mergeTrimHistoryMessages(
-  existing: MessageChatHistoryItem[],
-  incoming: MessageChatHistoryItem[],
-  ctx: HistoryMessageContext | undefined,
-  options: {
-    maxRows: number;
-    anchorMessageId: number;
-    keepEnd: boolean;
-    skipTrim?: boolean;
-    layouts: ReadonlyMap<number, MessageScrollLayoutEntry>;
-    heightCache: ReadonlyMap<number, number>;
-    rowGapPx: number;
-    hasMoreOlder: boolean;
-    nextBeforeMessageId: number | null;
-  },
-): MergeTrimHistoryResult {
-  const merged = mergeHistoryMessages(existing, incoming, ctx);
-  if (options.skipTrim) {
-    return {
-      messages: merged,
-      removedFromTop: 0,
-      adjustScrollYByPx: 0,
-      hasMoreOlder: options.hasMoreOlder,
-      nextBeforeMessageId: options.nextBeforeMessageId,
-    };
-  }
-  const trimmed = trimMessagesAroundAnchorCount(
-    merged,
-    options.anchorMessageId,
-    options.maxRows,
-  );
-  const removedFromTop =
-    trimmed.length < merged.length && trimmed[0] != null
-      ? merged.findIndex(
-          (row) => row.telegram_message_id === trimmed[0]!.telegram_message_id,
-        )
-      : 0;
-  const adjustScrollYByPx =
-    removedFromTop > 0
-      ? estimateMessageListBlockTotalHeight(
-          merged.slice(0, removedFromTop),
-          new Map(),
-          options.heightCache,
-          options.rowGapPx,
-        )
-      : 0;
-  const hasMoreOlder =
-    removedFromTop > 0 ? true : options.hasMoreOlder;
-  const nextBeforeMessageId =
-    trimmed.length > 0 && hasMoreOlder
-      ? trimmed[0]!.telegram_message_id
-      : options.nextBeforeMessageId;
-
+function chatOpenScrollPlanFromSession(
+  session: ReturnType<typeof resolveChatOpenSession>,
+): ChatOpenScrollPlan {
   return {
-    messages: trimmed,
-    removedFromTop,
-    adjustScrollYByPx,
-    hasMoreOlder,
-    nextBeforeMessageId,
+    openingUnreadCount: session.openingUnreadCount,
+    openAnchor: session.scroll.openAnchor,
+    pinMessagesToBottom: session.scroll.pinToBottom,
+    followingBottom: session.scroll.followingBottom,
+    pendingInitialScroll: session.scroll.pendingInitialScroll,
+    pendingScrollRestore: session.scroll.restore,
+    scrollToUnreadDivider: session.scroll.alignUnreadDivider,
   };
-}
-
-function applyMergeTrimResult(
-  result: MergeTrimHistoryResult,
-  refs: {
-    hasMoreOlderRef: MutableRefObject<boolean>;
-    nextBeforeMessageIdRef: MutableRefObject<number | null>;
-    pendingPreserveScrollYRef: MutableRefObject<number | null>;
-    pinnedScrollYRef: MutableRefObject<number>;
-    setHasMoreOlder: (value: boolean) => void;
-    setNextBeforeMessageId: (value: number | null) => void;
-  },
-): MessageChatHistoryItem[] {
-  if (result.removedFromTop > 0 && result.adjustScrollYByPx > 0) {
-    const nextScrollY = Math.max(
-      0,
-      refs.pinnedScrollYRef.current - result.adjustScrollYByPx,
-    );
-    refs.pendingPreserveScrollYRef.current = nextScrollY;
-  }
-  if (result.hasMoreOlder !== refs.hasMoreOlderRef.current) {
-    refs.hasMoreOlderRef.current = result.hasMoreOlder;
-    refs.setHasMoreOlder(result.hasMoreOlder);
-  }
-  if (result.nextBeforeMessageId !== refs.nextBeforeMessageIdRef.current) {
-    const current = refs.nextBeforeMessageIdRef.current;
-    const incoming = result.nextBeforeMessageId;
-    // Smaller message ids are older — never regress the API pagination cursor.
-    const shouldApply =
-      incoming == null || current == null || incoming <= current;
-    if (shouldApply) {
-      refs.nextBeforeMessageIdRef.current = incoming;
-      refs.setNextBeforeMessageId(incoming);
-    }
-  }
-  return result.messages;
 }
 
 function applyHistoryMetaToSelectedChat(
@@ -423,11 +188,6 @@ function applyHistoryMetaToSelectedChat(
     ...(chatKind != null ? { chat_kind: chatKind } : {}),
     ...(memberCount != null ? { member_count: memberCount } : {}),
   });
-}
-
-function historyTailSignature(messages: readonly MessageChatHistoryItem[]): string {
-  if (messages.length === 0) return "0:0";
-  return `${messages.length}:${messages[messages.length - 1]!.telegram_message_id}`;
 }
 
 export function MessageChatMessageList({ chat, colors }: Props) {
@@ -449,9 +209,14 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const [lastReadOutboxFromHistory, setLastReadOutboxFromHistory] = useState<number | null>(null);
   const [selfUserId, setSelfUserId] = useState<number | null>(null);
   const [columnWidthPx, setColumnWidthPx] = useState(0);
+  const openSession = useMemo(
+    () => resolveChatOpenSession(chat),
+    // generation forces re-resolve on reopen of the same chat id
+    [chat.telegram_chat_id, chat.unread_count, chat.last_message_telegram_id, chat.last_read_inbox_message_id, historyLoad.generation],
+  );
   const openScrollPlan = useMemo(
-    () => resolveChatOpenScrollPlan(chat),
-    [chat.telegram_chat_id, chat.unread_count, historyLoad.generation],
+    () => chatOpenScrollPlanFromSession(openSession),
+    [openSession],
   );
   const [isFollowingBottom, setIsFollowingBottom] = useState(
     () => openScrollPlan.followingBottom,
@@ -463,6 +228,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const [scrollAnchorRestorePending, setScrollAnchorRestorePending] = useState(false);
   /** Suppress preserveViewportOnResize while prepend/expand anchor restore runs. */
   const [prependAnchorRestorePending, setPrependAnchorRestorePending] = useState(false);
+  /** Sync mirror of prependAnchorRestorePending — state alone lags one tick and races scroll triggers. */
+  const prependAnchorRestorePendingRef = useRef(false);
+  const setPrependAnchorRestorePendingSynced = useCallback((pending: boolean) => {
+    prependAnchorRestorePendingRef.current = pending;
+    setPrependAnchorRestorePending(pending);
+  }, []);
   const scrollControllerRef = useRef<HspScrollColumnHandle | null>(null);
   const loadingOlderRef = useRef(false);
   const loadingNewerRef = useRef(false);
@@ -539,20 +310,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       const currentNext = nextBeforeMessageIdRef.current;
       // A shorter revalidation/prefetch must not close pagination while we still have
       // an older loaded head or a cursor at/below that head.
+      // Ignore shorter tail-only revalidations that do not cover the loaded head.
       if (
         !incomingHasMore &&
         loadedHeadId > 0 &&
-        (incomingHeadId <= 0 ||
-          loadedHeadId < incomingHeadId ||
-          (currentNext != null && currentNext > 0 && currentNext <= loadedHeadId))
+        incomingHeadId > 0 &&
+        loadedHeadId < incomingHeadId
       ) {
-        if (
-          currentNext == null &&
-          loadedHeadId > 0 &&
-          hasMoreOlderRef.current
-        ) {
-          applyOlderPaginationCursor(true, loadedHeadId);
-        }
+        return;
+      }
+      if (
+        !incomingHasMore &&
+        loadedHeadId > 0 &&
+        currentNext != null &&
+        currentNext > 0 &&
+        currentNext <= loadedHeadId
+      ) {
         return;
       }
       let nextBefore = incomingNextBefore;
@@ -586,6 +359,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const openScrollAppliedRef = useRef(false);
   const pendingPreserveScrollYRef = useRef<number | null>(null);
   const pinnedScrollYRef = useRef(0);
+  const chatScrollStateRef = useRef<ChatScrollControllerState>(createChatScrollControllerState());
   const pinnedLayoutHRef = useRef(0);
   const virtualScrollRafRef = useRef<number | null>(null);
   const pendingInitialScrollRef = useRef(false);
@@ -668,6 +442,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const lastScrollYRef = useRef(0);
   const userScrollingUpRef = useRef(false);
   const loadOlderStartScrollYRef = useRef<number | null>(null);
+  /** scrollTop captured synchronously before a history/display merge (telegram-tt). */
+  const scrollTopBeforeUpdateRef = useRef<number | null>(null);
   /** DOM + message anchor captured when an older-page fetch starts. */
   const olderLoadDomAnchorRef = useRef<HspScrollAnchor | null>(null);
   type OlderLoadMessageAnchor = {
@@ -681,6 +457,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const olderLoadDisplayHeadBeforeRef = useRef(0);
   /** True from older-prepend anchor capture until settle completes. */
   const olderPrependInProgressRef = useRef(false);
+  /**
+   * Item anchor armed into pendingItemAnchorRef only after a successful merge so
+   * mid-fetch display ticks cannot consume restore early.
+   */
   /** Display-slice expansion vs API older fetch — different scroll-keep rules. */
   const olderPrependKindRef = useRef<"display_expand" | "api_load" | null>(null);
   /** Viewport anchor pinned while expanding the display char slice (no API fetch). */
@@ -688,6 +468,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   /** Defer prepend lock release until row heights stop changing (media measure). */
   const olderPrependSettleUntilRef = useRef(0);
   const prependKeepRafRef = useRef<number | null>(null);
+  /** In-flight prepend restore — prevents layout-effect re-entry when display slice changes mid-keep. */
+  const activePrependRestoreRef = useRef<{
+    itemAnchor: HspItemAnchor | null;
+    loadOlderBeforeId: number | null;
+  } | null>(null);
   const lastOlderLoadFinishedAtRef = useRef(0);
   const virtualTopSpacerPxRef = useRef(0);
   /** Suppress bottom-stick scroll churn while row heights are still measuring. */
@@ -725,9 +510,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       prev: MessageChatHistoryItem[],
       incoming: MessageChatHistoryItem[],
       keepEnd: boolean,
+      windowOptions?: { skipTrim?: boolean },
     ): MessageChatHistoryItem[] => {
       const isOlderPrependMerge = !keepEnd;
       const skipTrim =
+        windowOptions?.skipTrim === true ||
         (isOlderPrependMerge && loadingOlderRef.current) ||
         // Keep already-loaded older pages while the user is reading history.
         (userHasScrolledSinceOpenRef.current && prev.length > MESSAGE_LIST_VIEWPORT_LIMIT);
@@ -791,7 +578,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       generation: historyLoad.generation,
     };
 
-    const plan = resolveChatOpenScrollPlan(chat);
+    const plan = chatOpenScrollPlanFromSession(resolveChatOpenSession(chat));
     openingUnreadCountRef.current = plan.openingUnreadCount;
     unreadMarkingArmPendingRef.current = plan.openingUnreadCount > 0;
     setFabUnreadDisplayTick((tick) => tick + 1);
@@ -810,7 +597,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     );
 
     if (chatChanged) {
-      scrollAnchorMessageIdRef.current = 0;
+      const openFetchAnchor = resolveOpenHistoryFetchAnchor(chat, plan);
+      scrollAnchorMessageIdRef.current = plan.scrollToUnreadDivider
+        ? 0
+        : openFetchAnchor;
       viewportSliceTickRef.current = 0;
       setViewportSliceTick(0);
       lastLiveSignatureRef.current = "";
@@ -836,6 +626,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       prevContentHForBottomStickRef.current = 0;
       openScrollAppliedRef.current = false;
       pendingItemAnchorRef.current = null;
+      scrollTopBeforeUpdateRef.current = null;
+      setPrependAnchorRestorePendingSynced(false);
       displaySliceBoundsOverrideRef.current = null;
       setFrozenUnreadDividerBeforeId(null);
       memoFirstUnreadIdRef.current = null;
@@ -992,6 +784,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           followingBottom:
             followingBottomRef.current ||
             isChatScrollNearBottom(metrics.scrollY, metrics.layoutH, metrics.contentH),
+          ...(scrollAnchorMessageIdRef.current > 0
+            ? { anchorMessageId: scrollAnchorMessageIdRef.current }
+            : {}),
         });
       }
     };
@@ -1058,7 +853,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     );
   }, []);
 
-  const markUserScrollInteraction = useCallback(() => {
+  const markUserScrollInteraction = useCallback((direction?: "up" | "down") => {
+    if (direction === "up") {
+      userScrollingUpRef.current = true;
+    } else if (direction === "down") {
+      userScrollingUpRef.current = false;
+    }
     const metrics = scrollControllerRef.current?.getMetrics();
     if (
       metrics &&
@@ -1362,12 +1162,14 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   ): ReadonlyMap<number, { y: number; height: number }> => {
     const messages = displayMessagesRef.current;
     if (isMessageListVirtualizationActive(messages.length)) {
+      const liveMetrics = scrollControllerRef.current?.getMetrics();
       const scrollMetrics = metrics ?? {
         scrollY: pinnedScrollYRef.current,
         layoutH:
           pinnedLayoutHRef.current > 0
             ? pinnedLayoutHRef.current
-            : scrollControllerRef.current?.getMetrics().layoutH ?? 0,
+            : liveMetrics?.layoutH ?? 0,
+        contentH: liveMetrics?.contentH,
       };
       if (scrollMetrics.layoutH > 0) {
         return buildMessageListViewportAwareLayouts(
@@ -1491,19 +1293,20 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       if (!entry || entry.height <= 0) return false;
       const liveAnchor = scrollControllerRef.current?.captureScrollAnchor();
       const measuredContentH = liveAnchor?.scrollHeight ?? metrics.contentH;
-      const estimatedContentH = estimateMessageListBlockTotalHeight(
-        displayMessagesRef.current,
-        messageLayoutsRef.current,
-        messageRowHeightCacheRef.current,
-        MESSAGE_BUBBLE_ROW_GAP_PX,
-      );
-      const contentH = Math.max(metrics.contentH, measuredContentH, estimatedContentH);
+      const contentH = Math.max(metrics.contentH, measuredContentH);
+      if (contentH <= 0) return false;
       const targetY = scrollYToPreserveViewportOffset(
         entry,
         anchor.offsetFromViewportTop,
         metrics.layoutH,
         contentH,
       );
+      const scrollTopBefore = scrollTopBeforeUpdateRef.current;
+      if (scrollTopBefore != null && domAnchor) {
+        const heightDelta = Math.max(0, measuredContentH - domAnchor.scrollHeight);
+        const maxTargetY = scrollTopBefore + heightDelta + 80;
+        if (targetY > maxTargetY) return false;
+      }
       scrollControllerRef.current?.scrollToY(targetY);
       const nextMetrics = scrollControllerRef.current?.getMetrics();
       if (
@@ -1519,6 +1322,61 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     },
     [resolveScrollLayoutMap, verifyPrependScrollKept],
   );
+
+  /** Capture anchor + scrollTop immediately before a list merge (telegram-tt rememberScrollPosition). */
+  const rememberDomScrollAtOlderLoadStart = useCallback((): void => {
+    const remembered = rememberBeforeUpdate(
+      scrollControllerRef.current,
+      capturePrependItemAnchor,
+    );
+    chatScrollStateRef.current.remembered = remembered;
+    scrollTopBeforeUpdateRef.current = remembered.scrollTop;
+    loadOlderStartScrollYRef.current = remembered.scrollTop;
+    olderLoadDomAnchorRef.current = remembered.domAnchor;
+  }, [capturePrependItemAnchor]);
+
+  const rememberItemAnchorBeforeMerge = useCallback((): void => {
+    const item = capturePrependItemAnchor();
+    pendingItemAnchorRef.current = item;
+    if (chatScrollStateRef.current.remembered) {
+      chatScrollStateRef.current.remembered.itemAnchor = item;
+    }
+    const metrics = scrollControllerRef.current?.getMetrics();
+    if (metrics && metrics.contentH > 0 && metrics.layoutH > 0) {
+      scrollOffsetRef.current = Math.max(
+        metrics.contentH - metrics.scrollY,
+        metrics.layoutH,
+      );
+    }
+  }, [capturePrependItemAnchor]);
+
+  const rememberScrollBeforeListUpdate = useCallback((): void => {
+    rememberDomScrollAtOlderLoadStart();
+    rememberItemAnchorBeforeMerge();
+  }, [rememberDomScrollAtOlderLoadStart, rememberItemAnchorBeforeMerge]);
+
+  /** telegram-tt scrollTop += prependedHeight — authoritative when rows mount above. */
+  const applyPrependDomScrollCompensation = useCallback((): number | null => {
+    const domAnchor = olderLoadDomAnchorRef.current;
+    const scrollTopBefore =
+      loadOlderStartScrollYRef.current ?? scrollTopBeforeUpdateRef.current;
+    if (!domAnchor || scrollTopBefore == null) return null;
+    const liveAnchor = scrollControllerRef.current?.captureScrollAnchor();
+    const contentH =
+      liveAnchor?.scrollHeight ??
+      scrollControllerRef.current?.getMetrics()?.contentH ??
+      0;
+    const heightDelta = Math.max(0, contentH - domAnchor.scrollHeight);
+    if (heightDelta <= 0) return null;
+    const targetY = scrollTopBefore + heightDelta;
+    scrollControllerRef.current?.scrollToY(targetY);
+    const nextMetrics = scrollControllerRef.current?.getMetrics();
+    if (nextMetrics) {
+      pinnedScrollYRef.current = nextMetrics.scrollY;
+      lastScrollYRef.current = nextMetrics.scrollY;
+    }
+    return targetY;
+  }, []);
 
   const settleOpenUnreadDividerScroll = useCallback((): boolean => {
     const loaded = loadedMessagesRef.current;
@@ -1695,60 +1553,68 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     setViewportSliceTick(viewportSliceTickRef.current);
   }, []);
 
-  const expandDisplaySliceTowardOlder = useCallback(() => {
+  const expandDisplaySliceTowardOlder = useCallback((
+    _options?: { chainLoadOlderWhenAtTop?: boolean },
+  ) => {
     if (pendingItemAnchorRef.current) return false;
+    if (prependAnchorRestorePendingRef.current) return false;
+    if (loadingOlderRef.current || olderPrependInProgressRef.current) return false;
     const loaded = loadedMessagesRef.current;
-    const bounds = displaySliceBoundsRef.current;
-    if (bounds.endIndex < bounds.startIndex) return false;
-    if (bounds.startIndex <= 0) return false;
-    const nextBounds = expandDisplaySliceOlder(loaded, bounds, MESSAGE_LIST_SLICE);
-    if (nextBounds.startIndex >= bounds.startIndex) return false;
+    const current = {
+      bounds: displaySliceBoundsRef.current,
+      override: displaySliceBoundsOverrideRef.current,
+      anchorMessageId: scrollAnchorMessageIdRef.current,
+      atLoadedTop: viewportAtLoadedTopRef.current,
+      atLoadedBottom: viewportAtLoadedBottomRef.current,
+    };
+    const next = expandWindowOlder(loaded, current, MESSAGE_LIST_SLICE);
+    if (!next) return false;
     followingBottomRef.current = false;
     setIsFollowingBottom(false);
     setAuthenticatedHomeOpenChatFollowingBottom(false);
-    olderLoadDomAnchorRef.current =
-      scrollControllerRef.current?.captureScrollAnchor() ?? null;
+    beginPrependPhase(
+      chatScrollStateRef.current,
+      scrollControllerRef.current,
+      capturePrependItemAnchor,
+      "display_expand",
+    );
+    isReplacingHistoryRef.current = true;
     olderPrependKindRef.current = "display_expand";
     olderPrependInProgressRef.current = true;
     displayExpandAnchorIdRef.current =
       displayMessagesRef.current[0]?.telegram_message_id ?? 0;
-    if (nextBounds.startIndex === 0) {
-      const loadedHeadId = loadedMessagesRef.current[0]?.telegram_message_id ?? 0;
-      const cursor =
-        loadedHeadId > 0
-          ? loadedHeadId
-          : nextBeforeMessageIdRef.current;
-      loadOlderAfterExpandSnapshotRef.current = cursor;
-      if (cursor != null && cursor > 0) {
-        nextBeforeMessageIdRef.current = cursor;
-        if (!hasMoreOlderRef.current) {
-          hasMoreOlderRef.current = true;
-          setHasMoreOlder(true);
-        }
-      }
-    } else {
-      loadOlderAfterExpandSnapshotRef.current = null;
-    }
-    pendingItemAnchorRef.current = capturePrependItemAnchor();
-    displaySliceBoundsOverrideRef.current = {
-      startIndex: nextBounds.startIndex,
-      endIndex: Math.max(nextBounds.endIndex, bounds.endIndex),
-    };
+    // telegram-tt: widen the in-buffer display window only. API older paging is
+    // triggered separately by the top sentinel / near-top edge — never chained
+    // from display expand (avoids double-prepend autoscroll at the loaded head).
+    loadOlderAfterExpandSnapshotRef.current = null;
+    rememberScrollBeforeListUpdate();
+    displaySliceBoundsOverrideRef.current = next.override;
+    displaySliceBoundsRef.current = next.bounds;
     programmaticScrollRef.current = true;
-    setPrependAnchorRestorePending(true);
+    setPrependAnchorRestorePendingSynced(true);
     logMessagesScrollAction("display_expand_start", {
-      prevStart: bounds.startIndex,
-      nextStart: nextBounds.startIndex,
-      displayCount: nextBounds.endIndex - nextBounds.startIndex + 1,
-      loadOlderAfterExpand: loadOlderAfterExpandSnapshotRef.current != null,
+      prevStart: current.bounds.startIndex,
+      nextStart: next.bounds.startIndex,
+      displayCount: next.bounds.endIndex - next.bounds.startIndex + 1,
+      loadOlderAfterExpand: false,
     });
     bumpViewportSliceTick();
     return true;
-  }, [bumpViewportSliceTick, capturePrependItemAnchor, logMessagesScrollAction]);
+  }, [
+    bumpViewportSliceTick,
+    capturePrependItemAnchor,
+    logMessagesScrollAction,
+    rememberScrollBeforeListUpdate,
+    setPrependAnchorRestorePendingSynced,
+  ]);
 
   /** Expand the count-based display window toward already-loaded newer rows (no API fetch). */
   const expandDisplaySliceTowardNewer = useCallback(() => {
     if (pendingItemAnchorRef.current) return false;
+    if (prependAnchorRestorePendingRef.current) return false;
+    // Never widen toward newer while an older API prepend is in flight — that
+    // rewrites the display window and consumes scroll restore early (jump).
+    if (loadingOlderRef.current || olderPrependInProgressRef.current) return false;
     const loaded = loadedMessagesRef.current;
     const bounds = displaySliceBoundsRef.current;
     if (bounds.endIndex < bounds.startIndex) return false;
@@ -1759,8 +1625,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     setIsFollowingBottom(false);
     setAuthenticatedHomeOpenChatFollowingBottom(false);
     // Pin the visible row across append growth (flex spacer / media resize / virtual window).
-    // Do not use DOM height-delta restore — that is prepend-only and causes a down jump.
+    // Capture anchor locally — do not arm pendingItemAnchorRef or the prepend-restore
+    // layout effect will treat this as an older prepend and jump the viewport.
     const itemAnchor = capturePrependItemAnchor();
+    isReplacingHistoryRef.current = true;
     displaySliceBoundsOverrideRef.current = {
       startIndex: Math.min(nextBounds.startIndex, bounds.startIndex),
       endIndex: nextBounds.endIndex,
@@ -1771,6 +1639,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       displayCount: nextBounds.endIndex - nextBounds.startIndex + 1,
     });
     bumpViewportSliceTick();
+    displaySliceBoundsRef.current = {
+      startIndex: Math.min(nextBounds.startIndex, bounds.startIndex),
+      endIndex: nextBounds.endIndex,
+    };
     if (itemAnchor) {
       requestAnimationFrame(() => {
         const restored =
@@ -1779,10 +1651,27 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           restored,
           messageId: itemAnchor.messageId,
         });
+        isReplacingHistoryRef.current = false;
+        const nextMetrics = scrollControllerRef.current?.getMetrics();
+        if (nextMetrics) {
+          pinnedScrollYRef.current = nextMetrics.scrollY;
+          lastScrollYRef.current = nextMetrics.scrollY;
+        }
+        scheduleVirtualScrollWindowUpdate();
+      });
+    } else {
+      requestAnimationFrame(() => {
+        isReplacingHistoryRef.current = false;
+        scheduleVirtualScrollWindowUpdate();
       });
     }
     return true;
-  }, [bumpViewportSliceTick, capturePrependItemAnchor, logMessagesScrollAction]);
+  }, [
+    bumpViewportSliceTick,
+    capturePrependItemAnchor,
+    logMessagesScrollAction,
+    scheduleVirtualScrollWindowUpdate,
+  ]);
 
   /** Expand the count-based display window toward already-loaded older rows (no API fetch). */
   const beginDisplaySliceExpand = expandDisplaySliceTowardOlder;
@@ -2119,7 +2008,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
               firstUnread ??
               resolveLastReadMessageId(nextMessages, readCursor) ??
               nextMessages[0]!.telegram_message_id;
-            nextMessages = trimMessagesAroundAnchorCount(
+            nextMessages = trimLoadedAroundAnchor(
               nextMessages,
               paintAnchor,
               MESSAGE_LIST_VIEWPORT_LIMIT,
@@ -2137,8 +2026,21 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             if (firstUnread != null) {
               scrollAnchorMessageIdRef.current = firstUnread;
             }
+          } else if (
+            !openScrollToUnreadDividerRef.current &&
+            !chatScrollPaintReadyRef.current
+          ) {
+            const paintAnchor = resolveOpenHistoryFetchAnchor(
+              chat,
+              chatOpenScrollPlanFromSession(resolveChatOpenSession(chat)),
+            );
+            if (paintAnchor > 0) {
+              scrollAnchorMessageIdRef.current = paintAnchor;
+            }
           }
-          return mergeHistoryWithWindow([], nextMessages, true);
+          return mergeHistoryWithWindow([], nextMessages, true, {
+            skipTrim: !cached.previewOnly && !cached.hasMoreOlder,
+          });
         });
       } else {
         setMessages((prev) => {
@@ -2146,7 +2048,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           const cacheHeadInner = cached.messages[0]?.telegram_message_id ?? 0;
           const extendsOlderInner =
             cacheHeadInner > 0 && (prevHead === 0 || cacheHeadInner < prevHead);
-          const next = mergeHistoryWithWindow(prev, cached.messages, !extendsOlderInner);
+          const next = mergeHistoryWithWindow(
+            prev,
+            cached.messages,
+            !extendsOlderInner,
+            { skipTrim: !cached.previewOnly && !cached.hasMoreOlder },
+          );
           if (historyTailSignature(next) === historyTailSignature(prev)) return prev;
           return next;
         });
@@ -2292,26 +2199,43 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       scrollAnchorMessageIdRef.current = anchorId;
     }
 
-    let bounds = sliceMessagesByCountAroundId(
+    // While a top-pinned display_expand override is active, anchor the window on
+    // the buffer head so mergeOverride stays wide. During api_load prepends keep
+    // the locked viewport row — anchoring on head shrinks to ~40 rows and jumps
+    // scroll to the oldest messages (telegram-tt keeps the visible anchor).
+    const prependOverride = displaySliceBoundsOverrideRef.current;
+    if (
+      olderPrependKindRef.current === "display_expand" &&
+      (prependAnchorRestorePendingRef.current || prependOverride != null) &&
+      (prependOverride?.startIndex === 0 ||
+        displaySliceBoundsRef.current.startIndex === 0)
+    ) {
+      const loadedHeadId = loadedMessages[0]?.telegram_message_id ?? 0;
+      if (loadedHeadId > 0) {
+        anchorId = loadedHeadId;
+      }
+    } else if (
+      olderPrependKindRef.current === "api_load" &&
+      (prependAnchorRestorePendingRef.current || prependOverride != null)
+    ) {
+      const lockedId = olderLoadLockedAnchorIdRef.current;
+      if (lockedId > 0) {
+        anchorId = lockedId;
+      }
+    }
+
+    const window = resolveDisplayWindow(
       loadedMessages,
       anchorId,
+      displaySliceBoundsOverrideRef.current,
       MESSAGE_LIST_SLICE,
     );
-    const override = displaySliceBoundsOverrideRef.current;
-    if (override && override.endIndex >= override.startIndex) {
-      bounds = {
-        startIndex: Math.min(bounds.startIndex, override.startIndex),
-        endIndex: Math.max(bounds.endIndex, override.endIndex),
-      };
-      bounds.startIndex = Math.max(0, bounds.startIndex);
-      bounds.endIndex = Math.min(loadedMessages.length - 1, bounds.endIndex);
-    }
+    const bounds = window.bounds;
     displaySliceBoundsRef.current = bounds;
     if (bounds.endIndex < bounds.startIndex) return [];
-    viewportAtLoadedTopRef.current = bounds.startIndex === 0;
-    viewportAtLoadedBottomRef.current =
-      bounds.endIndex >= loadedMessages.length - 1;
-    return loadedMessages.slice(bounds.startIndex, bounds.endIndex + 1);
+    viewportAtLoadedTopRef.current = window.atLoadedTop;
+    viewportAtLoadedBottomRef.current = window.atLoadedBottom;
+    return sliceDisplayMessages(loadedMessages, window);
   }, [
     loadedMessages,
     viewportSliceTick,
@@ -2533,9 +2457,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   const applyOpenScrollOnce = useCallback((): boolean => {
     if (chatScrollPaintReadyRef.current || openScrollAppliedRef.current) return true;
+    beginOpenSettlePhase(chatScrollStateRef.current);
     if (displayMessagesRef.current.length === 0) {
       if (!loadingInitial) {
         openScrollAppliedRef.current = true;
+        endOpenSettlePhase(chatScrollStateRef.current, scrollControllerRef.current);
         revealChatScroll();
       }
       return true;
@@ -2593,6 +2519,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     setInitialScrollInProgress(false);
     enableEdgeLoadingAfterOpen();
     openScrollAppliedRef.current = true;
+    endOpenSettlePhase(chatScrollStateRef.current, scrollControllerRef.current);
     revealChatScroll();
     virtualScrollTickRef.current += 1;
     setVirtualScrollTick(virtualScrollTickRef.current);
@@ -2866,11 +2793,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   ]);
 
   useLayoutEffect(() => {
+    if (activePrependRestoreRef.current) return;
+
     const itemAnchor = pendingItemAnchorRef.current;
     const loadOlderBeforeId = loadOlderAfterExpandSnapshotRef.current;
     if (!itemAnchor && loadOlderBeforeId == null) return;
     pendingItemAnchorRef.current = null;
     loadOlderAfterExpandSnapshotRef.current = null;
+    activePrependRestoreRef.current = { itemAnchor, loadOlderBeforeId };
+
+    const capturedItemAnchor = itemAnchor;
+    const capturedLoadOlderBeforeId = loadOlderBeforeId;
     let attempts = 0;
     let released = false;
     let stableFrames = 0;
@@ -2878,44 +2811,117 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     const release = (restored: boolean) => {
       if (released) return;
       released = true;
+      activePrependRestoreRef.current = null;
+      const domCompensatedY = applyPrependDomScrollCompensation();
+      // Pin the natural display slice to the viewport row before dropping the
+      // widened override. Otherwise a top-pinned expand leaves the scroll
+      // anchor on the buffer head and the ~40-row window blanks mid-list.
+      const pinId =
+        olderLoadLockedAnchorIdRef.current > 0
+          ? olderLoadLockedAnchorIdRef.current
+          : capturedItemAnchor?.messageId ?? 0;
+      if (pinId > 0) {
+        scrollAnchorMessageIdRef.current = pinId;
+      }
+      displaySliceBoundsOverrideRef.current = null;
       programmaticScrollRef.current = false;
-      setPrependAnchorRestorePending(false);
+      loadOlderStartScrollYRef.current = null;
+      scrollTopBeforeUpdateRef.current = null;
+      isReplacingHistoryRef.current = false;
+      setPrependAnchorRestorePendingSynced(false);
       releaseOlderLoadViewportLock();
+      bumpViewportSliceTick();
       logMessagesScrollAction(
-        restored ? "prepend_keep_release" : "prepend_keep_miss",
+        restored || domCompensatedY != null
+          ? "prepend_keep_release"
+          : "prepend_keep_miss",
         {
-          messageId: itemAnchor?.messageId ?? 0,
+          messageId: capturedItemAnchor?.messageId ?? 0,
+          pinMessageId: pinId,
           attempts,
-          loadOlderAfterExpand: loadOlderBeforeId != null,
+          loadOlderAfterExpand: capturedLoadOlderBeforeId != null,
+          domCompensatedY,
         },
       );
-      scrollControllerRef.current?.clearNearTopLatch();
-      // Only chain API older after a successful keep — chaining on miss
-      // reloads while the viewport is already wrong and amplifies jumps.
-      if (restored && loadOlderBeforeId != null) {
-        requestAnimationFrame(() => {
-          void loadOlderMessagesRef.current({
-            expandArmed: true,
-            beforeMessageId: loadOlderBeforeId,
-          });
-        });
+      const releaseMetrics = scrollControllerRef.current?.getMetrics();
+      if (releaseMetrics) {
+        pinnedScrollYRef.current = releaseMetrics.scrollY;
+        lastScrollYRef.current = releaseMetrics.scrollY;
+        syncPinnedFromMetrics(chatScrollStateRef.current, releaseMetrics);
       }
+      scheduleVirtualScrollWindowUpdate();
+      endPrependPhase(chatScrollStateRef.current, scrollControllerRef.current);
+      scrollControllerRef.current?.clearNearTopLatch();
     };
-    if (!itemAnchor) {
+    if (!capturedItemAnchor) {
       release(false);
       return;
     }
+    isScrollTopJustUpdatedRef.current = true;
+    programmaticScrollRef.current = true;
     const run = () => {
-      // Item geometry first — DOM height-delta often under-restores mid-settle.
-      let restored = restorePrependItemAnchor(itemAnchor);
+      const liveMetrics = scrollControllerRef.current?.getMetrics();
+      const startY = loadOlderStartScrollYRef.current;
+      // User scrolled down during the older fetch — do not yank them back to the
+      // pre-scroll item anchor (that reads as auto-scroll). Compensate growth
+      // from the live scroll offset instead.
+      if (
+        olderPrependKindRef.current === "api_load" &&
+        startY != null &&
+        liveMetrics &&
+        liveMetrics.layoutH > 0 &&
+        !userScrollingUpRef.current &&
+        liveMetrics.scrollY > startY + MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX
+      ) {
+        const domAnchor = olderLoadDomAnchorRef.current;
+        const heightDelta =
+          domAnchor != null
+            ? Math.max(0, liveMetrics.contentH - domAnchor.scrollHeight)
+            : 0;
+        if (heightDelta > 0) {
+          scrollControllerRef.current?.scrollToY(liveMetrics.scrollY + heightDelta);
+          const nextMetrics = scrollControllerRef.current?.getMetrics();
+          if (nextMetrics) {
+            pinnedScrollYRef.current = nextMetrics.scrollY;
+            lastScrollYRef.current = nextMetrics.scrollY;
+          }
+        }
+        olderLoadDomAnchorRef.current = null;
+        release(true);
+        return;
+      }
+      const prependKind = olderPrependKindRef.current;
+      const remembered = chatScrollStateRef.current.remembered ?? {
+        scrollTop: loadOlderStartScrollYRef.current ?? 0,
+        domAnchor: olderLoadDomAnchorRef.current,
+        itemAnchor: capturedItemAnchor,
+      };
+      let restored = restoreAfterUpdate(
+        scrollControllerRef.current,
+        remembered,
+        { preferDomDelta: true },
+      );
       if (!restored) {
-        restored = restorePrependDomAnchor();
+        restored =
+          prependKind === "display_expand"
+            ? restorePrependItemAnchor(capturedItemAnchor)
+            : restorePrependDomAnchor();
+      }
+      if (restored) {
+        const nextMetrics = scrollControllerRef.current?.getMetrics();
+        if (nextMetrics) {
+          pinnedScrollYRef.current = nextMetrics.scrollY;
+          lastScrollYRef.current = nextMetrics.scrollY;
+          syncPinnedFromMetrics(chatScrollStateRef.current, nextMetrics);
+        }
       }
       const contentH =
         scrollControllerRef.current?.getMetrics()?.contentH ??
         scrollControllerRef.current?.captureScrollAnchor()?.scrollHeight ??
         -1;
       if (restored) {
+        // Wait for layout to settle before clearing the display override —
+        // a no-op item restore (delta≈0) must not shrink the window on frame 0.
         if (contentH > 0 && Math.abs(contentH - lastContentH) <= 1) {
           stableFrames += 1;
         } else {
@@ -2935,15 +2941,19 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
       requestAnimationFrame(run);
     };
-    requestAnimationFrame(run);
+    // Synchronous first pass — telegram-tt applies scrollTop in useLayoutEffect
+    // before paint; deferring to rAF lets the browser commit a wrong viewport.
+    run();
   }, [
-    displayMessages.length,
-    lastDisplayMessageId,
     viewportSliceTick,
     restorePrependItemAnchor,
     restorePrependDomAnchor,
+    applyPrependDomScrollCompensation,
     logMessagesScrollAction,
     releaseOlderLoadViewportLock,
+    setPrependAnchorRestorePendingSynced,
+    bumpViewportSliceTick,
+    scheduleVirtualScrollWindowUpdate,
   ]);
 
   // Release the DOM scroll-anchor gate set by non-older paths (outgoing send,
@@ -3150,20 +3160,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     void (async () => {
       const runNetworkLoad = async () => {
         try {
-          const plan = resolveChatOpenScrollPlan(chat);
+          const session = resolveChatOpenSession(chat);
+          const plan = chatOpenScrollPlanFromSession(resolveChatOpenSession(chat));
+          const fetchAnchor = session.displayAnchorMessageId ?? 0;
           let result;
-          if (
-            plan.pendingScrollRestore?.anchorMessageId != null &&
-            plan.pendingScrollRestore.anchorMessageId > 0
-          ) {
-            result = await fetchChatHistoryAroundCharBudget(
-              chat.telegram_chat_id,
-              chat.peer_user_id,
-              plan.pendingScrollRestore.anchorMessageId,
-              MESSAGE_CHAT_VIEWPORT_CHAR_RANGE,
-              MESSAGE_CHAT_VIEWPORT_CHAR_RANGE,
-            );
-          } else if (plan.scrollToUnreadDivider) {
+          if (session.fetch.kind === "around_unread") {
             result = await fetchChatHistoryAroundUnreadCharBudget(
               chat.telegram_chat_id,
               chat.peer_user_id,
@@ -3171,7 +3172,20 @@ export function MessageChatMessageList({ chat, colors }: Props) {
               MESSAGE_CHAT_VIEWPORT_CHAR_RANGE,
               { lastReadInboxHint: chat.last_read_inbox_message_id ?? null },
             );
+          } else if (
+            session.fetch.kind === "around_message" &&
+            session.fetch.anchorMessageId != null &&
+            session.fetch.anchorMessageId > 0
+          ) {
+            result = await fetchChatHistoryAroundCharBudget(
+              chat.telegram_chat_id,
+              chat.peer_user_id,
+              session.fetch.anchorMessageId,
+              MESSAGE_CHAT_VIEWPORT_CHAR_RANGE,
+              MESSAGE_CHAT_VIEWPORT_CHAR_RANGE,
+            );
           } else if (plan.openAnchor === "bottom") {
+            // Fallback only when no anchor id exists (empty / brand-new chat).
             result = await fetchChatHistoryTailCharBudget(
               chat.telegram_chat_id,
               chat.peer_user_id,
@@ -3239,7 +3253,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
               scrollAnchorId > 0 &&
               result.messages.length > MESSAGE_LIST_VIEWPORT_LIMIT
             ) {
-              const trimmed = trimMessagesAroundAnchorCount(
+              const trimmed = trimLoadedAroundAnchor(
                 result.messages,
                 scrollAnchorId,
                 MESSAGE_LIST_VIEWPORT_LIMIT,
@@ -3255,12 +3269,16 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           }
           if (scrollAnchorId > 0) {
             scrollAnchorMessageIdRef.current = scrollAnchorId;
+          } else if (fetchAnchor > 0) {
+            scrollAnchorMessageIdRef.current = fetchAnchor;
           }
           setCachedChatHistory(chat.telegram_chat_id, result, {
             previewOnly: false,
             aroundUnread:
-              plan.scrollToUnreadDivider || historyAnchorSpec.aroundUnread,
-            aroundMessageId: historyAnchorSpec.aroundMessageId ?? null,
+              session.fetch.aroundUnread || plan.scrollToUnreadDivider,
+            aroundMessageId:
+              session.fetch.anchorMessageId ??
+              (fetchAnchor > 0 ? fetchAnchor : null),
           });
           setMessages((prev) => {
             if (
@@ -3270,7 +3288,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             ) {
               return prev;
             }
-            return mergeHistoryWithWindow(prev, result.messages, true);
+            return mergeHistoryWithWindow(prev, result.messages, true, {
+              skipTrim: !result.hasMoreOlder,
+            });
           });
           setChatKind(result.chatKind);
           if (result.selfUserId != null) {
@@ -3359,7 +3379,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           cachedTailId,
           chat.last_message_telegram_id,
         );
-        const openPlan = resolveChatOpenScrollPlan(chat);
+        const openPlan = chatOpenScrollPlanFromSession(resolveChatOpenSession(chat));
         const cacheServesUnreadOpen =
           !openPlan.scrollToUnreadDivider ||
           (cached != null &&
@@ -3641,6 +3661,62 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     loadingInitial,
   ]);
 
+  /** Merge older rows from the local history cache when the API page is empty. */
+  const hydrateOlderHistoryFromCache = useCallback((): {
+    hydrated: boolean;
+    addedCount: number;
+    mergedLength: number;
+  } => {
+    const cached = getCachedChatHistory(chat.telegram_chat_id);
+    if (!cached || cached.previewOnly) {
+      return { hydrated: false, addedCount: 0, mergedLength: 0 };
+    }
+    const loadedHead = loadedMessagesRef.current[0]?.telegram_message_id ?? 0;
+    const cacheHead = cached.messages[0]?.telegram_message_id ?? 0;
+    if (cacheHead <= 0 || loadedHead <= 0 || cacheHead >= loadedHead) {
+      return { hydrated: false, addedCount: 0, mergedLength: 0 };
+    }
+    let addedCount = 0;
+    let mergedLength = 0;
+    setMessages((prev) => {
+      const next = mergeHistoryWithWindow(prev, cached.messages, false, {
+        skipTrim: !cached.hasMoreOlder,
+      });
+      const prevHead = prev.length > 0 ? prev[0]!.telegram_message_id : 0;
+      const nextHead = next.length > 0 ? next[0]!.telegram_message_id : 0;
+      mergedLength = next.length;
+      addedCount =
+        prevHead > 0 && nextHead > 0 && nextHead < prevHead
+          ? Math.max(1, next.length - prev.length)
+          : Math.max(0, next.length - prev.length);
+      return next;
+    });
+    mergeOlderPaginationCursor(
+      cached.hasMoreOlder,
+      cached.nextBeforeMessageId,
+      cacheHead,
+    );
+    logPageDisplay("messages_history_hydrate_older_from_cache", {
+      ...chatLogFields({
+        chatId: chat.telegram_chat_id,
+        peerUserId: chat.peer_user_id,
+        title: chat.title,
+      }),
+      loadedHead,
+      cacheHead,
+      addedCount,
+      mergedLength,
+      cacheCount: cached.messages.length,
+    });
+    return { hydrated: true, addedCount, mergedLength };
+  }, [
+    chat.peer_user_id,
+    chat.telegram_chat_id,
+    chat.title,
+    mergeHistoryWithWindow,
+    mergeOlderPaginationCursor,
+  ]);
+
   const loadOlderMessages = useCallback(async (options?: { expandArmed?: boolean; beforeMessageId?: number }) => {
     const expandArmed = options?.expandArmed === true;
     const loadedHeadId = loadedMessagesRef.current[0]?.telegram_message_id ?? null;
@@ -3669,7 +3745,18 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
       return;
     }
-    if (!expandArmed && !hasMoreOlder) {
+
+    const cachedForHydrate = getCachedChatHistory(chat.telegram_chat_id);
+    const cacheHeadForHydrate = cachedForHydrate?.messages[0]?.telegram_message_id ?? 0;
+    const canHydrateFromCache =
+      cachedForHydrate != null &&
+      !cachedForHydrate.previewOnly &&
+      loadedHeadId != null &&
+      loadedHeadId > 0 &&
+      cacheHeadForHydrate > 0 &&
+      cacheHeadForHydrate < loadedHeadId;
+
+    if (!hasMoreOlderRef.current && !canHydrateFromCache) {
       return;
     }
     if (olderLoadInFlightBeforeIdRef.current === beforeMessageId) {
@@ -3680,11 +3767,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       return;
     }
 
+    if (!expandArmed && olderPrependInProgressRef.current) {
+      return;
+    }
+
     isReplacingHistoryRef.current = true;
     olderLoadInFlightBeforeIdRef.current = beforeMessageId;
-    const startMetrics = scrollControllerRef.current?.getMetrics();
-    const startScrollY = startMetrics?.scrollY ?? 0;
-    loadOlderStartScrollYRef.current = startScrollY;
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     followingBottomRef.current = false;
@@ -3692,15 +3780,30 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     const headBeforeLoad =
       displayMessagesRef.current[0]?.telegram_message_id ?? 0;
     const lengthBeforeLoad = displayMessagesRef.current.length;
-    olderLoadDomAnchorRef.current =
-      scrollControllerRef.current?.captureScrollAnchor() ?? null;
+    beginPrependPhase(
+      chatScrollStateRef.current,
+      scrollControllerRef.current,
+      capturePrependItemAnchor,
+      "api_load",
+    );
     olderPrependKindRef.current = "api_load";
     olderPrependInProgressRef.current = true;
-    pendingItemAnchorRef.current = capturePrependItemAnchor();
     programmaticScrollRef.current = true;
-    setPrependAnchorRestorePending(true);
-    const anchorId = pendingItemAnchorRef.current?.messageId ?? 0;
+    setPrependAnchorRestorePendingSynced(true);
+    olderLoadDisplayHeadBeforeRef.current = headBeforeLoad;
+    const anchorId =
+      topViewportAnchorMessageId(
+        displayMessagesRef.current,
+        resolveScrollLayoutMap(),
+        scrollControllerRef.current?.getMetrics() ?? { scrollY: 0, layoutH: 0, contentH: 0 },
+      ) ?? displayMessagesRef.current[0]?.telegram_message_id ?? 0;
     if (anchorId > 0) {
+      olderLoadLockedAnchorIdRef.current = anchorId;
+    }
+    const atLoadedTopForPrepend =
+      viewportAtLoadedTopRef.current ||
+      displaySliceBoundsRef.current.startIndex === 0;
+    if (anchorId > 0 && !atLoadedTopForPrepend) {
       scrollAnchorMessageIdRef.current = anchorId;
     }
     logMessagesScrollAction("prepend_lock", {
@@ -3708,6 +3811,52 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       prependKind: "api_load",
       loadingOlder: true,
     });
+    rememberDomScrollAtOlderLoadStart();
+
+    const clearOlderLoadCaptureWithoutRestore = () => {
+      pendingItemAnchorRef.current = null;
+      loadOlderStartScrollYRef.current = null;
+      scrollTopBeforeUpdateRef.current = null;
+      setPrependAnchorRestorePendingSynced(false);
+      programmaticScrollRef.current = false;
+      isReplacingHistoryRef.current = false;
+      releaseOlderLoadViewportLock();
+    };
+
+    /** After buffer growth: keep the same visual rows and arm item-anchor restore. */
+    const armOlderPrependScrollRestore = (
+      prependedCount: number,
+      mergedLength: number,
+    ) => {
+      const nextWindow = afterOlderPrepend(
+        Math.max(1, mergedLength),
+        {
+          bounds: displaySliceBoundsRef.current,
+          override: displaySliceBoundsOverrideRef.current,
+          anchorMessageId: scrollAnchorMessageIdRef.current,
+          atLoadedTop: viewportAtLoadedTopRef.current,
+          atLoadedBottom: viewportAtLoadedBottomRef.current,
+        },
+        prependedCount,
+        {
+          pinToLoadedTop:
+            viewportAtLoadedTopRef.current &&
+            (scrollControllerRef.current?.getMetrics()?.scrollY ?? pinnedScrollYRef.current) <=
+              MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX,
+        },
+      );
+      displaySliceBoundsOverrideRef.current = nextWindow.override;
+      displaySliceBoundsRef.current = nextWindow.bounds;
+      // Keep scrollAnchor on the locked viewport row (not the buffer head) so
+      // clearing the override after restore still covers what the user sees.
+      const lockedId = olderLoadLockedAnchorIdRef.current;
+      if (lockedId > 0) {
+        scrollAnchorMessageIdRef.current = lockedId;
+      }
+      programmaticScrollRef.current = true;
+      setPrependAnchorRestorePendingSynced(true);
+      bumpViewportSliceTick();
+    };
 
     logPageDisplay("messages_history_load_older_start", {
       ...chatLogFields({
@@ -3719,6 +3868,23 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     });
 
     try {
+      if (canHydrateFromCache && !hasMoreOlderRef.current) {
+        const cacheHydrate = hydrateOlderHistoryFromCache();
+        if (cacheHydrate.hydrated) {
+          rememberItemAnchorBeforeMerge();
+          armOlderPrependScrollRestore(
+            cacheHydrate.addedCount,
+            Math.max(cacheHydrate.mergedLength, loadedMessagesRef.current.length),
+          );
+          logMessagesScrollAction("prepend_cache_hydrate", {
+            addedCount: cacheHydrate.addedCount,
+            mergedLength: cacheHydrate.mergedLength,
+            beforeApi: true,
+          });
+          return;
+        }
+      }
+
       let result = await fetchOlderHistoryCharBudget(
         chat.telegram_chat_id,
         chat.peer_user_id,
@@ -3735,14 +3901,24 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           beforeMessageId,
           message: result.error,
         });
-        pendingItemAnchorRef.current = null;
-        setPrependAnchorRestorePending(false);
-        programmaticScrollRef.current = false;
-        releaseOlderLoadViewportLock();
+        clearOlderLoadCaptureWithoutRestore();
         return;
       }
 
       if (result.messages.length === 0) {
+        const cacheHydrate = hydrateOlderHistoryFromCache();
+        if (cacheHydrate.hydrated) {
+          rememberItemAnchorBeforeMerge();
+          armOlderPrependScrollRestore(
+            cacheHydrate.addedCount,
+            Math.max(cacheHydrate.mergedLength, loadedMessagesRef.current.length),
+          );
+          logMessagesScrollAction("prepend_cache_hydrate", {
+            addedCount: cacheHydrate.addedCount,
+            mergedLength: cacheHydrate.mergedLength,
+          });
+          return;
+        }
         applyOlderPaginationCursor(result.hasMoreOlder, result.nextBeforeMessageId);
         logPageDisplay("messages_history_load_older_empty", {
           ...chatLogFields({
@@ -3754,19 +3930,25 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           hasMoreOlder: result.hasMoreOlder,
           nextBeforeMessageId: result.nextBeforeMessageId,
         });
-        pendingItemAnchorRef.current = null;
-        setPrependAnchorRestorePending(false);
-        programmaticScrollRef.current = false;
-        releaseOlderLoadViewportLock();
+        clearOlderLoadCaptureWithoutRestore();
+        endPrependPhase(chatScrollStateRef.current, scrollControllerRef.current);
+        requestAnimationFrame(() => {
+          if (displaySliceBoundsRef.current.startIndex > 0) {
+            expandDisplaySliceTowardOlder();
+          }
+        });
         return;
       }
 
       let addedCount = 0;
       let nextHeadAfter = headBeforeLoad;
+      let mergedLength = 0;
+      rememberItemAnchorBeforeMerge();
       setMessages((prev) => {
         const next = mergeHistoryWithWindow(prev, result.messages, false);
         const prevHead = prev.length > 0 ? prev[0]!.telegram_message_id : 0;
         nextHeadAfter = next.length > 0 ? next[0]!.telegram_message_id : 0;
+        mergedLength = next.length;
         addedCount =
           prevHead > 0 && nextHeadAfter > 0 && nextHeadAfter < prevHead
             ? Math.max(1, next.length - prev.length)
@@ -3786,26 +3968,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           headBeforeLoad > 0 &&
           nextHeadAfter < headBeforeLoad;
         if (grewViaCache || grewViaMerge) {
-          const loaded = loadedMessagesRef.current;
-          const prevOverride = displaySliceBoundsOverrideRef.current;
-          const prevEnd = Math.max(
-            displaySliceBoundsRef.current.endIndex,
-            prevOverride?.endIndex ?? displaySliceBoundsRef.current.endIndex,
-          );
-          let nextStart = prevOverride?.startIndex ?? displaySliceBoundsRef.current.startIndex;
-          if (nextHeadAfter > 0 && headBeforeLoad > 0 && nextHeadAfter < headBeforeLoad) {
-            const headIndex = loaded.findIndex(
-              (row) => row.telegram_message_id === nextHeadAfter,
-            );
-            if (headIndex >= 0) {
-              nextStart = Math.min(nextStart, headIndex);
-            }
-          }
-          displaySliceBoundsOverrideRef.current = {
-            startIndex: Math.max(0, nextStart),
-            endIndex: Math.min(loaded.length - 1, prevEnd),
-          };
-          bumpViewportSliceTick();
+          // Head moved older without a reliable length delta — still keep viewport.
+          armOlderPrependScrollRestore(0, Math.max(mergedLength, loadedMessagesRef.current.length));
           logMessagesScrollAction("prepend_merge_applied", {
             addedCount: 0,
             nextHeadAfter,
@@ -3813,8 +3977,38 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             grewViaCache,
             grewViaMerge,
           });
-        } else {
-          pendingItemAnchorRef.current = null;
+          const nextCursor =
+            result.nextBeforeMessageId ??
+            Math.min(...result.messages.map((row) => row.telegram_message_id));
+          const canAdvance =
+            nextCursor != null &&
+            Number.isFinite(nextCursor) &&
+            nextCursor > 0 &&
+            nextCursor < beforeMessageId;
+          if (canAdvance) {
+            const keepGoing =
+              result.hasMoreOlder ||
+              nextCursor <
+                (nextHeadAfter > 0 ? nextHeadAfter : beforeMessageId);
+            applyOlderPaginationCursor(keepGoing, nextCursor);
+            mergeCachedChatHistoryTail(chat.telegram_chat_id, result);
+            logPageDisplay("messages_history_load_older_advance_cursor", {
+              ...chatLogFields({
+                chatId: chat.telegram_chat_id,
+                peerUserId: chat.peer_user_id,
+                title: chat.title,
+              }),
+              beforeMessageId,
+              nextBeforeMessageId: nextCursor,
+              fetchedCount: result.messages.length,
+              grewViaCache,
+              grewViaMerge,
+              keepGoing,
+            });
+            return;
+          }
+          applyOlderPaginationCursor(false, null);
+          return;
         }
         const nextCursor =
           result.nextBeforeMessageId ??
@@ -3843,23 +4037,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             grewViaMerge,
             keepGoing,
           });
-          pendingItemAnchorRef.current = null;
-          setPrependAnchorRestorePending(false);
-          programmaticScrollRef.current = false;
-          releaseOlderLoadViewportLock();
-          if (keepGoing && viewportAtLoadedTopRef.current) {
-            loadOlderAdvanceChainRef.current = true;
-            requestAnimationFrame(() => {
-              if (!loadOlderAdvanceChainRef.current) return;
-              loadOlderAdvanceChainRef.current = false;
-              void loadOlderMessagesRef.current({
-                expandArmed: true,
-                beforeMessageId: nextCursor,
-              });
-            });
-          } else {
-            loadOlderAdvanceChainRef.current = false;
-          }
+          clearOlderLoadCaptureWithoutRestore();
           return;
         }
         applyOlderPaginationCursor(false, null);
@@ -3872,16 +4050,13 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           beforeMessageId,
           fetchedCount: result.messages.length,
         });
-        pendingItemAnchorRef.current = null;
-        setPrependAnchorRestorePending(false);
-        programmaticScrollRef.current = false;
-        releaseOlderLoadViewportLock();
+        clearOlderLoadCaptureWithoutRestore();
         return;
       }
       if (result.selfUserId != null) {
         setSelfUserId(result.selfUserId);
       }
-      bumpViewportSliceTick();
+      armOlderPrependScrollRestore(addedCount, mergedLength);
       logMessagesScrollAction("prepend_merge_applied", {
         addedCount,
         nextHeadAfter,
@@ -3937,21 +4112,15 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     } finally {
       loadingOlderRef.current = false;
       setLoadingOlder(false);
-      loadOlderStartScrollYRef.current = null;
+      // Keep loadOlderStartScrollYRef until prepend restore release() — clearing
+      // here races the layout-effect height-delta fallback and breaks keep.
       lastOlderLoadFinishedAtRef.current = Date.now();
       olderLoadInFlightBeforeIdRef.current = null;
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          isReplacingHistoryRef.current = false;
-        });
-      });
-      scrollControllerRef.current?.clearNearTopLatch();
     }
   }, [
     chat.peer_user_id,
     chat.telegram_chat_id,
     chat.title,
-    hasMoreOlder,
     applyOlderPaginationCursor,
     historyMessageContext,
     logMessagesScrollAction,
@@ -3960,6 +4129,13 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     loadingInitial,
     releaseOlderLoadViewportLock,
     bumpViewportSliceTick,
+    setPrependAnchorRestorePendingSynced,
+    rememberDomScrollAtOlderLoadStart,
+    rememberItemAnchorBeforeMerge,
+    rememberScrollBeforeListUpdate,
+    resolveScrollLayoutMap,
+    hydrateOlderHistoryFromCache,
+    expandDisplaySliceTowardOlder,
   ]);
 
   const loadNewerMessages = useCallback(async () => {
@@ -4025,12 +4201,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         return;
       }
 
-      const scrollAnchorBeforeMerge =
-        !followingBottomRef.current
-          ? scrollControllerRef.current?.captureScrollAnchor()
-          : null;
-      const itemAnchorBeforeMerge =
-        !followingBottomRef.current ? capturePrependItemAnchor() : null;
+      if (!followingBottomRef.current) {
+        rememberScrollBeforeListUpdate();
+      }
 
       let addedCount = 0;
       isReplacingHistoryRef.current = true;
@@ -4093,18 +4266,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         ) {
           scrollControllerRef.current?.scrollToEnd();
         }
-      } else if (itemAnchorBeforeMerge) {
-        requestAnimationFrame(() => {
-          scrollControllerRef.current?.restoreItemAnchor(itemAnchorBeforeMerge);
-        });
+      } else {
+        const itemAnchor = pendingItemAnchorRef.current;
+        const scrollAnchorBeforeMerge = olderLoadDomAnchorRef.current;
+        if (itemAnchor) {
+          requestAnimationFrame(() => {
+            scrollControllerRef.current?.restoreItemAnchor(itemAnchor);
+          });
+        }
         if (scrollAnchorBeforeMerge) {
-          // Gate only — layout effect clears without prepend height-delta restore.
           assignPendingScrollAnchor(scrollAnchorBeforeMerge);
         }
-      } else if (scrollAnchorBeforeMerge) {
-        // Newer rows append below — browser keeps scrollTop. Do not apply prepend
-        // height-delta restore (that jumps the viewport down). Only gate briefly.
-        assignPendingScrollAnchor(scrollAnchorBeforeMerge);
       }
 
       logPageDisplay("messages_history_load_newer_ok", {
@@ -4168,7 +4340,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     loadingInitial,
     assignPendingScrollAnchor,
     bumpViewportSliceTick,
-    capturePrependItemAnchor,
+    rememberScrollBeforeListUpdate,
   ]);
 
   useEffect(() => {
@@ -4186,25 +4358,13 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     !loadingNewer &&
     !initialScrollInProgress;
 
-  const tryTriggerOlderHistoryLoad = useCallback(() => {
-    if (isReplacingHistoryRef.current) return;
-    if (initialScrollInProgressRef.current) return;
-    if (!userHasScrolledSinceOpenRef.current) return;
-    if (loadingOlderRef.current || loadingNewerRef.current) return;
+  /** Expand display toward older rows, or API-load when already at loaded head. */
+  const runOlderEdgeAction = useCallback(() => {
     if (pendingItemAnchorRef.current) return;
-    if (olderPrependInProgressRef.current || prependAnchorRestorePending) return;
     if (!chatScrollPaintReadyRef.current || loadingInitial) return;
-    if (Date.now() - lastOlderLoadFinishedAtRef.current < LOAD_OLDER_PAGE_COOLDOWN_MS) {
-      return;
-    }
-    // telegram-tt: only page older near the top — never while reading mid-list.
-    // Mid-history opens often sit at scrollY≈0 (top of the display window), so
-    // also require a real user scroll before older paging.
-    const metrics = scrollControllerRef.current?.getMetrics();
     if (
-      metrics &&
-      metrics.layoutH > 0 &&
-      metrics.scrollY > MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX + MESSAGE_LIST_SENSITIVE_AREA_PX
+      isReplacingHistory(chatScrollStateRef.current.phase) &&
+      !canEdgeLoadInPhase(chatScrollStateRef.current.phase)
     ) {
       return;
     }
@@ -4215,41 +4375,45 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
     const displayHeadId = display[0]!.telegram_message_id;
     const loadedHeadId = loaded.length > 0 ? loaded[0]!.telegram_message_id : 0;
-    if (
-      viewportAtLoadedTopRef.current &&
-      hasMoreOlderRef.current &&
-      (displayHeadId <= 0 ||
-        loadedHeadId <= 0 ||
-        displayHeadId <= loadedHeadId)
-    ) {
-      void loadOlderMessages();
-      return;
-    }
-    if (
+    const canExpandInBuffer =
       displaySliceBoundsRef.current.startIndex > 0 ||
       (displayHeadId > 0 &&
         loadedHeadId > 0 &&
-        displayHeadId > loadedHeadId)
-    ) {
+        displayHeadId > loadedHeadId);
+
+    // telegram-tt: widen the in-buffer window before any API page fetch.
+    if (canExpandInBuffer) {
       expandDisplaySliceTowardOlder();
       return;
     }
-    if (!hasMoreOlderRef.current) return;
+
+    if (!viewportAtLoadedTopRef.current) return;
+
+    if (!hasMoreOlderRef.current) {
+      const cached = getCachedChatHistory(chat.telegram_chat_id);
+      const cacheHead = cached?.messages[0]?.telegram_message_id ?? 0;
+      if (
+        cached &&
+        !cached.previewOnly &&
+        cacheHead > 0 &&
+        loadedHeadId > 0 &&
+        cacheHead < loadedHeadId
+      ) {
+        void loadOlderMessages();
+      }
+      return;
+    }
+
     void loadOlderMessages();
   }, [
     expandDisplaySliceTowardOlder,
     loadOlderMessages,
     loadingInitial,
-    prependAnchorRestorePending,
   ]);
 
-  const tryTriggerNewerHistoryLoad = useCallback(() => {
-    if (isReplacingHistoryRef.current) return;
-    if (initialScrollInProgressRef.current || scrollAnchorRestorePending) return;
-    if (!userHasScrolledSinceOpenRef.current) return;
-    if (loadingOlderRef.current || loadingNewerRef.current) return;
+  /** Expand display toward newer rows, or API-load when display already at loaded tail. */
+  const runNewerEdgeAction = useCallback(() => {
     if (pendingItemAnchorRef.current) return;
-    if (olderPrependInProgressRef.current || prependAnchorRestorePending) return;
     if (!chatScrollPaintReadyRef.current || loadingInitial) return;
 
     const loaded = loadedMessagesRef.current;
@@ -4277,9 +4441,56 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     expandDisplaySliceTowardNewer,
     loadNewerMessages,
     loadingInitial,
-    prependAnchorRestorePending,
-    scrollAnchorRestorePending,
   ]);
+
+  const { tryLoadOlder: tryTriggerOlderHistoryLoad, tryLoadNewer: tryTriggerNewerHistoryLoad } =
+    useChatScrollHooks({
+      historyIoEnabled: historyLoadIoEnabled,
+      getPhase: () => chatScrollStateRef.current.phase,
+      getMetrics: () => scrollControllerRef.current?.getMetrics(),
+      getGate: () => {
+        const loaded = loadedMessagesRef.current;
+        const display = displayMessagesRef.current;
+        const bounds = displaySliceBoundsRef.current;
+        const canExpandOlder =
+          bounds.startIndex > 0 ||
+          (display.length > 0 &&
+            loaded.length > 0 &&
+            display[0]!.telegram_message_id > loaded[0]!.telegram_message_id);
+        const cached = getCachedChatHistory(chat.telegram_chat_id);
+        const cacheHead = cached?.messages[0]?.telegram_message_id ?? 0;
+        const loadedHead = loaded[0]?.telegram_message_id ?? 0;
+        const canHydrateOlder =
+          cached != null &&
+          !cached.previewOnly &&
+          cacheHead > 0 &&
+          loadedHead > 0 &&
+          cacheHead < loadedHead;
+        return {
+          phase: chatScrollStateRef.current.phase,
+          userHasScrolledSinceOpen: userHasScrolledSinceOpenRef.current,
+          initialScrollInProgress: initialScrollInProgressRef.current,
+          prependAnchorRestorePending:
+            prependAnchorRestorePendingRef.current ||
+            prependAnchorRestorePending ||
+            scrollAnchorRestorePending,
+          loadingOlder: loadingOlderRef.current,
+          loadingNewer: loadingNewerRef.current,
+          userScrollingUp: userScrollingUpRef.current,
+          hasMoreOlder: hasMoreOlderRef.current,
+          hasMoreNewer: true,
+          canExpandOlderInBuffer: canExpandOlder,
+          canHydrateOlderFromCache: canHydrateOlder,
+          olderCooldownUntilMs:
+            lastOlderLoadFinishedAtRef.current + LOAD_OLDER_PAGE_COOLDOWN_MS,
+          newerRetryAfterMs: loadNewerRetryAfterRef.current,
+        };
+      },
+      actions: {
+        onLoadOlder: runOlderEdgeAction,
+        onLoadNewer: runNewerEdgeAction,
+      },
+    });
 
   const triggerLoadNewerFromSentinel = useCallback(() => {
     tryTriggerNewerHistoryLoad();
@@ -4330,10 +4541,26 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       mode: "widen_display_around_open",
     });
     requestAnimationFrame(() => {
+      if (
+        loadingOlderRef.current ||
+        olderPrependInProgressRef.current ||
+        prependAnchorRestorePendingRef.current
+      ) {
+        return;
+      }
+      // Widen the in-memory display window only — do not chain an API older
+      // fetch from open settle (that races prepend restore and blanks mid-list).
       if (displaySliceBoundsRef.current.startIndex > 0) {
         expandDisplaySliceTowardOlder();
       }
       requestAnimationFrame(() => {
+        if (
+          loadingOlderRef.current ||
+          olderPrependInProgressRef.current ||
+          prependAnchorRestorePendingRef.current
+        ) {
+          return;
+        }
         const loadedNow = loadedMessagesRef.current;
         const displayNow = displayMessagesRef.current;
         if (loadedNow.length === 0 || displayNow.length === 0) return;
@@ -4410,13 +4637,23 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   const canExpandOlderInBuffer = useMemo(() => {
     if (loadedMessages.length === 0 || displayMessages.length === 0) return false;
+    const bounds = displaySliceBoundsRef.current;
     return (
+      bounds.startIndex > 0 ||
       displayMessages[0]!.telegram_message_id > loadedMessages[0]!.telegram_message_id
     );
-  }, [loadedMessages, displayMessages]);
+  }, [loadedMessages, displayMessages, viewportSliceTick]);
+
+  const canHydrateOlderFromCache = useMemo(() => {
+    const cached = getCachedChatHistory(chat.telegram_chat_id);
+    if (!cached || cached.previewOnly || loadedMessages.length === 0) return false;
+    const cacheHead = cached.messages[0]?.telegram_message_id ?? 0;
+    const loadedHead = loadedMessages[0]!.telegram_message_id;
+    return cacheHead > 0 && loadedHead > 0 && cacheHead < loadedHead;
+  }, [chat.telegram_chat_id, loadedMessages, viewportSliceTick]);
 
   const showTopHistoryLoadSentinel =
-    hasMoreOlder || canExpandOlderInBuffer;
+    hasMoreOlder || canExpandOlderInBuffer || canHydrateOlderFromCache;
 
   const triggerLoadOlderFromSentinel = useCallback(() => {
     tryTriggerOlderHistoryLoad();
@@ -4586,7 +4823,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       topSpacerPx: 0,
       bottomSpacerPx: 0,
     };
+    // During older prepend/restore the virtual window must include the anchor row.
+    // Slicing with stale scrollY (often ≈0 at the top edge) drops the anchor from
+    // the DOM and scroll-keep misses — the viewport jumps to newly prepended rows.
+    if (
+      prependAnchorRestorePending ||
+      olderPrependInProgressRef.current ||
+      pendingItemAnchorRef.current != null
+    ) {
+      return disabledWindow;
+    }
     if (displayMessages.length < MESSAGE_LIST_VIRTUALIZE_MIN_ROWS) {
+      return disabledWindow;
+    }
+    // telegram-tt: while scrolled up in history, render the full mounted display
+    // slice — windowing with 120px fallbacks leaves blank gaps between rows.
+    if (!isFollowingBottom && !initialScrollInProgress) {
       return disabledWindow;
     }
     const metrics = scrollControllerRef.current?.getMetrics();
@@ -4596,23 +4848,45 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         : metrics && metrics.layoutH > 0
           ? metrics.layoutH
           : 1;
-    const scrollY = pinnedScrollYRef.current;
+    const scrollY = metrics?.scrollY ?? pinnedScrollYRef.current;
+    const liveContentH = metrics?.contentH ?? 0;
+    // At the loaded head, render the full display slice — virtual spacers fight
+    // the flex column and leave blank gaps above the oldest rows (telegram-tt).
+    if (
+      viewportAtLoadedTopRef.current &&
+      scrollY <= MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX + MESSAGE_LIST_VIRTUAL_OVERSCAN_PX
+    ) {
+      return disabledWindow;
+    }
     const window = resolveMessageListVirtualWindow(
       displayMessages,
       messageRowHeightCacheRef.current,
-      { scrollY, layoutH },
+      { scrollY, layoutH, contentH: liveContentH },
       MESSAGE_BUBBLE_ROW_GAP_PX,
+      messageLayoutsRef.current,
     );
     if (!window.enabled || displayMessages.length === 0) {
       return window;
     }
     let totalHeight = 0;
+    let measuredRows = 0;
     for (let index = 0; index < displayMessages.length; index += 1) {
       const messageId = displayMessages[index]!.telegram_message_id;
       const cached = messageRowHeightCacheRef.current.get(messageId);
       const contentHeight =
         cached != null && cached > 0 ? cached : MESSAGE_LIST_VIRTUAL_ESTIMATED_ROW_PX;
       totalHeight += contentHeight + (index > 0 ? MESSAGE_BUBBLE_ROW_GAP_PX : 0);
+      if (cached != null && cached > 0) measuredRows += 1;
+    }
+    const measuredRatio =
+      displayMessages.length > 0 ? measuredRows / displayMessages.length : 1;
+    if (
+      liveContentH > 0 &&
+      totalHeight > 0 &&
+      liveContentH > totalHeight * 1.1 &&
+      measuredRatio < 0.6
+    ) {
+      return disabledWindow;
     }
     const maxScrollY = Math.max(0, totalHeight - layoutH);
     const nearBottomFromEstimate =
@@ -4642,7 +4916,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       endIndex: displayMessages.length - 1,
       bottomSpacerPx: 0,
     };
-  }, [chat.last_message_telegram_id, chatScrollPaintReady, displayMessages, displayMessagesLayoutSig, virtualScrollTick]);
+  }, [
+    chat.last_message_telegram_id,
+    chatScrollPaintReady,
+    displayMessages,
+    displayMessagesLayoutSig,
+    initialScrollInProgress,
+    isFollowingBottom,
+    prependAnchorRestorePending,
+    virtualScrollTick,
+    viewportSliceTick,
+  ]);
 
   const renderedMessages = listVirtualWindow.enabled
     ? displayMessages.slice(listVirtualWindow.startIndex, listVirtualWindow.endIndex + 1)
@@ -4669,7 +4953,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     );
   }
 
-  const pinMessagesToBottom = openScrollPlan.pinMessagesToBottom;
+  const pinMessagesToBottom =
+    openScrollPlan.pinMessagesToBottom &&
+    (isFollowingBottom || initialScrollInProgress);
   const hideScrollUntilSettled =
     displayMessages.length > 0 && !chatScrollPaintReady;
 
@@ -4692,15 +4978,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
         initialScrollPosition={openScrollPlan.openAnchor}
         skipInitialTopReset
-        nearTopThresholdPx={MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX}
-        onNearTop={tryTriggerOlderHistoryLoad}
-        nearBottomThresholdPx={MESSAGE_CHAT_LOAD_NEWER_THRESHOLD_PX}
-        onNearBottom={tryTriggerNewerHistoryLoad}
         onScrollPositionChange={handleScrollPositionChange}
         onUserScrollIntent={markUserScrollInteraction}
         onMetricsChange={handleOpenScrollMetrics}
         scrollControllerRef={scrollControllerRef}
-        preserveViewportOnResize={chatScrollPaintReady && !prependAnchorRestorePending}
+        preserveViewportOnResize={chatScrollPaintReady && !prependAnchorRestorePending && !loadingOlder}
         stickToBottomOnResize={isFollowingBottom}
         contentContainerStyle={{
           padding: MESSAGE_CHAT_BODY_PADDING_PX,

@@ -311,7 +311,30 @@ export async function fetchChatHistoryAroundMessage(
       mapped = applyReadOutboxToHistoryMessages(mapped, freshChat);
       mapped = applyCumulativeOutgoingReadStatuses(mapped);
     }
-    messages = sortHistoryMessages(mapped).slice(0, pageLimit);
+    const sorted = sortHistoryMessages(mapped);
+    if (sorted.length <= pageLimit) {
+      messages = sorted;
+    } else {
+      // Keep a window centered on the anchor — never drop older context by
+      // taking only the oldest pageLimit rows (that hides the unread band).
+      const anchorIndex = sorted.findIndex(
+        (row) => row.telegram_message_id === anchorId,
+      );
+      if (anchorIndex < 0) {
+        messages = sorted.slice(0, pageLimit);
+      } else {
+        const olderWanted = Math.min(
+          contextBefore,
+          Math.max(0, pageLimit - 1),
+        );
+        let startIndex = Math.max(0, anchorIndex - olderWanted);
+        let endIndex = Math.min(sorted.length - 1, startIndex + pageLimit - 1);
+        if (endIndex - startIndex + 1 < pageLimit) {
+          startIndex = Math.max(0, endIndex - pageLimit + 1);
+        }
+        messages = sorted.slice(startIndex, endIndex + 1);
+      }
+    }
   }
 
   const finalChat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
@@ -394,17 +417,19 @@ export async function fetchChatHistoryAroundUnread(
     };
   }
 
-  // telegram-tt Around: roughly half the viewport above the read cursor and
-  // enough newer rows to cover the unread band (not a hard 20-message cap).
+  // telegram-tt Around: keep a solid band of older context above the read
+  // cursor, then fill the rest with unread/newer rows (not a hard 20-cap).
+  const minOlder = Math.min(30, Math.max(2, pageLimit - 1));
   const contextBefore = Math.min(
-    Math.max(2, Math.floor(pageLimit * 0.35)),
+    Math.max(minOlder, Math.floor(pageLimit * 0.45)),
     pageLimit - 1,
   );
   const newerWanted = Math.min(
     pageLimit - contextBefore,
-    Math.max(Math.floor(pageLimit * 0.5), unreadCount + 6),
+    Math.max(Math.floor(pageLimit * 0.4), unreadCount + 6),
   );
   const olderAbove = contextBefore;
+  // Prefer enough room for older+newer; allow up to pageLimit (caller may pass 80–120).
   const aroundLimit = Math.min(pageLimit, contextBefore + newerWanted + 1);
 
   const around = await fetchChatHistoryAroundMessage(

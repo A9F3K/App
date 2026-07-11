@@ -1,8 +1,5 @@
 import type { MessageChatRowData } from "./components/messages/MessageChatRow";
 import {
-  MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER,
-  MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER,
-  MESSAGE_CHAT_HISTORY_OPEN_UNREAD_LIMIT_MAX,
   MESSAGE_CHAT_HISTORY_PAGE_SIZE,
   MESSAGE_CHAT_HISTORY_PREVIEW_SIZE,
 } from "./components/messages/messageChatLayout";
@@ -18,8 +15,11 @@ import {
   PREVIEW_FRESH_MS,
   setCachedChatHistory,
 } from "./messageChatHistoryCache";
-import { getChatScrollPosition } from "./messageChatScrollCache";
-import { isMeaningfulCachedUnreadScroll } from "./components/messages/resolveChatOpenScrollPlan";
+import {
+  getOpenChatHistoryCacheAnchorSpec,
+  resolveChatOpenSession,
+  shouldPrefetchHistoryAroundUnread,
+} from "./components/messages/chatOpenSession";
 import { logPageDisplay } from "./pageDisplayLog";
 import { isChatListSyncInProgress } from "./components/messages/chatListSyncStatus";
 
@@ -72,72 +72,21 @@ function toCacheAnchorSpec(spec: LoadSpec): ChatHistoryCacheAnchorSpec {
   };
 }
 
-/** Load around the inbox read cursor when the chat has unreads on first open. */
-export function shouldPrefetchHistoryAroundUnread(
-  chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count">,
-): boolean {
-  const unread = Math.max(
-    0,
-    Math.trunc(Number.isFinite(chat.unread_count) ? chat.unread_count : 0),
-  );
-  if (unread <= 0) return false;
-  const scrollPos = getChatScrollPosition(chat.telegram_chat_id);
-  // Match resolveChatOpenScrollPlan: only skip around-unread when restoring a real mid-read viewport.
-  if (scrollPos != null && isMeaningfulCachedUnreadScroll(scrollPos)) return false;
-  return true;
-}
+export { shouldPrefetchHistoryAroundUnread, getOpenChatHistoryCacheAnchorSpec };
 
 function resolveOpenLoadSpec(
-  chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count">,
+  chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count"> &
+    Partial<Pick<MessageChatRowData, "last_message_telegram_id" | "last_read_inbox_message_id">>,
 ): LoadSpec {
-  const aroundUnread = shouldPrefetchHistoryAroundUnread(chat);
-  const scrollPos = getChatScrollPosition(chat.telegram_chat_id);
-  const anchorId = scrollPos?.anchorMessageId;
-  const loadAroundAnchor =
-    scrollPos != null &&
-    !scrollPos.followingBottom &&
-    anchorId != null &&
-    anchorId > 0;
-
-  if (loadAroundAnchor) {
-    return {
-      warmup: true,
-      limit:
-        MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER +
-        MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER +
-        2,
-      previewOnly: false,
-      aroundUnread: false,
-      aroundMessageId: anchorId,
-      olderAbove: MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER,
-      newerBelow: MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER,
-    };
-  }
-
-  if (aroundUnread) {
-    const unread = Math.max(
-      0,
-      Math.trunc(Number.isFinite(chat.unread_count) ? chat.unread_count : 0),
-    );
-    return {
-      warmup: true,
-      limit: Math.min(
-        MESSAGE_CHAT_HISTORY_OPEN_UNREAD_LIMIT_MAX,
-        Math.max(
-          MESSAGE_CHAT_HISTORY_PAGE_SIZE,
-          unread + MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER + 8,
-        ),
-      ),
-      previewOnly: false,
-      aroundUnread: true,
-    };
-  }
-
+  const session = resolveChatOpenSession(chat as MessageChatRowData);
   return {
     warmup: true,
-    limit: MESSAGE_CHAT_HISTORY_PAGE_SIZE,
+    limit: session.fetch.limit,
     previewOnly: false,
-    aroundUnread,
+    aroundUnread: session.fetch.aroundUnread,
+    aroundMessageId: session.fetch.anchorMessageId,
+    olderAbove: session.fetch.olderAbove,
+    newerBelow: session.fetch.newerBelow,
   };
 }
 
@@ -157,13 +106,6 @@ function resolveLoadSpec(
     previewOnly: options.previewOnly,
     aroundUnread,
   };
-}
-
-/** Cache anchor for the current open-chat history load strategy. */
-export function getOpenChatHistoryCacheAnchorSpec(
-  chat: Pick<MessageChatRowData, "telegram_chat_id" | "unread_count">,
-): ChatHistoryCacheAnchorSpec {
-  return toCacheAnchorSpec(resolveOpenLoadSpec(chat));
 }
 
 async function runHistoryLoad(

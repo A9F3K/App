@@ -112,10 +112,18 @@ export const MESSAGE_CHAT_HISTORY_LIVE_TAIL_SIZE = 10;
 /** Distance from top (px) that triggers loading the previous page. */
 export const MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX = 120;
 
-/** On reopen, load only this many messages above the saved viewport anchor. */
-export const MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER = 5;
-/** On reopen, load only this many messages below the saved viewport anchor. */
-export const MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER = 10;
+/**
+ * Older rows seeded above the open anchor (bottom / restore / around).
+ * Matches around-unread context so every open has scrollable history above.
+ */
+export const MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER = 30;
+/** Newer rows seeded below a mid-thread open anchor. */
+export const MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER = 15;
+/**
+ * Minimum older rows above first-unread / around-unread open (telegram-tt Around).
+ * Prefetch and TDLib around-unread should seed at least this much context above the divider.
+ */
+export const MESSAGE_CHAT_HISTORY_AROUND_UNREAD_OLDER = 30;
 /** Batch size when scrolling down into newer history below the loaded window. */
 export const MESSAGE_CHAT_HISTORY_NEWER_PAGE_SIZE = 15;
 /** Larger batch when catching up a big unread backlog on scroll-down. */

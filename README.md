@@ -203,10 +203,15 @@ From the repository root, deploy the static web build to Vercel production:
 vercel --prod
 ```
 
-Cache erasing
+Hard reload: clear everything including cookies
 
 ```bash
-sessionStorage.clear(); localStorage.clear(); location.reload(true);
+sessionStorage.clear();
+localStorage.clear();
+document.cookie.split(";").forEach(c => { 
+  document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/"); 
+});
+window.location.href = window.location.origin + window.location.pathname + '?t=' + Date.now();
 ```
 
 Deploying from repository root makes this folder the project root, so `api/bot` is deployed and no Root Directory setting is needed. The project is configured so Vercel runs `npx expo export -p web` and serves the `dist/` output. Link the project first with `vercel` if needed.

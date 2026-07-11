@@ -101,7 +101,7 @@ type Props = {
   onNearBottom?: () => void;
   nearBottomThresholdPx?: number;
   /** Wheel, touch-drag, or scrollbar drag — not layout/programmatic scroll. */
-  onUserScrollIntent?: () => void;
+  onUserScrollIntent?: (direction?: "up" | "down") => void;
   /** Optional imperative scroll API (scroll-to-end, preserve position on prepend). */
   scrollControllerRef?: React.MutableRefObject<HspScrollColumnHandle | null>;
   /**
@@ -225,6 +225,7 @@ export function HspScrollColumn({
   const preserveViewportOnResizeRef = useRef(preserveViewportOnResize);
   preserveViewportOnResizeRef.current = preserveViewportOnResize;
   const stableAnchorRef = useRef<HspItemAnchor | null>(null);
+  const stableAnchorScrollTopRef = useRef<number | null>(null);
   const wasAtBottomRef = useRef(true);
   const resizeHandlerRef = useRef<() => void>(() => {});
 
@@ -258,6 +259,7 @@ export function HspScrollColumn({
       stickToBottomOnResizeRef.current &&
       el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_INDICATOR_SCROLL_EPS;
     wasAtBottomRef.current = atBottom;
+    stableAnchorScrollTopRef.current = el.scrollTop;
     // Always keep a row pin when not sticking to bottom — mid-history display growth
     // must re-pin the visible message instead of jumping to the new scroll end.
     stableAnchorRef.current = atBottom ? null : captureTopVisibleAnchor();
@@ -340,7 +342,7 @@ export function HspScrollColumn({
         const { scrollTop, scrollHeight, clientHeight } = el;
         if (Math.abs(e.deltaY) <= 0.5) return;
 
-        onUserScrollIntent?.();
+        onUserScrollIntent?.(e.deltaY < 0 ? "up" : "down");
 
         const contentFits = scrollHeight <= clientHeight + 0.5;
         const atTop = scrollTop <= SCROLL_INDICATOR_SCROLL_EPS;
@@ -357,7 +359,15 @@ export function HspScrollColumn({
           onNearTop?.();
           return;
         }
-        if (e.deltaY > 0 && (atBottom || contentFits)) {
+        // Only fire newer intent when already parked at the absolute bottom —
+        // never while mid-list scroll-down (contentFits alone was too aggressive).
+        if (e.deltaY > 0 && atBottom && !contentFits) {
+          e.preventDefault();
+          nearBottomFiredRef.current = false;
+          onNearBottom?.();
+          return;
+        }
+        if (e.deltaY > 0 && contentFits) {
           e.preventDefault();
           nearBottomFiredRef.current = false;
           onNearBottom?.();
@@ -630,6 +640,16 @@ export function HspScrollColumn({
     if (preserveViewportOnResizeRef.current) {
       const el = getScrollElement();
       if (el) {
+        const anchorScrollTop = stableAnchorScrollTopRef.current;
+        if (
+          anchorScrollTop != null &&
+          stableAnchorRef.current &&
+          Math.abs(el.scrollTop - anchorScrollTop) > 8
+        ) {
+          recordStableAnchor();
+          syncScrollMetricsFromDom();
+          return;
+        }
         if (wasAtBottomRef.current) {
           const targetY = Math.max(0, el.scrollHeight - el.clientHeight);
           if (Math.abs(el.scrollTop - targetY) > 0.5) {

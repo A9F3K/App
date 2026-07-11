@@ -76,8 +76,9 @@ export function estimateMessageListBlockTotalHeight(
 export function resolveMessageListVirtualWindow(
   messages: readonly { telegram_message_id: number }[],
   heightCache: ReadonlyMap<number, number>,
-  metrics: { scrollY: number; layoutH: number },
+  metrics: { scrollY: number; layoutH: number; contentH?: number },
   rowGapPx: number,
+  layouts: ReadonlyMap<number, MessageScrollLayoutEntry> = new Map(),
 ): MessageListVirtualWindow {
   const count = messages.length;
   const disabledWindow: MessageListVirtualWindow = {
@@ -91,22 +92,31 @@ export function resolveMessageListVirtualWindow(
     return disabledWindow;
   }
 
-  const virtualRowBlockHeightPx = (messageId: number, index: number): number => {
-    const cached = heightCache.get(messageId);
-    const contentHeight =
-      cached != null && cached > 0 ? cached : MESSAGE_LIST_VIRTUAL_ESTIMATED_ROW_PX;
-    return contentHeight + (index > 0 ? rowGapPx : 0);
-  };
+  const virtualRowBlockHeightPx = (messageId: number, index: number): number =>
+    rowBlockHeightPx(messageId, index, layouts, heightCache, rowGapPx);
 
   let totalHeight = 0;
   for (let index = 0; index < count; index += 1) {
     totalHeight += virtualRowBlockHeightPx(messages[index]!.telegram_message_id, index);
   }
-  const maxScrollY = Math.max(0, totalHeight - metrics.layoutH);
+  const liveContentH = metrics.contentH ?? 0;
+  // After prepend/expand many rows use the 120px fallback while the live DOM is
+  // much taller. Map the live scroll offset into estimate space so windowing
+  // tracks the viewport the user is actually looking at.
+  const heightScale =
+    liveContentH > totalHeight * 1.08 && totalHeight > 0
+      ? liveContentH / totalHeight
+      : 1;
+  const effectiveTotalHeight = Math.max(totalHeight, liveContentH);
+  const maxScrollY = Math.max(0, effectiveTotalHeight - metrics.layoutH);
   const scrollY = Math.min(Math.max(0, metrics.scrollY), maxScrollY);
+  const estimateScrollY = scrollY / heightScale;
 
-  const viewportTop = Math.max(0, scrollY - MESSAGE_LIST_VIRTUAL_OVERSCAN_PX);
-  const viewportBottom = scrollY + metrics.layoutH + MESSAGE_LIST_VIRTUAL_OVERSCAN_PX;
+  const overscanPx = Math.round(
+    MESSAGE_LIST_VIRTUAL_OVERSCAN_PX * Math.min(Math.max(heightScale, 1), 2.5),
+  );
+  const viewportTop = Math.max(0, estimateScrollY - overscanPx);
+  const viewportBottom = estimateScrollY + metrics.layoutH + overscanPx;
 
   let cursorY = 0;
   let startIndex = 0;
@@ -138,6 +148,22 @@ export function resolveMessageListVirtualWindow(
   let bottomSpacerPx = 0;
   for (let index = endIndex + 1; index < count; index += 1) {
     bottomSpacerPx += virtualRowBlockHeightPx(messages[index]!.telegram_message_id, index);
+  }
+
+  if (heightScale > 1) {
+    topSpacerPx = Math.round(topSpacerPx * heightScale);
+    let renderedHeight = 0;
+    for (let index = startIndex; index <= endIndex; index += 1) {
+      renderedHeight += virtualRowBlockHeightPx(
+        messages[index]!.telegram_message_id,
+        index,
+      );
+    }
+    renderedHeight = Math.round(renderedHeight * heightScale);
+    bottomSpacerPx = Math.max(
+      0,
+      Math.round(effectiveTotalHeight - topSpacerPx - renderedHeight),
+    );
   }
 
   return {
@@ -180,7 +206,7 @@ export function buildMessageListViewportAwareLayouts(
   messages: readonly { telegram_message_id: number }[],
   measuredLayouts: ReadonlyMap<number, MessageScrollLayoutEntry>,
   heightCache: ReadonlyMap<number, number>,
-  metrics: { scrollY: number; layoutH: number },
+  metrics: { scrollY: number; layoutH: number; contentH?: number },
   rowGapPx: number,
 ): Map<number, MessageScrollLayoutEntry> {
   const layouts = buildMessageListComputedLayouts(messages, heightCache, rowGapPx);
@@ -189,6 +215,7 @@ export function buildMessageListViewportAwareLayouts(
     heightCache,
     metrics,
     rowGapPx,
+    layouts,
   );
   if (!window.enabled) return layouts;
 

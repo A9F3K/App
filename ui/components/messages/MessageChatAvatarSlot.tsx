@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { View } from "react-native";
+import { Platform, StyleSheet, View } from "react-native";
 import type { ThemeColors, ThemeName } from "../../theme";
+import { hairlineBorderWidthPx } from "../../scrollIndicatorPx";
 import { ChatAvatarFallback } from "./ChatAvatarFallback";
 import type { NetworkFetchPriority } from "./networkFetchQueue";
 import { isMessageChatAvatarBlobCached, isMessageChatAvatarFetchFailed, MessageChatAvatarImage } from "./MessageChatAvatarImage";
@@ -42,6 +43,13 @@ export function MessageChatAvatarSlot({
 
   const tryImage =
     Boolean(iconUrl) && !loadFailed && !isMessageChatAvatarFetchFailed(iconUrl ?? "");
+  const avatarBorderWidth = hairlineBorderWidthPx();
+  // Web: inset shadow draws on top of full-size content (no layout inset).
+  // Native: border consumes inner space — size content to the padding box.
+  const contentSizePx =
+    Platform.OS === "web"
+      ? sizePx
+      : Math.max(1, sizePx - avatarBorderWidth * 2);
 
   return (
     <View
@@ -49,38 +57,55 @@ export function MessageChatAvatarSlot({
         width: sizePx,
         height: sizePx,
         position: "relative",
-        alignItems: "center",
-        justifyContent: "center",
+        overflow: "hidden",
+        ...(Platform.OS === "web"
+          ? { boxShadow: `inset 0 0 0 ${avatarBorderWidth}px ${colors.highlight}` }
+          : {
+              borderWidth: avatarBorderWidth,
+              borderColor: colors.highlight,
+              borderStyle: "solid",
+            }),
       }}
     >
-      <ChatAvatarFallback initials={initials} sizePx={sizePx} colors={colors} scheme={scheme} />
-      {tryImage ? (
-        <View
-          style={{
-            position: "absolute",
-            left: 0,
-            top: 0,
-            width: sizePx,
-            height: sizePx,
-            opacity: imageReady ? 1 : 0,
-          }}
-        >
-          <MessageChatAvatarImage
-            uri={iconUrl!}
-            sizePx={sizePx}
-            loadEnabled={loadEnabled}
-            fetchPriority={fetchPriority}
-            onLoad={() => {
-              setImageReady(true);
-              onLoad?.();
-            }}
-            onError={(error) => {
-              setLoadFailed(true);
-              onError?.(error);
-            }}
-          />
-        </View>
-      ) : null}
+      <View
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          width: contentSizePx,
+          height: contentSizePx,
+        }}
+      >
+        <ChatAvatarFallback
+          initials={initials}
+          sizePx={contentSizePx}
+          colors={colors}
+          scheme={scheme}
+        />
+        {tryImage ? (
+          <View
+            style={[
+              StyleSheet.absoluteFillObject,
+              { opacity: imageReady ? 1 : 0 },
+            ]}
+          >
+            <MessageChatAvatarImage
+              uri={iconUrl!}
+              sizePx={contentSizePx}
+              loadEnabled={loadEnabled}
+              fetchPriority={fetchPriority}
+              onLoad={() => {
+                setImageReady(true);
+                onLoad?.();
+              }}
+              onError={(error) => {
+                setLoadFailed(true);
+                onError?.(error);
+              }}
+            />
+          </View>
+        ) : null}
+      </View>
     </View>
   );
 }
