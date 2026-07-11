@@ -18,6 +18,7 @@ import {
   getOpenChatHistoryCacheAnchorSpec,
 } from "../../messageChatHistoryPrefetch";
 import {
+  clearChatScrollPosition,
   isChatScrollNearBottom,
   saveChatScrollPosition,
   scrollYFromCachedPosition,
@@ -127,10 +128,13 @@ import {
   countUnreadMessagesNewerThanViewport,
   formatScrollToBottomUnreadCountLabel,
   isAtLoadedChatTail,
+  isUnreadDividerAlignedAtTop,
   MESSAGE_CHAT_FAB_ALWAYS_SHOW_UNREAD_THRESHOLD,
   maxFullyVisibleMessageId,
   maxIntersectingUnreadMessageId,
   topViewportAnchorMessageId,
+  UNREAD_DIVIDER_ROW_HEIGHT_PX,
+  UNREAD_DIVIDER_TOP_PX,
   VIEW_INBOX_DEBOUNCE_MS,
   type MessageScrollLayoutEntry,
 } from "./messageListLayout";
@@ -357,6 +361,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     (options?: { expandArmed?: boolean; beforeMessageId?: number }) => Promise<void>
   >(async () => {});
   const openScrollAppliedRef = useRef(false);
+  /** Unread-divider open is only done once DOM/layout scroll matches telegram-tt UNREAD_DIVIDER_TOP. */
+  const unreadOpenAlignVerifiedRef = useRef(false);
   const pendingPreserveScrollYRef = useRef<number | null>(null);
   const pinnedScrollYRef = useRef(0);
   const chatScrollStateRef = useRef<ChatScrollControllerState>(createChatScrollControllerState());
@@ -419,6 +425,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const saveScrollDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevContentHForBottomStickRef = useRef(0);
   const historySyncKeyRef = useRef("");
+  const historyNetworkKeyRef = useRef("");
   const chatScrollPaintReadyRef = useRef(false);
   const messageLayoutsRef = useRef<Map<number, MessageScrollLayoutEntry>>(new Map());
   const messageRowHeightCacheRef = useRef<Map<number, number>>(new Map());
@@ -597,6 +604,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     );
 
     if (chatChanged) {
+      if (plan.scrollToUnreadDivider) {
+        // Drop stale mid-list restores so the next open stays on the unread divider
+        // until the user actually scrolls (telegram-tt first-unread open).
+        clearChatScrollPosition(chat.telegram_chat_id);
+      }
       const openFetchAnchor = resolveOpenHistoryFetchAnchor(chat, plan);
       scrollAnchorMessageIdRef.current = plan.scrollToUnreadDivider
         ? 0
@@ -624,7 +636,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       assignPendingScrollAnchor(null);
       pendingEmojiPrefetchRef.current = null;
       prevContentHForBottomStickRef.current = 0;
+      historySyncKeyRef.current = "";
+      historyNetworkKeyRef.current = "";
       openScrollAppliedRef.current = false;
+      unreadOpenAlignVerifiedRef.current = false;
       pendingItemAnchorRef.current = null;
       scrollTopBeforeUpdateRef.current = null;
       setPrependAnchorRestorePendingSynced(false);
@@ -1139,6 +1154,16 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const persistChatScrollPosition = useCallback(
     (metrics: HspScrollMetrics) => {
       if (metrics.contentH <= 0) return;
+      // Never persist the pre-settle / unread-catch-up viewport — that overwrites the
+      // unread-divider open with a random mid-list Y on the next reopen.
+      if (initialScrollInProgressRef.current) return;
+      if (!chatScrollPaintReadyRef.current) return;
+      if (
+        openingUnreadCountRef.current > 0 &&
+        !userHasScrolledSinceOpenRef.current
+      ) {
+        return;
+      }
       const anchorId = topViewportAnchorMessageId(
         displayMessagesRef.current,
         messageLayoutsRef.current,
@@ -1388,6 +1413,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     if (firstUnreadId == null && lastReadId == null) {
       if (openScrollAnchorRef.current === "bottom") {
         settleOpenBottomScroll();
+        unreadOpenAlignVerifiedRef.current = true;
         return true;
       }
       // Keep retrying until layouts/messages expose an unread boundary (do not fake-settle at bottom).
@@ -1410,9 +1436,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     }
 
     if (firstUnreadId != null) {
-      if (memoFirstUnreadIdRef.current == null) {
+      if (memoFirstUnreadIdRef.current !== firstUnreadId) {
         memoFirstUnreadIdRef.current = firstUnreadId;
         memoUnreadDividerBeforeIdRef.current = firstUnreadId;
+        setFrozenUnreadDividerBeforeId(firstUnreadId);
       }
     }
 
@@ -1442,26 +1469,110 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       return false;
     }
 
-    const contentH =
-      metrics.contentH > 0
-        ? metrics.contentH
-        : estimateMessageListBlockTotalHeight(
-            displayMessagesRef.current,
-            messageLayoutsRef.current,
-            messageRowHeightCacheRef.current,
-            MESSAGE_BUBBLE_ROW_GAP_PX,
-          );
+    const estimatedContentH = estimateMessageListBlockTotalHeight(
+      displayMessagesRef.current,
+      messageLayoutsRef.current,
+      messageRowHeightCacheRef.current,
+      MESSAGE_BUBBLE_ROW_GAP_PX,
+    );
+    const liveContentH = metrics.contentH > 0 ? metrics.contentH : 0;
+    const contentH = Math.max(liveContentH, estimatedContentH);
     if (contentH <= 0) return false;
 
-    // Always place the unread divider near the top (UNREAD_DIVIDER_TOP), matching telegram-tt.
-    const targetY = scrollYToAlignUnreadDivider(
+    // Prefer live DOM geometry when the unread row/divider is mounted — estimated
+    // heights under-report media-heavy group chats and scrollToY then clamps to 0.
+    let domTargetY: number | null = null;
+    if (Platform.OS === "web" && firstUnreadId != null) {
+      const row =
+        typeof document !== "undefined"
+          ? document.getElementById(`message-row-${firstUnreadId}`)
+          : null;
+      const divider =
+        typeof document !== "undefined"
+          ? document.getElementById("message-unread-divider")
+          : null;
+      const targetEl = divider ?? row;
+      if (targetEl) {
+        let node: HTMLElement | null = targetEl.parentElement;
+        while (node) {
+          const style = globalThis.getComputedStyle?.(node);
+          if (
+            style &&
+            (style.overflowY === "auto" || style.overflowY === "scroll") &&
+            node.scrollHeight > node.clientHeight + 20
+          ) {
+            const nodeRect = node.getBoundingClientRect();
+            const elRect = targetEl.getBoundingClientRect();
+            const offsetInContent = elRect.top - nodeRect.top + node.scrollTop;
+            const rawTarget =
+              divider != null && node.contains(divider)
+                ? offsetInContent - UNREAD_DIVIDER_TOP_PX
+                : offsetInContent - UNREAD_DIVIDER_ROW_HEIGHT_PX - UNREAD_DIVIDER_TOP_PX;
+            const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+            domTargetY = Math.min(maxScroll, Math.max(0, rawTarget));
+            break;
+          }
+          node = node.parentElement;
+        }
+      }
+    }
+
+    const layoutTargetY = scrollYToAlignUnreadDivider(
       anchorEntry,
       metrics.layoutH,
       contentH,
     );
+    const targetY = domTargetY != null ? domTargetY : layoutTargetY;
+
+    // Content still growing (common on media-heavy unread opens) — pin best-effort
+    // but keep retrying until the DOM can actually reach the divider.
+    const liveMaxScroll = Math.max(0, liveContentH - metrics.layoutH);
+    if (
+      domTargetY == null &&
+      targetY > liveMaxScroll + 48 &&
+      liveContentH + 1 < estimatedContentH * 0.85
+    ) {
+      applyProgrammaticScrollY(Math.min(targetY, liveMaxScroll));
+      return false;
+    }
+
     applyProgrammaticScrollY(targetY);
-    enableEdgeLoadingAfterOpen();
-    return true;
+
+    const after = scrollControllerRef.current?.getMetrics();
+    const afterY = after?.scrollY ?? pinnedScrollYRef.current;
+    if (isUnreadDividerAlignedAtTop(afterY, targetY)) {
+      unreadOpenAlignVerifiedRef.current = true;
+      enableEdgeLoadingAfterOpen();
+      return true;
+    }
+
+    // DOM divider near the top of the viewport is ground truth even if scrollY
+    // metrics lag a frame behind scrollTop writes.
+    if (Platform.OS === "web" && typeof document !== "undefined") {
+      const divider = document.getElementById("message-unread-divider");
+      if (divider) {
+        let node: HTMLElement | null = divider.parentElement;
+        while (node) {
+          const style = globalThis.getComputedStyle?.(node);
+          if (
+            style &&
+            (style.overflowY === "auto" || style.overflowY === "scroll") &&
+            node.scrollHeight > node.clientHeight + 20
+          ) {
+            const top = divider.getBoundingClientRect().top - node.getBoundingClientRect().top;
+            if (top >= -8 && top <= 72) {
+              unreadOpenAlignVerifiedRef.current = true;
+              enableEdgeLoadingAfterOpen();
+              return true;
+            }
+            break;
+          }
+          node = node.parentElement;
+        }
+      }
+    }
+
+    return false;
   }, [
     applyProgrammaticScrollY,
     enableEdgeLoadingAfterOpen,
@@ -1760,6 +1871,21 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         if (!openScrollSettleRef.current.trySettle()) {
           openScrollSettleRef.current.scheduleRetry();
         }
+      } else if (
+        chatScrollPaintReadyRef.current &&
+        openScrollToUnreadDividerRef.current &&
+        !unreadOpenAlignVerifiedRef.current &&
+        openingUnreadCountRef.current > 0 &&
+        !userHasScrolledSinceOpenRef.current &&
+        metrics.contentH > metrics.layoutH + 0.5
+      ) {
+        // Content grew after a premature reveal (media/layouts) — re-pin to oldest unread.
+        if (settleOpenUnreadDividerScroll()) {
+          logMessagesScrollAction("unread_open_realign", {
+            scrollY: pinnedScrollYRef.current,
+            contentH: metrics.contentH,
+          });
+        }
       }
       scheduleVirtualScrollWindowUpdate();
       setFabUnreadDisplayTick((tick) => tick + 1);
@@ -1847,6 +1973,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       logMessagesScrollAction,
       scheduleVirtualScrollWindowUpdate,
       scrollAnchorRestorePending,
+      settleOpenUnreadDividerScroll,
       tryArmUnreadMarking,
       isScrollNearBottom,
       persistChatScrollPosition,
@@ -2572,13 +2699,16 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const scheduleOpenScrollForceReveal = useCallback(() => {
     if (chatScrollPaintReadyRef.current) return;
     if (openScrollForceRevealTimerRef.current != null) return;
+    // Media-heavy unread opens need longer than a blank bottom open — keep
+    // retrying settle until the divider can land near UNREAD_DIVIDER_TOP.
+    const delayMs = openScrollToUnreadDividerRef.current ? 1800 : 600;
     openScrollForceRevealTimerRef.current = setTimeout(() => {
       openScrollForceRevealTimerRef.current = null;
       if (!chatScrollPaintReadyRef.current) {
         // Last chance to land on the unread divider before paint (do not reveal at a random Y).
         openScrollSettleRef.current.forceReveal("open_scroll_timeout");
       }
-    }, 600);
+    }, delayMs);
   }, []);
 
   openScrollSettleRef.current = {
@@ -2593,6 +2723,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           initialScrollInProgressRef.current = false;
           setInitialScrollInProgress(false);
           openScrollAppliedRef.current = true;
+          unreadOpenAlignVerifiedRef.current = true;
           revealChatScroll();
           enableEdgeLoadingAfterOpen();
           logPageDisplay("messages_open_scroll_settle", {
@@ -2612,6 +2743,37 @@ export function MessageChatMessageList({ chat, colors }: Props) {
               ) ?? 0,
           });
           return;
+        }
+      }
+      // Best-effort: if the divider is in the DOM, jump there even when verification failed.
+      if (openScrollToUnreadDividerRef.current && Platform.OS === "web") {
+        const divider =
+          typeof document !== "undefined"
+            ? document.getElementById("message-unread-divider")
+            : null;
+        if (divider) {
+          let node: HTMLElement | null = divider.parentElement;
+          while (node) {
+            const style = globalThis.getComputedStyle?.(node);
+            if (
+              style &&
+              (style.overflowY === "auto" || style.overflowY === "scroll") &&
+              node.scrollHeight > node.clientHeight + 20
+            ) {
+              const offset =
+                divider.getBoundingClientRect().top -
+                node.getBoundingClientRect().top +
+                node.scrollTop;
+              const targetY = Math.max(0, offset - UNREAD_DIVIDER_TOP_PX);
+              applyProgrammaticScrollY(targetY);
+              unreadOpenAlignVerifiedRef.current = isUnreadDividerAlignedAtTop(
+                scrollControllerRef.current?.getMetrics()?.scrollY ?? targetY,
+                targetY,
+              );
+              break;
+            }
+            node = node.parentElement;
+          }
         }
       }
       if (applyOpenScrollOnce()) return;
@@ -3107,8 +3269,15 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       setNextBeforeMessageId(null);
       setLastReadOutboxFromHistory(null);
       setSelfUserId(null);
+      historyNetworkKeyRef.current = "";
       return;
     }
+
+    // One network open per chat+generation — do not re-fetch when callback
+    // identities change (e.g. selfUserId lands and recreates merge helpers).
+    const historyKey = `${chat.telegram_chat_id}:${historyLoad.generation}`;
+    if (historyNetworkKeyRef.current === historyKey) return;
+    historyNetworkKeyRef.current = historyKey;
 
     let cancelled = false;
     setError(null);

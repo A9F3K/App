@@ -403,6 +403,16 @@ export function scrollYToAlignUnreadDivider(
   return Math.min(maxScroll, Math.max(0, targetY));
 }
 
+/** True when the open-chat unread divider is parked near the top (telegram-tt UNREAD_DIVIDER_TOP). */
+export function isUnreadDividerAlignedAtTop(
+  scrollY: number,
+  targetScrollY: number,
+  tolerancePx = 64,
+): boolean {
+  if (!Number.isFinite(scrollY) || !Number.isFinite(targetScrollY)) return false;
+  return Math.abs(scrollY - targetScrollY) <= tolerancePx;
+}
+
 /** Loaded history includes the chat's latest message (not a stale preview tail). */
 export function isAtLoadedChatTail(
   loadedTailMessageId: number,

@@ -129,6 +129,36 @@ export function getChatScrollPosition(chatId: number): CachedChatScrollPosition 
   return entry;
 }
 
+/** Drop one chat's saved scroll (memory + session). Used when forcing a fresh unread open. */
+export function clearChatScrollPosition(chatId: number): void {
+  if (!Number.isFinite(chatId)) return;
+  memory.delete(chatId);
+  try {
+    if (typeof globalThis === "undefined" || !("sessionStorage" in globalThis)) return;
+    const store = readSessionCache();
+    delete store[String(chatId)];
+    (globalThis as unknown as { sessionStorage: Storage }).sessionStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify(store),
+    );
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+/** Drop all saved scroll positions (memory + session). */
+export function clearAllChatScrollPositions(): void {
+  memory.clear();
+  try {
+    if (typeof globalThis === "undefined" || !("sessionStorage" in globalThis)) return;
+    (globalThis as unknown as { sessionStorage: Storage }).sessionStorage.removeItem(
+      SESSION_STORAGE_KEY,
+    );
+  } catch {
+    /* quota / private mode */
+  }
+}
+
 /** Distance from viewport bottom (px) treated as "pinned to latest messages". */
 export const CHAT_SCROLL_FOLLOW_BOTTOM_THRESHOLD_PX = 80;
 

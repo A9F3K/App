@@ -271,6 +271,8 @@ export function HspScrollColumn({
     if (didMountScrollResetRef.current) return;
     didMountScrollResetRef.current = true;
     if (initialScrollPosition === "bottom") return;
+    // Unread opens skip the top reset — the controller applies UNREAD_DIVIDER_TOP itself.
+    if (skipInitialTopReset) return;
     if (Platform.OS === "web") {
       const instance = scrollRef.current as unknown as {
         getScrollableNode?: () => HTMLElement | null | undefined;
@@ -289,7 +291,7 @@ export function HspScrollColumn({
       requestAnimationFrame(syncScrollMetricsFromDom);
     });
     return () => cancelAnimationFrame(id);
-  }, [initialScrollPosition, syncNearTopLatch, syncScrollMetricsFromDom]);
+  }, [initialScrollPosition, skipInitialTopReset, syncNearTopLatch, syncScrollMetricsFromDom]);
 
   useLayoutEffect(() => {
     if (Platform.OS !== "web") return;

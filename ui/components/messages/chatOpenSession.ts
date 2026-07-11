@@ -75,10 +75,13 @@ function cachedScrollY(cached: CachedChatScrollPosition): number {
 export function isMeaningfulCachedUnreadScroll(cached: CachedChatScrollPosition): boolean {
   if (cached.followingBottom) return true;
   const scrollY = cachedScrollY(cached);
-  if (scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX) return true;
-  if (cached.anchorMessageId != null && cached.anchorMessageId > 0) {
-    return scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX;
-  }
+  const hasAnchor =
+    cached.anchorMessageId != null &&
+    Number.isFinite(cached.anchorMessageId) &&
+    cached.anchorMessageId > 0;
+  // Bare scrollY from a failed/partial open settle must not skip the unread divider.
+  // telegram-tt only restores mid-unread when a real viewport message was pinned.
+  if (hasAnchor && scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX) return true;
   return false;
 }
 
