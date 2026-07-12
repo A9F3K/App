@@ -246,6 +246,27 @@ export function setCachedChatHistory(
       ? Math.trunc(options.aroundMessageId)
       : null;
   const existing = getCachedChatHistory(chatId);
+  // Never let a short preview lane wipe a longer full thread (open/full prefetch).
+  if (
+    previewOnly &&
+    existing &&
+    !existing.previewOnly &&
+    existing.messages.length > 0
+  ) {
+    if (page.messages.length > 0) {
+      mergeCachedChatHistoryTail(chatId, page);
+    }
+    return;
+  }
+  if (
+    previewOnly &&
+    existing &&
+    existing.previewOnly &&
+    existing.messages.length > page.messages.length
+  ) {
+    mergeCachedChatHistoryTail(chatId, page);
+    return;
+  }
   // Never let a shorter overlapping page wipe a longer thread (prefetch 30 vs open 197).
   if (
     existing &&

@@ -10,6 +10,12 @@ export const MESSAGE_LIST_SLICE = CHAT_HISTORY_WINDOW_N;
 /** Max rows kept in the in-memory buffer around the anchor (2N). */
 export const MESSAGE_LIST_VIEWPORT_LIMIT = MESSAGE_LIST_SLICE * 2;
 
+/**
+ * Max rows in the mounted display window (2N sides + anchor).
+ * Matches {@link windowBoundsAroundAnchor} / openAround.
+ */
+export const MESSAGE_LIST_DISPLAY_MAX = MESSAGE_LIST_VIEWPORT_LIMIT + 1;
+
 export type CountSliceBounds = {
   startIndex: number;
   endIndex: number;
@@ -79,14 +85,23 @@ export function canExpandDisplaySliceOlder(
   return displayStartIndex > 0;
 }
 
+/**
+ * Slide the display window toward older rows (tdesktop / telegram-tt).
+ * Never grow past `maxRows` — drop newer rows as older ones are revealed.
+ */
 export function expandDisplaySliceOlder(
   loadedMessages: readonly MessageChatHistoryItem[],
   currentBounds: CountSliceBounds,
   expandBy = MESSAGE_LIST_SLICE,
+  maxRows = MESSAGE_LIST_DISPLAY_MAX,
 ): CountSliceBounds {
   if (currentBounds.endIndex < currentBounds.startIndex) return currentBounds;
   const startIndex = Math.max(0, currentBounds.startIndex - expandBy);
-  return { startIndex, endIndex: currentBounds.endIndex };
+  let endIndex = currentBounds.endIndex;
+  if (maxRows > 0 && endIndex - startIndex + 1 > maxRows) {
+    endIndex = startIndex + maxRows - 1;
+  }
+  return { startIndex, endIndex };
 }
 
 /** Expand display slice toward newer rows already in the buffer (no API fetch). */
@@ -101,10 +116,15 @@ export function canExpandDisplaySliceNewer(
   );
 }
 
+/**
+ * Slide the display window toward newer rows.
+ * Never grow past `maxRows` — drop older rows as newer ones are revealed.
+ */
 export function expandDisplaySliceNewer(
   loadedMessages: readonly MessageChatHistoryItem[],
   currentBounds: CountSliceBounds,
   expandBy = MESSAGE_LIST_SLICE,
+  maxRows = MESSAGE_LIST_DISPLAY_MAX,
 ): CountSliceBounds {
   if (currentBounds.endIndex < currentBounds.startIndex) return currentBounds;
   if (loadedMessages.length === 0) return currentBounds;
@@ -112,5 +132,9 @@ export function expandDisplaySliceNewer(
     loadedMessages.length - 1,
     currentBounds.endIndex + expandBy,
   );
-  return { startIndex: currentBounds.startIndex, endIndex };
+  let startIndex = currentBounds.startIndex;
+  if (maxRows > 0 && endIndex - startIndex + 1 > maxRows) {
+    startIndex = Math.max(0, endIndex - maxRows + 1);
+  }
+  return { startIndex, endIndex };
 }

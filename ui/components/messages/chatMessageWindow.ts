@@ -2,6 +2,7 @@ import type { MessageChatHistoryItem } from "./messageChatHistoryTypes";
 import {
   expandDisplaySliceNewer,
   expandDisplaySliceOlder,
+  MESSAGE_LIST_DISPLAY_MAX,
   MESSAGE_LIST_SLICE,
   MESSAGE_LIST_VIEWPORT_LIMIT,
   sliceMessagesByCountAroundId,
@@ -90,6 +91,7 @@ export function expandOlder(
   loaded: readonly MessageChatHistoryItem[],
   current: ChatMessageWindowState,
   expandBy = MESSAGE_LIST_SLICE,
+  maxRows = MESSAGE_LIST_DISPLAY_MAX,
 ): ChatMessageWindowState | null {
   if (loaded.length === 0) return null;
   const visibleBounds = mergeOverride(
@@ -98,16 +100,18 @@ export function expandOlder(
     loaded.length,
   );
   if (visibleBounds.startIndex <= 0) return null;
-  const nextBounds = expandDisplaySliceOlder(loaded, visibleBounds, expandBy);
+  const nextBounds = expandDisplaySliceOlder(
+    loaded,
+    visibleBounds,
+    expandBy,
+    maxRows,
+  );
   if (nextBounds.startIndex >= visibleBounds.startIndex) return null;
-  const override: CountSliceBounds = {
-    startIndex: nextBounds.startIndex,
-    endIndex: Math.max(nextBounds.endIndex, visibleBounds.endIndex),
-  };
-  const bounds = mergeOverride(nextBounds, override, loaded.length);
+  // Authoritative slid window — do not merge-widen with the previous endIndex.
+  const bounds = clampBounds(loaded.length, nextBounds);
   return {
     bounds,
-    override,
+    override: bounds,
     anchorMessageId: current.anchorMessageId,
     atLoadedTop: bounds.startIndex === 0,
     atLoadedBottom: bounds.endIndex >= loaded.length - 1,
@@ -119,19 +123,27 @@ export function expandNewer(
   loaded: readonly MessageChatHistoryItem[],
   current: ChatMessageWindowState,
   expandBy = MESSAGE_LIST_SLICE,
+  maxRows = MESSAGE_LIST_DISPLAY_MAX,
 ): ChatMessageWindowState | null {
   if (loaded.length === 0) return null;
-  if (current.bounds.endIndex >= loaded.length - 1) return null;
-  const nextBounds = expandDisplaySliceNewer(loaded, current.bounds, expandBy);
-  if (nextBounds.endIndex <= current.bounds.endIndex) return null;
-  const override: CountSliceBounds = {
-    startIndex: Math.min(nextBounds.startIndex, current.bounds.startIndex),
-    endIndex: nextBounds.endIndex,
-  };
-  const bounds = mergeOverride(nextBounds, override, loaded.length);
+  const visibleBounds = mergeOverride(
+    current.bounds,
+    current.override,
+    loaded.length,
+  );
+  if (visibleBounds.endIndex >= loaded.length - 1) return null;
+  const nextBounds = expandDisplaySliceNewer(
+    loaded,
+    visibleBounds,
+    expandBy,
+    maxRows,
+  );
+  if (nextBounds.endIndex <= visibleBounds.endIndex) return null;
+  // Authoritative slid window — do not merge-widen with the previous startIndex.
+  const bounds = clampBounds(loaded.length, nextBounds);
   return {
     bounds,
-    override,
+    override: bounds,
     anchorMessageId: current.anchorMessageId,
     atLoadedTop: bounds.startIndex === 0,
     atLoadedBottom: bounds.endIndex >= loaded.length - 1,
@@ -171,18 +183,19 @@ export function afterOlderPrepend(
     };
   }
   const nextStart = Math.min(loadedLength - 1, prevStart + prependedCount);
+  let nextEnd = Math.min(
+    loadedLength - 1,
+    Math.max(prevEnd + prependedCount, nextStart),
+  );
+  // Keep the shifted window within 2N+1 (drop from the newer end).
+  if (nextEnd - nextStart + 1 > MESSAGE_LIST_DISPLAY_MAX) {
+    nextEnd = nextStart + MESSAGE_LIST_DISPLAY_MAX - 1;
+  }
   const override: CountSliceBounds = {
     startIndex: nextStart,
-    endIndex: Math.min(
-      loadedLength - 1,
-      Math.max(prevEnd + prependedCount, nextStart),
-    ),
+    endIndex: nextEnd,
   };
-  const base = clampBounds(loadedLength, {
-    startIndex: prevStart + prependedCount,
-    endIndex: prevEnd + prependedCount,
-  });
-  const bounds = mergeOverride(base, override, loadedLength);
+  const bounds = clampBounds(loadedLength, override);
   return {
     bounds,
     override,
@@ -237,7 +250,32 @@ export function trimLoadedAroundAnchor(
   return trimMessagesAroundAnchorCount(messages, anchorMessageId, maxRows);
 }
 
+/**
+ * Keep a settled display window as an override floor (tdesktop item-anchor).
+ * Only shrink when over maxRows — never re-center via openAround (that jumps).
+ */
+export function keepSettledDisplayWindow(
+  loadedLength: number,
+  settled: CountSliceBounds,
+  maxRows = MESSAGE_LIST_DISPLAY_MAX,
+): CountSliceBounds {
+  if (loadedLength <= 0 || settled.endIndex < settled.startIndex) {
+    return { startIndex: 0, endIndex: -1 };
+  }
+  let startIndex = Math.max(0, Math.min(settled.startIndex, loadedLength - 1));
+  let endIndex = Math.max(
+    startIndex,
+    Math.min(settled.endIndex, loadedLength - 1),
+  );
+  if (maxRows > 0 && endIndex - startIndex + 1 > maxRows) {
+    // Drop from the newer end so the older edge the user just revealed stays.
+    endIndex = startIndex + maxRows - 1;
+  }
+  return { startIndex, endIndex };
+}
+
 export {
+  MESSAGE_LIST_DISPLAY_MAX,
   MESSAGE_LIST_SLICE,
   MESSAGE_LIST_VIEWPORT_LIMIT,
   type CountSliceBounds,

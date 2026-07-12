@@ -23,8 +23,10 @@
  * 1. Always open with Around (older+newer context); tail-only is last-resort fallback.
  * 2. Sentinels are the primary edge trigger; near-top/bottom metrics are backup.
  * 3. chatScrollController.phase is the only mutation gate — do not add parallel booleans.
- * 4. On prepend release, re-pin display around the viewport message before clearing override.
- * 5. Display expand widens the in-buffer window only; API older loads use sentinels / near-top edge.
+ * 4. On prepend release, keep the settled ≤2N window as override floor (item-anchor).
+ *    Never openAround/re-center on release — that jumps into blank spacer space.
+ * 5. Display expand *slides* the in-buffer window (≤2N); API older loads use sentinels / near-top.
+ * 6. Mid-history: paint the full capped display slice (no estimated-height virtual gaps).
  */
 export {
   resolveChatOpenSession,

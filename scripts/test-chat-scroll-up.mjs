@@ -9,6 +9,9 @@ import {
   openAround,
   resolveDisplayWindow,
   sliceDisplayMessages,
+  MESSAGE_LIST_VIEWPORT_LIMIT,
+  MESSAGE_LIST_DISPLAY_MAX,
+  keepSettledDisplayWindow,
 } from "../ui/components/messages/chatMessageWindow.ts";
 import { decideChatEdgeLoad } from "../ui/components/messages/chatEdgeLoadPolicy.ts";
 import {
@@ -73,19 +76,39 @@ function restoreItemAnchorScrollY(args) {
 
 console.log("chat scroll-up smoke tests");
 
-// Complete history in buffer: scroll-up expands display before API.
+// Complete history in buffer: scroll-up slides display (≤2N), does not grow unboundedly.
 {
   const loaded = makeLoaded(120, 1000);
   const tailId = loaded[loaded.length - 1].telegram_message_id;
   const opened = openAround(loaded, tailId);
   assert.equal(opened.atLoadedBottom, true);
   assert.ok(opened.bounds.startIndex > 0, "tail open keeps older rows in buffer");
+  const openedCount =
+    opened.bounds.endIndex - opened.bounds.startIndex + 1;
 
   const expanded = expandOlder(loaded, opened);
   assert.ok(expanded, "expand toward older succeeds");
   assert.ok(expanded.bounds.startIndex < opened.bounds.startIndex);
   const slice = sliceDisplayMessages(loaded, expanded);
-  assert.ok(slice.length > 40, "expanded slice shows more than one page");
+  assert.ok(slice.length <= MESSAGE_LIST_DISPLAY_MAX, "slid window stays ≤2N+1");
+  assert.ok(
+    expanded.bounds.endIndex < opened.bounds.endIndex || openedCount <= MESSAGE_LIST_DISPLAY_MAX,
+    "sliding older drops newer rows when at cap",
+  );
+}
+
+// Repeated older expands never exceed 2N+1 (tdesktop retained UI budget).
+{
+  const loaded = makeLoaded(200, 1);
+  let window = openAround(loaded, loaded[199].telegram_message_id);
+  for (let i = 0; i < 8; i += 1) {
+    const next = expandOlder(loaded, window);
+    if (!next) break;
+    window = next;
+    const count = window.bounds.endIndex - window.bounds.startIndex + 1;
+    assert.ok(count <= MESSAGE_LIST_DISPLAY_MAX, `expand #${i + 1} count=${count}`);
+  }
+  assert.ok(window.bounds.startIndex === 0 || window.bounds.endIndex - window.bounds.startIndex + 1 <= MESSAGE_LIST_DISPLAY_MAX);
 }
 
 // Edge gate: in-buffer expand triggers load without hasMoreOlder.
@@ -164,6 +187,32 @@ console.log("chat scroll-up smoke tests");
   assert.equal(shiftedAtTop.override?.startIndex, 35, "shift past prepended rows even at top");
   assert.equal(shiftedAtTop.override?.endIndex, 114, "prior end shifted by prepend count");
   assert.equal(shiftedAtTop.atLoadedTop, false, "new older rows stay above the display window");
+  assert.ok(
+    shiftedAtTop.override.endIndex - shiftedAtTop.override.startIndex + 1 <=
+      MESSAGE_LIST_DISPLAY_MAX,
+    "shifted window stays ≤2N+1",
+  );
+}
+
+// Wide display window is clamped to 2N+1 after prepend shift.
+{
+  const shiftedWide = afterOlderPrepend(
+    200,
+    {
+      bounds: { startIndex: 0, endIndex: 119 },
+      override: { startIndex: 0, endIndex: 119 },
+      anchorMessageId: 1000,
+      atLoadedTop: true,
+      atLoadedBottom: false,
+    },
+    40,
+  );
+  assert.equal(shiftedWide.override?.startIndex, 40);
+  assert.equal(
+    shiftedWide.override.endIndex - shiftedWide.override.startIndex + 1,
+    MESSAGE_LIST_DISPLAY_MAX,
+    "wide window clamped to 2N+1 after shift",
+  );
 }
 
 // Mid-buffer older prepend shifts indices so the same rows stay mounted.
@@ -370,6 +419,20 @@ console.log("chat scroll-up smoke tests");
   assert.ok(budget.older > CHAT_HISTORY_WINDOW_N, "older receives redistributed budget");
   assert.equal(opened.bounds.startIndex, 50 - budget.older);
   assert.equal(opened.bounds.endIndex, 50 + budget.newer);
+}
+
+// keepSettledDisplayWindow never re-centers (regression: openAround on release
+// jumped scrollY into blank spacer / background).
+{
+  const kept = keepSettledDisplayWindow(200, { startIndex: 40, endIndex: 120 }, MESSAGE_LIST_DISPLAY_MAX);
+  assert.equal(kept.startIndex, 40, "older edge of settled window stays");
+  assert.equal(
+    kept.endIndex - kept.startIndex + 1,
+    MESSAGE_LIST_DISPLAY_MAX,
+    "clamps to display max by dropping newer only",
+  );
+  const under = keepSettledDisplayWindow(80, { startIndex: 10, endIndex: 50 }, MESSAGE_LIST_DISPLAY_MAX);
+  assert.deepEqual(under, { startIndex: 10, endIndex: 50 }, "under-max window unchanged");
 }
 
 console.log("all chat scroll-up smoke tests passed");
