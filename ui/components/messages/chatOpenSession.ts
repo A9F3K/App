@@ -10,7 +10,11 @@ import {
   MESSAGE_CHAT_HISTORY_OPEN_UNREAD_LIMIT_MAX,
   MESSAGE_CHAT_HISTORY_PAGE_SIZE,
 } from "./messageChatLayout";
+import { CHAT_HISTORY_WINDOW_N } from "./chatHistoryWindowBudget";
 import type { MessageChatRowData } from "./MessageChatRow";
+
+/** Full bidirectional open window (2N) when one side of history is exhausted. */
+const OPEN_WINDOW_2N = CHAT_HISTORY_WINDOW_N * 2;
 
 /** Ignore stale cache at scroll top — that is not a deliberate mid-read position. */
 const RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX = 48;
@@ -116,13 +120,14 @@ function aroundUnreadFetch(unreadCount: number): ChatOpenFetchSpec {
     limit: Math.min(
       MESSAGE_CHAT_HISTORY_OPEN_UNREAD_LIMIT_MAX,
       Math.max(
+        OPEN_WINDOW_2N,
         MESSAGE_CHAT_HISTORY_PAGE_SIZE,
         unreadCount + MESSAGE_CHAT_HISTORY_AROUND_UNREAD_OLDER + 8,
       ),
     ),
     aroundUnread: true,
     olderAbove: MESSAGE_CHAT_HISTORY_AROUND_UNREAD_OLDER,
-    newerBelow: null,
+    newerBelow: MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER,
   };
 }
 
@@ -130,12 +135,13 @@ function tailFetchFallback(): ChatOpenFetchSpec {
   return {
     kind: "tail",
     anchorMessageId: null,
-    olderBudgetRows: MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER,
+    // At chat end: redistribute unused newer budget → up to 2N older.
+    olderBudgetRows: OPEN_WINDOW_2N,
     newerBudgetRows: 0,
-    limit: MESSAGE_CHAT_HISTORY_PAGE_SIZE,
+    limit: Math.max(MESSAGE_CHAT_HISTORY_PAGE_SIZE, OPEN_WINDOW_2N),
     aroundUnread: false,
-    olderAbove: null,
-    newerBelow: null,
+    olderAbove: OPEN_WINDOW_2N,
+    newerBelow: 0,
   };
 }
 

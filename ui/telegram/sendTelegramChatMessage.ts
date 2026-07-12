@@ -1,6 +1,6 @@
 import { buildApiUrl } from "../../api/_base";
 import type { MessageChatHistoryItem } from "../components/messages/messageChatHistoryTypes";
-import { coalesceOutgoingStatus } from "../components/messages/messageChatHistoryTypes";
+import { normalizeSuccessfulSendOutgoingStatus } from "../components/messages/messageChatHistoryTypes";
 
 export type SendTelegramChatMessageResult =
   | { ok: true; message: MessageChatHistoryItem }
@@ -15,7 +15,7 @@ function normalizeSentMessage(raw: unknown): MessageChatHistoryItem | null {
   if (!text.trim()) return null;
   const senderUserId = Number(row.sender_user_id);
   const senderChatId = Number(row.sender_chat_id);
-  const outgoingStatus = coalesceOutgoingStatus(row.outgoing_status, true);
+  const outgoingStatus = normalizeSuccessfulSendOutgoingStatus(row.outgoing_status, true);
   return {
     telegram_message_id: telegramMessageId,
     text,

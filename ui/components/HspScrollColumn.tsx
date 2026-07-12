@@ -24,6 +24,7 @@ import {
   scrollIndicatorHairlineBorderWidthPx,
   scrollIndicatorThumbSpanAndOffset,
   snapScrollIndicatorCoordPx,
+  SCROLL_INDICATOR_THUMB_MIN_PX,
 } from "../scrollIndicatorPx";
 import { isBrowserZoomWheelEvent } from "../browserZoom";
 import { layout, useColors } from "../theme";
@@ -83,6 +84,14 @@ type Props = {
   onScrollPositionChange?: (metrics: HspScrollMetrics) => void;
   /** Inset (px) of the thumb from the right edge of the scroll shell; default {@link layout.scrollIndicatorRightInsetPx}. */
   scrollbarRightInsetPx?: number;
+  /** Min thumb height (px). Chat panes pass ~20 to match tdesktop. */
+  indicatorThumbMinPx?: number;
+  /**
+   * Optional content height used only for thumb *size* (not scroll range).
+   * Pass estimated loaded-buffer / history span so mid-history remounts do not
+   * collapse the thumb to the mounted display slice alone.
+   */
+  indicatorContentSpanPx?: number | null;
   /**
    * When true (default), wheel/touch scroll does not chain to parent scrollers once this column hits an edge.
    * Root layout passes false so zoomed document scroll still works when the main shell is exhausted.
@@ -130,6 +139,8 @@ export function HspScrollColumn({
   onMetricsChange,
   onScrollPositionChange,
   scrollbarRightInsetPx = DEFAULT_SCROLLBAR_RIGHT_INSET,
+  indicatorThumbMinPx = SCROLL_INDICATOR_THUMB_MIN_PX,
+  indicatorContentSpanPx = null,
   containOverscroll = true,
   scrollEnabled = true,
   initialScrollPosition = "top",
@@ -152,7 +163,34 @@ export function HspScrollColumn({
   const nearBottomFiredRef = useRef(false);
   const scrollMetricsRef = useRef({ layoutH: 0, contentH: 0, scrollY: 0 });
   const [scroll, setScroll] = useState({ layoutH: 0, contentH: 0, scrollY: 0 });
-  scrollMetricsRef.current = scroll;
+  // Do NOT assign scrollMetricsRef from React state here — programmatic
+  // scrollToY/restore must update the ref synchronously so getMetrics() is
+  // correct before the next render. Parent re-renders with stale state would
+  // otherwise wipe a just-restored scrollY and re-pin the wrong offset.
+
+  /** Keep getMetrics() in sync with DOM mutations before the next React render. */
+  const commitScrollMetrics = useCallback(
+    (next: { layoutH?: number; contentH?: number; scrollY: number }) => {
+      const merged = {
+        layoutH:
+          next.layoutH != null && next.layoutH > 0
+            ? next.layoutH
+            : scrollMetricsRef.current.layoutH,
+        contentH:
+          next.contentH != null && next.contentH > 0
+            ? next.contentH
+            : scrollMetricsRef.current.contentH,
+        scrollY: next.scrollY,
+      };
+      scrollMetricsRef.current = merged;
+      setScroll((prev) => ({
+        layoutH: merged.layoutH > 0 ? merged.layoutH : prev.layoutH,
+        contentH: merged.contentH > 0 ? merged.contentH : prev.contentH,
+        scrollY: merged.scrollY,
+      }));
+    },
+    [],
+  );
   const stickToBottomOnResizeRef = useRef(stickToBottomOnResize);
   stickToBottomOnResizeRef.current = stickToBottomOnResize;
 
@@ -216,6 +254,7 @@ export function HspScrollColumn({
         scrollY,
         ...(contentH > 0 ? { contentH } : {}),
       };
+      scrollMetricsRef.current = next;
       emitScrollPosition(next);
       return next;
     });
@@ -434,6 +473,11 @@ export function HspScrollColumn({
         scrollY: y,
         ...(ch > 0 ? { contentH: ch } : {}),
       };
+      scrollMetricsRef.current = {
+        layoutH: next.layoutH,
+        contentH: next.contentH,
+        scrollY: next.scrollY,
+      };
       emitScrollPosition({
         layoutH: next.layoutH,
         contentH: next.contentH,
@@ -473,7 +517,11 @@ export function HspScrollColumn({
 
   const onLayout = (e: LayoutChangeEvent) => {
     const lh = e.nativeEvent.layout.height;
-    setScroll((prev) => ({ ...prev, layoutH: lh }));
+    setScroll((prev) => {
+      const next = { ...prev, layoutH: lh };
+      scrollMetricsRef.current = next;
+      return next;
+    });
     if (initialScrollPosition === "top" && !skipInitialTopReset && !didInitialTopResetRef.current) {
       didInitialTopResetRef.current = true;
       requestAnimationFrame(() => {
@@ -486,7 +534,7 @@ export function HspScrollColumn({
         } else {
           scrollRef.current?.scrollTo({ y: 0, animated: false });
         }
-        setScroll((prev) => ({ ...prev, scrollY: 0 }));
+        commitScrollMetrics({ scrollY: 0 });
         syncNearTopLatch(0);
       });
     }
@@ -496,7 +544,11 @@ export function HspScrollColumn({
   };
 
   const onContentSizeChange = (_w: number, h: number) => {
-    setScroll((prev) => ({ ...prev, contentH: h }));
+    setScroll((prev) => {
+      const next = { ...prev, contentH: h };
+      scrollMetricsRef.current = next;
+      return next;
+    });
     if (Platform.OS === "web") {
       requestAnimationFrame(() => resizeHandlerRef.current());
     }
@@ -518,12 +570,11 @@ export function HspScrollColumn({
           const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
           clamped = Math.min(maxScroll, clamped);
           el.scrollTop = clamped;
-          setScroll((prev) => ({
-            ...prev,
-            layoutH: el.clientHeight > 0 ? el.clientHeight : prev.layoutH,
-            contentH: el.scrollHeight > 0 ? el.scrollHeight : prev.contentH,
+          commitScrollMetrics({
+            layoutH: el.clientHeight,
+            contentH: el.scrollHeight,
             scrollY: clamped,
-          }));
+          });
           syncNearTopLatch(clamped);
           syncNearBottomLatch(clamped, el.clientHeight, el.scrollHeight);
           recordStableAnchor();
@@ -533,10 +584,10 @@ export function HspScrollColumn({
       scrollRef.current?.scrollTo({ y: clamped, animated: false });
       syncNearTopLatch(clamped);
       syncNearBottomLatch(clamped, scrollMetricsRef.current.layoutH, scrollMetricsRef.current.contentH);
-      setScroll((prev) => ({ ...prev, scrollY: clamped }));
+      commitScrollMetrics({ scrollY: clamped });
       recordStableAnchor();
     },
-    [recordStableAnchor, syncNearBottomLatch, syncNearTopLatch],
+    [commitScrollMetrics, recordStableAnchor, syncNearBottomLatch, syncNearTopLatch],
   );
 
   const scrollToEnd = useCallback(() => {
@@ -547,12 +598,7 @@ export function HspScrollColumn({
         const contentH = el.scrollHeight;
         const y = Math.max(0, contentH - layoutH);
         el.scrollTop = y;
-        setScroll((prev) => ({
-          ...prev,
-          layoutH: layoutH > 0 ? layoutH : prev.layoutH,
-          contentH: contentH > 0 ? contentH : prev.contentH,
-          scrollY: y,
-        }));
+        commitScrollMetrics({ layoutH, contentH, scrollY: y });
         syncNearTopLatch(y);
         syncNearBottomLatch(y, layoutH, contentH);
         recordStableAnchor();
@@ -560,7 +606,7 @@ export function HspScrollColumn({
       }
     }
     scrollRef.current?.scrollToEnd({ animated: false });
-  }, [getScrollElement, recordStableAnchor, syncNearBottomLatch, syncNearTopLatch]);
+  }, [commitScrollMetrics, getScrollElement, recordStableAnchor, syncNearBottomLatch, syncNearTopLatch]);
 
   const messageRowNativeId = (messageId: number) => `message-row-${messageId}`;
 
@@ -603,22 +649,35 @@ export function HspScrollColumn({
         const scrollEl = getScrollElement();
         if (!rowEl || !scrollEl) return false;
         const delta = rowEl.getBoundingClientRect().top - anchor.viewportTopPx;
-        if (Math.abs(delta) < 0.5) return true;
+        if (Math.abs(delta) < 0.5) {
+          // Still sync metrics from live DOM so callers do not read a stale scrollY.
+          commitScrollMetrics({
+            layoutH: scrollEl.clientHeight,
+            contentH: scrollEl.scrollHeight,
+            scrollY: scrollEl.scrollTop,
+          });
+          return true;
+        }
         const nextTop = scrollEl.scrollTop + delta;
         scrollEl.scrollTop = nextTop;
-        setScroll((prev) => ({
-          ...prev,
-          layoutH: scrollEl.clientHeight > 0 ? scrollEl.clientHeight : prev.layoutH,
-          contentH: scrollEl.scrollHeight > 0 ? scrollEl.scrollHeight : prev.contentH,
+        commitScrollMetrics({
+          layoutH: scrollEl.clientHeight,
+          contentH: scrollEl.scrollHeight,
           scrollY: nextTop,
-        }));
+        });
         syncNearTopLatch(nextTop);
         syncNearBottomLatch(nextTop, scrollEl.clientHeight, scrollEl.scrollHeight);
         return true;
       }
       return false;
     },
-    [findMessageRowElement, getScrollElement, syncNearBottomLatch, syncNearTopLatch],
+    [
+      commitScrollMetrics,
+      findMessageRowElement,
+      getScrollElement,
+      syncNearBottomLatch,
+      syncNearTopLatch,
+    ],
   );
 
   const applyInitialScroll = useCallback(
@@ -692,30 +751,60 @@ export function HspScrollColumn({
         const el = getScrollElement();
         if (!el) return false;
         const delta = el.scrollHeight - anchor.scrollHeight;
-        if (delta <= 0) return false;
-        const nextTop = anchor.scrollTop + delta;
+        // Growing content: classic prepend keep (scrollTop += ΔH).
+        // Shrinking / remounted windows: pin absolute scrollTop from the capture
+        // so a display-slice remount does not reset the viewport to 0.
+        const nextTop =
+          delta > 0
+            ? anchor.scrollTop + delta
+            : Math.max(
+                0,
+                Math.min(anchor.scrollTop, Math.max(0, el.scrollHeight - el.clientHeight)),
+              );
+        if (delta <= 0 && Math.abs(el.scrollTop - nextTop) < 0.5) {
+          // Already at the captured offset — treat as kept when heights match.
+          if (Math.abs(delta) < 0.5) {
+            commitScrollMetrics({
+              layoutH: el.clientHeight,
+              contentH: el.scrollHeight,
+              scrollY: el.scrollTop,
+            });
+            return true;
+          }
+          return false;
+        }
         el.scrollTop = nextTop;
-        setScroll((prev) => ({
-          ...prev,
-          layoutH: el.clientHeight > 0 ? el.clientHeight : prev.layoutH,
-          contentH: el.scrollHeight > 0 ? el.scrollHeight : prev.contentH,
+        commitScrollMetrics({
+          layoutH: el.clientHeight,
+          contentH: el.scrollHeight,
           scrollY: nextTop,
-        }));
+        });
         syncNearTopLatch(nextTop);
         syncNearBottomLatch(nextTop, el.clientHeight, el.scrollHeight);
         return true;
       }
       const metrics = scrollMetricsRef.current;
       const delta = metrics.contentH - anchor.scrollHeight;
-      if (delta <= 0) return false;
-      const nextTop = anchor.scrollTop + delta;
+      const maxY = Math.max(0, metrics.contentH - metrics.layoutH);
+      const nextTop =
+        delta > 0
+          ? anchor.scrollTop + delta
+          : Math.max(0, Math.min(anchor.scrollTop, maxY));
+      if (delta <= 0 && Math.abs(metrics.scrollY - nextTop) < 0.5) {
+        if (Math.abs(delta) < 0.5) return true;
+        return false;
+      }
       scrollRef.current?.scrollTo({ y: nextTop, animated: false });
-      setScroll((prev) => ({ ...prev, scrollY: nextTop, contentH: metrics.contentH }));
+      commitScrollMetrics({
+        layoutH: metrics.layoutH,
+        contentH: metrics.contentH,
+        scrollY: nextTop,
+      });
       syncNearTopLatch(nextTop);
       syncNearBottomLatch(nextTop, metrics.layoutH, metrics.contentH);
       return true;
     },
-    [getScrollElement, syncNearBottomLatch, syncNearTopLatch],
+    [commitScrollMetrics, getScrollElement, syncNearBottomLatch, syncNearTopLatch],
   );
 
   const keepScrollPositionOnPrepend = useCallback(
@@ -748,11 +837,31 @@ export function HspScrollColumn({
       scrollToEnd,
       scrollToY,
       applyInitialScroll,
-      getMetrics: () => ({
-        layoutH: scrollMetricsRef.current.layoutH,
-        contentH: scrollMetricsRef.current.contentH,
-        scrollY: scrollMetricsRef.current.scrollY,
-      }),
+      getMetrics: () => {
+        if (Platform.OS === "web") {
+          const el = getScrollElement();
+          if (el && el.clientHeight > 0) {
+            const scrollYRaw = el.scrollTop;
+            const scrollY =
+              scrollYRaw <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : scrollYRaw;
+            const live = {
+              layoutH: el.clientHeight,
+              contentH:
+                el.scrollHeight > 0
+                  ? el.scrollHeight
+                  : scrollMetricsRef.current.contentH,
+              scrollY,
+            };
+            scrollMetricsRef.current = live;
+            return live;
+          }
+        }
+        return {
+          layoutH: scrollMetricsRef.current.layoutH,
+          contentH: scrollMetricsRef.current.contentH,
+          scrollY: scrollMetricsRef.current.scrollY,
+        };
+      },
       captureScrollAnchor,
       keepScrollPositionOnPrepend,
       restoreScrollAnchor,
@@ -771,7 +880,7 @@ export function HspScrollColumn({
         scrollControllerRef.current = null;
       }
     };
-  }, [scrollControllerRef, scrollToEnd, scrollToY, applyInitialScroll, captureScrollAnchor, keepScrollPositionOnPrepend, restoreScrollAnchor, captureItemAnchor, restoreItemAnchor]);
+  }, [scrollControllerRef, scrollToEnd, scrollToY, applyInitialScroll, captureScrollAnchor, keepScrollPositionOnPrepend, restoreScrollAnchor, captureItemAnchor, restoreItemAnchor, getScrollElement]);
 
   useLayoutEffect(() => {
     if (initialScrollPosition !== "bottom" || didInitialBottomScrollRef.current) return;
@@ -788,19 +897,24 @@ export function HspScrollColumn({
       return { show: false as const, thumbH: 0, thumbTop: 0 };
     }
     const maxScroll = Math.max(1e-6, contentH - viewH);
+    const thumbContentSpan =
+      indicatorContentSpanPx != null && indicatorContentSpanPx > contentH
+        ? indicatorContentSpanPx
+        : contentH;
     const { thumbSpan, thumbOffset } = scrollIndicatorThumbSpanAndOffset(
       viewH,
       viewH,
-      contentH,
+      thumbContentSpan,
       y,
       maxScroll,
+      indicatorThumbMinPx,
     );
     const hairline = scrollIndicatorHairlineBorderWidthPx();
     const thumbH = Math.max(hairline, thumbSpan);
     const thumbTop =
       scroll.scrollY <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : thumbOffset;
     return { show: true as const, thumbH, thumbTop, maxScroll };
-  }, [scroll]);
+  }, [scroll, indicatorContentSpanPx, indicatorThumbMinPx]);
 
   return (
     <View style={[styles.shell, style]}>

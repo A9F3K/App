@@ -1,4 +1,8 @@
 import { MESSAGE_CHAT_CACHE_MESSAGES_MAX } from "./components/messages/messageChatLayout";
+import {
+  enrichHistoryMessageDisplay,
+  mergeHistoryMessageRow,
+} from "./components/messages/messageChatHistoryTypes";
 import type { ChatHistoryPageResult } from "./telegram/fetchTelegramChatHistoryPage";
 
 export type CachedChatHistoryPage = ChatHistoryPageResult & {
@@ -289,7 +293,13 @@ export function mergeCachedChatHistoryTail(
   }
   const byId = new Map(existing.messages.map((row) => [row.telegram_message_id, row]));
   for (const row of tail.messages) {
-    byId.set(row.telegram_message_id, row);
+    const prev = byId.get(row.telegram_message_id);
+    byId.set(
+      row.telegram_message_id,
+      prev
+        ? mergeHistoryMessageRow(prev, row)
+        : enrichHistoryMessageDisplay(row),
+    );
   }
   let messages = [...byId.values()].sort((a, b) => {
     const byTime = Date.parse(a.sent_at) - Date.parse(b.sent_at);

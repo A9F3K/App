@@ -92,12 +92,17 @@ export function expandOlder(
   expandBy = MESSAGE_LIST_SLICE,
 ): ChatMessageWindowState | null {
   if (loaded.length === 0) return null;
-  if (current.bounds.startIndex <= 0) return null;
-  const nextBounds = expandDisplaySliceOlder(loaded, current.bounds, expandBy);
-  if (nextBounds.startIndex >= current.bounds.startIndex) return null;
+  const visibleBounds = mergeOverride(
+    current.bounds,
+    current.override,
+    loaded.length,
+  );
+  if (visibleBounds.startIndex <= 0) return null;
+  const nextBounds = expandDisplaySliceOlder(loaded, visibleBounds, expandBy);
+  if (nextBounds.startIndex >= visibleBounds.startIndex) return null;
   const override: CountSliceBounds = {
     startIndex: nextBounds.startIndex,
-    endIndex: Math.max(nextBounds.endIndex, current.bounds.endIndex),
+    endIndex: Math.max(nextBounds.endIndex, visibleBounds.endIndex),
   };
   const bounds = mergeOverride(nextBounds, override, loaded.length);
   return {
@@ -134,14 +139,20 @@ export function expandNewer(
 }
 
 /**
- * After an older prepend, shift or widen the display window so the same visual
- * rows stay mounted (telegram-tt around / keep).
+ * After older messages land in the loaded buffer: **always shift** the display
+ * window by `prependedCount` so the same visual rows stay mounted.
+ *
+ * New older rows sit above `startIndex` and are revealed later via
+ * {@link expandOlder} / scroll-up — never by growing content at scrollY≈0
+ * (which requires fragile scroll compensation and still jumps).
+ *
+ * `pinToLoadedTop` is ignored (kept for call-site compatibility).
  */
 export function afterOlderPrepend(
   loadedLength: number,
   current: ChatMessageWindowState,
   prependedCount: number,
-  options?: { pinToLoadedTop?: boolean },
+  _options?: { pinToLoadedTop?: boolean },
 ): ChatMessageWindowState {
   if (loadedLength <= 0) return emptyChatMessageWindow();
   const prevStart = current.override?.startIndex ?? current.bounds.startIndex;
@@ -149,30 +160,28 @@ export function afterOlderPrepend(
     current.bounds.endIndex,
     current.override?.endIndex ?? current.bounds.endIndex,
   );
-  const pinToLoadedTop = options?.pinToLoadedTop === true || prevStart === 0;
-  let override: CountSliceBounds | null = null;
-  if (prependedCount > 0) {
-    if (prevStart === 0) {
-      override = {
-        startIndex: 0,
-        endIndex: Math.min(loadedLength - 1, prevEnd + prependedCount),
-      };
-    } else {
-      override = {
-        startIndex: Math.min(loadedLength - 1, prevStart + prependedCount),
-        endIndex: Math.min(
-          loadedLength - 1,
-          Math.max(prevEnd + prependedCount, prevStart + prependedCount),
-        ),
-      };
-    }
-  } else if (pinToLoadedTop) {
-    override = {
-      startIndex: 0,
-      endIndex: Math.min(loadedLength - 1, Math.max(prevEnd, current.bounds.endIndex)),
+  if (prependedCount <= 0) {
+    const bounds = clampBounds(loadedLength, current.bounds);
+    return {
+      bounds,
+      override: current.override,
+      anchorMessageId: current.anchorMessageId,
+      atLoadedTop: bounds.startIndex === 0,
+      atLoadedBottom: bounds.endIndex >= loadedLength - 1,
     };
   }
-  const base = clampBounds(loadedLength, current.bounds);
+  const nextStart = Math.min(loadedLength - 1, prevStart + prependedCount);
+  const override: CountSliceBounds = {
+    startIndex: nextStart,
+    endIndex: Math.min(
+      loadedLength - 1,
+      Math.max(prevEnd + prependedCount, nextStart),
+    ),
+  };
+  const base = clampBounds(loadedLength, {
+    startIndex: prevStart + prependedCount,
+    endIndex: prevEnd + prependedCount,
+  });
   const bounds = mergeOverride(base, override, loadedLength);
   return {
     bounds,
@@ -192,7 +201,14 @@ export function resolveDisplayWindow(
 ): ChatMessageWindowState {
   if (loaded.length === 0) return emptyChatMessageWindow();
   const base = sliceMessagesByCountAroundId(loaded, anchorMessageId, sliceSize);
-  const bounds = mergeOverride(base, override, loaded.length);
+  // Override is authoritative (afterOlderPrepend shift, expandOlder/Newer).
+  // Merging with a re-centered base (min start / max end) widens the window on
+  // API prepend and mounts new older rows above the viewport — that grows
+  // contentH and causes the visible jump (e.g. displayCount 81→119).
+  const bounds =
+    override != null && override.endIndex >= override.startIndex
+      ? clampBounds(loaded.length, override)
+      : base;
   return {
     bounds,
     override,

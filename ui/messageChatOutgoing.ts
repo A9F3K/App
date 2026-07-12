@@ -1,4 +1,5 @@
 import type { MessageChatHistoryItem } from "./components/messages/messageChatHistoryTypes";
+import { normalizeSuccessfulSendOutgoingStatus } from "./components/messages/messageChatHistoryTypes";
 import { mergeCachedChatHistoryMessages } from "./messageChatHistoryCache";
 
 export type OutgoingChatMessageEvent = {
@@ -9,8 +10,15 @@ export type OutgoingChatMessageEvent = {
 const listeners = new Set<(event: OutgoingChatMessageEvent) => void>();
 
 export function publishOutgoingChatMessage(chatId: number, message: MessageChatHistoryItem): void {
-  mergeCachedChatHistoryMessages(chatId, [message]);
-  const event = { chatId, message };
+  const normalized: MessageChatHistoryItem = {
+    ...message,
+    outgoing_status: normalizeSuccessfulSendOutgoingStatus(
+      message.outgoing_status,
+      message.is_outgoing,
+    ),
+  };
+  mergeCachedChatHistoryMessages(chatId, [normalized]);
+  const event = { chatId, message: normalized };
   for (const listener of listeners) {
     listener(event);
   }

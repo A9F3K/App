@@ -1,9 +1,13 @@
 import type { MessageChatHistoryItem } from "./messageChatHistoryTypes";
+import {
+  CHAT_HISTORY_WINDOW_N,
+  windowBoundsAroundAnchor,
+} from "./chatHistoryWindowBudget";
 
-/** Rows rendered around the scroll anchor (telegram-tt MESSAGE_LIST_SLICE). */
-export const MESSAGE_LIST_SLICE = 40;
+/** Rows preferred above/below the scroll anchor (tdesktop-style N). */
+export const MESSAGE_LIST_SLICE = CHAT_HISTORY_WINDOW_N;
 
-/** Max rows kept in the in-memory buffer around the anchor. */
+/** Max rows kept in the in-memory buffer around the anchor (2N). */
 export const MESSAGE_LIST_VIEWPORT_LIMIT = MESSAGE_LIST_SLICE * 2;
 
 export type CountSliceBounds = {
@@ -19,7 +23,10 @@ function findMessageIndexById(
   return messages.findIndex((row) => row.telegram_message_id === messageId);
 }
 
-/** Contiguous slice of `sliceSize` rows above and below `anchorIndex`. */
+/**
+ * Contiguous slice of up to 2N rows around `anchorIndex`.
+ * Shortfalls at history edges are redistributed to the other side.
+ */
 export function sliceMessagesByCount(
   messages: readonly MessageChatHistoryItem[],
   anchorIndex: number,
@@ -28,10 +35,7 @@ export function sliceMessagesByCount(
   if (messages.length === 0) {
     return { startIndex: 0, endIndex: -1 };
   }
-  const anchor = Math.max(0, Math.min(anchorIndex, messages.length - 1));
-  const startIndex = Math.max(0, anchor - sliceSize);
-  const endIndex = Math.min(messages.length - 1, anchor + sliceSize);
-  return { startIndex, endIndex };
+  return windowBoundsAroundAnchor(messages.length, anchorIndex, sliceSize);
 }
 
 export function sliceMessagesByCountAroundId(
@@ -49,7 +53,7 @@ export function sliceMessagesByCountAroundId(
   return sliceMessagesByCount(messages, anchorIndex, sliceSize);
 }
 
-/** Trim loaded buffer to at most `maxRows` centered on `anchorMessageId`. */
+/** Trim loaded buffer to at most `maxRows` centered on `anchorMessageId` with edge redistribution. */
 export function trimMessagesAroundAnchorCount(
   messages: MessageChatHistoryItem[],
   anchorMessageId: number,
@@ -58,12 +62,12 @@ export function trimMessagesAroundAnchorCount(
   if (messages.length <= maxRows) return messages;
   const anchorIndex = findMessageIndexById(messages, anchorMessageId);
   if (anchorIndex < 0) return messages;
-  const half = Math.floor(maxRows / 2);
-  let startIndex = Math.max(0, anchorIndex - half);
-  let endIndex = Math.min(messages.length - 1, startIndex + maxRows - 1);
-  if (endIndex - startIndex + 1 < maxRows) {
-    startIndex = Math.max(0, endIndex - maxRows + 1);
-  }
+  const nPerSide = Math.floor(maxRows / 2);
+  const { startIndex, endIndex } = windowBoundsAroundAnchor(
+    messages.length,
+    anchorIndex,
+    nPerSide,
+  );
   return messages.slice(startIndex, endIndex + 1);
 }
 

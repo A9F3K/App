@@ -1,4 +1,4 @@
-import { Platform, Text, View } from "react-native";
+import { Platform, StyleSheet, Text, View } from "react-native";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import type { ThemeColors, ThemeName } from "../../theme";
 import { chatAvatarFallbackBackground, colorsForAvatarInitials } from "./chatAvatarInitials";
@@ -8,23 +8,30 @@ export function ChatAvatarFallback({
   sizePx,
   colors,
   scheme,
+  fill = false,
 }: {
   initials: string[];
   sizePx: number;
   colors: ThemeColors;
   scheme: ThemeName;
+  /** Fill the parent slot (keeps `sizePx` for letter sizing). */
+  fill?: boolean;
 }) {
   const backgroundColor = chatAvatarFallbackBackground(colors, scheme);
+  const frameStyle = fill
+    ? StyleSheet.absoluteFillObject
+    : { width: sizePx, height: sizePx, borderRadius: 0 };
 
   if (initials.length === 0) {
     return (
       <View
-        style={{
-          width: sizePx,
-          height: sizePx,
-          borderRadius: 0,
-          backgroundColor,
-        }}
+        style={[
+          frameStyle,
+          {
+            borderRadius: 0,
+            backgroundColor,
+          },
+        ]}
       />
     );
   }
@@ -35,15 +42,16 @@ export function ChatAvatarFallback({
 
   return (
     <View
-      style={{
-        width: sizePx,
-        height: sizePx,
-        borderRadius: 0,
-        backgroundColor,
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
+      style={[
+        frameStyle,
+        {
+          borderRadius: 0,
+          backgroundColor,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+        },
+      ]}
     >
       {initials.map((letter, index) => (
         <Text

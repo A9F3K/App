@@ -109,27 +109,34 @@ export const MESSAGE_CHAT_HISTORY_PREVIEW_SIZE = 7;
 /** Live tail poll — only merge newer messages, not a full history page. */
 export const MESSAGE_CHAT_HISTORY_LIVE_TAIL_SIZE = 10;
 
-/** Distance from top (px) that triggers loading the previous page. */
+/** Distance from top (px) that treats the viewport as at the older edge. */
 export const MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX = 120;
+/**
+ * Floor for older-history prefetch before the hard top edge.
+ * Live triggers use max(this, 3 × viewportHeight) — tdesktop kPreloadHeightsCount.
+ */
+export const MESSAGE_CHAT_LOAD_OLDER_PREFETCH_PX = 750;
+/** Viewport heights before an edge that arm older/newer prefetch (tdesktop). */
+export const MESSAGE_CHAT_EDGE_PREFETCH_SCREENS = 3;
 
 /**
  * Older rows seeded above the open anchor (bottom / restore / around).
- * Matches around-unread context so every open has scrollable history above.
+ * Matches N so every open has a full scrollable side when history allows.
  */
-export const MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER = 30;
-/** Newer rows seeded below a mid-thread open anchor. */
-export const MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER = 15;
+export const MESSAGE_CHAT_HISTORY_OPEN_OLDER_BUFFER = 40;
+/** Newer rows seeded below a mid-thread open anchor (N). */
+export const MESSAGE_CHAT_HISTORY_OPEN_NEWER_BUFFER = 40;
 /**
- * Minimum older rows above first-unread / around-unread open (telegram-tt Around).
+ * Minimum older rows above first-unread / around-unread open.
  * Prefetch and TDLib around-unread should seed at least this much context above the divider.
  */
-export const MESSAGE_CHAT_HISTORY_AROUND_UNREAD_OLDER = 30;
+export const MESSAGE_CHAT_HISTORY_AROUND_UNREAD_OLDER = 40;
 /** Batch size when scrolling down into newer history below the loaded window. */
-export const MESSAGE_CHAT_HISTORY_NEWER_PAGE_SIZE = 15;
+export const MESSAGE_CHAT_HISTORY_NEWER_PAGE_SIZE = 40;
 /** Larger batch when catching up a big unread backlog on scroll-down. */
-export const MESSAGE_CHAT_HISTORY_NEWER_CATCHUP_PAGE_SIZE = 30;
-/** Max first-page window when opening a chat with many unreads. */
-export const MESSAGE_CHAT_HISTORY_OPEN_UNREAD_LIMIT_MAX = 120;
+export const MESSAGE_CHAT_HISTORY_NEWER_CATCHUP_PAGE_SIZE = 40;
+/** Max first-page window when opening a chat with many unreads (2N). */
+export const MESSAGE_CHAT_HISTORY_OPEN_UNREAD_LIMIT_MAX = 80;
 /** Max rows kept in the open-chat message list (sliding window around the viewport). */
 export const MESSAGE_CHAT_LOADED_WINDOW_MAX = 120;
 /** Max rows stored per chat in the session history cache. */

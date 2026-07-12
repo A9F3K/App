@@ -188,3 +188,29 @@ export function historyTailSignature(
   if (messages.length === 0) return "0:0";
   return `${messages.length}:${messages[messages.length - 1]!.telegram_message_id}`;
 }
+
+/**
+ * Oldest telegram message id in the buffer. Prefer this over messages[0] for
+ * getChatHistory from_message_id — display sort is by sent_at, so the chronological
+ * head can sit after a higher id when several rows share the same second.
+ */
+export function oldestHistoryMessageId(
+  messages: readonly MessageChatHistoryItem[],
+): number | null {
+  let oldest: number | null = null;
+  for (const row of messages) {
+    const id = row.telegram_message_id;
+    if (!Number.isFinite(id) || id <= 0) continue;
+    if (oldest == null || id < oldest) oldest = id;
+  }
+  return oldest;
+}
+
+/** Keep only rows strictly older than the pagination cursor (TDLib exclusive). */
+export function filterMessagesOlderThan(
+  messages: readonly MessageChatHistoryItem[],
+  beforeMessageId: number,
+): MessageChatHistoryItem[] {
+  if (!(beforeMessageId > 0)) return [...messages];
+  return messages.filter((row) => row.telegram_message_id < beforeMessageId);
+}

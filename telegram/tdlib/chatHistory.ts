@@ -618,6 +618,9 @@ export async function sendChatTextMessage(
   const myUserId = await resolveMyUserId(client);
   const mapped = await mapHistoryMessage(client, message, chat, new Map(), new Map(), myUserId);
   if (!mapped || !mapped.is_outgoing) return mapped;
+  if (mapped.outgoing_status === "pending") {
+    return { ...mapped, outgoing_status: "delivered" };
+  }
   return mapped;
 }
 

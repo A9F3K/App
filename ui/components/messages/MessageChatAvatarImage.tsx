@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Image } from "expo-image";
 import type { ImageStyle, StyleProp } from "react-native";
+import { Platform, StyleSheet } from "react-native";
 import { runQueuedNetworkFetch, type NetworkFetchPriority } from "./networkFetchQueue";
 
 function needsAuthenticatedFetch(uri: string): boolean {
@@ -99,6 +100,8 @@ type Props = {
   uri: string;
   sizePx: number;
   style?: StyleProp<ImageStyle>;
+  /** Fill the parent slot instead of a fixed pixel box. */
+  fill?: boolean;
   /** When false, skip proxy fetch until the row scrolls into view. */
   loadEnabled?: boolean;
   fetchPriority?: NetworkFetchPriority;
@@ -111,6 +114,7 @@ export function MessageChatAvatarImage({
   uri,
   sizePx,
   style,
+  fill = false,
   loadEnabled = true,
   fetchPriority = "normal",
   onLoad,
@@ -170,7 +174,15 @@ export function MessageChatAvatarImage({
       accessibilityIgnoresInvertColors
       onLoad={() => onLoadRef.current?.()}
       onError={(event) => onErrorRef.current?.(event.error ?? "unknown_avatar_error")}
-      style={[{ width: sizePx, height: sizePx, borderRadius: 0 }, style]}
+      style={[
+        fill
+          ? [StyleSheet.absoluteFillObject, { borderRadius: 0 }]
+          : { width: sizePx, height: sizePx, borderRadius: 0 },
+        Platform.OS === "web"
+          ? ({ display: "block", objectFit: "cover" } as const)
+          : null,
+        style,
+      ]}
       contentFit="cover"
     />
   );

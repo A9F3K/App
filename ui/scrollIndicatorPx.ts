@@ -27,6 +27,9 @@ export const SCROLL_INDICATOR_THUMB_MAX_TRACK_FRAC = 0.32;
  */
 export const SCROLL_INDICATOR_THUMB_MIN_PX = 4;
 
+/** Chat message list thumb floor (tdesktop `st::minHeight` ≈ 20px). */
+export const CHAT_SCROLL_INDICATOR_THUMB_MIN_PX = 20;
+
 /** Pin thumb to track ends when scroll offset is within this many px of 0 / max. */
 export const SCROLL_INDICATOR_SCROLL_EPS = 2;
 
@@ -52,7 +55,7 @@ export function scrollOffsetFromThumbPosition(
 /**
  * Thumb span and offset along the scroll axis: horizontal → width + `left`, vertical → height + `top`.
  * Same rules as `AuthenticatedHomeLeftNavStrip` (proportional size, {@link SCROLL_INDICATOR_THUMB_MAX_TRACK_FRAC} cap,
- * {@link SCROLL_INDICATOR_THUMB_MIN_PX} floor, epsilon edge pins, then pixel snap).
+ * min thumb floor, epsilon edge pins, then pixel snap).
  */
 export function scrollIndicatorThumbSpanAndOffset(
   trackSpan: number,
@@ -60,16 +63,18 @@ export function scrollIndicatorThumbSpanAndOffset(
   contentSpan: number,
   scrollOffset: number,
   scrollRange: number,
+  thumbMinPx: number = SCROLL_INDICATOR_THUMB_MIN_PX,
 ): { thumbSpan: number; thumbOffset: number } {
   if (trackSpan <= 0 || contentSpan <= 0 || scrollRange <= 0) {
     return { thumbSpan: 0, thumbOffset: 0 };
   }
+  const minThumb = Math.max(1, thumbMinPx);
   const scrollClamped = Math.max(0, Math.min(scrollOffset, scrollRange));
   const ratio = Math.min(1, Math.max(0, viewportSpan / contentSpan));
   let thumbSpan = Math.round(trackSpan * ratio);
   const capSpan = Math.round(trackSpan * SCROLL_INDICATOR_THUMB_MAX_TRACK_FRAC);
   thumbSpan = Math.min(thumbSpan, capSpan);
-  thumbSpan = Math.max(SCROLL_INDICATOR_THUMB_MIN_PX, Math.min(trackSpan - 1, thumbSpan));
+  thumbSpan = Math.max(minThumb, Math.min(trackSpan - 1, thumbSpan));
 
   let thumbOffset = Math.round((scrollClamped / scrollRange) * Math.max(0, trackSpan - thumbSpan));
   if (scrollClamped <= SCROLL_INDICATOR_SCROLL_EPS) thumbOffset = 0;

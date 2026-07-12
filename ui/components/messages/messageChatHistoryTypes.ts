@@ -120,6 +120,21 @@ export function coalesceOutgoingStatus(
   return "delivered";
 }
 
+/**
+ * After sendMessage succeeds, TDLib may still report `pending` briefly.
+ * Treat that as delivered so the bubble shows a sent tick immediately.
+ */
+export function normalizeSuccessfulSendOutgoingStatus(
+  raw: unknown,
+  isOutgoing: boolean,
+): MessageOutgoingStatus | null {
+  const status = coalesceOutgoingStatus(raw, isOutgoing);
+  if (!isOutgoing) return null;
+  if (status === "failed") return "failed";
+  if (status === "pending") return "delivered";
+  return status;
+}
+
 export function resolveMessageOutgoingStatus(
   item: Pick<MessageChatHistoryItem, "is_outgoing" | "outgoing_status">,
 ): MessageOutgoingStatus | null {

@@ -20,6 +20,8 @@ export type ChatEdgeLoadGateInput = {
   canExpandOlderInBuffer?: boolean;
   canHydrateOlderFromCache?: boolean;
   nearTop: boolean;
+  /** scrollY within the hard top threshold — dwell at top counts as scroll-up intent. */
+  atHardScrollTop?: boolean;
   nearBottom: boolean;
   olderCooldownUntilMs?: number;
   newerRetryAfterMs?: number;
@@ -62,6 +64,9 @@ export function decideChatEdgeLoad(input: ChatEdgeLoadGateInput): ChatEdgeLoadDe
   const newerBackoff =
     input.newerRetryAfterMs != null && now < input.newerRetryAfterMs;
 
+  const atHardScrollTop = input.atHardScrollTop === true;
+  const olderScrollIntent = input.userScrollingUp || atHardScrollTop;
+
   const loadOlder =
     (input.hasMoreOlder ||
       input.canExpandOlderInBuffer === true ||
@@ -69,7 +74,7 @@ export function decideChatEdgeLoad(input: ChatEdgeLoadGateInput): ChatEdgeLoadDe
     !input.loadingOlder &&
     !olderCooldown &&
     input.nearTop &&
-    input.userScrollingUp;
+    olderScrollIntent;
 
   const loadNewer =
     input.hasMoreNewer &&

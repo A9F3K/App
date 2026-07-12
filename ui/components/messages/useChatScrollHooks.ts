@@ -12,6 +12,8 @@ import {
   CHAT_EDGE_OLDER_THRESHOLD_PX,
   CHAT_EDGE_SENSITIVE_AREA_PX,
 } from "./chatEdgeLoadPolicy";
+import { MESSAGE_CHAT_LOAD_OLDER_PREFETCH_PX } from "./messageChatLayout";
+import { chatEdgePrefetchPx } from "./chatHistoryWindowBudget";
 import {
   canEdgeLoad,
   isReplacingHistory,
@@ -43,10 +45,18 @@ export type ChatScrollHooksActions = {
   onLoadNewer: () => void;
 };
 
-const DEFAULT_NEAR_TOP_PX =
-  CHAT_EDGE_OLDER_THRESHOLD_PX + CHAT_EDGE_SENSITIVE_AREA_PX;
-const DEFAULT_NEAR_BOTTOM_PX =
-  CHAT_EDGE_NEWER_THRESHOLD_PX + CHAT_EDGE_SENSITIVE_AREA_PX;
+/** Prefetch older pages before the hard top edge (tdesktop: 3 screens). */
+function nearTopPrefetchPx(layoutH: number): number {
+  return chatEdgePrefetchPx(layoutH, 3, MESSAGE_CHAT_LOAD_OLDER_PREFETCH_PX);
+}
+
+function nearBottomPrefetchPx(layoutH: number): number {
+  return chatEdgePrefetchPx(
+    layoutH,
+    3,
+    CHAT_EDGE_NEWER_THRESHOLD_PX + CHAT_EDGE_SENSITIVE_AREA_PX,
+  );
+}
 
 export function useChatScrollHooks(options: {
   getPhase: () => ChatScrollPhase;
@@ -70,7 +80,11 @@ export function useChatScrollHooks(options: {
     const nearTop =
       metrics == null ||
       metrics.layoutH <= 0 ||
-      isNearChatTop(metrics.scrollY, DEFAULT_NEAR_TOP_PX);
+      isNearChatTop(metrics.scrollY, nearTopPrefetchPx(metrics.layoutH));
+    const atHardScrollTop =
+      metrics != null &&
+      metrics.layoutH > 0 &&
+      isNearChatTop(metrics.scrollY, CHAT_EDGE_OLDER_THRESHOLD_PX);
 
     const decision = decideChatEdgeLoad({
       phase,
@@ -85,6 +99,7 @@ export function useChatScrollHooks(options: {
       canHydrateOlderFromCache: gate.canHydrateOlderFromCache,
       hasMoreNewer: false,
       nearTop,
+      atHardScrollTop,
       nearBottom: false,
       olderCooldownUntilMs: gate.olderCooldownUntilMs,
     });
@@ -107,7 +122,7 @@ export function useChatScrollHooks(options: {
         metrics.scrollY,
         metrics.layoutH,
         metrics.contentH,
-        DEFAULT_NEAR_BOTTOM_PX,
+        nearBottomPrefetchPx(metrics.layoutH),
       );
 
     const decision = decideChatEdgeLoad({

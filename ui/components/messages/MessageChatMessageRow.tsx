@@ -174,7 +174,9 @@ export function MessageChatMessageRow({
     selfUserId,
   });
   const checksWidthPx = showOutgoingChecks
-    ? messageChatOutgoingChecksWidthPx(outgoingStatusForLayout)
+    ? messageChatOutgoingChecksWidthPx(
+        outgoingStatusForLayout === "read" ? "read" : "delivered",
+      )
     : 0;
   const callArrowWidthPx = messageChatCallArrowWidthPx(isCall);
   const metaWidthPx = measureMessageBubbleMetaWidthPx(
