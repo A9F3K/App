@@ -14,7 +14,7 @@ import {
   syncAuthenticatedHomeSelectedChat,
   useAuthenticatedHomeSelectedChat,
 } from "../authenticatedHomeSelectedChat";
-import { prefetchChatHistory } from "../messageChatHistoryPrefetch";
+import { prefetchChatHistory, prefetchChatHistoryPriority, prefetchVisibleChatNeighbors } from "../messageChatHistoryPrefetch";
 import { getCachedChatHistory } from "../messageChatHistoryCache";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
 import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
@@ -754,6 +754,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         peerUserId: item.peer_user_id,
         title: item.title,
       }));
+      // tdesktop: start full history warm before the message list mounts.
+      prefetchChatHistoryPriority(item);
       void import("../telegram/warmupTelegramChatSession").then(({ warmupTelegramChatSession }) => {
         void warmupTelegramChatSession(item.telegram_chat_id);
       });
@@ -927,6 +929,17 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const visibleChatStartIndex = chatListVirtualWindow.enabled
     ? chatListVirtualWindow.startIndex
     : 0;
+  const visibleChatIdsKey = visibleChats
+    .map((row) => row.telegram_chat_id)
+    .join(",");
+
+  // tdesktop: keep neighbors warm so the next switch paints from cache.
+  useEffect(() => {
+    if (!isTelegramMessagesConnected || visibleChats.length === 0) return;
+    prefetchVisibleChatNeighbors(visibleChats, selectedChatId, { radius: 2 });
+    // visibleChats identity changes every render; key on ids + selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- visibleChatIdsKey
+  }, [isTelegramMessagesConnected, selectedChatId, visibleChatIdsKey]);
 
   useEffect(() => {
     setChatListBottomLoaderActive(showBottomLoader);

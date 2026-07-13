@@ -607,6 +607,33 @@ export async function fetchOlderHistoryCharBudget(
     if (result.messages.length === 0) {
       hasMoreOlder = result.hasMoreOlder;
       nextBeforeMessageId = result.nextBeforeMessageId;
+      // tdesktop: one warm retry — TDLib can return an empty older page once
+      // while the chat slice is still hydrating after openChat.
+      if (round === 0 && cursor != null) {
+        await new Promise((resolve) => setTimeout(resolve, 450));
+        const retry = await fetchPageWithWarmup(chatId, peerUserId, cursor);
+        if (retry.error) {
+          return { ...retry, messages };
+        }
+        if (retry.messages.length > 0) {
+          messages = mergeSortedMessages(retry.messages, messages);
+          hasMoreOlder = retry.hasMoreOlder;
+          nextBeforeMessageId = retry.nextBeforeMessageId;
+          chatKind = retry.chatKind;
+          lastReadOutboxMessageId =
+            retry.lastReadOutboxMessageId ?? lastReadOutboxMessageId;
+          lastReadInboxMessageId =
+            retry.lastReadInboxMessageId ?? lastReadInboxMessageId;
+          memberCount = retry.memberCount;
+          selfUserId = retry.selfUserId;
+          if (totalCharacterWeight(messages) >= charBudget) break;
+          if (!retry.hasMoreOlder || retry.nextBeforeMessageId == null) break;
+          cursor = retry.nextBeforeMessageId;
+          continue;
+        }
+        hasMoreOlder = retry.hasMoreOlder;
+        nextBeforeMessageId = retry.nextBeforeMessageId;
+      }
       break;
     }
     messages = mergeSortedMessages(result.messages, messages);
@@ -633,14 +660,11 @@ export async function fetchOlderHistoryCharBudget(
   const sliced = messages.slice(startIndex);
   const slicedHeadId =
     sliced.length > 0 ? sliced[0]!.telegram_message_id : null;
-  if (startIndex > 0 && slicedHeadId != null) {
+  // tdesktop: a non-empty older window is never EOF. TDLib often returns a short
+  // final page while older messages still exist; only an empty page closes the
+  // edge. Char-budget trim (startIndex > 0) also leaves rows above the slice.
+  if (slicedHeadId != null) {
     hasMoreOlder = true;
-    nextBeforeMessageId = slicedHeadId;
-  } else if (
-    hasMoreOlder &&
-    slicedHeadId != null &&
-    (nextBeforeMessageId == null || nextBeforeMessageId > slicedHeadId)
-  ) {
     nextBeforeMessageId = slicedHeadId;
   }
 

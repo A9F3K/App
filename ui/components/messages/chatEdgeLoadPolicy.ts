@@ -22,6 +22,8 @@ export type ChatEdgeLoadGateInput = {
   nearTop: boolean;
   /** scrollY within the hard top threshold — dwell at top counts as scroll-up intent. */
   atHardScrollTop?: boolean;
+  /** scrollY within the hard bottom threshold — dwell at bottom counts as scroll-down intent. */
+  atHardScrollBottom?: boolean;
   nearBottom: boolean;
   olderCooldownUntilMs?: number;
   newerRetryAfterMs?: number;
@@ -55,7 +57,13 @@ export function decideChatEdgeLoad(input: ChatEdgeLoadGateInput): ChatEdgeLoadDe
   if (input.prependAnchorRestorePending) {
     return { loadOlder: false, loadNewer: false, reason: "prepend_restore" };
   }
-  if (!input.userHasScrolledSinceOpen) {
+  // Block mid-list until the user moves; older/newer edges are exempt (nearTop / nearBottom).
+  if (
+    !input.userHasScrolledSinceOpen &&
+    !input.nearTop &&
+    !input.nearBottom &&
+    !input.atHardScrollBottom
+  ) {
     return { loadOlder: false, loadNewer: false, reason: "await_user_scroll" };
   }
 
@@ -65,7 +73,11 @@ export function decideChatEdgeLoad(input: ChatEdgeLoadGateInput): ChatEdgeLoadDe
     input.newerRetryAfterMs != null && now < input.newerRetryAfterMs;
 
   const atHardScrollTop = input.atHardScrollTop === true;
-  const olderScrollIntent = input.userScrollingUp || atHardScrollTop;
+  // Dwelling in the older prefetch band counts as scroll-up intent (tdesktop).
+  const olderScrollIntent =
+    input.userScrollingUp || atHardScrollTop || input.nearTop;
+  const atHardScrollBottom = input.atHardScrollBottom === true;
+  const newerScrollIntent = !input.userScrollingUp || atHardScrollBottom;
 
   const loadOlder =
     (input.hasMoreOlder ||
@@ -81,7 +93,8 @@ export function decideChatEdgeLoad(input: ChatEdgeLoadGateInput): ChatEdgeLoadDe
     !input.loadingNewer &&
     !newerBackoff &&
     input.nearBottom &&
-    !input.userScrollingUp;
+    newerScrollIntent &&
+    (input.userHasScrolledSinceOpen || atHardScrollBottom);
 
   if (loadOlder) return { loadOlder: true, loadNewer: false, reason: "near_top" };
   if (loadNewer) return { loadOlder: false, loadNewer: true, reason: "near_bottom" };

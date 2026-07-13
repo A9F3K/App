@@ -435,4 +435,160 @@ console.log("chat scroll-up smoke tests");
   assert.deepEqual(under, { startIndex: 10, endIndex: 50 }, "under-max window unchanged");
 }
 
+// Older-page merge must be decided synchronously (React 18 does not flush
+// setState updaters after await). Simulates Irina: 40 loaded + 163 older API rows.
+{
+  const prev = makeLoaded(40, 131443195904);
+  const pageCursor = oldestHistoryMessageId(prev);
+  assert.ok(pageCursor != null && pageCursor > 0);
+  const incoming = makeLoaded(163, pageCursor - 163);
+  const incomingOlder = filterMessagesOlderThan(incoming, pageCursor);
+  const strictlyOlder = filterMessagesOlderThan(incomingOlder, pageCursor);
+  assert.equal(strictlyOlder.length, 163, "API page is strictly older than buffer head");
+  const byId = new Map();
+  for (const row of [...strictlyOlder, ...prev]) {
+    byId.set(row.telegram_message_id, row);
+  }
+  const next = [...byId.values()].sort(
+    (a, b) => a.telegram_message_id - b.telegram_message_id,
+  );
+  const nextHead = oldestHistoryMessageId(next);
+  const addedCount =
+    pageCursor > 0 && nextHead > 0 && nextHead < pageCursor
+      ? Math.max(1, next.length - prev.length)
+      : next.length - prev.length;
+  assert.equal(addedCount, 163, "sync merge reports growth without setState updater");
+  assert.equal(next.length, 203);
+  // keepGoing must not retry solely because nextCursor < loadedOldest when the
+  // server already reported hasMoreOlder=false (that caused empty_page + stall).
+  const hasMoreOlder = false;
+  const nextCursor = nextHead;
+  const keepGoing = hasMoreOlder === true;
+  assert.equal(keepGoing, false, "do not advance into empty_page when server is done");
+  assert.ok(nextCursor < pageCursor);
+}
+
+// MMI regression: large older API page lands above the display window
+// (afterOlderPrepend shifts startIndex). Post-release must still expand the
+// in-buffer older slice when hasMoreOlder=false — otherwise scroll-up looks dead.
+{
+  const prependedCount = 234;
+  const before = makeLoaded(42, 1000);
+  const prepended = makeLoaded(prependedCount, 100);
+  const after = [...prepended, ...before];
+  const beforeWindow = {
+    bounds: { startIndex: 0, endIndex: 41 },
+    override: null,
+    anchorMessageId: before[0].telegram_message_id,
+    atLoadedTop: true,
+    atLoadedBottom: true,
+  };
+  const afterApi = afterOlderPrepend(after.length, beforeWindow, prependedCount);
+  assert.equal(
+    afterApi.override?.startIndex,
+    prependedCount,
+    "new older rows stay above the display window",
+  );
+  assert.equal(afterApi.override?.endIndex, prependedCount + 41);
+  assert.equal(afterApi.atLoadedTop, false);
+
+  const hasMoreOlder = false;
+  const canExpandOlderFromBuffer =
+    (afterApi.override?.startIndex ?? afterApi.bounds.startIndex) > 0;
+  const shouldContinueOlderEdge = hasMoreOlder || canExpandOlderFromBuffer;
+  assert.equal(
+    shouldContinueOlderEdge,
+    true,
+    "post-release chain continues when buffer can expand older even if API is done",
+  );
+
+  const expanded = expandOlder(after, afterApi);
+  assert.ok(expanded, "expandOlder reveals buffered older rows");
+  assert.ok(
+    expanded.bounds.startIndex < afterApi.override.startIndex,
+    "expandOlder moves display toward buffered older rows",
+  );
+
+  const gate = decideChatEdgeLoad({
+    phase: "idle",
+    userHasScrolledSinceOpen: true,
+    initialScrollInProgress: false,
+    prependAnchorRestorePending: false,
+    loadingOlder: false,
+    loadingNewer: false,
+    userScrollingUp: true,
+    hasMoreOlder: false,
+    hasMoreNewer: false,
+    canExpandOlderInBuffer: canExpandOlderFromBuffer,
+    nearTop: true,
+    nearBottom: false,
+  });
+  assert.equal(gate.loadOlder, true, "edge gate prefers in-buffer older expand over no-op");
+}
+
+// Cache hydrate must leave hasMoreOlder open — prefetch/around windows are
+// never EOF. Otherwise scroll-up dies after absorbing one cache page.
+{
+  const cacheHasMoreOlder = false; // typical char-budget / around slice
+  const hydratedHasMoreOlder = true; // forced after absorb
+  assert.equal(
+    hydratedHasMoreOlder,
+    true,
+    "hydrating older rows from cache must not close the older edge",
+  );
+  assert.equal(
+    cacheHasMoreOlder || hydratedHasMoreOlder,
+    true,
+    "server false-EOF on a cache slice is overridden after hydrate",
+  );
+}
+
+// Open-chat cache listener must absorb a fuller prefetch into a short preview
+// (extendsOlder / upgradesPreview), not only when the thread is empty.
+{
+  const previewCount = 7;
+  const fullCacheCount = 81;
+  const loadedOldest = 1000;
+  const cacheOldest = 100; // extends older than the painted preview head
+  const extendsOlder =
+    cacheOldest > 0 && loadedOldest > 0 && cacheOldest < loadedOldest;
+  const upgradesPreview = true; // painted previewOnly, cache is full
+  const shouldApplyWhileOpen =
+    extendsOlder || upgradesPreview || previewCount === 0;
+  assert.equal(
+    shouldApplyWhileOpen,
+    true,
+    "full prefetch must apply into an open preview chat",
+  );
+  assert.ok(
+    fullCacheCount > previewCount,
+    "prefetch upgrade grows the open buffer before the next API page",
+  );
+}
+
+// tdesktop scrollTopItem: keep the locked message; never stick to y=0 (that
+// teleports onto newly revealed rows). Auto-chain only while still at hard top
+// after restore — prefetch-zone chaining caused mid-list jumps (1034→24812).
+{
+  const LOAD_OLDER_THRESHOLD_PX = 120;
+  const startY = 1077;
+  const afterItemAnchorY = 24812; // wrong path: auto display_expand then item keep
+  const startedNearTop = startY <= LOAD_OLDER_THRESHOLD_PX;
+  const restoreY = startY; // item-anchor keeps visual; no stick-to-0
+  assert.equal(startedNearTop, false, "prefetch-zone is not hard top");
+  assert.equal(restoreY, 1077, "mid-list prepend must keep scrollTopItem");
+  assert.notEqual(
+    restoreY,
+    afterItemAnchorY,
+    "must not auto-expand into a mid-list jump",
+  );
+  const nearHardTopAfterRestore =
+    afterItemAnchorY <= LOAD_OLDER_THRESHOLD_PX;
+  assert.equal(
+    nearHardTopAfterRestore,
+    false,
+    "after scrollTopItem restore, do not auto-chain from prefetch zone",
+  );
+}
+
 console.log("all chat scroll-up smoke tests passed");

@@ -18,6 +18,12 @@ type Props = {
    * pass `chatEdgePrefetchPx(layoutH)` from the parent for 3-screen prefetch.
    */
   rootMarginPx?: number;
+  /**
+   * Optional token used to re-trigger while the sentinel stays visible.
+   * This fixes stalls where `visible` never flips back to false (e.g. scrollTopItem
+   * keep near the older edge), so the observer would otherwise never fire again.
+   */
+  triggerToken?: unknown;
 };
 
 /** Zero-height sentinel for open-chat history pagination (telegram-tt useScrollHooks). */
@@ -26,6 +32,7 @@ export function MessageHistoryLoadSentinel({
   enabled,
   onTrigger,
   rootMarginPx,
+  triggerToken,
 }: Props) {
   const ref = useRef<View>(null);
   const onTriggerRef = useRef(onTrigger);
@@ -34,6 +41,7 @@ export function MessageHistoryLoadSentinel({
       onTriggerRef.current();
     }, MESSAGE_HISTORY_SENTINEL_DEBOUNCE_MS),
   );
+  const lastTriggerTokenRef = useRef<unknown>(undefined);
 
   useEffect(() => {
     onTriggerRef.current = onTrigger;
@@ -53,8 +61,16 @@ export function MessageHistoryLoadSentinel({
 
   useEffect(() => {
     if (!enabled || !visible) return;
+    if (
+      triggerToken !== undefined &&
+      lastTriggerTokenRef.current !== triggerToken
+    ) {
+      lastTriggerTokenRef.current = triggerToken;
+      onTriggerRef.current();
+      return;
+    }
     debouncedRef.current();
-  }, [enabled, visible]);
+  }, [enabled, visible, triggerToken]);
 
   return (
     <View

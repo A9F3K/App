@@ -176,6 +176,8 @@ export function isChatHistoryCacheAnchorMatch(
   }
 
   if (spec.aroundUnread === true) {
+    // Full around-unread pages only; previews may still paint via
+    // {@link isChatHistoryCachePaintable} and upgrade in the background.
     return entry.aroundUnread === true && !entry.previewOnly;
   }
 
@@ -184,6 +186,15 @@ export function isChatHistoryCacheAnchorMatch(
   }
 
   return true;
+}
+
+/**
+ * Any non-empty cached page for this chat — used to paint immediately on switch
+ * (tdesktop), including short preview lanes while full history loads.
+ */
+export function isChatHistoryCachePaintable(chatId: number): boolean {
+  const entry = getCachedChatHistory(chatId);
+  return entry != null && entry.messages.length > 0;
 }
 
 /** Full first page ready to show without another network round-trip. */

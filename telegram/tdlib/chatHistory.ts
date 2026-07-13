@@ -135,6 +135,12 @@ export async function fetchChatHistory(
 
   while (batches < maxBatches) {
     let raw = await loadPage(cursorMessageId);
+    // tdesktop/TDLib: first older page can briefly return empty while the
+    // server slice is still warming after openChat — retry once before EOF.
+    if (loadOlder && batches === 0 && raw.length === 0) {
+      await sleep(500);
+      raw = await loadPage(cursorMessageId);
+    }
     if (!loadOlder && batches === 0 && raw.length < Math.min(rawBatchLimit, 5)) {
       await sleep(600);
       raw = await loadPage(null);
@@ -175,15 +181,16 @@ export async function fetchChatHistory(
     messages = applyCumulativeOutgoingReadStatuses(messages);
   }
   const oldestReturnedId = messages[0]?.telegram_message_id ?? null;
+  // tdesktop/TDLib: short pages are common and are not EOF. For older loads,
+  // keep pagination open whenever this page returned rows — the next request
+  // returning empty is what closes the edge.
   const hasMoreOlder = loadOlder
-    ? messages.length >= pageLimit ||
-      (messages.length === 0 && lastBatchWasFull && lastRawOldestId != null)
+    ? messages.length > 0 ||
+      (lastBatchWasFull && lastRawOldestId != null)
     : sorted.length > pageLimit || (lastBatchWasFull && oldestReturnedId != null);
   const nextBeforeMessageId = loadOlder
     ? messages.length > 0
-      ? hasMoreOlder
-        ? oldestReturnedId
-        : null
+      ? oldestReturnedId
       : lastBatchWasFull && lastRawOldestId != null
         ? lastRawOldestId
         : null

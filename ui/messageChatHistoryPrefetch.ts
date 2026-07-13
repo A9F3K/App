@@ -242,9 +242,12 @@ function enqueueBackgroundPrefetch(
   chatId: number,
   peerUserId: number | null | undefined,
   spec: LoadSpec,
+  options?: { front?: boolean },
 ): void {
   if (!Number.isFinite(chatId)) return;
-  if (openChatLoadingId != null || isChatListSyncInProgress()) return;
+  // Always queue while the open chat loads — drain resumes when it finishes.
+  // Skipping enqueue here previously burned MessageChatRow's one-shot prefetch.
+  if (isChatListSyncInProgress()) return;
 
   const freshMs = spec.previewOnly ? PREVIEW_FRESH_MS : undefined;
   if (
@@ -260,13 +263,22 @@ function enqueueBackgroundPrefetch(
     queued.splice(existingIdx, 1);
   }
 
-  if (queued.length + inFlightBackground.size >= PREFETCH_VISIBLE_MAX) return;
+  if (queued.length + inFlightBackground.size >= PREFETCH_VISIBLE_MAX) {
+    if (!options?.front) return;
+    // Neighbors of the open chat: bump the oldest queued preview out.
+    if (queued.length > 0) queued.pop();
+  }
 
-  queued.push({
+  const entry = {
     chatId,
     peerUserId: Number.isFinite(Number(peerUserId)) ? Number(peerUserId) : null,
     spec,
-  });
+  };
+  if (options?.front) {
+    queued.unshift(entry);
+  } else {
+    queued.push(entry);
+  }
   scheduleBackgroundDrain();
 }
 
@@ -322,12 +334,55 @@ export function isOpenChatHistoryLoading(): boolean {
 export function prefetchChatHistory(
   chat: Pick<MessageChatRowData, "telegram_chat_id" | "peer_user_id" | "unread_count">,
 ): void {
-  if (openChatLoadingId != null || isChatListSyncInProgress()) return;
+  if (isChatListSyncInProgress()) return;
   enqueueBackgroundPrefetch(
     chat.telegram_chat_id,
     chat.peer_user_id ?? null,
     resolveLoadSpec(chat, { previewOnly: true }),
   );
+}
+
+/**
+ * Warm neighbors of the open chat (tdesktop-style fast switch).
+ * Full open-spec for ±radius list neighbors; preview for the rest of `visible`.
+ */
+export function prefetchVisibleChatNeighbors(
+  chats: readonly MessageChatRowData[],
+  selectedChatId: number | null | undefined,
+  options?: { radius?: number },
+): void {
+  if (chats.length === 0) return;
+  const radius =
+    typeof options?.radius === "number" && options.radius > 0
+      ? Math.trunc(options.radius)
+      : 2;
+  const selectedIdx =
+    selectedChatId != null && Number.isFinite(selectedChatId)
+      ? chats.findIndex((row) => row.telegram_chat_id === selectedChatId)
+      : -1;
+
+  for (let i = 0; i < chats.length; i++) {
+    const chat = chats[i]!;
+    if (selectedChatId != null && chat.telegram_chat_id === selectedChatId) {
+      continue;
+    }
+    const nearSelected =
+      selectedIdx >= 0 && Math.abs(i - selectedIdx) <= radius;
+    if (nearSelected) {
+      enqueueBackgroundPrefetch(
+        chat.telegram_chat_id,
+        chat.peer_user_id ?? null,
+        resolveOpenLoadSpec(chat),
+        { front: true },
+      );
+    } else {
+      enqueueBackgroundPrefetch(
+        chat.telegram_chat_id,
+        chat.peer_user_id ?? null,
+        resolveLoadSpec(chat, { previewOnly: true }),
+      );
+    }
+  }
 }
 
 /** Warm the open chat — shares the same in-flight load as {@link loadOpenChatHistoryFirstPage}. */
@@ -339,6 +394,7 @@ export function prefetchChatHistoryPriority(
   const spec = resolveOpenLoadSpec(chat);
   const anchorSpec = toCacheAnchorSpec(spec);
   const cached = getCachedChatHistory(chatId);
+  // Full fresh page only — never skip upgrading a preview-only cache.
   if (
     cached &&
     !cached.previewOnly &&
@@ -348,13 +404,6 @@ export function prefetchChatHistoryPriority(
     return;
   }
   if (sharedLoads.has(chatId)) return;
-  if (
-    cached?.previewOnly &&
-    isChatHistoryCacheFresh(chatId, PREVIEW_FRESH_MS) &&
-    isChatHistoryCacheAnchorMatch(chatId, anchorSpec)
-  ) {
-    return;
-  }
   void loadOpenChatHistoryFirstPage(chatId, chat.peer_user_id ?? null, chat);
 }
 

@@ -135,12 +135,18 @@ async function fetchMediaBlob(
   uri: string,
   phase: "preview" | "full",
   debugContext?: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<{ bytes: Uint8Array; mime: string; response: Response }> {
   logMessageMediaDebug("fetch_start", { phase, uri, ...debugContext });
   let response: Response;
   try {
-    response = await fetch(uri, { method: "GET", credentials: "include" });
+    response = await fetch(uri, {
+      method: "GET",
+      credentials: "include",
+      signal,
+    });
   } catch (err) {
+    if (signal?.aborted) throw err;
     logMessageMediaFetchError(phase, uri, err, debugContext);
     throw err;
   }
@@ -717,6 +723,9 @@ export function MessageChatMediaContent({
     }
 
     let cancelled = false;
+    const abortController =
+      typeof AbortController !== "undefined" ? new AbortController() : null;
+    const fetchSignal = abortController?.signal;
     let mediaObjectUrl: string | null = null;
     let previewObjectUrl: string | null = null;
     setLoading(true);
@@ -780,6 +789,7 @@ export function MessageChatMediaContent({
                 resolvePreviewMediaUrl(uri),
                 "preview",
                 debugContext,
+                fetchSignal,
               );
               if (cancelled) return;
               previewObjectUrl = createObjectUrl(bytes, mime, "image");
@@ -795,7 +805,12 @@ export function MessageChatMediaContent({
           const loadFullVideo = async (): Promise<void> => {
             for (let attempt = 0; attempt < VIDEO_FULL_MAX_ATTEMPTS && !cancelled; attempt++) {
               try {
-                const { bytes, mime } = await fetchMediaBlob(uri, "full", debugContext);
+                const { bytes, mime } = await fetchMediaBlob(
+                  uri,
+                  "full",
+                  debugContext,
+                  fetchSignal,
+                );
                 if (cancelled) return;
                 const kind = resolveMediaKind(bytes, contentKind, mime);
                 if (kind !== "video") throw new Error("VIDEO_NOT_READY");
@@ -827,6 +842,7 @@ export function MessageChatMediaContent({
                 resolvePreviewMediaUrl(uri),
                 "preview",
                 debugContext,
+                fetchSignal,
               );
               if (cancelled) return;
               previewObjectUrl = createObjectUrl(bytes, mime, "image");
@@ -846,10 +862,15 @@ export function MessageChatMediaContent({
           if (!deferFullMediaFetch) {
           for (let attempt = 0; attempt < PHOTO_FULL_MAX_ATTEMPTS && !cancelled; attempt++) {
             try {
-              const { bytes, mime } = await fetchMediaBlob(uri, "full", {
+              const { bytes, mime } = await fetchMediaBlob(
+                uri,
+                "full",
+                {
                 ...debugContext,
                 attempt: attempt + 1,
-              });
+                },
+                fetchSignal,
+              );
               if (cancelled) return;
               const kind = resolveMediaKind(bytes, contentKind, mime);
               if (mediaObjectUrl) deferRevokeObjectUrl(mediaObjectUrl);
@@ -919,7 +940,12 @@ export function MessageChatMediaContent({
           setLoading(false);
           photoLoadSettled = true;
         } else if (!deferFullMediaFetch) {
-          const { bytes, mime } = await fetchMediaBlob(uri, "full", debugContext);
+          const { bytes, mime } = await fetchMediaBlob(
+            uri,
+            "full",
+            debugContext,
+            fetchSignal,
+          );
           if (cancelled) return;
           const kind = resolveMediaKind(bytes, contentKind, mime);
           mediaObjectUrl = createObjectUrl(bytes, mime, kind);
@@ -941,6 +967,7 @@ export function MessageChatMediaContent({
 
     return () => {
       cancelled = true;
+      abortController?.abort();
       deferRevokeObjectUrl(mediaObjectUrl);
       deferRevokeObjectUrl(previewObjectUrl);
     };

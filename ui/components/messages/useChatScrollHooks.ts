@@ -124,6 +124,15 @@ export function useChatScrollHooks(options: {
         metrics.contentH,
         nearBottomPrefetchPx(metrics.layoutH),
       );
+    const atHardScrollBottom =
+      metrics != null &&
+      metrics.layoutH > 0 &&
+      isNearChatBottom(
+        metrics.scrollY,
+        metrics.layoutH,
+        metrics.contentH,
+        CHAT_EDGE_NEWER_THRESHOLD_PX + CHAT_EDGE_SENSITIVE_AREA_PX,
+      );
 
     const decision = decideChatEdgeLoad({
       phase,
@@ -137,6 +146,7 @@ export function useChatScrollHooks(options: {
       hasMoreNewer: gate.hasMoreNewer,
       nearTop: false,
       nearBottom,
+      atHardScrollBottom,
       newerRetryAfterMs: gate.newerRetryAfterMs,
     });
     if (!decision.loadNewer) return;
