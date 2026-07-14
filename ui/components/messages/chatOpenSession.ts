@@ -78,15 +78,16 @@ function cachedScrollY(cached: CachedChatScrollPosition): number {
 /** True when saved scroll is a real mid-thread position (not a stale top/empty entry). */
 export function isMeaningfulCachedUnreadScroll(cached: CachedChatScrollPosition): boolean {
   if (cached.followingBottom) return true;
-  const scrollY = cachedScrollY(cached);
   const hasAnchor =
     cached.anchorMessageId != null &&
     Number.isFinite(cached.anchorMessageId) &&
     cached.anchorMessageId > 0;
+  // After reload, contentH from the previous paint cannot be trusted — a saved
+  // viewport message id is enough to reopen mid-thread instead of the unread divider.
+  if (hasAnchor) return true;
+  const scrollY = cachedScrollY(cached);
   // Bare scrollY from a failed/partial open settle must not skip the unread divider.
-  // telegram-tt only restores mid-unread when a real viewport message was pinned.
-  if (hasAnchor && scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX) return true;
-  return false;
+  return scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX;
 }
 
 function positiveId(raw: unknown): number {
@@ -195,7 +196,8 @@ export function resolveChatOpenSession(chat: MessageChatRowData): ChatOpenSessio
         restore: cachedScroll,
         alignUnreadDivider: false,
         openAnchor: restoreAtBottom ? "bottom" : "top",
-        pendingInitialScroll: false,
+        // Wait for history + layouts before revealing — same settle path as unread/bottom.
+        pendingInitialScroll: true,
       },
       displayAnchorMessageId: anchorForFetch > 0 ? anchorForFetch : null,
     };

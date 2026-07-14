@@ -7,6 +7,11 @@ export type CachedChatScrollPosition = {
   followingBottom: boolean;
   /** Top-of-viewport message when scroll was saved — used to load a tight window on reopen. */
   anchorMessageId?: number;
+  /**
+   * Distance from the viewport top to the top of `anchorMessageId` when saved.
+   * Prefer this over distanceFromBottom after reload — contentH usually differs.
+   */
+  anchorOffsetFromViewportTop?: number;
   savedAt: number;
 };
 
@@ -73,15 +78,27 @@ function normalizeDistanceFromBottom(entry: CachedChatScrollPosition): number {
   return 0;
 }
 
+function normalizeAnchorOffset(raw: unknown): number | undefined {
+  const offset = Number(raw);
+  if (!Number.isFinite(offset)) return undefined;
+  return offset;
+}
+
 function hydrateFromSession(chatId: number): CachedChatScrollPosition | null {
   const entry = readSessionCache()[String(chatId)];
   if (!entry || !Number.isFinite(entry.contentH)) return null;
   if (Date.now() - entry.savedAt > MAX_AGE_MS) return null;
   const anchorMessageId = normalizeAnchorMessageId(entry.anchorMessageId);
+  const anchorOffsetFromViewportTop = normalizeAnchorOffset(
+    entry.anchorOffsetFromViewportTop,
+  );
   const normalized: CachedChatScrollPosition = {
     ...entry,
     distanceFromBottom: normalizeDistanceFromBottom(entry),
     ...(anchorMessageId != null ? { anchorMessageId } : {}),
+    ...(anchorOffsetFromViewportTop != null
+      ? { anchorOffsetFromViewportTop }
+      : {}),
   };
   memory.set(chatId, normalized);
   return normalized;

@@ -58,6 +58,8 @@ export type HspScrollColumnHandle = {
   scrollToEnd: () => void;
   scrollToY: (y: number) => void;
   getMetrics: () => HspScrollMetrics;
+  /** Live scroll DOM node on web (null on native). */
+  getScrollElement: () => HTMLElement | null;
   /** Apply open-scroll position once before reveal. */
   applyInitialScroll: (targetY: number) => void;
   captureScrollAnchor: () => HspScrollAnchor | null;
@@ -837,6 +839,7 @@ export function HspScrollColumn({
       scrollToEnd,
       scrollToY,
       applyInitialScroll,
+      getScrollElement,
       getMetrics: () => {
         if (Platform.OS === "web") {
           const el = getScrollElement();

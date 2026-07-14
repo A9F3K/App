@@ -54,8 +54,11 @@ export function decideChatEdgeLoad(input: ChatEdgeLoadGateInput): ChatEdgeLoadDe
   if (!canEdgeLoad(input.phase)) {
     return { loadOlder: false, loadNewer: false, reason: `phase_${input.phase}` };
   }
-  if (input.prependAnchorRestorePending) {
-    return { loadOlder: false, loadNewer: false, reason: "prepend_restore" };
+  // Block duplicate API pages while a fetch is in flight. After the fetch
+  // finishes, scroll restore may still run — do not stall the next older page
+  // on media/layout settling below the viewport.
+  if (input.prependAnchorRestorePending && input.loadingOlder) {
+    return { loadOlder: false, loadNewer: false, reason: "prepend_api_load" };
   }
   // Block mid-list until the user moves; older/newer edges are exempt (nearTop / nearBottom).
   if (
@@ -92,6 +95,7 @@ export function decideChatEdgeLoad(input: ChatEdgeLoadGateInput): ChatEdgeLoadDe
     input.hasMoreNewer &&
     !input.loadingNewer &&
     !newerBackoff &&
+    !input.prependAnchorRestorePending &&
     input.nearBottom &&
     newerScrollIntent &&
     (input.userHasScrolledSinceOpen || atHardScrollBottom);
