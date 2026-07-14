@@ -1692,12 +1692,10 @@ export function HomeAuthenticatedScreen() {
         left={homeLeftColumn}
         right={homeWideRightColumn}
         middleColumnFooter={
-          messagesChatOpen && isTripleColumn && selectedMessageChat?.chat_kind !== "channel"
+          messagesChatOpen && selectedMessageChat?.chat_kind !== "channel"
             ? <MessageChatWriteBottomBar />
             : messagesChatOpen
-            ? aiBarDock === "splitColumn2"
-              ? embeddedAiBar
-              : null
+            ? null
             : headerPanelVisibleOnWide && sendActiveOnWide
             ? isTripleColumn
               ? sendColumnFooter

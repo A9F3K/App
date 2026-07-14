@@ -24,7 +24,6 @@ import {
   MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX,
   MESSAGE_BUBBLE_PADDING_VERTICAL_PX,
   MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
-  MESSAGE_BUBBLE_REPLY_BAR_HEIGHT_PX,
   MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX,
   MESSAGE_BUBBLE_REPLY_BG_ACCENT_ALPHA,
   MESSAGE_BUBBLE_REPLY_MARGIN_BOTTOM_PX,
@@ -388,32 +387,31 @@ function MessageChatReplyBlock({
   return (
     <View
       style={{
-        flexDirection: "row",
-        alignItems: "flex-start",
         maxWidth: maxWidthPx,
         marginBottom: MESSAGE_BUBBLE_REPLY_MARGIN_BOTTOM_PX,
         borderRadius: 0,
         overflow: "hidden",
         backgroundColor: replyBackground,
+        position: "relative",
       }}
     >
       <View
+        pointerEvents="none"
         style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          bottom: 0,
           width: MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX,
-          height: MESSAGE_BUBBLE_REPLY_BAR_HEIGHT_PX,
-          marginTop: MESSAGE_BUBBLE_REPLY_PADDING_PX,
-          marginBottom: MESSAGE_BUBBLE_REPLY_PADDING_PX,
           backgroundColor: barColor,
-          flexShrink: 0,
         }}
       />
       <View
         style={{
-          flex: 1,
           paddingTop: MESSAGE_BUBBLE_REPLY_PADDING_PX,
           paddingRight: MESSAGE_BUBBLE_REPLY_PADDING_PX,
           paddingBottom: MESSAGE_BUBBLE_REPLY_PADDING_PX,
-          paddingLeft: MESSAGE_BUBBLE_REPLY_PADDING_PX,
+          paddingLeft: MESSAGE_BUBBLE_REPLY_PADDING_PX + MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX,
           minWidth: 0,
         }}
       >

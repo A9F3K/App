@@ -14,7 +14,6 @@ export const MESSAGE_BUBBLE_PADDING_VERTICAL_PX = 10;
 export const MESSAGE_BUBBLE_REPLY_PADDING_PX = 5;
 /** Telegram-style accent strip on the left of the reply quote. */
 export const MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX = 1;
-export const MESSAGE_BUBBLE_REPLY_BAR_HEIGHT_PX = 50;
 export const MESSAGE_BUBBLE_REPLY_MARGIN_BOTTOM_PX = 6;
 /** Reply quote fill = sender accent at this opacity over the bubble. */
 export const MESSAGE_BUBBLE_REPLY_BG_ACCENT_ALPHA = 0.28;
