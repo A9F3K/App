@@ -56,6 +56,8 @@ export type MessageChatHistoryItem = {
   media_width?: number | null;
   media_height?: number | null;
   reply_to?: MessageChatReplyPreview | null;
+  /** Id of the message being replied to (even when preview text is unresolved). */
+  reply_to_message_id?: number | null;
   /** Ended call was answered / had duration (content_kind call). */
   call_success?: boolean | null;
 };
@@ -490,5 +492,13 @@ export function mergeHistoryMessageRow(
       incomingEnriched.sender_accent_color_dark ?? prevEnriched.sender_accent_color_dark ?? null,
     is_outgoing: isOutgoing,
     outgoing_status: outgoingStatus,
+    reply_to:
+      incomingEnriched.reply_to?.text?.trim()
+        ? incomingEnriched.reply_to
+        : prevEnriched.reply_to?.text?.trim()
+          ? prevEnriched.reply_to
+          : (incomingEnriched.reply_to ?? prevEnriched.reply_to ?? null),
+    reply_to_message_id:
+      incomingEnriched.reply_to_message_id ?? prevEnriched.reply_to_message_id ?? null,
   });
 }

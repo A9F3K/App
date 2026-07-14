@@ -100,6 +100,7 @@ import {
   mergeTrimHistoryMessages,
   oldestHistoryMessageId,
 } from "./chatHistoryMerge";
+import { enrichReplyPreviewsFromLoadedHistory } from "./messageChatReplyEnrichment";
 import { chatLiveSignature, chatMessageTailSignature } from "./chatListSignatures";
 import {
   formatMessageDateDividerLabel,
@@ -127,6 +128,10 @@ import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import { MessageHistoryLoadSentinel } from "./MessageHistoryLoadSentinel";
 import { MessageChatScrollToBottomButton } from "./MessageChatScrollToBottomButton";
 import { prefetchOpenChatAvatars, setOpenChatAvatarPriority, isOpenChatAvatarPriority } from "./messageChatAvatarPrefetch";
+import {
+  clearDisplayChatMediaPrefetchSignature,
+  prefetchDisplayChatMedia,
+} from "./messageMediaPrefetch";
 import type { MessageChatRowData } from "./MessageChatRow";
 import {
   minIntersectingMessageId,
@@ -173,6 +178,9 @@ const MESSAGE_CHAT_LIVE_POLL_STREAM_FALLBACK_MS = 30_000;
 const CHAT_HISTORY_STREAM_ENABLED = typeof EventSource !== "undefined";
 /** User must scroll up this far before older history loads after reopen. */
 const LOAD_OLDER_PAGE_COOLDOWN_MS = 500;
+/** Empty older pages may be TDLib warmup; soft-fail before permanent EOF. */
+const OLDER_EMPTY_SOFT_FAIL_BUDGET = 3;
+const OLDER_EMPTY_SOFT_FAIL_COOLDOWN_MS = 1200;
 /** telegram-tt FAB_THRESHOLD — hide scroll-down when within this distance of bottom (read chats). */
 const FAB_VISIBILITY_THRESHOLD_PX = 50;
 /** telegram-tt NOTCH_THRESHOLD — unread chats hide FAB only at exact bottom. */
@@ -521,6 +529,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     loadOlderBeforeId: number | null;
   } | null>(null);
   const lastOlderLoadFinishedAtRef = useRef(0);
+  const olderEmptySoftFailCountRef = useRef(0);
+  const olderSoftFailCooldownUntilRef = useRef(0);
   const virtualTopSpacerPxRef = useRef(0);
   /** Suppress bottom-stick scroll churn while row heights are still measuring. */
   const layoutSettlingUntilRef = useRef(0);
@@ -597,7 +607,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         virtualScrollTickRef.current += 1;
         setVirtualScrollTick(virtualScrollTickRef.current);
       }
-      return next;
+      return enrichReplyPreviewsFromLoadedHistory(next);
     },
     [historyMessageContext],
   );
@@ -685,6 +695,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       prevDisplayLastIdRef.current = 0;
       lastAppliedCacheSignatureRef.current = "";
       lastAvatarPrefetchGenerationRef.current = 0;
+      clearDisplayChatMediaPrefetchSignature(chat.telegram_chat_id);
       messageLayoutsRef.current.clear();
       messageRowHeightCacheRef.current.clear();
       lastDisplayedUnreadRemainingRef.current = null;
@@ -740,6 +751,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         openScrollForceRevealTimerRef.current = null;
       }
       lastOlderLoadFinishedAtRef.current = 0;
+      olderEmptySoftFailCountRef.current = 0;
+      olderSoftFailCooldownUntilRef.current = 0;
       olderLoadDomAnchorRef.current = null;
       olderLoadLockedAnchorIdRef.current = 0;
       olderLoadDisplayHeadBeforeRef.current = 0;
@@ -2277,6 +2290,14 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       if (metrics.layoutH > 0) {
         pinnedLayoutHRef.current = metrics.layoutH;
       }
+      if (chatScrollPaintReadyRef.current) {
+        prefetchDisplayChatMedia(chat.telegram_chat_id, displayMessagesRef.current, {
+          scrollY: metrics.scrollY,
+          layoutH: metrics.layoutH || pinnedLayoutHRef.current || 480,
+          layouts: messageLayoutsRef.current,
+          contentActive: true,
+        });
+      }
       if (
         !chatScrollPaintReadyRef.current &&
         metrics.layoutH > 0 &&
@@ -3569,6 +3590,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     historyLoad.generation,
     shouldLoadHistory,
     chatScrollPaintReady,
+  ]);
+
+  useEffect(() => {
+    if (!shouldLoadHistory || displayMessages.length === 0) return;
+    if (!chatScrollPaintReady) return;
+    prefetchDisplayChatMedia(chat.telegram_chat_id, displayMessages, {
+      scrollY: lastScrollYRef.current,
+      layoutH: pinnedLayoutHRef.current || 480,
+      layouts: messageLayoutsRef.current,
+      contentActive: true,
+    });
+  }, [
+    chat.telegram_chat_id,
+    chatScrollPaintReady,
+    displayMessages,
+    shouldLoadHistory,
   ]);
 
   useEffect(() => {
@@ -5038,7 +5075,38 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             });
             return;
           }
-          applyOlderPaginationCursor(result.hasMoreOlder, result.nextBeforeMessageId);
+          // Empty older pages are often TDLib/gateway transient (around-window
+          // truncated, cache still warming). Soft-fail a few times before
+          // treating the edge as true EOF — otherwise scroll-up permanently
+          // stalls after messages_history_load_older_empty.
+          const softFailCount = olderEmptySoftFailCountRef.current;
+          if (softFailCount < OLDER_EMPTY_SOFT_FAIL_BUDGET) {
+            olderEmptySoftFailCountRef.current = softFailCount + 1;
+            olderSoftFailCooldownUntilRef.current =
+              Date.now() + OLDER_EMPTY_SOFT_FAIL_COOLDOWN_MS;
+            applyOlderPaginationCursor(true, pageCursor);
+            logPageDisplay("messages_history_load_older_empty_soft", {
+              ...chatLogFields({
+                chatId: chat.telegram_chat_id,
+                peerUserId: chat.peer_user_id,
+                title: chat.title,
+              }),
+              beforeMessageId: pageCursor,
+              softFailCount: softFailCount + 1,
+              softFailBudget: OLDER_EMPTY_SOFT_FAIL_BUDGET,
+              cooldownMs: OLDER_EMPTY_SOFT_FAIL_COOLDOWN_MS,
+              apiHasMoreOlder: result.hasMoreOlder,
+              nextBeforeMessageId: result.nextBeforeMessageId,
+            });
+            clearOlderLoadCaptureWithoutRestore({
+              reason: "empty_page_soft",
+              tryDisplayExpand: true,
+            });
+            return;
+          }
+          olderEmptySoftFailCountRef.current = 0;
+          olderSoftFailCooldownUntilRef.current = 0;
+          applyOlderPaginationCursor(false, null);
           logPageDisplay("messages_history_load_older_empty", {
             ...chatLogFields({
               chatId: chat.telegram_chat_id,
@@ -5046,8 +5114,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
               title: chat.title,
             }),
             beforeMessageId: pageCursor,
-            hasMoreOlder: result.hasMoreOlder,
+            hasMoreOlder: false,
             nextBeforeMessageId: result.nextBeforeMessageId,
+            softFailExhausted: true,
           });
           clearOlderLoadCaptureWithoutRestore({
             reason: "empty_page",
@@ -5183,6 +5252,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         return;
       }
 
+      olderEmptySoftFailCountRef.current = 0;
+      olderSoftFailCooldownUntilRef.current = 0;
       if (result.selfUserId != null) {
         setSelfUserId(result.selfUserId);
       }
@@ -5508,9 +5579,6 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const runOlderEdgeAction = useCallback(() => {
     if (pendingItemAnchorRef.current) return;
     if (!chatScrollPaintReadyRef.current || loadingInitial) return;
-    if (holdOlderEdgeAfterRestoreRef.current && !userHasScrolledSinceOpenRef.current) {
-      return;
-    }
     // One prepend at a time — stacking expand+API mid-keep races the viewport.
     if (
       loadingOlderRef.current ||
@@ -5545,6 +5613,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           MESSAGE_CHAT_LOAD_OLDER_PREFETCH_PX,
         ),
       );
+
+    // Mid-list restore must not API-load older until the user scrolls — unless
+    // the viewport is already on the loaded older edge (restore landed near top).
+    if (
+      holdOlderEdgeAfterRestoreRef.current &&
+      !userHasScrolledSinceOpenRef.current &&
+      !scrollNearTop &&
+      !viewportAtLoadedTopRef.current
+    ) {
+      return;
+    }
 
     const canExpandInBuffer =
       displaySliceBoundsRef.current.startIndex > 0 ||
@@ -5676,8 +5755,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           hasMoreNewer: true,
           canExpandOlderInBuffer: canExpandOlder,
           canHydrateOlderFromCache: canHydrateOlder,
-          olderCooldownUntilMs:
-            lastOlderLoadFinishedAtRef.current + LOAD_OLDER_PAGE_COOLDOWN_MS,
+        olderCooldownUntilMs: Math.max(
+          lastOlderLoadFinishedAtRef.current + LOAD_OLDER_PAGE_COOLDOWN_MS,
+          olderSoftFailCooldownUntilRef.current,
+        ),
           newerRetryAfterMs: loadNewerRetryAfterRef.current,
         };
       },

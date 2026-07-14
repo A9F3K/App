@@ -1,6 +1,7 @@
 export type NetworkFetchPriority = "high" | "normal";
 
-const MAX_CONCURRENT = 4;
+/** Photos + avatars + emoji share this pool; keep enough slots for scroll fill. */
+const MAX_CONCURRENT = 8;
 let inFlight = 0;
 const highWaiters: Array<() => void> = [];
 const normalWaiters: Array<() => void> = [];

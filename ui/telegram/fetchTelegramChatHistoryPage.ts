@@ -76,16 +76,21 @@ export function normalizeHistoryMessage(
   const outgoingRaw = row.outgoing_status ?? row.outgoingStatus;
   const outgoingStatus = coalesceOutgoingStatus(outgoingRaw, isOutgoing);
   let replyTo: MessageChatHistoryItem["reply_to"] = null;
+  let replyToMessageId: number | null = null;
+  const replyIdRaw = Number(row.reply_to_message_id ?? row.replyToMessageId);
+  if (Number.isFinite(replyIdRaw) && replyIdRaw > 0) {
+    replyToMessageId = Math.trunc(replyIdRaw);
+  }
   const replyRaw = row.reply_to;
   if (replyRaw && typeof replyRaw === "object" && !Array.isArray(replyRaw)) {
     const replyRow = replyRaw as Record<string, unknown>;
     const replySenderName =
       typeof replyRow.sender_name === "string" ? replyRow.sender_name.trim() : "";
     const replyText = typeof replyRow.text === "string" ? replyRow.text.trim() : "";
-    if (replySenderName && replyText) {
+    if (replyText) {
       const replySenderUserId = Number(replyRow.sender_user_id);
       replyTo = {
-        sender_name: replySenderName,
+        sender_name: replySenderName || "…",
         sender_user_id: safeTelegramUserIdForLog(replySenderUserId) ?? null,
         text: replyText,
         text_segments: normalizeFormattedTextSegments(replyRow.text_segments),
@@ -144,6 +149,7 @@ export function normalizeHistoryMessage(
       ? Number(row.media_height ?? row.mediaHeight)
       : null,
     reply_to: replyTo,
+    reply_to_message_id: replyToMessageId,
     call_success: isCall ? Boolean(row.call_success ?? row.callSuccess) : undefined,
   });
 }

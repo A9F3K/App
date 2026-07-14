@@ -17,11 +17,12 @@ import { WEB_UI_SANS_STACK } from "../../theme";
 import { bytesLookLikeTgs, bytesLookLikeVideo } from "./loadTgsAnimation";
 import { deferRevokeObjectUrl } from "./deferRevokeObjectUrl";
 import { MessageChatTgsSticker } from "./MessageChatTgsSticker";
+import { logMessageMediaDebug } from "./messageMediaDebug";
 import {
-  logMessageMediaDebug,
-  logMessageMediaFetchError,
-  logMessageMediaFetchResult,
-} from "./messageMediaDebug";
+  fetchCachedMessageMedia,
+  forgetCachedMessageMedia,
+  getCachedMessageMedia,
+} from "./messageMediaBlobCache";
 
 type Props = {
   uri: string;
@@ -32,9 +33,15 @@ type Props = {
   maxWidthPx?: number;
   colors: ThemeColors;
   onDisplaySizeChange?: (widthPx: number, heightPx: number) => void;
-  /** When false, skip preview/full fetches until the message row is visible. */
+  /**
+   * When false, skip network fetches (open scroll not ready). Cached blobs still show.
+   * Preview can run for all painted rows; full fetch is gated by {@link deferFullMediaFetch}.
+   */
   mediaFetchEnabled?: boolean;
-  /** When true, only load preview bytes until {@link mediaFetchEnabled} is set. */
+  /**
+   * When true, load preview/minithumbnail only — full bytes wait until the row is
+   * in the media prefetch band (tdesktop nearby preload).
+   */
   deferFullMediaFetch?: boolean;
 };
 
@@ -129,52 +136,6 @@ function isStreamableVideoContentKind(contentKind: MessageChatContentKind): bool
 export function resolvePreviewMediaUrl(uri: string): string {
   if (/[?&]preview=1(?:&|$)/.test(uri)) return uri;
   return `${uri}${uri.includes("?") ? "&" : "?"}preview=1`;
-}
-
-async function fetchMediaBlob(
-  uri: string,
-  phase: "preview" | "full",
-  debugContext?: Record<string, unknown>,
-  signal?: AbortSignal,
-): Promise<{ bytes: Uint8Array; mime: string; response: Response }> {
-  logMessageMediaDebug("fetch_start", { phase, uri, ...debugContext });
-  let response: Response;
-  try {
-    response = await fetch(uri, {
-      method: "GET",
-      credentials: "include",
-      signal,
-    });
-  } catch (err) {
-    if (signal?.aborted) throw err;
-    logMessageMediaFetchError(phase, uri, err, debugContext);
-    throw err;
-  }
-  if (!response.ok) {
-    logMessageMediaFetchError(phase, uri, new Error(`HTTP_${response.status}`), {
-      httpStatus: response.status,
-      ...debugContext,
-    });
-    throw new Error(`HTTP_${response.status}`);
-  }
-  const blob = await response.blob();
-  const buffer = await blob.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  const mime = (blob.type || response.headers.get("Content-Type") || "").trim();
-  logMessageMediaFetchResult(phase, uri, response, bytes, debugContext);
-  return { bytes, mime, response };
-}
-
-function createObjectUrl(bytes: Uint8Array, mime: string, kind: ResolvedMediaKind): string {
-  const blobType =
-    kind === "video"
-      ? mime.startsWith("video/")
-        ? mime
-        : "video/mp4"
-      : kind === "tgs"
-        ? "application/x-tgsticker"
-        : mime || "application/octet-stream";
-  return URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: blobType }));
 }
 
 export function messageMediaShowsProgressBar(contentKind: MessageChatContentKind): boolean {
@@ -717,25 +678,9 @@ export function MessageChatMediaContent({
   }, [widthPx, heightPx, maxWidthPx, mediaUri]);
 
   useEffect(() => {
-    if (!mediaFetchEnabled) {
-      setLoading(false);
-      return;
-    }
-
     let cancelled = false;
-    const abortController =
-      typeof AbortController !== "undefined" ? new AbortController() : null;
-    const fetchSignal = abortController?.signal;
-    let mediaObjectUrl: string | null = null;
-    let previewObjectUrl: string | null = null;
-    setLoading(true);
-    setFailed(false);
-    setMediaUri(null);
-    setPreviewUri(null);
-    setMediaBytes(null);
-    setMediaKind(null);
-    setDisplayWidthPx(widthPx);
-    setDisplayHeightPx(heightPx);
+    let localMediaUrl: string | null = null;
+    let localPreviewUrl: string | null = null;
 
     const layoutCapPx = Math.max(maxWidthPx ?? widthPx, widthPx, PHOTO_MIN_LAYOUT_WIDTH_PX);
     const placeholderDims = mediaLoadingPlaceholderDimensions(layoutCapPx, contentKind);
@@ -749,6 +694,45 @@ export function MessageChatMediaContent({
       layoutCapPx,
       maxWidthPx: maxWidthPx ?? null,
     };
+
+    const previewUrl = resolvePreviewMediaUrl(uri);
+    const cachedFull = getCachedMessageMedia(uri);
+    const cachedPreview = getCachedMessageMedia(previewUrl);
+
+    // Instant paint from shared cache (tdesktop: keep photos across scroll remounts).
+    if (cachedFull) {
+      const kind = resolveMediaKind(cachedFull.bytes, contentKind, cachedFull.mime);
+      setMediaUri(cachedFull.objectUrl);
+      setMediaBytes(cachedFull.bytes);
+      setMediaKind(kind);
+      setPreviewUri(null);
+      setFailed(false);
+      setLoading(false);
+    } else if (cachedPreview) {
+      setMediaUri(null);
+      setMediaBytes(null);
+      setMediaKind(null);
+      setPreviewUri(cachedPreview.objectUrl);
+      setFailed(false);
+      setLoading(false);
+    } else {
+      setMediaUri(null);
+      setPreviewUri(null);
+      setMediaBytes(null);
+      setMediaKind(null);
+      setFailed(false);
+      setLoading(mediaFetchEnabled);
+      setDisplayWidthPx(widthPx);
+      setDisplayHeightPx(heightPx);
+    }
+
+    if (!mediaFetchEnabled) {
+      setLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     logMessageMediaDebug("mount", { uri, ...debugContext });
 
     const applyIntrinsicDimensions = async (
@@ -777,49 +761,65 @@ export function MessageChatMediaContent({
       if (usesVideoPreview) displayDimsLockedRef.current = true;
     };
 
+    if (cachedFull) {
+      void applyIntrinsicDimensions(
+        cachedFull.objectUrl,
+        resolveMediaKind(cachedFull.bytes, contentKind, cachedFull.mime) === "video"
+          ? "video"
+          : "image",
+      );
+    } else if (cachedPreview) {
+      void applyIntrinsicDimensions(cachedPreview.objectUrl, "image");
+    }
+
     void (async () => {
       let photoLoadSettled = false;
       try {
         if (usesVideoPreview) {
-          const hasPreviewRef = { current: false };
+          const hasPreviewRef = { current: Boolean(cachedPreview) };
 
-          void (async () => {
-            try {
-              const { bytes, mime } = await fetchMediaBlob(
-                resolvePreviewMediaUrl(uri),
-                "preview",
-                debugContext,
-                fetchSignal,
-              );
-              if (cancelled) return;
-              previewObjectUrl = createObjectUrl(bytes, mime, "image");
-              hasPreviewRef.current = true;
-              setPreviewUri(previewObjectUrl);
-              await applyIntrinsicDimensions(previewObjectUrl, "image");
-              if (!cancelled) setLoading(false);
-            } catch {
-              /* preview is optional */
-            }
-          })();
-
-          const loadFullVideo = async (): Promise<void> => {
-            for (let attempt = 0; attempt < VIDEO_FULL_MAX_ATTEMPTS && !cancelled; attempt++) {
+          if (!cachedPreview) {
+            void (async () => {
               try {
-                const { bytes, mime } = await fetchMediaBlob(
-                  uri,
-                  "full",
-                  debugContext,
-                  fetchSignal,
+                const { bytes, mime, objectUrl } = await fetchCachedMessageMedia(
+                  previewUrl,
+                  "preview",
+                  { priority: "normal", debugContext },
                 );
                 if (cancelled) return;
+                localPreviewUrl = objectUrl;
+                hasPreviewRef.current = true;
+                setPreviewUri(objectUrl);
+                await applyIntrinsicDimensions(objectUrl, "image");
+                if (!cancelled && !getCachedMessageMedia(uri)) setLoading(false);
+                void bytes;
+                void mime;
+              } catch {
+                /* preview is optional */
+              }
+            })();
+          }
+
+          const loadFullVideo = async (): Promise<void> => {
+            if (cachedFull) return;
+            for (let attempt = 0; attempt < VIDEO_FULL_MAX_ATTEMPTS && !cancelled; attempt++) {
+              try {
+                const { bytes, mime, objectUrl } = await fetchCachedMessageMedia(uri, "full", {
+                  priority: "high",
+                  debugContext: { ...debugContext, attempt: attempt + 1 },
+                });
+                if (cancelled) return;
                 const kind = resolveMediaKind(bytes, contentKind, mime);
-                if (kind !== "video") throw new Error("VIDEO_NOT_READY");
-                mediaObjectUrl = createObjectUrl(bytes, mime, kind);
-                await applyIntrinsicDimensions(mediaObjectUrl, "video");
+                if (kind !== "video") {
+                  forgetCachedMessageMedia(uri);
+                  throw new Error("VIDEO_NOT_READY");
+                }
+                localMediaUrl = objectUrl;
+                await applyIntrinsicDimensions(objectUrl, "video");
                 if (cancelled) return;
                 setMediaBytes(bytes);
                 setMediaKind(kind);
-                setMediaUri(mediaObjectUrl);
+                setMediaUri(objectUrl);
                 setLoading(false);
                 return;
               } catch {
@@ -837,21 +837,21 @@ export function MessageChatMediaContent({
 
         if (contentKind === "photo") {
           const previewPromise = (async () => {
+            if (cachedPreview || cachedFull) return;
             try {
-              const { bytes, mime } = await fetchMediaBlob(
-                resolvePreviewMediaUrl(uri),
-                "preview",
+              const { objectUrl } = await fetchCachedMessageMedia(previewUrl, "preview", {
+                priority: "high",
                 debugContext,
-                fetchSignal,
-              );
+              });
               if (cancelled) return;
-              previewObjectUrl = createObjectUrl(bytes, mime, "image");
-              setPreviewUri(previewObjectUrl);
-              await applyIntrinsicDimensions(previewObjectUrl, "image");
+              localPreviewUrl = objectUrl;
+              setPreviewUri(objectUrl);
+              await applyIntrinsicDimensions(objectUrl, "image");
+              if (!cancelled && !getCachedMessageMedia(uri)) setLoading(false);
             } catch (previewError) {
               logMessageMediaDebug("fetch_error", {
                 phase: "preview",
-                uri: resolvePreviewMediaUrl(uri),
+                uri: previewUrl,
                 error:
                   previewError instanceof Error ? previewError.message : String(previewError),
                 ...debugContext,
@@ -859,104 +859,100 @@ export function MessageChatMediaContent({
             }
           })();
 
-          if (!deferFullMediaFetch) {
-          for (let attempt = 0; attempt < PHOTO_FULL_MAX_ATTEMPTS && !cancelled; attempt++) {
-            try {
-              const { bytes, mime } = await fetchMediaBlob(
-                uri,
-                "full",
-                {
-                ...debugContext,
-                attempt: attempt + 1,
-                },
-                fetchSignal,
-              );
-              if (cancelled) return;
-              const kind = resolveMediaKind(bytes, contentKind, mime);
-              if (mediaObjectUrl) deferRevokeObjectUrl(mediaObjectUrl);
-              mediaObjectUrl = createObjectUrl(bytes, mime, kind);
-              const intrinsic = await measureWebMediaIntrinsicSize(
-                mediaObjectUrl,
-                kind === "video" ? "video" : "image",
-              );
-              if (cancelled) return;
-              if (photoBytesLookFullSize(bytes, intrinsic)) {
-                logMessageMediaDebug("photo_full_accepted", {
-                  uri,
-                  attempt: attempt + 1,
-                  intrinsicWidth: intrinsic?.width ?? null,
-                  intrinsicHeight: intrinsic?.height ?? null,
-                  byteLength: bytes.length,
-                  ...debugContext,
+          if (!deferFullMediaFetch && !cachedFull) {
+            for (let attempt = 0; attempt < PHOTO_FULL_MAX_ATTEMPTS && !cancelled; attempt++) {
+              try {
+                const { bytes, mime, objectUrl } = await fetchCachedMessageMedia(uri, "full", {
+                  priority: "high",
+                  debugContext: { ...debugContext, attempt: attempt + 1 },
                 });
-                await applyIntrinsicDimensions(
-                  mediaObjectUrl,
-                  kind === "video" ? "video" : kind === "gif" ? "gif" : "image",
+                if (cancelled) return;
+                const kind = resolveMediaKind(bytes, contentKind, mime);
+                const intrinsic = await measureWebMediaIntrinsicSize(
+                  objectUrl,
+                  kind === "video" ? "video" : "image",
                 );
                 if (cancelled) return;
-                setMediaBytes(bytes);
-                setMediaKind(kind);
-                setMediaUri(mediaObjectUrl);
+                if (photoBytesLookFullSize(bytes, intrinsic)) {
+                  logMessageMediaDebug("photo_full_accepted", {
+                    uri,
+                    attempt: attempt + 1,
+                    intrinsicWidth: intrinsic?.width ?? null,
+                    intrinsicHeight: intrinsic?.height ?? null,
+                    byteLength: bytes.length,
+                    ...debugContext,
+                  });
+                  localMediaUrl = objectUrl;
+                  await applyIntrinsicDimensions(
+                    objectUrl,
+                    kind === "video" ? "video" : kind === "gif" ? "gif" : "image",
+                  );
+                  if (cancelled) return;
+                  setMediaBytes(bytes);
+                  setMediaKind(kind);
+                  setMediaUri(objectUrl);
+                  break;
+                }
+                logMessageMediaDebug(
+                  "photo_full_rejected_thumbnail",
+                  {
+                    uri,
+                    attempt: attempt + 1,
+                    intrinsicWidth: intrinsic?.width ?? null,
+                    intrinsicHeight: intrinsic?.height ?? null,
+                    byteLength: bytes.length,
+                    ...debugContext,
+                  },
+                  "warn",
+                );
+                forgetCachedMessageMedia(uri);
+                logMessageMediaDebug(
+                  "photo_full_give_up_thumbnail_only",
+                  { uri, byteLength: bytes.length, attempt: attempt + 1, ...debugContext },
+                  "warn",
+                );
+                break;
+              } catch (fullError) {
+                logMessageMediaDebug("fetch_error", {
+                  phase: "full",
+                  uri,
+                  error: fullError instanceof Error ? fullError.message : String(fullError),
+                  attempt: attempt + 1,
+                  ...debugContext,
+                });
                 break;
               }
-              logMessageMediaDebug(
-                "photo_full_rejected_thumbnail",
-                {
-                  uri,
-                  attempt: attempt + 1,
-                  intrinsicWidth: intrinsic?.width ?? null,
-                  intrinsicHeight: intrinsic?.height ?? null,
-                  byteLength: bytes.length,
-                  ...debugContext,
-                },
-                "warn",
-              );
-              deferRevokeObjectUrl(mediaObjectUrl);
-              mediaObjectUrl = null;
-              logMessageMediaDebug(
-                "photo_full_give_up_thumbnail_only",
-                { uri, byteLength: bytes.length, attempt: attempt + 1, ...debugContext },
-                "warn",
-              );
-              break;
-            } catch (fullError) {
-              logMessageMediaDebug("fetch_error", {
-                phase: "full",
-                uri,
-                error: fullError instanceof Error ? fullError.message : String(fullError),
-                attempt: attempt + 1,
-                ...debugContext,
-              });
-              break;
             }
-          }
           }
 
           await previewPromise;
           if (cancelled) return;
-          if (!mediaObjectUrl && !previewObjectUrl) {
+          if (!getCachedMessageMedia(uri) && !getCachedMessageMedia(previewUrl) && !localMediaUrl && !localPreviewUrl && !cachedFull && !cachedPreview) {
             setFailed(true);
           }
           setLoading(false);
           photoLoadSettled = true;
-        } else if (!deferFullMediaFetch) {
-          const { bytes, mime } = await fetchMediaBlob(
-            uri,
-            "full",
+        } else if (!deferFullMediaFetch || contentKind === "sticker") {
+          // Stickers/documents: load with painted rows; photos/videos defer full to prefetch band.
+          if (cachedFull) {
+            photoLoadSettled = true;
+            return;
+          }
+          const { bytes, mime, objectUrl } = await fetchCachedMessageMedia(uri, "full", {
+            priority: deferFullMediaFetch ? "normal" : "high",
             debugContext,
-            fetchSignal,
-          );
+          });
           if (cancelled) return;
           const kind = resolveMediaKind(bytes, contentKind, mime);
-          mediaObjectUrl = createObjectUrl(bytes, mime, kind);
+          localMediaUrl = objectUrl;
           await applyIntrinsicDimensions(
-            mediaObjectUrl,
+            objectUrl,
             kind === "video" ? "video" : kind === "gif" ? "gif" : "image",
           );
           if (cancelled) return;
           setMediaBytes(bytes);
           setMediaKind(kind);
-          setMediaUri(mediaObjectUrl);
+          setMediaUri(objectUrl);
         }
       } catch {
         if (!cancelled && contentKind !== "photo") setFailed(true);
@@ -966,10 +962,15 @@ export function MessageChatMediaContent({
     })();
 
     return () => {
+      // Do not abort shared cache fetches — let nearby photos finish like tdesktop.
       cancelled = true;
-      abortController?.abort();
-      deferRevokeObjectUrl(mediaObjectUrl);
-      deferRevokeObjectUrl(previewObjectUrl);
+      // Only revoke ad-hoc URLs (fallback path); cache URLs must live across remounts.
+      if (localMediaUrl && !getCachedMessageMedia(uri)) {
+        deferRevokeObjectUrl(localMediaUrl);
+      }
+      if (localPreviewUrl && !getCachedMessageMedia(previewUrl)) {
+        deferRevokeObjectUrl(localPreviewUrl);
+      }
     };
   }, [contentKind, uri, usesVideoPreview, mediaFetchEnabled, deferFullMediaFetch]);
 

@@ -56,7 +56,12 @@ export type MappedChatHistoryMessage = {
     sender_user_id: number | null;
     text: string;
     text_segments?: FormattedTextSegment[] | null;
+    sender_emoji_status_custom_emoji_id?: string | null;
+    sender_accent_color_light?: string | null;
+    sender_accent_color_dark?: string | null;
   } | null;
+  /** TDLib replied message id — set even when preview text could not be resolved. */
+  reply_to_message_id?: number | null;
   /** Ended call was answered / had duration (messageCall only). */
   call_success?: boolean | null;
 };
@@ -218,12 +223,7 @@ async function resolveMessageSenderUserId(
   return null;
 }
 
-async function resolveReplyPreview(
-  client: Client,
-  message: TdMessage,
-  userCache: UserProfileCache,
-  chatCache: Map<number, { title: string; isChannel: boolean }>,
-): Promise<{
+type ReplyPreviewPayload = {
   sender_name: string;
   sender_user_id: number | null;
   text: string;
@@ -231,12 +231,89 @@ async function resolveReplyPreview(
   sender_emoji_status_custom_emoji_id?: string | null;
   sender_accent_color_light?: string | null;
   sender_accent_color_dark?: string | null;
-} | null> {
+};
+
+function isMessageReplyToMessage(reply: TdMessage["reply_to"]): boolean {
+  if (!reply || typeof reply !== "object") return false;
+  // Current TDLib: messageReplyToMessage. Older typo / aliases kept for safety.
+  return (
+    reply._ === "messageReplyToMessage" ||
+    reply._ === "messageReplyMessage" ||
+    (typeof reply.message_id === "number" && reply.message_id > 0)
+  );
+}
+
+function extractReplyToMessageId(message: TdMessage): number | null {
   const reply = message.reply_to;
-  if (reply?._ !== "messageReplyMessage") return null;
-  const chatId = reply.chat_id;
+  if (!isMessageReplyToMessage(reply) || !reply) return null;
   const messageId = reply.message_id;
-  if (typeof chatId !== "number" || typeof messageId !== "number") return null;
+  return typeof messageId === "number" && messageId > 0 ? messageId : null;
+}
+
+async function resolveReplyOriginSender(
+  client: Client,
+  reply: NonNullable<TdMessage["reply_to"]>,
+  userCache: UserProfileCache,
+  chatCache: Map<number, { title: string; isChannel: boolean }>,
+): Promise<{ name: string; userId: number | null; profile: TdUserProfileCache | null }> {
+  const origin = reply.origin;
+  if (origin?._ === "messageOriginUser" && typeof origin.sender_user_id === "number") {
+    const profile = await resolveTdUserProfile(client, origin.sender_user_id, userCache);
+    return { name: profile.name, userId: origin.sender_user_id, profile };
+  }
+  if (origin?._ === "messageOriginHiddenUser" && typeof origin.sender_name === "string") {
+    const name = origin.sender_name.trim();
+    if (name) return { name, userId: null, profile: null };
+  }
+  if (origin?._ === "messageOriginChat" && typeof origin.sender_chat_id === "number") {
+    const resolved = await resolveChatName(client, origin.sender_chat_id, chatCache);
+    return { name: resolved.title, userId: null, profile: null };
+  }
+  if (origin?._ === "messageOriginChannel" && typeof origin.chat_id === "number") {
+    const resolved = await resolveChatName(client, origin.chat_id, chatCache);
+    const signature =
+      typeof origin.author_signature === "string" ? origin.author_signature.trim() : "";
+    return { name: signature || resolved.title, userId: null, profile: null };
+  }
+  return { name: "", userId: null, profile: null };
+}
+
+function replyPreviewTextFromInline(reply: NonNullable<TdMessage["reply_to"]>): {
+  text: string;
+  text_segments: FormattedTextSegment[] | null;
+} {
+  const quoteText =
+    typeof reply.quote?.text?.text === "string" ? reply.quote.text.text.trim() : "";
+  if (quoteText) {
+    return { text: quoteText.slice(0, 200), text_segments: null };
+  }
+  if (reply.content && typeof reply.content === "object") {
+    const stub = { content: reply.content } as TdMessage;
+    const text = bodyText(stub).trim() || previewFromMessage(stub) || "";
+    if (text) {
+      return {
+        text: text.slice(0, 200),
+        text_segments: messageTextSegments(stub, { enrichStandardEmojis: true }),
+      };
+    }
+  }
+  return { text: "", text_segments: null };
+}
+
+async function resolveReplyPreview(
+  client: Client,
+  message: TdMessage,
+  userCache: UserProfileCache,
+  chatCache: Map<number, { title: string; isChannel: boolean }>,
+): Promise<ReplyPreviewPayload | null> {
+  const reply = message.reply_to;
+  if (!isMessageReplyToMessage(reply) || !reply) return null;
+  const chatId = typeof reply.chat_id === "number" ? reply.chat_id : message.chat_id;
+  const messageId = reply.message_id;
+  if (typeof chatId !== "number" || typeof messageId !== "number" || messageId <= 0) {
+    return null;
+  }
+
   try {
     const replied = (await client.invoke({
       _: "getMessage",
@@ -245,20 +322,33 @@ async function resolveReplyPreview(
     })) as TdMessage;
     const sender = await resolveSenderName(client, replied, { id: chatId } as TdChat, userCache, chatCache);
     const text = bodyText(replied).trim() || previewFromMessage(replied) || "";
-    if (!text) return null;
-    const replySegments = messageTextSegments(replied, { enrichStandardEmojis: true });
-    return {
-      sender_name: sender.name,
-      sender_user_id: senderUserId(replied),
-      text: text.slice(0, 200),
-      text_segments: replySegments,
-      sender_emoji_status_custom_emoji_id: sender.profile?.emoji_status_custom_emoji_id ?? null,
-      sender_accent_color_light: sender.profile?.accent_color_light ?? null,
-      sender_accent_color_dark: sender.profile?.accent_color_dark ?? null,
-    };
+    if (text) {
+      return {
+        sender_name: sender.name,
+        sender_user_id: senderUserId(replied),
+        text: text.slice(0, 200),
+        text_segments: messageTextSegments(replied, { enrichStandardEmojis: true }),
+        sender_emoji_status_custom_emoji_id: sender.profile?.emoji_status_custom_emoji_id ?? null,
+        sender_accent_color_light: sender.profile?.accent_color_light ?? null,
+        sender_accent_color_dark: sender.profile?.accent_color_dark ?? null,
+      };
+    }
   } catch {
-    return null;
+    /* Fall through to inline reply_to quote/content/origin. */
   }
+
+  const inline = replyPreviewTextFromInline(reply);
+  if (!inline.text) return null;
+  const originSender = await resolveReplyOriginSender(client, reply, userCache, chatCache);
+  return {
+    sender_name: originSender.name || "…",
+    sender_user_id: originSender.userId,
+    text: inline.text,
+    text_segments: inline.text_segments,
+    sender_emoji_status_custom_emoji_id: originSender.profile?.emoji_status_custom_emoji_id ?? null,
+    sender_accent_color_light: originSender.profile?.accent_color_light ?? null,
+    sender_accent_color_dark: originSender.profile?.accent_color_dark ?? null,
+  };
 }
 
 function senderUserId(message: TdMessage): number | null {
@@ -605,7 +695,11 @@ export async function mapHistoryMessage(
 
   const sender = await resolveSenderName(client, resolved, chat, userCache, chatCache);
   const senderChatIdValue = senderChatId(resolved);
-  const replyTo = await resolveReplyPreview(client, resolved, userCache, chatCache);
+  const replyToMessageId = extractReplyToMessageId(resolved);
+  const replyTo =
+    replyToMessageId != null
+      ? await resolveReplyPreview(client, resolved, userCache, chatCache)
+      : null;
   const dimensions = mediaDimensions(resolved);
 
   const textSegments = messageTextSegments(resolved, { enrichStandardEmojis: true });
@@ -637,6 +731,7 @@ export async function mapHistoryMessage(
     media_width: dimensions.width,
     media_height: dimensions.height,
     reply_to: replyTo,
+    reply_to_message_id: replyToMessageId,
     ...(isCall ? { call_success: parseCallSuccess(resolved) } : {}),
   };
 }

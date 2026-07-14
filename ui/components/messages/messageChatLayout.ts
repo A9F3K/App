@@ -10,6 +10,14 @@ export const MESSAGE_BUBBLE_BORDER_RADIUS_PX = 0;
 export const MESSAGE_BUBBLE_COMPACT_HEIGHT_PX = MESSAGE_BUBBLE_AVATAR_PX;
 export const MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX = 15;
 export const MESSAGE_BUBBLE_PADDING_VERTICAL_PX = 10;
+/** In-bubble reply quote: padding around name + preview text. */
+export const MESSAGE_BUBBLE_REPLY_PADDING_PX = 5;
+/** Telegram-style accent strip on the left of the reply quote. */
+export const MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX = 1;
+export const MESSAGE_BUBBLE_REPLY_BAR_HEIGHT_PX = 50;
+export const MESSAGE_BUBBLE_REPLY_MARGIN_BOTTOM_PX = 6;
+/** Reply quote fill = sender accent at this opacity over the bubble. */
+export const MESSAGE_BUBBLE_REPLY_BG_ACCENT_ALPHA = 0.28;
 export const MESSAGE_BUBBLE_FONT_SIZE_PX = 15;
 export const MESSAGE_BUBBLE_LINE_HEIGHT_PX = 25;
 /** Inline emoji sticker height in bubbles — Telegram ~20px for 15px body text. */
@@ -118,6 +126,12 @@ export const MESSAGE_CHAT_LOAD_OLDER_THRESHOLD_PX = 120;
 export const MESSAGE_CHAT_LOAD_OLDER_PREFETCH_PX = 750;
 /** Viewport heights before an edge that arm older/newer prefetch (tdesktop). */
 export const MESSAGE_CHAT_EDGE_PREFETCH_SCREENS = 3;
+/**
+ * IntersectionObserver rootMargin for photo/video full-size fetch around the
+ * viewport (tdesktop-style nearby preload — not limited to the emoji 160px band).
+ */
+/** ~3× typical chat viewport (~480–800) plus slack for fast flings (tdesktop kPreloadHeights). */
+export const MESSAGE_CHAT_MEDIA_PREFETCH_PX = 2400;
 
 /**
  * Older rows seeded above the open anchor (bottom / restore / around).

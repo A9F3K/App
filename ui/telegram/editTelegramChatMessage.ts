@@ -1,36 +1,19 @@
 import { buildApiUrl } from "../../api/_base";
 import type { MessageChatHistoryItem } from "../components/messages/messageChatHistoryTypes";
 import { coalesceOutgoingStatus } from "../components/messages/messageChatHistoryTypes";
+import { normalizeHistoryMessage } from "./fetchTelegramChatHistoryPage";
 
 export type EditTelegramChatMessageResult =
   | { ok: true; message: MessageChatHistoryItem }
   | { ok: false; error: string };
 
 function normalizeEditedMessage(raw: unknown): MessageChatHistoryItem | null {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const row = raw as Record<string, unknown>;
-  const telegramMessageId = Number(row.telegram_message_id);
-  if (!Number.isFinite(telegramMessageId)) return null;
-  const text = typeof row.text === "string" ? row.text : "";
-  if (!text.trim()) return null;
-  const senderUserId = Number(row.sender_user_id);
-  const senderChatId = Number(row.sender_chat_id);
-  const outgoingStatus = coalesceOutgoingStatus(row.outgoing_status, true);
+  const normalized = normalizeHistoryMessage(raw, null, null);
+  if (!normalized || !normalized.text.trim()) return null;
   return {
-    telegram_message_id: telegramMessageId,
-    text,
-    sent_at: typeof row.sent_at === "string" ? row.sent_at : new Date().toISOString(),
-    sender_name: typeof row.sender_name === "string" ? row.sender_name : "",
-    sender_user_id: Number.isFinite(senderUserId) ? senderUserId : null,
-    sender_chat_id: Number.isFinite(senderChatId) ? senderChatId : null,
-    sender_is_channel: Boolean(row.sender_is_channel),
+    ...normalized,
     is_outgoing: true,
-    outgoing_status: outgoingStatus,
-    content_kind: "text",
-    has_media: false,
-    media_width: null,
-    media_height: null,
-    reply_to: null,
+    outgoing_status: coalesceOutgoingStatus(normalized.outgoing_status, true),
   };
 }
 

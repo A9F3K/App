@@ -17,6 +17,16 @@ export type TdMessage = {
     _?: string;
     chat_id?: number;
     message_id?: number;
+    quote?: { text?: { text?: string } };
+    origin?: {
+      _?: string;
+      sender_user_id?: number;
+      sender_name?: string;
+      sender_chat_id?: number;
+      chat_id?: number;
+      author_signature?: string;
+    };
+    content?: Record<string, unknown>;
   };
   content?: Record<string, unknown>;
 };

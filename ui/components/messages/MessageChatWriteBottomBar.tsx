@@ -70,15 +70,33 @@ export function MessageChatWriteBottomBar() {
           return;
         }
 
+        const replyTarget = compose?.reply ?? null;
         const result = await sendTelegramChatMessage(
           selectedChat.telegram_chat_id,
           text,
-          compose?.reply?.telegram_message_id ?? null,
+          replyTarget?.telegram_message_id ?? null,
         );
         if (result.ok) {
+          const message =
+            replyTarget && !result.message.reply_to
+              ? {
+                  ...result.message,
+                  reply_to: {
+                    sender_name: replyTarget.sender_name,
+                    sender_user_id: null,
+                    text: replyTarget.text,
+                  },
+                  reply_to_message_id: replyTarget.telegram_message_id,
+                }
+              : result.message.reply_to_message_id == null && replyTarget
+                ? {
+                    ...result.message,
+                    reply_to_message_id: replyTarget.telegram_message_id,
+                  }
+                : result.message;
           publishOutgoingChatMessage(
             selectedChat.telegram_chat_id,
-            enrichHistoryMessageDisplay(result.message),
+            enrichHistoryMessageDisplay(message),
           );
           clearMessageChatCompose(selectedChat.telegram_chat_id);
         } else if (result.error === TELEGRAM_SEND_ERROR_PUBLIC_GROUPS_BANNED) {

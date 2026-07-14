@@ -24,6 +24,11 @@ import {
   MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX,
   MESSAGE_BUBBLE_PADDING_VERTICAL_PX,
   MESSAGE_BUBBLE_MEDIA_PROGRESS_SLOT_HEIGHT_PX,
+  MESSAGE_BUBBLE_REPLY_BAR_HEIGHT_PX,
+  MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX,
+  MESSAGE_BUBBLE_REPLY_BG_ACCENT_ALPHA,
+  MESSAGE_BUBBLE_REPLY_MARGIN_BOTTOM_PX,
+  MESSAGE_BUBBLE_REPLY_PADDING_PX,
   MESSAGE_BUBBLE_TIME_FONT_SIZE_PX,
   MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX,
   messageBubbleMediaMetaBottomPx,
@@ -64,6 +69,16 @@ type Props = {
   selfUserId?: number | null;
   /** Message row is on-screen — unlock inline emoji fetches in bubble text. */
   emojiContentActive?: boolean;
+  /**
+   * When true, fetch photo/video preview (and stickers) for painted rows.
+   * Defaults to {@link emojiContentActive}.
+   */
+  mediaFetchEnabled?: boolean;
+  /**
+   * When true, defer full-resolution photo/video until the row enters the media
+   * prefetch band (tdesktop nearby preload).
+   */
+  deferFullMediaFetch?: boolean;
 };
 
 function resolveMediaUrl(chatId: number, messageId: number): string {
@@ -325,6 +340,27 @@ function messageChatOnMediaMetaTextStyle(colors: ThemeColors) {
   } as const;
 }
 
+function replyQuoteAccentBackground(accentColor: string, fallback: string): string {
+  const trimmed = accentColor.trim();
+  const m6 = /^#?([0-9a-f]{6})$/i.exec(trimmed);
+  if (m6) {
+    const n = parseInt(m6[1], 16);
+    const r = (n >> 16) & 255;
+    const g = (n >> 8) & 255;
+    const b = n & 255;
+    return `rgba(${r},${g},${b},${MESSAGE_BUBBLE_REPLY_BG_ACCENT_ALPHA})`;
+  }
+  const m3 = /^#?([0-9a-f]{3})$/i.exec(trimmed);
+  if (m3) {
+    const t = m3[1];
+    const r = parseInt(t[0] + t[0], 16);
+    const g = parseInt(t[1] + t[1], 16);
+    const b = parseInt(t[2] + t[2], 16);
+    return `rgba(${r},${g},${b},${MESSAGE_BUBBLE_REPLY_BG_ACCENT_ALPHA})`;
+  }
+  return fallback;
+}
+
 function MessageChatReplyBlock({
   reply,
   colors,
@@ -347,20 +383,40 @@ function MessageChatReplyBlock({
     reply.sender_accent_color_light,
     reply.sender_accent_color_dark,
   );
+  const replyBackground = replyQuoteAccentBackground(barColor, colors.undercover);
 
   return (
     <View
       style={{
         flexDirection: "row",
+        alignItems: "flex-start",
         maxWidth: maxWidthPx,
-        marginBottom: 6,
+        marginBottom: MESSAGE_BUBBLE_REPLY_MARGIN_BOTTOM_PX,
         borderRadius: 0,
         overflow: "hidden",
-        backgroundColor: colors.highlight,
+        backgroundColor: replyBackground,
       }}
     >
-      <View style={{ width: 3, backgroundColor: barColor, flexShrink: 0 }} />
-      <View style={{ flex: 1, paddingVertical: 5, paddingHorizontal: 8, minWidth: 0 }}>
+      <View
+        style={{
+          width: MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX,
+          height: MESSAGE_BUBBLE_REPLY_BAR_HEIGHT_PX,
+          marginTop: MESSAGE_BUBBLE_REPLY_PADDING_PX,
+          marginBottom: MESSAGE_BUBBLE_REPLY_PADDING_PX,
+          backgroundColor: barColor,
+          flexShrink: 0,
+        }}
+      />
+      <View
+        style={{
+          flex: 1,
+          paddingTop: MESSAGE_BUBBLE_REPLY_PADDING_PX,
+          paddingRight: MESSAGE_BUBBLE_REPLY_PADDING_PX,
+          paddingBottom: MESSAGE_BUBBLE_REPLY_PADDING_PX,
+          paddingLeft: MESSAGE_BUBBLE_REPLY_PADDING_PX,
+          minWidth: 0,
+        }}
+      >
         <SpecialTelegramUserName
           name={reply.sender_name}
           telegramUserId={reply.sender_user_id}
@@ -391,7 +447,7 @@ function MessageChatReplyBlock({
               fontSize: MESSAGE_BUBBLE_FONT_SIZE_PX,
               lineHeight: MESSAGE_BUBBLE_LINE_HEIGHT_PX,
               fontWeight: "400",
-              color: colors.secondary,
+              color: colors.primary,
               textAlign: "left",
             },
             Platform.OS === "web" ? ({ fontFamily: WEB_UI_SANS_STACK } as object) : null,
@@ -416,7 +472,11 @@ export function MessageChatBubbleBody({
   peerUserId = null,
   selfUserId = null,
   emojiContentActive = true,
+  mediaFetchEnabled,
+  deferFullMediaFetch,
 }: Props) {
+  const mediaLoadEnabled = mediaFetchEnabled ?? emojiContentActive;
+  const deferFullMedia = deferFullMediaFetch ?? !mediaLoadEnabled;
   const { t } = useAppStrings();
   const { colorScheme } = useTelegram();
   const [liveMediaSize, setLiveMediaSize] = useState<{ widthPx: number; heightPx: number } | null>(
@@ -586,8 +646,8 @@ export function MessageChatBubbleBody({
             maxWidthPx={mediaLayoutMaxWidthPx}
             colors={colors}
             onDisplaySizeChange={handleMediaDisplaySizeChange}
-            mediaFetchEnabled={emojiContentActive}
-            deferFullMediaFetch={!emojiContentActive}
+            mediaFetchEnabled={mediaLoadEnabled}
+            deferFullMediaFetch={deferFullMedia}
           />
           {contentKind === "animation" && overlayMediaMeta ? (
             <View

@@ -136,10 +136,16 @@ export async function fetchChatHistory(
   while (batches < maxBatches) {
     let raw = await loadPage(cursorMessageId);
     // tdesktop/TDLib: first older page can briefly return empty while the
-    // server slice is still warming after openChat — retry once before EOF.
+    // server slice is still warming after openChat — retry with backoff
+    // before treating the edge as EOF.
     if (loadOlder && batches === 0 && raw.length === 0) {
-      await sleep(500);
-      raw = await loadPage(cursorMessageId);
+      for (const delayMs of [500, 1000, 1500]) {
+        await sleep(delayMs);
+        raw = await loadPage(cursorMessageId);
+        if (raw.length > 0) {
+          break;
+        }
+      }
     }
     if (!loadOlder && batches === 0 && raw.length < Math.min(rawBatchLimit, 5)) {
       await sleep(600);
@@ -346,7 +352,16 @@ export async function fetchChatHistoryAroundMessage(
 
   const finalChat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
   const oldestReturnedId = messages[0]?.telegram_message_id ?? null;
-  const hasMoreOlder = messages.length >= pageLimit || contextBefore > 0;
+  // A short around-window (e.g. unread open with only 16 rows) must not
+  // permanently advertise older history when the older half already filled
+  // `contextBefore`. Incomplete older fills still keep pagination open so
+  // scroll-up can continue loading.
+  const olderInWindow = messages.filter(
+    (row) => row.telegram_message_id < anchorId,
+  ).length;
+  const hasMoreOlder =
+    messages.length >= pageLimit ||
+    (contextBefore > 0 && olderInWindow < contextBefore);
   const nextBeforeMessageId =
     hasMoreOlder && oldestReturnedId != null ? oldestReturnedId : null;
 

@@ -607,16 +607,16 @@ export async function fetchOlderHistoryCharBudget(
     if (result.messages.length === 0) {
       hasMoreOlder = result.hasMoreOlder;
       nextBeforeMessageId = result.nextBeforeMessageId;
-      // tdesktop: one warm retry — TDLib can return an empty older page once
-      // while the chat slice is still hydrating after openChat.
+      // Empty older pages are often warm-lag, not EOF. Retry with backoff
+      // before treating the page as terminal for this character budget pass.
       if (round === 0 && cursor != null) {
-        await new Promise((resolve) => setTimeout(resolve, 450));
-        const retry = await fetchPageWithWarmup(chatId, peerUserId, cursor);
-        if (retry.error) {
-          return { ...retry, messages };
-        }
-        if (retry.messages.length > 0) {
-          messages = mergeSortedMessages(retry.messages, messages);
+        let recovered = false;
+        for (const delayMs of [450, 900, 1400] as const) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          const retry = await fetchPageWithWarmup(chatId, peerUserId, cursor);
+          if (retry.error) {
+            return { ...retry, messages };
+          }
           hasMoreOlder = retry.hasMoreOlder;
           nextBeforeMessageId = retry.nextBeforeMessageId;
           chatKind = retry.chatKind;
@@ -626,13 +626,18 @@ export async function fetchOlderHistoryCharBudget(
             retry.lastReadInboxMessageId ?? lastReadInboxMessageId;
           memberCount = retry.memberCount;
           selfUserId = retry.selfUserId;
+          if (retry.messages.length > 0) {
+            messages = mergeSortedMessages(retry.messages, messages);
+            recovered = true;
+            break;
+          }
+        }
+        if (recovered) {
           if (totalCharacterWeight(messages) >= charBudget) break;
-          if (!retry.hasMoreOlder || retry.nextBeforeMessageId == null) break;
-          cursor = retry.nextBeforeMessageId;
+          if (!hasMoreOlder || nextBeforeMessageId == null) break;
+          cursor = nextBeforeMessageId;
           continue;
         }
-        hasMoreOlder = retry.hasMoreOlder;
-        nextBeforeMessageId = retry.nextBeforeMessageId;
       }
       break;
     }

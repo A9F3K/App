@@ -35,6 +35,9 @@ import {
   MESSAGE_BUBBLE_META_GAP_PX,
   MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX,
   MESSAGE_BUBBLE_PADDING_VERTICAL_PX,
+  MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX,
+  MESSAGE_BUBBLE_REPLY_PADDING_PX,
+  MESSAGE_CHAT_MEDIA_PREFETCH_PX,
 } from "./messageChatLayout";
 import { resolveMessageMediaDimensions } from "./MessageChatMediaContent";
 import { messageChatOutgoingChecksWidthPx } from "./MessageChatOutgoingChecks";
@@ -152,6 +155,10 @@ export function MessageChatMessageRow({
   const rowInView = useElementVisible(rowRef as RefObject<Element | null>, {
     rootMargin: "160px",
   });
+  // Wider band for photo/video full fetch — tdesktop preloads media ahead of the viewport.
+  const mediaNearView = useElementVisible(rowRef as RefObject<Element | null>, {
+    rootMargin: `${MESSAGE_CHAT_MEDIA_PREFETCH_PX}px`,
+  });
   const isProxyAvatar = Boolean(iconUrl?.includes("/api/telegram-messages-avatar"));
   const avatarFetchEnabled = !isProxyAvatar || rowInView;
 
@@ -218,6 +225,8 @@ export function MessageChatMessageRow({
     }
     const reply = item.reply_to;
     if (reply) {
+      const replyChromePx =
+        MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX + MESSAGE_BUBBLE_REPLY_PADDING_PX * 2;
       const replySenderWidth = measureTextGlyphWidth(
         reply.sender_name,
         MESSAGE_BUBBLE_FONT_SIZE_PX,
@@ -225,9 +234,13 @@ export function MessageChatMessageRow({
       );
       const replyTextWidth = measureLongestWrappedBodyLineWidth(
         reply.text,
-        Math.max(0, bubbleInnerMaxWidth - 12),
+        Math.max(0, bubbleInnerMaxWidth - replyChromePx),
       );
-      extra = Math.max(extra, replySenderWidth + 12, replyTextWidth + 12);
+      extra = Math.max(
+        extra,
+        replySenderWidth + replyChromePx,
+        replyTextWidth + replyChromePx,
+      );
     }
     return extra;
   }, [
@@ -574,6 +587,14 @@ export function MessageChatMessageRow({
               peerUserId={chat.peer_user_id}
               selfUserId={selfUserId}
               emojiContentActive={contentActive && rowInView}
+              mediaFetchEnabled={contentActive}
+              deferFullMediaFetch={
+                // Photos/stickers: full as soon as painted (list also prefetches the window).
+                // Video/gif: wait for the wider nearby preload band.
+                item.content_kind === "video" || item.content_kind === "animation"
+                  ? !(contentActive && mediaNearView)
+                  : !contentActive
+              }
             />
           </View>
           </Pressable>
