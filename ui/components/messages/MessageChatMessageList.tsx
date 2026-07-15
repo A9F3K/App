@@ -127,6 +127,9 @@ import { MessageChatOlderHistoryLoadLine } from "./MessageChatOlderHistoryLoadLi
 import { MessageUnreadDivider } from "./MessageUnreadDivider";
 import { MessageHistoryLoadSentinel } from "./MessageHistoryLoadSentinel";
 import { MessageChatScrollToBottomButton } from "./MessageChatScrollToBottomButton";
+import { MessageChatWriteBottomBar } from "./MessageChatWriteBottomBar";
+import { messageChatBottomOverlayHeightPx } from "./messageChatBottomOverlayLayout";
+import { useAuthenticatedHomeSplitLayoutMetrics } from "../AuthenticatedHomeSplitLayoutMetricsContext";
 import { prefetchOpenChatAvatars, setOpenChatAvatarPriority, isOpenChatAvatarPriority } from "./messageChatAvatarPrefetch";
 import {
   clearDisplayChatMediaPrefetchSignature,
@@ -214,6 +217,8 @@ function applyHistoryMetaToSelectedChat(
 
 export function MessageChatMessageList({ chat, colors }: Props) {
   const { t } = useAppStrings();
+  const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
+  const isTwoColumnWide = splitMetrics?.columnCount === 2;
   const { isAuthenticated } = useAuth();
   const { isTelegramMessagesConnected } = useTelegramMessagesConnection();
   const historyLoad = useAuthenticatedHomeHistoryLoadTarget();
@@ -6294,6 +6299,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     (isFollowingBottom || initialScrollInProgress);
   const hideScrollUntilSettled =
     displayMessages.length > 0 && !chatScrollPaintReady;
+  const showComposeOverlay =
+    isTwoColumnWide && (chatKind ?? chat.chat_kind) !== "channel";
+  const bottomOverlayHeightPx = showComposeOverlay ? messageChatBottomOverlayHeightPx() : 0;
 
   return (
     <View
@@ -6328,6 +6336,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         stickToBottomOnResize={isFollowingBottom}
         contentContainerStyle={{
           padding: MESSAGE_CHAT_BODY_PADDING_PX,
+          paddingBottom: MESSAGE_CHAT_BODY_PADDING_PX + bottomOverlayHeightPx,
           ...(pinMessagesToBottom ? { flexGrow: 1 } : null),
         }}
       >
@@ -6446,7 +6455,31 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         color={colors.accent}
         edge="bottom"
       />
-      {showScrollToBottomButton ? (
+      {showComposeOverlay ? (
+        <View
+          pointerEvents="box-none"
+          style={{
+            position: "absolute",
+            left: MESSAGE_CHAT_BODY_PADDING_PX,
+            right: MESSAGE_CHAT_BODY_PADDING_PX,
+            bottom: MESSAGE_CHAT_BODY_PADDING_PX,
+            zIndex: layout.authenticatedHome.scrollIndicatorOverlayZIndex + 1,
+          }}
+        >
+          <MessageChatWriteBottomBar
+            embedded
+            trailing={
+              showScrollToBottomButton ? (
+                <MessageChatScrollToBottomButton
+                  unreadLabel={scrollToBottomUnreadLabel}
+                  colors={colors}
+                  onPress={scrollToBottom}
+                />
+              ) : null
+            }
+          />
+        </View>
+      ) : showScrollToBottomButton ? (
         <View
           pointerEvents="box-none"
           style={{

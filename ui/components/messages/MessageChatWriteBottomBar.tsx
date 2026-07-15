@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { TELEGRAM_SEND_ERROR_PUBLIC_GROUPS_BANNED } from "../../../shared/telegramSendError";
@@ -15,11 +15,19 @@ import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesCo
 import { appWarn } from "../../../shared/appLog";
 import { useColors } from "../../theme";
 import { GlobalBottomBar } from "../GlobalBottomBar";
+import { MessageChatComposePill } from "./MessageChatComposePill";
 import { MessageChatComposeStrip } from "../messages/MessageChatComposeStrip";
 import { MessageChatPublicGroupsBanModal } from "../messages/MessageChatPublicGroupsBanModal";
+import { MESSAGE_CHAT_BOTTOM_COMPOSE_FAB_GAP_PX } from "./messageChatLayout";
 
-/** Chat compose bar in wide three-column layout — same chrome as {@link GlobalBottomBar}. */
-export function MessageChatWriteBottomBar() {
+type Props = {
+  /** Pill row inside the open chat overlay (left of the scroll FAB). */
+  embedded?: boolean;
+  /** Trailing control in the overlay row — typically scroll-to-bottom FAB. */
+  trailing?: ReactNode;
+};
+
+export function MessageChatWriteBottomBar({ embedded = false, trailing = null }: Props) {
   const { t } = useAppStrings();
   const colors = useColors();
   const selectedChat = useAuthenticatedHomeSelectedChat();
@@ -99,6 +107,7 @@ export function MessageChatWriteBottomBar() {
             enrichHistoryMessageDisplay(message),
           );
           clearMessageChatCompose(selectedChat.telegram_chat_id);
+          setDraft("");
         } else if (result.error === TELEGRAM_SEND_ERROR_PUBLIC_GROUPS_BANNED) {
           setDraft(text);
           setPublicGroupsBanVisible(true);
@@ -125,6 +134,42 @@ export function MessageChatWriteBottomBar() {
 
   if (selectedChat?.chat_kind === "channel") {
     return null;
+  }
+
+  const pill = (
+    <MessageChatComposePill
+      placeholder={t("messages.chatWrite.placeholderPill")}
+      value={draft}
+      onChangeText={setDraft}
+      onSubmit={canSend ? onSubmit : () => {}}
+      sendAccessibilityLabel={t("messages.chatWrite.send")}
+      canSend={canSend}
+    />
+  );
+
+  if (embedded) {
+    return (
+      <View pointerEvents="box-none">
+        {compose ? (
+          <MessageChatComposeStrip compose={compose} colors={colors} onDismiss={onDismissCompose} />
+        ) : null}
+        <View
+          pointerEvents="box-none"
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: MESSAGE_CHAT_BOTTOM_COMPOSE_FAB_GAP_PX,
+          }}
+        >
+          <View style={{ flex: 1, minWidth: 0 }}>{pill}</View>
+          {trailing}
+        </View>
+        <MessageChatPublicGroupsBanModal
+          visible={publicGroupsBanVisible}
+          onClose={() => setPublicGroupsBanVisible(false)}
+        />
+      </View>
+    );
   }
 
   return (

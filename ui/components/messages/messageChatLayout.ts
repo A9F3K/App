@@ -17,6 +17,13 @@ export const MESSAGE_BUBBLE_REPLY_BAR_WIDTH_PX = 1;
 export const MESSAGE_BUBBLE_REPLY_MARGIN_BOTTOM_PX = 6;
 /** Reply quote fill = sender accent at this opacity over the bubble. */
 export const MESSAGE_BUBBLE_REPLY_BG_ACCENT_ALPHA = 0.28;
+/** Open-chat compose pill — matches {@link MESSAGE_CHAT_SCROLL_TO_BOTTOM_OUTER_PX} FAB height. */
+export const MESSAGE_CHAT_COMPOSE_PILL_HEIGHT_PX = 60;
+export const MESSAGE_CHAT_COMPOSE_PILL_RADIUS_PX = MESSAGE_CHAT_COMPOSE_PILL_HEIGHT_PX / 2;
+export const MESSAGE_CHAT_COMPOSE_PILL_PADDING_LEFT_PX = 15;
+export const MESSAGE_CHAT_COMPOSE_PILL_PADDING_RIGHT_PX = 15;
+/** Gap between compose pill and scroll-to-bottom FAB in the two-column overlay row. */
+export const MESSAGE_CHAT_BOTTOM_COMPOSE_FAB_GAP_PX = 15;
 export const MESSAGE_BUBBLE_FONT_SIZE_PX = 15;
 export const MESSAGE_BUBBLE_LINE_HEIGHT_PX = 25;
 /** Inline emoji sticker height in bubbles — Telegram ~20px for 15px body text. */

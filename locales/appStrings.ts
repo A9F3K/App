@@ -170,6 +170,7 @@ const en = {
   "messages.chatAction.uploadingFile": "sending file…",
   "messages.chatAction.uploadingFileNamed": "{{name}} is sending file…",
   "messages.chatWrite.placeholder": "Write",
+  "messages.chatWrite.placeholderPill": "Enter the message",
   "messages.chatWrite.send": "Write",
   "messages.publicGroupsBan.body":
     "Unfortunately, you are banned from participating in public groups.",
@@ -519,6 +520,7 @@ const ru = {
   "messages.chatAction.uploadingFile": "отправляет файл…",
   "messages.chatAction.uploadingFileNamed": "{{name}} отправляет файл…",
   "messages.chatWrite.placeholder": "Написать",
+  "messages.chatWrite.placeholderPill": "Введите сообщение",
   "messages.chatWrite.send": "Написать",
   "messages.publicGroupsBan.body":
     "К сожалению, вам запрещено участвовать в публичных группах.",
