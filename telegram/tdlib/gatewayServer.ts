@@ -35,6 +35,9 @@ import {
   submitConnectPassword,
   submitConnectPhoneNumber,
   sendChatMessageForUser,
+  sendChatPhotoForUser,
+  leaveChatVoiceForUser,
+  getChatVoiceParticipantsForUser,
   editChatMessageForUser,
   resolvePublicChatForUser,
 } from "./connectAttempts.js";
@@ -502,6 +505,119 @@ export function startTdlibGatewayServer(): http.Server {
           sendJson(res, result.error ? 503 : 200, {
             ok: !result.error,
             message: result.message,
+            error: result.error,
+          });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chat/messages/send-photo") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            chatId?: number;
+            photoBase64?: string;
+            caption?: string;
+            mime?: string;
+            replyToMessageId?: number;
+          };
+          const telegramUsername = (body.telegramUsername || "").trim();
+          const chatId = Number(body.chatId);
+          const photoBase64 = typeof body.photoBase64 === "string" ? body.photoBase64 : "";
+          const caption = typeof body.caption === "string" ? body.caption : "";
+          const mime = typeof body.mime === "string" ? body.mime : "image/jpeg";
+          const replyToMessageId = Number(body.replyToMessageId);
+          if (!telegramUsername || !Number.isFinite(chatId) || !photoBase64) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const started = Date.now();
+          const result = await sendChatPhotoForUser(telegramUsername, chatId, photoBase64, {
+            caption,
+            mime,
+            replyToMessageId:
+              Number.isFinite(replyToMessageId) && replyToMessageId > 0
+                ? Math.trunc(replyToMessageId)
+                : null,
+          });
+          logGateway("chat_photo_sent", {
+            telegramUsername,
+            chatId,
+            ok: !result.error,
+            messageId: result.message?.telegram_message_id ?? null,
+            bytes: Math.floor((photoBase64.length * 3) / 4),
+            error: result.error,
+            ms: Date.now() - started,
+          });
+          sendJson(res, result.error ? 503 : 200, {
+            ok: !result.error,
+            message: result.message,
+            error: result.error,
+          });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chat/voice/leave") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            chatId?: number;
+            groupCallId?: number;
+          };
+          const telegramUsername = (body.telegramUsername || "").trim();
+          const chatId = Number(body.chatId);
+          const groupCallId = Number(body.groupCallId);
+          if (!telegramUsername || !Number.isFinite(chatId)) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const started = Date.now();
+          const result = await leaveChatVoiceForUser(
+            telegramUsername,
+            chatId,
+            Number.isFinite(groupCallId) && groupCallId > 0 ? Math.trunc(groupCallId) : null,
+          );
+          logGateway("chat_voice_leave", {
+            telegramUsername,
+            chatId,
+            ok: result.ok,
+            groupCallId: result.voice_chat_group_call_id,
+            error: result.error,
+            ms: Date.now() - started,
+          });
+          sendJson(res, result.ok ? 200 : 503, {
+            ok: result.ok,
+            has_active_voice_chat: result.has_active_voice_chat,
+            voice_chat_group_call_id: result.voice_chat_group_call_id,
+            error: result.error,
+          });
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/chat/voice/participants") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const chatId = Number(url.searchParams.get("chatId"));
+          const groupCallId = Number(url.searchParams.get("groupCallId"));
+          if (!telegramUsername || !Number.isFinite(chatId)) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const started = Date.now();
+          const result = await getChatVoiceParticipantsForUser(
+            telegramUsername,
+            chatId,
+            Number.isFinite(groupCallId) && groupCallId > 0 ? Math.trunc(groupCallId) : null,
+          );
+          logGateway("chat_voice_participants", {
+            telegramUsername,
+            chatId,
+            ok: result.ok,
+            count: result.participants.length,
+            participantCount: result.participant_count,
+            error: result.error,
+            ms: Date.now() - started,
+          });
+          sendJson(res, result.ok ? 200 : 503, {
+            ok: result.ok,
+            participants: result.participants,
+            participant_count: result.participant_count,
             error: result.error,
           });
           return;

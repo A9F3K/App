@@ -1,5 +1,11 @@
 /** Matches {@link AuthenticatedHomeLeftNavStrip} total strip height. */
 export const MESSAGE_CHAT_HEADER_STRIP_HEIGHT_PX = 55;
+/** Active voice-chat strip under the open-chat header. */
+export const MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX = 44;
+/** Overlapping participant avatars in the voice strip. */
+export const MESSAGE_CHAT_VOICE_BAR_AVATAR_PX = 28;
+export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX = 10;
+export const MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS = 5;
 
 /** Shared list row metrics — aligned with {@link AuthenticatedHomeFeedPanel} feed rows. */
 export const MESSAGE_ROW_HEIGHT_PX = 40;

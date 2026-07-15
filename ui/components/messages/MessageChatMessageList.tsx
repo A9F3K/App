@@ -140,6 +140,7 @@ import {
   clearDisplayChatMediaPrefetchSignature,
   prefetchDisplayChatMedia,
 } from "./messageMediaPrefetch";
+import { demoteQueuedNetworkFetches } from "./networkFetchQueue";
 import type { MessageChatRowData } from "./MessageChatRow";
 import {
   minIntersectingMessageId,
@@ -708,6 +709,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       lastAppliedCacheSignatureRef.current = "";
       lastAvatarPrefetchGenerationRef.current = 0;
       clearDisplayChatMediaPrefetchSignature(chat.telegram_chat_id);
+      demoteQueuedNetworkFetches();
       messageLayoutsRef.current.clear();
       messageRowHeightCacheRef.current.clear();
       lastDisplayedUnreadRemainingRef.current = null;
@@ -5461,46 +5463,83 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         return;
       }
 
-      if (!followingBottomRef.current) {
-        rememberScrollBeforeListUpdate();
+      // Sync merge — after `await`, React 18 does not flush setState updaters
+      // inline (same fix as loadOlder). Reading addedCount from an updater
+      // always stayed 0 → false advance_cursor + older prepend-restore lock,
+      // which collapsed the display window and stuck scroll-down.
+      const prev = messagesRef.current;
+      const prevTail =
+        prev.length > 0 ? prev[prev.length - 1]!.telegram_message_id : 0;
+      const viewportAnchor = scrollAnchorMessageIdRef.current;
+      // Bias trim toward the fetch edge so newly loaded newer rows survive
+      // when the user is mid-list (around-anchor trim would otherwise drop them).
+      if (prevTail > 0) {
+        scrollAnchorMessageIdRef.current = prevTail;
       }
-
-      let addedCount = 0;
       isReplacingHistoryRef.current = true;
-      setMessages((prev) => {
-        const next = mergeHistoryWithWindow(prev, result.messages, true);
-        const prevTail =
-          prev.length > 0 ? prev[prev.length - 1]!.telegram_message_id : 0;
-        const nextTail =
-          next.length > 0 ? next[next.length - 1]!.telegram_message_id : 0;
-        addedCount =
-          nextTail > prevTail
-            ? Math.max(1, next.length - prev.length)
-            : next.length - prev.length;
-        return next;
-      });
+      const next = mergeHistoryWithWindow(prev, result.messages, true);
+      const nextTail =
+        next.length > 0 ? next[next.length - 1]!.telegram_message_id : 0;
+      const addedCount =
+        nextTail > prevTail
+          ? Math.max(1, next.length - prev.length)
+          : next.length - prev.length;
+
+      if (
+        viewportAnchor > 0 &&
+        !followingBottomRef.current &&
+        next.some((row) => row.telegram_message_id === viewportAnchor)
+      ) {
+        scrollAnchorMessageIdRef.current = viewportAnchor;
+      } else if (nextTail > 0) {
+        scrollAnchorMessageIdRef.current = nextTail;
+      }
 
       if (addedCount === 0) {
-        if (result.messages.length > 0) {
-          const maxFetchedId = Math.max(
-            ...result.messages.map((row) => row.telegram_message_id),
-          );
-          if (maxFetchedId > sinceMessageId) {
-            lastDisplayMessageIdRef.current = maxFetchedId;
-            logPageDisplay("messages_history_load_newer_advance_cursor", {
-              ...chatLogFields({
-                chatId: chat.telegram_chat_id,
-                peerUserId: chat.peer_user_id,
-                title: chat.title,
-              }),
-              sinceMessageId,
-              maxFetchedId,
-              fetchedCount: result.messages.length,
-            });
-          }
+        // Do not advance cursors past rows we did not retain — that skips
+        // pages and leaves scroll restore armed against an empty expand.
+        if (viewportAnchor > 0) {
+          scrollAnchorMessageIdRef.current = viewportAnchor;
         }
+        loadNewerRetryAfterRef.current =
+          Date.now() + MESSAGE_CHAT_LOAD_NEWER_ERROR_BACKOFF_MS;
+        logPageDisplay("messages_history_load_newer_no_growth", {
+          ...chatLogFields({
+            chatId: chat.telegram_chat_id,
+            peerUserId: chat.peer_user_id,
+            title: chat.title,
+          }),
+          sinceMessageId,
+          fetchedCount: result.messages.length,
+        });
         return;
       }
+
+      // Stale display overrides after keepEnd trim clamp to a single last row
+      // (displayCount=1, contentH≈layoutH) and trap edge loads on older expand.
+      const override = displaySliceBoundsOverrideRef.current;
+      if (override != null && override.startIndex >= next.length) {
+        displaySliceBoundsOverrideRef.current = null;
+        displaySliceBoundsRef.current = { startIndex: 0, endIndex: -1 };
+      } else if (override != null) {
+        displaySliceBoundsOverrideRef.current = {
+          startIndex: Math.max(
+            0,
+            Math.min(override.startIndex, next.length - 1),
+          ),
+          endIndex: Math.max(
+            0,
+            Math.min(
+              Math.max(override.endIndex, override.startIndex),
+              next.length - 1,
+            ),
+          ),
+        };
+      }
+
+      messagesRef.current = next;
+      loadedMessagesRef.current = next;
+      setMessages(next);
 
       loadNewerRetryAfterRef.current = 0;
 
@@ -5511,8 +5550,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       if (result.selfUserId != null) {
         setSelfUserId(result.selfUserId);
       }
-      setLastReadOutboxFromHistory((prev) =>
-        mergeReadOutboxCursor(prev, result.lastReadOutboxMessageId),
+      setLastReadOutboxFromHistory((prevOutbox) =>
+        mergeReadOutboxCursor(prevOutbox, result.lastReadOutboxMessageId),
       );
       mergeCachedChatHistoryTail(chat.telegram_chat_id, result);
 
@@ -5525,17 +5564,6 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           isChatScrollNearBottom(metrics.scrollY, metrics.layoutH, metrics.contentH)
         ) {
           scrollControllerRef.current?.scrollToEnd();
-        }
-      } else {
-        const itemAnchor = pendingItemAnchorRef.current;
-        const scrollAnchorBeforeMerge = olderLoadDomAnchorRef.current;
-        if (itemAnchor) {
-          requestAnimationFrame(() => {
-            scrollControllerRef.current?.restoreItemAnchor(itemAnchor);
-          });
-        }
-        if (scrollAnchorBeforeMerge) {
-          assignPendingScrollAnchor(scrollAnchorBeforeMerge);
         }
       }
 
@@ -5598,9 +5626,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     historyMessageContext,
     mergeHistoryWithWindow,
     loadingInitial,
-    assignPendingScrollAnchor,
     bumpViewportSliceTick,
-    rememberScrollBeforeListUpdate,
   ]);
 
   useEffect(() => {
@@ -5645,6 +5671,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     const displayHeadId = display[0]!.telegram_message_id;
     const loadedOldestId = oldestHistoryMessageId(loaded) ?? 0;
     const metrics = scrollControllerRef.current?.getMetrics();
+    // contentH≈layoutH reports nearTop and nearBottom — do not expand older
+    // unless the user is scrolling up (scroll-down stuck on display_expand).
+    if (
+      metrics != null &&
+      metrics.layoutH > 0 &&
+      metrics.contentH > 0 &&
+      metrics.contentH <= metrics.layoutH + 0.5 &&
+      !userScrollingUpRef.current
+    ) {
+      return;
+    }
     const scrollNearTop =
       metrics != null &&
       metrics.layoutH > 0 &&

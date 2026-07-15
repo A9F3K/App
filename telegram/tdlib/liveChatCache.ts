@@ -17,6 +17,7 @@ import {
   type ChatPresenceKind,
   type TdChat,
   type TdMessage,
+  voiceChatFromTdChat,
 } from "./chatPreview.js";
 import { previewSegmentsFromMessage } from "./formattedTextSegments.js";
 import { emojiStatusCustomIdFromChat } from "./emojiStatus.js";
@@ -60,6 +61,10 @@ export type LiveChatRow = {
   is_pinned: boolean;
   pin_order: string;
   list_tier: ChatListTier;
+  /** True when TDLib reports an active voice/video chat on this chat. */
+  has_active_voice_chat: boolean;
+  /** TDLib `video_chat.group_call_id` when active; otherwise null. */
+  voice_chat_group_call_id: number | null;
   /** Monotonic version bumped on each update (for client diffing). */
   revision: number;
 };
@@ -325,6 +330,7 @@ export function patchLiveChatFromTdlib(
     ...lastMessageListRowMetaFromChat(chat, getLiveChatSelfUserId(telegramUsername)),
       is_pinned: isChatPinnedInMainList(chat),
       pin_order: mainListOrderKey(chat),
+      ...voiceChatFromTdChat(chat),
       list_tier: existing?.list_tier ?? chatListTier(chat),
     };
   return upsertLiveChatRow(telegramUsername, row);
@@ -383,6 +389,8 @@ export function patchLiveChatReadInbox(
     last_message_sender_user_id: existing.last_message_sender_user_id,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
+    has_active_voice_chat: existing.has_active_voice_chat ?? false,
+    voice_chat_group_call_id: existing.voice_chat_group_call_id ?? null,
     list_tier: existing.list_tier,
   });
 }
@@ -434,6 +442,8 @@ export function patchLiveChatAction(
     last_message_sender_user_id: existing.last_message_sender_user_id,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
+    has_active_voice_chat: existing.has_active_voice_chat ?? false,
+    voice_chat_group_call_id: existing.voice_chat_group_call_id ?? null,
     list_tier: existing.list_tier,
   });
 }
@@ -477,6 +487,8 @@ export function patchLiveChatPresence(
       last_message_sender_user_id: row.last_message_sender_user_id,
       is_pinned: row.is_pinned,
       pin_order: row.pin_order,
+      has_active_voice_chat: row.has_active_voice_chat ?? false,
+      voice_chat_group_call_id: row.voice_chat_group_call_id ?? null,
       list_tier: row.list_tier,
     });
   }
@@ -524,6 +536,8 @@ export function patchLiveChatEmojiStatus(
       last_message_sender_user_id: row.last_message_sender_user_id,
       is_pinned: row.is_pinned,
       pin_order: row.pin_order,
+      has_active_voice_chat: row.has_active_voice_chat ?? false,
+      voice_chat_group_call_id: row.voice_chat_group_call_id ?? null,
       list_tier: row.list_tier,
     });
   }
@@ -569,6 +583,8 @@ export function patchLiveChatChatEmojiStatus(
     last_message_sender_user_id: existing.last_message_sender_user_id,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
+    has_active_voice_chat: existing.has_active_voice_chat ?? false,
+    voice_chat_group_call_id: existing.voice_chat_group_call_id ?? null,
     list_tier: existing.list_tier,
   });
 }
@@ -620,6 +636,8 @@ export function applyLiveMessageUpdate(
     ),
     is_pinned: existing?.is_pinned ?? false,
     pin_order: existing?.pin_order ?? "0",
+    has_active_voice_chat: existing?.has_active_voice_chat ?? false,
+    voice_chat_group_call_id: existing?.voice_chat_group_call_id ?? null,
     list_tier: existing?.list_tier ?? "positioned",
   };
   return upsertLiveChatRow(telegramUsername, row);
@@ -668,6 +686,63 @@ export function patchLiveChatMemberMeta(
     last_message_sender_user_id: existing.last_message_sender_user_id,
     is_pinned: existing.is_pinned,
     pin_order: existing.pin_order,
+    has_active_voice_chat: existing.has_active_voice_chat ?? false,
+    voice_chat_group_call_id: existing.voice_chat_group_call_id ?? null,
+    list_tier: existing.list_tier,
+  });
+}
+
+/** Apply TDLib `updateChatVideoChat` / refreshed `video_chat` without a full chat rebuild. */
+export function patchLiveChatVideoChat(
+  telegramUsername: string,
+  chatId: number,
+  input: {
+    has_active_voice_chat: boolean;
+    voice_chat_group_call_id: number | null;
+  },
+): LiveChatRow | null {
+  const cache = caches.get(telegramUsername);
+  if (!cache) return null;
+  const existing = cache.chats.get(chatId);
+  if (!existing) return null;
+  if (
+    existing.has_active_voice_chat === input.has_active_voice_chat &&
+    existing.voice_chat_group_call_id === input.voice_chat_group_call_id
+  ) {
+    return existing;
+  }
+  return upsertLiveChatRow(telegramUsername, {
+    telegram_chat_id: existing.telegram_chat_id,
+    title: existing.title,
+    subtitle: existing.subtitle,
+    ...(existing.subtitle_segments ? { subtitle_segments: existing.subtitle_segments } : {}),
+    avatar_url: existing.avatar_url,
+    last_message_at: existing.last_message_at,
+    unread_count: existing.unread_count,
+    peer_user_id: existing.peer_user_id,
+    peer_username: existing.peer_username ?? null,
+    chat_username: existing.chat_username ?? null,
+    chat_kind: existing.chat_kind ?? null,
+    member_count: existing.member_count ?? null,
+    peer_emoji_status_custom_emoji_id: existing.peer_emoji_status_custom_emoji_id ?? null,
+    peer_accent_color_light: existing.peer_accent_color_light ?? null,
+    peer_accent_color_dark: existing.peer_accent_color_dark ?? null,
+    presence_kind: existing.presence_kind,
+    presence_at: existing.presence_at,
+    chat_action: existing.chat_action,
+    chat_action_user_id: existing.chat_action_user_id,
+    chat_action_user_name: existing.chat_action_user_name,
+    chat_action_expires_at: existing.chat_action_expires_at,
+    last_read_outbox_message_id: existing.last_read_outbox_message_id,
+    last_read_inbox_message_id: existing.last_read_inbox_message_id,
+    last_message_is_outgoing: existing.last_message_is_outgoing,
+    last_message_outgoing_status: existing.last_message_outgoing_status,
+    last_message_telegram_id: existing.last_message_telegram_id,
+    last_message_sender_user_id: existing.last_message_sender_user_id,
+    is_pinned: existing.is_pinned,
+    pin_order: existing.pin_order,
+    has_active_voice_chat: input.has_active_voice_chat,
+    voice_chat_group_call_id: input.voice_chat_group_call_id,
     list_tier: existing.list_tier,
   });
 }

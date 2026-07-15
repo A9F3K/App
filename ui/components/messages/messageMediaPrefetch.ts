@@ -68,7 +68,8 @@ export function prefetchDisplayChatMedia(
     const previewUri = resolvePreviewMediaUrl(uri);
 
     if (previewQueued < DISPLAY_PREVIEW_PREFETCH_MAX && !getCachedMessageMedia(previewUri)) {
-      prefetchMessageMedia(previewUri, { priority: "high", preview: true });
+      // Keep off the critical/high lanes so visible mounts from MessageChatMediaContent win.
+      prefetchMessageMedia(previewUri, { priority: "normal", preview: true });
       previewQueued += 1;
     }
 
@@ -90,7 +91,7 @@ export function prefetchDisplayChatMedia(
     }
 
     if (wantFull && fullQueued < DISPLAY_FULL_PREFETCH_MAX && !getCachedMessageMedia(uri)) {
-      prefetchMessageMedia(uri, { priority: "high", preview: false });
+      prefetchMessageMedia(uri, { priority: "normal", preview: false });
       fullQueued += 1;
     }
   }

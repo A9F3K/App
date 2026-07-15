@@ -218,13 +218,24 @@ export function resolveDisplayWindow(
   // Merging with a re-centered base (min start / max end) widens the window on
   // API prepend and mounts new older rows above the viewport — that grows
   // contentH and causes the visible jump (e.g. displayCount 81→119).
-  const bounds =
-    override != null && override.endIndex >= override.startIndex
-      ? clampBounds(loaded.length, override)
-      : base;
+  let bounds = base;
+  let nextOverride = override;
+  if (override != null && override.endIndex >= override.startIndex) {
+    const clamped = clampBounds(loaded.length, override);
+    const overrideSpan = override.endIndex - override.startIndex;
+    const clampedSpan = clamped.endIndex - clamped.startIndex;
+    // After a keepEnd trim, stale high indices clamp to a single last row and
+    // trap scroll (contentH≈layoutH). Fall back to the anchor-centered slice.
+    if (overrideSpan > 0 && clampedSpan === 0 && override.startIndex >= loaded.length) {
+      nextOverride = null;
+      bounds = base;
+    } else {
+      bounds = clamped;
+    }
+  }
   return {
     bounds,
-    override,
+    override: nextOverride,
     anchorMessageId:
       anchorMessageId > 0
         ? anchorMessageId

@@ -1,3 +1,4 @@
+Unreads
 Connection lost
 Messages count and scrolling bugs
 photo size

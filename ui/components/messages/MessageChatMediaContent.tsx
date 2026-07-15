@@ -761,6 +761,20 @@ export function MessageChatMediaContent({
       if (usesVideoPreview) displayDimsLockedRef.current = true;
     };
 
+    // Optimistic / pasted photos: use the local blob/data URL directly.
+    if (/^(blob:|data:)/i.test(uri)) {
+      setMediaUri(uri);
+      setPreviewUri(null);
+      setMediaBytes(null);
+      setMediaKind("image");
+      setFailed(false);
+      setLoading(false);
+      void applyIntrinsicDimensions(uri, "image");
+      return () => {
+        cancelled = true;
+      };
+    }
+
     if (cachedFull) {
       void applyIntrinsicDimensions(
         cachedFull.objectUrl,
@@ -840,7 +854,7 @@ export function MessageChatMediaContent({
             if (cachedPreview || cachedFull) return;
             try {
               const { objectUrl } = await fetchCachedMessageMedia(previewUrl, "preview", {
-                priority: "high",
+                priority: "critical",
                 debugContext,
               });
               if (cancelled) return;
@@ -863,7 +877,7 @@ export function MessageChatMediaContent({
             for (let attempt = 0; attempt < PHOTO_FULL_MAX_ATTEMPTS && !cancelled; attempt++) {
               try {
                 const { bytes, mime, objectUrl } = await fetchCachedMessageMedia(uri, "full", {
-                  priority: "high",
+                  priority: "critical",
                   debugContext: { ...debugContext, attempt: attempt + 1 },
                 });
                 if (cancelled) return;
@@ -939,7 +953,7 @@ export function MessageChatMediaContent({
             return;
           }
           const { bytes, mime, objectUrl } = await fetchCachedMessageMedia(uri, "full", {
-            priority: deferFullMediaFetch ? "normal" : "high",
+            priority: deferFullMediaFetch ? "normal" : "critical",
             debugContext,
           });
           if (cancelled) return;

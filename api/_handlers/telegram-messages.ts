@@ -7,7 +7,7 @@ import { revokeMtprotoSession } from "../../database/telegramMtproto.js";
 import { applyAuthApiCors, authApiPreflightResponse } from "../_lib/auth-cors.js";
 import { telegramUsernameFromSessionCookie } from "../_lib/session-auth.js";
 import { appLog, safeTelegramUserIdForLog, telegramUserIdLogField } from "../../shared/appLog.js";
-import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayResyncChats, gatewaySendChatMessage, gatewayEditChatMessage, gatewayResolvePublicChat, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
+import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayLeaveChatVoice, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
 
 type NodeRes = {
   status: (code: number) => void;
@@ -241,6 +241,11 @@ function mapLiveChats(live: { chats: Record<string, unknown>[]; revision: number
     last_message_sender_user_id: (() => {
       const raw = Number(row.last_message_sender_user_id);
       return Number.isFinite(raw) && raw > 0 ? raw : null;
+    })(),
+    has_active_voice_chat: Boolean(row.has_active_voice_chat),
+    voice_chat_group_call_id: (() => {
+      const raw = Number(row.voice_chat_group_call_id);
+      return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : null;
     })(),
   }));
   return { chats, revision: live.revision };
@@ -1143,6 +1148,234 @@ export async function telegramMessagesSendHandler(
   }
 
   return finishJson(request, res, { ok: true, message: result.message }, 200);
+}
+
+export async function telegramMessagesSendPhotoHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
+  }
+
+  const body = await parseRequestBody<{
+    chat_id?: unknown;
+    photo_base64?: unknown;
+    caption?: unknown;
+    mime?: unknown;
+    reply_to_message_id?: unknown;
+  }>(request);
+
+  const chatId = Number(body.chat_id);
+  const photoBase64 = typeof body.photo_base64 === "string" ? body.photo_base64.trim() : "";
+  const caption = typeof body.caption === "string" ? body.caption.trim() : "";
+  const mime = typeof body.mime === "string" && body.mime.trim() ? body.mime.trim() : "image/jpeg";
+  const replyToMessageId = Number(body.reply_to_message_id);
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
+  }
+  if (!photoBase64) {
+    return finishJson(request, res, { ok: false, error: "photo_required" }, 400);
+  }
+  if (caption.length > 4096) {
+    return finishJson(request, res, { ok: false, error: "text_too_long" }, 400);
+  }
+
+  const started = Date.now();
+  const result = await gatewaySendChatPhoto(userOrRes, chatId, photoBase64, {
+    caption,
+    mime,
+    replyToMessageId:
+      Number.isFinite(replyToMessageId) && replyToMessageId > 0
+        ? Math.trunc(replyToMessageId)
+        : null,
+  });
+  logTelegramMessagesApi("messages_send_photo", {
+    telegramUsername: userOrRes,
+    chatId,
+    ok: !result.error,
+    messageId:
+      result.message && typeof result.message.telegram_message_id === "number"
+        ? result.message.telegram_message_id
+        : null,
+    error: result.error,
+    elapsedMs: Date.now() - started,
+  });
+
+  if (result.error) {
+    return finishJson(
+      request,
+      res,
+      { ok: false, error: result.error, message: null },
+      result.error === "session_not_ready" ? 503 : 502,
+    );
+  }
+
+  return finishJson(request, res, { ok: true, message: result.message }, 200);
+}
+
+export async function telegramMessagesVoiceLeaveHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
+  }
+
+  const body = await parseRequestBody<{
+    chat_id?: unknown;
+    group_call_id?: unknown;
+  }>(request);
+
+  const chatId = Number(body.chat_id);
+  const groupCallId = Number(body.group_call_id);
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
+  }
+
+  const started = Date.now();
+  const result = await gatewayLeaveChatVoice(
+    userOrRes,
+    chatId,
+    Number.isFinite(groupCallId) && groupCallId > 0 ? Math.trunc(groupCallId) : null,
+  );
+  logTelegramMessagesApi("messages_voice_leave", {
+    telegramUsername: userOrRes,
+    chatId,
+    ok: result.ok,
+    error: result.error,
+    elapsedMs: Date.now() - started,
+  });
+
+  if (!result.ok) {
+    return finishJson(
+      request,
+      res,
+      {
+        ok: false,
+        error: result.error,
+        has_active_voice_chat: result.has_active_voice_chat,
+        voice_chat_group_call_id: result.voice_chat_group_call_id,
+      },
+      result.error === "session_not_ready" ? 503 : 502,
+    );
+  }
+
+  return finishJson(
+    request,
+    res,
+    {
+      ok: true,
+      has_active_voice_chat: result.has_active_voice_chat,
+      voice_chat_group_call_id: result.voice_chat_group_call_id,
+    },
+    200,
+  );
+}
+
+export async function telegramMessagesVoiceParticipantsHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
+  }
+
+  const url = requestUrl(request);
+  const chatId = Number(url.searchParams.get("chat_id"));
+  const groupCallId = Number(url.searchParams.get("group_call_id"));
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
+  }
+
+  const started = Date.now();
+  const result = await gatewayFetchChatVoiceParticipants(
+    userOrRes,
+    chatId,
+    Number.isFinite(groupCallId) && groupCallId > 0 ? Math.trunc(groupCallId) : null,
+  );
+  logTelegramMessagesApi("messages_voice_participants", {
+    telegramUsername: userOrRes,
+    chatId,
+    ok: result.ok,
+    count: result.participants.length,
+    error: result.error,
+    elapsedMs: Date.now() - started,
+  });
+
+  if (!result.ok) {
+    return finishJson(
+      request,
+      res,
+      { ok: false, error: result.error, participants: [], participant_count: 0 },
+      result.error === "session_not_ready" ? 503 : 502,
+    );
+  }
+
+  return finishJson(
+    request,
+    res,
+    {
+      ok: true,
+      participants: result.participants,
+      participant_count: result.participant_count,
+    },
+    200,
+  );
 }
 
 function mapResolvedChatRow(row: Record<string, unknown>) {

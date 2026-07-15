@@ -51,12 +51,33 @@ export type TdChat = {
   last_read_inbox_message_id?: number;
   last_read_outbox_message_id?: number;
   photo?: { small?: { id?: number }; big?: { id?: number } };
+  /** Active voice / video chat for this chat (`group_call_id` is 0 when none). */
+  video_chat?: {
+    _?: string;
+    group_call_id?: number;
+    has_participants?: boolean;
+  };
   positions?: Array<{
     list?: { _?: string };
     order?: string;
     is_pinned?: boolean;
   }>;
 };
+
+/** Active Telegram voice/video chat attached to a chat, if any. */
+export function voiceChatFromTdChat(chat: TdChat): {
+  has_active_voice_chat: boolean;
+  voice_chat_group_call_id: number | null;
+} {
+  const groupCallId = Number(chat.video_chat?.group_call_id);
+  if (!Number.isFinite(groupCallId) || groupCallId <= 0) {
+    return { has_active_voice_chat: false, voice_chat_group_call_id: null };
+  }
+  return {
+    has_active_voice_chat: true,
+    voice_chat_group_call_id: Math.trunc(groupCallId),
+  };
+}
 
 export function isChatPinnedInMainList(chat: TdChat): boolean {
   const positions = chat.positions;

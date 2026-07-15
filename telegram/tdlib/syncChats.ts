@@ -22,6 +22,7 @@ import {
   resolveLastMessagePreviewPayload,
   usernameFromTdUser,
   type TdChat,
+  voiceChatFromTdChat,
 } from "./chatPreview.js";
 import {
   patchLiveChatEmojiStatus,
@@ -967,6 +968,7 @@ async function buildLiveRowsForChats(
       ...lastMessageListRowMetaFromChat(chat, myUserId),
       is_pinned: isChatPinnedInMainList(chat),
       pin_order: mainListOrderKey(chat),
+      ...voiceChatFromTdChat(chat),
       list_tier: chatListTier(chat),
     });
   }

@@ -13,6 +13,7 @@ import {
 } from "../../messageChatOutgoing";
 import { editTelegramChatMessage } from "../../telegram/editTelegramChatMessage";
 import { sendTelegramChatMessage } from "../../telegram/sendTelegramChatMessage";
+import { sendTelegramChatPhoto } from "../../telegram/sendTelegramChatPhoto";
 import { enrichHistoryMessageDisplay } from "../messages/messageChatHistoryTypes";
 import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesConnectionContext";
 import { appWarn } from "../../../shared/appLog";
@@ -20,9 +21,15 @@ import { useColors } from "../../theme";
 import { GlobalBottomBar } from "../GlobalBottomBar";
 import { MessageChatComposePill } from "./MessageChatComposePill";
 import { MessageChatComposeStrip } from "../messages/MessageChatComposeStrip";
+import { MessageChatComposePhotoPreview } from "./MessageChatComposePhotoPreview";
 import { MessageChatPublicGroupsBanModal } from "../messages/MessageChatPublicGroupsBanModal";
 import { MESSAGE_CHAT_BOTTOM_COMPOSE_FAB_GAP_PX } from "./messageChatLayout";
 import { buildOptimisticOutgoingMessage } from "./optimisticOutgoingMessage";
+import {
+  readClipboardImageFromPasteEvent,
+  revokeComposePendingPhoto,
+  type ComposePendingPhoto,
+} from "./composeClipboardPhoto";
 
 type Props = {
   /** Pill row inside the open chat overlay (left of the scroll FAB). */
@@ -44,25 +51,61 @@ export function MessageChatWriteBottomBar({
   const { isTelegramMessagesConnected } = useTelegramMessagesConnection();
   const compose = useMessageChatCompose(selectedChat?.telegram_chat_id);
   const [draft, setDraft] = useState("");
+  const [pendingPhoto, setPendingPhoto] = useState<ComposePendingPhoto | null>(null);
   const [sending, setSending] = useState(false);
   const [publicGroupsBanVisible, setPublicGroupsBanVisible] = useState(false);
   const sendingRef = useRef(false);
   const editPrefillRef = useRef<number | null>(null);
+  const pendingPhotoRef = useRef<ComposePendingPhoto | null>(null);
+
+  useEffect(() => {
+    pendingPhotoRef.current = pendingPhoto;
+  }, [pendingPhoto]);
+
+  useEffect(() => {
+    return () => {
+      revokeComposePendingPhoto(pendingPhotoRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (compose?.edit) {
       if (editPrefillRef.current !== compose.edit.telegram_message_id) {
         editPrefillRef.current = compose.edit.telegram_message_id;
         setDraft(compose.edit.text);
+        setPendingPhoto((prev) => {
+          revokeComposePendingPhoto(prev);
+          return null;
+        });
       }
       return;
     }
     editPrefillRef.current = null;
   }, [compose?.edit]);
 
+  const clearPendingPhoto = useCallback(() => {
+    setPendingPhoto((prev) => {
+      revokeComposePendingPhoto(prev);
+      return null;
+    });
+  }, []);
+
+  const onPasteImage = useCallback(async (event: { clipboardData?: DataTransfer | null }) => {
+    if (compose?.edit) return false;
+    const photo = await readClipboardImageFromPasteEvent(event);
+    if (!photo) return false;
+    setPendingPhoto((prev) => {
+      revokeComposePendingPhoto(prev);
+      return photo;
+    });
+    return true;
+  }, [compose?.edit]);
+
   const onSubmit = useCallback(
     async (text: string) => {
       if (!selectedChat || !isTelegramMessagesConnected || sendingRef.current) return;
+      const photo = pendingPhotoRef.current;
+      if (!text.trim() && !photo) return;
       sendingRef.current = true;
       setSending(true);
       try {
@@ -89,6 +132,63 @@ export function MessageChatWriteBottomBar({
         }
 
         const replyTarget = compose?.reply ?? null;
+
+        if (photo) {
+          const optimistic = buildOptimisticOutgoingMessage({
+            text,
+            replyTarget,
+            photo: {
+              localUri: photo.previewUri,
+              width: photo.width,
+              height: photo.height,
+            },
+          });
+          publishOutgoingChatMessage(selectedChat.telegram_chat_id, optimistic);
+          clearMessageChatCompose(selectedChat.telegram_chat_id);
+          setDraft("");
+          setPendingPhoto(null);
+
+          const result = await sendTelegramChatPhoto({
+            chatId: selectedChat.telegram_chat_id,
+            photoBase64: photo.base64,
+            caption: text,
+            mime: photo.mime,
+            replyToMessageId: replyTarget?.telegram_message_id ?? null,
+          });
+          revokeComposePendingPhoto(photo);
+          if (result.ok) {
+            const message =
+              replyTarget && !result.message.reply_to
+                ? {
+                    ...result.message,
+                    reply_to: {
+                      sender_name: replyTarget.sender_name,
+                      sender_user_id: null,
+                      text: replyTarget.text,
+                    },
+                    reply_to_message_id: replyTarget.telegram_message_id,
+                  }
+                : result.message;
+            publishOutgoingChatMessage(
+              selectedChat.telegram_chat_id,
+              enrichHistoryMessageDisplay(message),
+            );
+          } else if (result.error === TELEGRAM_SEND_ERROR_PUBLIC_GROUPS_BANNED) {
+            removeOutgoingChatMessage(selectedChat.telegram_chat_id, optimistic.telegram_message_id);
+            setDraft(text);
+            setPendingPhoto(photo);
+            setPublicGroupsBanVisible(true);
+          } else {
+            removeOutgoingChatMessage(selectedChat.telegram_chat_id, optimistic.telegram_message_id);
+            setDraft(text);
+            setPendingPhoto(photo);
+            appWarn("[message-send-photo]", String(result.error), {
+              chatId: selectedChat.telegram_chat_id,
+            });
+          }
+          return;
+        }
+
         const optimistic = buildOptimisticOutgoingMessage({
           text,
           replyTarget,
@@ -149,11 +249,24 @@ export function MessageChatWriteBottomBar({
     }
   }, [compose?.edit]);
 
-  const canSend = selectedChat != null && isTelegramMessagesConnected && !sending;
+  const canSend =
+    selectedChat != null &&
+    isTelegramMessagesConnected &&
+    !sending &&
+    (Boolean(draft.trim()) || pendingPhoto != null);
 
   if (selectedChat?.chat_kind === "channel") {
     return null;
   }
+
+  const photoPreview = pendingPhoto ? (
+    <MessageChatComposePhotoPreview
+      previewUri={pendingPhoto.previewUri}
+      colors={colors}
+      onClear={clearPendingPhoto}
+      clearAccessibilityLabel={t("messages.chatWrite.clearPhoto")}
+    />
+  ) : null;
 
   const pill = (
     <MessageChatComposePill
@@ -164,6 +277,8 @@ export function MessageChatWriteBottomBar({
       sendAccessibilityLabel={t("messages.chatWrite.send")}
       canSend={canSend}
       onHeightChange={embedded ? onComposeOverlayHeightChange : undefined}
+      onPasteImage={onPasteImage}
+      hasPendingPhoto={pendingPhoto != null}
     />
   );
 
@@ -173,6 +288,7 @@ export function MessageChatWriteBottomBar({
         {compose ? (
           <MessageChatComposeStrip compose={compose} colors={colors} onDismiss={onDismissCompose} />
         ) : null}
+        {photoPreview}
         <View
           pointerEvents="box-none"
           style={{
@@ -197,6 +313,7 @@ export function MessageChatWriteBottomBar({
       {compose ? (
         <MessageChatComposeStrip compose={compose} colors={colors} onDismiss={onDismissCompose} />
       ) : null}
+      {photoPreview}
       <GlobalBottomBar
         placeholderText={t("messages.chatWrite.placeholder")}
         iconRotationDeg={-45}
@@ -205,6 +322,8 @@ export function MessageChatWriteBottomBar({
         draft={draft}
         onDraftChange={setDraft}
         onSubmit={canSend ? onSubmit : () => {}}
+        onPasteImage={onPasteImage}
+        allowEmptySubmit={pendingPhoto != null}
       />
       <MessageChatPublicGroupsBanModal
         visible={publicGroupsBanVisible}

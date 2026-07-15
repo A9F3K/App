@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent } from "react";
 import { Platform, ScrollView, StyleSheet, Text, TextInput, View, type NativeScrollEvent, type NativeSyntheticEvent, type TextInputContentSizeChangeEventData } from "react-native";
 import { WEB_UI_SANS_STACK } from "../../fonts";
 import { layout, typographyRect15, uiTextVerticalCompensationY, useColors } from "../../theme";
@@ -19,6 +19,10 @@ type Props = {
   sendAccessibilityLabel: string;
   canSend: boolean;
   onHeightChange?: (heightPx: number) => void;
+  /** Clipboard image paste (Ctrl/Cmd+V). Return true when an image was consumed. */
+  onPasteImage?: (event: { clipboardData?: DataTransfer | null }) => boolean | Promise<boolean>;
+  /** When true, Enter can send even if the text field is empty (photo attached). */
+  hasPendingPhoto?: boolean;
 };
 
 const {
@@ -43,6 +47,8 @@ export function MessageChatComposePill({
   sendAccessibilityLabel,
   canSend,
   onHeightChange,
+  onPasteImage,
+  hasPendingPhoto = false,
 }: Props) {
   const colors = useColors();
 
@@ -56,6 +62,8 @@ export function MessageChatComposePill({
         sendAccessibilityLabel={sendAccessibilityLabel}
         canSend={canSend}
         onHeightChange={onHeightChange}
+        onPasteImage={onPasteImage}
+        hasPendingPhoto={hasPendingPhoto}
         colors={colors}
       />
     );
@@ -87,6 +95,8 @@ function WebComposePill({
   sendAccessibilityLabel,
   canSend,
   onHeightChange,
+  onPasteImage,
+  hasPendingPhoto = false,
   colors,
 }: SharedProps) {
   const [isFocused, setIsFocused] = useState(false);
@@ -101,9 +111,31 @@ function WebComposePill({
 
   const submit = useCallback(() => {
     const text = value.trim();
-    if (!text || !canSend) return;
+    if (!canSend) return;
+    if (!text && !hasPendingPhoto) return;
     onSubmit(text);
-  }, [canSend, onSubmit, value]);
+  }, [canSend, hasPendingPhoto, onSubmit, value]);
+
+  const handlePaste = useCallback(
+    (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      if (!onPasteImage) return;
+      void Promise.resolve(
+        onPasteImage({ clipboardData: e.clipboardData as unknown as DataTransfer }),
+      ).then((handled) => {
+        if (handled) e.preventDefault();
+      });
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i];
+        if (item?.kind === "file" && item.type.startsWith("image/")) {
+          e.preventDefault();
+          return;
+        }
+      }
+    },
+    [onPasteImage],
+  );
 
   const measureAndResize = useCallback(() => {
     const el = textareaRef.current;
@@ -287,6 +319,7 @@ function WebComposePill({
           value={value}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
           rows={1}

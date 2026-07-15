@@ -106,6 +106,11 @@ function readStoredChat(): MessageChatRowData | null {
           ? (row.subtitle_segments as MessageChatRowData["subtitle_segments"])
           : null,
         is_pinned: Boolean(row.is_pinned),
+        has_active_voice_chat: Boolean(row.has_active_voice_chat),
+        voice_chat_group_call_id: (() => {
+          const raw = Number(row.voice_chat_group_call_id);
+          return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : null;
+        })(),
       };
     }
   } catch {
@@ -196,7 +201,9 @@ export function selectAuthenticatedHomeChat(chat: MessageChatRowData | null) {
     selectedChat.chat_action_user_name === chat.chat_action_user_name &&
     selectedChat.chat_action_expires_at === chat.chat_action_expires_at &&
     selectedChat.last_read_outbox_message_id === chat.last_read_outbox_message_id &&
-    selectedChat.last_read_inbox_message_id === chat.last_read_inbox_message_id
+    selectedChat.last_read_inbox_message_id === chat.last_read_inbox_message_id &&
+    selectedChat.has_active_voice_chat === chat.has_active_voice_chat &&
+    selectedChat.voice_chat_group_call_id === chat.voice_chat_group_call_id
   ) {
     return;
   }
@@ -295,6 +302,28 @@ export function useAuthenticatedHomeHistoryLoadTarget(): AuthenticatedHomeHistor
     getHistoryLoadSnapshot,
     getHistoryLoadServerSnapshot,
   );
+}
+
+/** Patch voice-chat fields on the currently open chat (e.g. after leave). */
+export function patchAuthenticatedHomeSelectedChatVoice(meta: {
+  has_active_voice_chat: boolean;
+  voice_chat_group_call_id: number | null;
+}): void {
+  hydrateFromStorageIfNeeded();
+  if (selectedChat == null) return;
+  if (
+    selectedChat.has_active_voice_chat === meta.has_active_voice_chat &&
+    selectedChat.voice_chat_group_call_id === meta.voice_chat_group_call_id
+  ) {
+    return;
+  }
+  selectedChat = {
+    ...selectedChat,
+    has_active_voice_chat: meta.has_active_voice_chat,
+    voice_chat_group_call_id: meta.voice_chat_group_call_id,
+  };
+  writeStoredChat(selectedChat);
+  emit();
 }
 
 /** Refresh open chat header meta after history load or live list sync. */
@@ -430,6 +459,8 @@ export function syncAuthenticatedHomeSelectedChat(chats: readonly MessageChatRow
     fresh.chat_action_user_id !== selectedChat.chat_action_user_id ||
     fresh.chat_action_user_name !== selectedChat.chat_action_user_name ||
     fresh.chat_action_expires_at !== selectedChat.chat_action_expires_at ||
+    fresh.has_active_voice_chat !== selectedChat.has_active_voice_chat ||
+    fresh.voice_chat_group_call_id !== selectedChat.voice_chat_group_call_id ||
     fresh.last_read_outbox_message_id !== selectedChat.last_read_outbox_message_id ||
     fresh.last_read_inbox_message_id !== selectedChat.last_read_inbox_message_id
   ) {

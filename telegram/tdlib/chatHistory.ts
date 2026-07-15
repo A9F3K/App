@@ -1,3 +1,6 @@
+import fs from "fs";
+import os from "os";
+import path from "path";
 import type { Client } from "tdl";
 import {
   applyReadOutboxToHistoryMessages,
@@ -644,6 +647,86 @@ export async function sendChatTextMessage(
     return { ...mapped, outgoing_status: "delivered" };
   }
   return mapped;
+}
+
+const MAX_OUTGOING_PHOTO_BYTES = 8 * 1024 * 1024;
+
+export async function sendChatPhotoMessage(
+  client: Client,
+  chatId: number,
+  photoBytes: Buffer,
+  options?: {
+    caption?: string | null;
+    mime?: string | null;
+    replyToMessageId?: number | null;
+  },
+): Promise<MappedChatHistoryMessage | null> {
+  if (!Buffer.isBuffer(photoBytes) || photoBytes.length === 0) return null;
+  if (photoBytes.length > MAX_OUTGOING_PHOTO_BYTES) return null;
+
+  const caption = typeof options?.caption === "string" ? options.caption.trim() : "";
+  if (caption.length > MAX_OUTGOING_TEXT_LENGTH) return null;
+
+  try {
+    await client.invoke({ _: "openChat", chat_id: chatId });
+  } catch {
+    /* already open */
+  }
+
+  const mime = (options?.mime || "image/jpeg").toLowerCase();
+  const ext =
+    mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : mime.includes("gif") ? "gif" : "jpg";
+  const tempPath = path.join(
+    os.tmpdir(),
+    `hsp-chat-photo-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`,
+  );
+  await fs.promises.writeFile(tempPath, photoBytes);
+
+  try {
+    const replyId = Number(options?.replyToMessageId);
+    const message = (await client.invoke({
+      _: "sendMessage",
+      chat_id: chatId,
+      ...(Number.isFinite(replyId) && replyId > 0
+        ? {
+            reply_to: {
+              _: "inputMessageReplyToMessage",
+              message_id: Math.trunc(replyId),
+            },
+          }
+        : {}),
+      input_message_content: {
+        _: "inputMessagePhoto",
+        photo: {
+          _: "inputFileLocal",
+          path: tempPath,
+        },
+        thumbnail: null,
+        added_sticker_file_ids: [],
+        width: 0,
+        height: 0,
+        caption: {
+          _: "formattedText",
+          text: caption,
+          entities: [],
+        },
+        show_caption_above_media: false,
+        self_destruct_type: null,
+        has_spoiler: false,
+      },
+    })) as TdMessage;
+
+    const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+    const myUserId = await resolveMyUserId(client);
+    const mapped = await mapHistoryMessage(client, message, chat, new Map(), new Map(), myUserId);
+    if (!mapped || !mapped.is_outgoing) return mapped;
+    if (mapped.outgoing_status === "pending") {
+      return { ...mapped, outgoing_status: "delivered" };
+    }
+    return mapped;
+  } finally {
+    await fs.promises.unlink(tempPath).catch(() => undefined);
+  }
 }
 
 export async function editChatTextMessage(

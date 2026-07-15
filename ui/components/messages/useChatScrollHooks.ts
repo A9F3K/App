@@ -77,6 +77,11 @@ export function useChatScrollHooks(options: {
     if (isReplacingHistory(phase) && !canEdgeLoad(phase)) return;
 
     const metrics = opts.getMetrics();
+    const contentFitsViewport =
+      metrics != null &&
+      metrics.layoutH > 0 &&
+      metrics.contentH > 0 &&
+      metrics.contentH <= metrics.layoutH + 0.5;
     const nearTop =
       metrics == null ||
       metrics.layoutH <= 0 ||
@@ -101,6 +106,7 @@ export function useChatScrollHooks(options: {
       nearTop,
       atHardScrollTop,
       nearBottom: false,
+      contentFitsViewport,
       olderCooldownUntilMs: gate.olderCooldownUntilMs,
     });
     if (!decision.loadOlder) return;
@@ -115,6 +121,11 @@ export function useChatScrollHooks(options: {
     if (isReplacingHistory(phase) && !canEdgeLoad(phase)) return;
 
     const metrics = opts.getMetrics();
+    const contentFitsViewport =
+      metrics != null &&
+      metrics.layoutH > 0 &&
+      metrics.contentH > 0 &&
+      metrics.contentH <= metrics.layoutH + 0.5;
     const nearBottom =
       metrics != null &&
       metrics.layoutH > 0 &&
@@ -147,6 +158,7 @@ export function useChatScrollHooks(options: {
       nearTop: false,
       nearBottom,
       atHardScrollBottom,
+      contentFitsViewport,
       newerRetryAfterMs: gate.newerRetryAfterMs,
     });
     if (!decision.loadNewer) return;

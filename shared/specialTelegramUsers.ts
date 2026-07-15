@@ -12,6 +12,8 @@ export const NATALYA_LAVRENOVA_TELEGRAM_USER_ID = 86649762;
 export const ANRILTINE_TELEGRAM_USER_ID = 7221481736;
 /** Telegram user id for @thedevs_admin ("The Devs." private chat). */
 export const THE_DEVS_TELEGRAM_USER_ID = 7048804505;
+/** Telegram user id for 🇪🇸Ņexx (private chat title "🇪🇸Ņexx"). */
+export const NEXX_TELEGRAM_USER_ID = 5850966794;
 
 export const SPECIAL_USER_BADGE_GAP_PX = 5;
 export const SPECIAL_USER_BADGE_SIZE_PX = 20;
@@ -38,6 +40,7 @@ const SPECIAL_USER_RULES: Record<number, SpecialUserRule> = {
   [NATALYA_LAVRENOVA_TELEGRAM_USER_ID]: { shine: true, badge: "art_sign" },
   [ANRILTINE_TELEGRAM_USER_ID]: { shine: true, badge: "s_sign" },
   [THE_DEVS_TELEGRAM_USER_ID]: { shine: true, badge: "status_tgs" },
+  [NEXX_TELEGRAM_USER_ID]: { shine: true, badge: "status_tgs" },
   1653333875: { shine: true, badge: "status_tgs" },
 };
 

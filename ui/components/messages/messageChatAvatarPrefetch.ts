@@ -77,7 +77,8 @@ export function prefetchOpenChatAvatars(
   });
 
   for (const uri of uris) {
-    prefetchMessageChatAvatar(uri, { priority: "high" });
+    // Below message-media "critical"; don't steal slots from newly painted photos.
+    prefetchMessageChatAvatar(uri, { priority: "normal" });
   }
 }
 

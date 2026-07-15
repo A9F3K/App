@@ -109,6 +109,10 @@ export type GlobalBottomBarOptions = {
   /** Controlled draft for local compose bars (e.g. chat reply/edit). */
   draft?: string;
   onDraftChange?: (next: string) => void;
+  /** Clipboard image paste (Ctrl/Cmd+V). Return true when an image was consumed. */
+  onPasteImage?: (event: { clipboardData?: DataTransfer | null }) => boolean | Promise<boolean>;
+  /** When true, Enter/send works with empty text (e.g. photo attached). */
+  allowEmptySubmit?: boolean;
 };
 
 export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
@@ -143,6 +147,8 @@ export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
   const iconRotationDeg = options?.iconRotationDeg ?? 0;
   const sendAccessibilityLabel = options?.sendAccessibilityLabel;
   const onSubmitOverride = options?.onSubmit;
+  const onPasteImage = options?.onPasteImage;
+  const allowEmptySubmit = options?.allowEmptySubmit ?? false;
   const { width: windowWidth } = useWindowDimensions();
   const backgroundColor = themeBgReady ? colors.background : "transparent";
   const launchPrimary =
@@ -176,6 +182,8 @@ export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
         iconRotationDeg={iconRotationDeg}
         sendAccessibilityLabel={sendAccessibilityLabel}
         onSubmitOverride={onSubmitOverride}
+        onPasteImage={onPasteImage}
+        allowEmptySubmit={allowEmptySubmit}
       />
     );
   }
@@ -290,6 +298,8 @@ function WebBottomBar({
   iconRotationDeg = 0,
   sendAccessibilityLabel,
   onSubmitOverride,
+  onPasteImage,
+  allowEmptySubmit = false,
 }: {
   backgroundColor: string;
   inputColor: string;
@@ -305,6 +315,8 @@ function WebBottomBar({
   iconRotationDeg?: number;
   sendAccessibilityLabel?: string;
   onSubmitOverride?: (text: string) => void;
+  onPasteImage?: (event: { clipboardData?: DataTransfer | null }) => boolean | Promise<boolean>;
+  allowEmptySubmit?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -474,7 +486,7 @@ function WebBottomBar({
       text = premadePrompts[Math.floor(Math.random() * premadePrompts.length)] ?? "";
       setValue(text);
     }
-    if (!text) return;
+    if (!text && !(allowEmptySubmit && onSubmitOverride)) return;
     setValue("");
     if (onSubmitOverride) {
       onSubmitOverride(text);
@@ -484,7 +496,28 @@ function WebBottomBar({
       pathname: "/ai" as any,
       params: { prompt: text, route: pathname ?? "/" },
     });
-  }, [router, pathname, value, setValue, premadePrompts, onSubmitOverride]);
+  }, [router, pathname, value, setValue, premadePrompts, onSubmitOverride, allowEmptySubmit]);
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      if (!onPasteImage) return;
+      void Promise.resolve(
+        onPasteImage({ clipboardData: e.clipboardData as unknown as DataTransfer }),
+      ).then((handled) => {
+        if (handled) e.preventDefault();
+      });
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (let i = 0; i < items.length; i += 1) {
+        const item = items[i];
+        if (item?.kind === "file" && item.type.startsWith("image/")) {
+          e.preventDefault();
+          return;
+        }
+      }
+    },
+    [onPasteImage],
+  );
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -524,6 +557,7 @@ function WebBottomBar({
               value={value}
               onInput={handleInput}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               onFocus={() => setIsFocused(true)}
               onBlur={() => setIsFocused(false)}
               rows={1}

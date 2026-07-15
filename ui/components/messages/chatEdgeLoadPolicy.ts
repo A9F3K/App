@@ -25,6 +25,12 @@ export type ChatEdgeLoadGateInput = {
   /** scrollY within the hard bottom threshold — dwell at bottom counts as scroll-down intent. */
   atHardScrollBottom?: boolean;
   nearBottom: boolean;
+  /**
+   * Content fits (or nearly fits) the viewport — both edges report “near”.
+   * Older loads then require explicit scroll-up so scroll-down is not trapped
+   * on display_expand_older while contentH≈layoutH.
+   */
+  contentFitsViewport?: boolean;
   olderCooldownUntilMs?: number;
   newerRetryAfterMs?: number;
   nowMs?: number;
@@ -76,11 +82,17 @@ export function decideChatEdgeLoad(input: ChatEdgeLoadGateInput): ChatEdgeLoadDe
     input.newerRetryAfterMs != null && now < input.newerRetryAfterMs;
 
   const atHardScrollTop = input.atHardScrollTop === true;
+  const contentFits = input.contentFitsViewport === true;
   // Dwelling in the older prefetch band counts as scroll-up intent (tdesktop).
+  // When content fits the viewport, nearTop alone is not older intent — both
+  // edges are “near”, and scroll-down was getting stuck expanding older.
   const olderScrollIntent =
-    input.userScrollingUp || atHardScrollTop || input.nearTop;
+    input.userScrollingUp ||
+    atHardScrollTop ||
+    (input.nearTop && !contentFits);
   const atHardScrollBottom = input.atHardScrollBottom === true;
-  const newerScrollIntent = !input.userScrollingUp || atHardScrollBottom;
+  const newerScrollIntent =
+    !input.userScrollingUp || atHardScrollBottom || (contentFits && !input.userScrollingUp);
 
   const loadOlder =
     (input.hasMoreOlder ||

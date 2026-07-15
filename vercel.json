@@ -30,8 +30,20 @@
       "destination": "/api/telegram-messages-send"
     },
     {
+      "source": "/api/telegram/messages/send-photo",
+      "destination": "/api/telegram-messages-send-photo"
+    },
+    {
       "source": "/api/telegram/messages/edit",
       "destination": "/api/telegram-messages-edit"
+    },
+    {
+      "source": "/api/telegram/messages/voice/leave",
+      "destination": "/api/telegram-messages-voice-leave"
+    },
+    {
+      "source": "/api/telegram/messages/voice/participants",
+      "destination": "/api/telegram-messages-voice-participants"
     },
     {
       "source": "/api/telegram/messages/resolve-chat",

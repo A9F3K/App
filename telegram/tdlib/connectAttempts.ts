@@ -20,10 +20,11 @@ import {
   isBackgroundChatSyncInProgress,
   isTier3ChatSyncInProgress,
 } from "./syncChats.js";
-import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, sendChatTextMessage, editChatTextMessage, viewChatInboxMessagesUpTo } from "./chatHistory.js";
+import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, sendChatTextMessage, sendChatPhotoMessage, editChatTextMessage, viewChatInboxMessagesUpTo } from "./chatHistory.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
 import { isPositionedComplete } from "./chatListSyncState.js";
-import { getLiveChatList, getLiveChatListRevision } from "./liveChatCache.js";
+import { getLiveChatList, getLiveChatListRevision, patchLiveChatVideoChat } from "./liveChatCache.js";
+import { voiceChatFromTdChat, type TdChat } from "./chatPreview.js";
 
 export type ConnectAuthMethod = "qr" | "phone";
 
@@ -1373,6 +1374,58 @@ export async function sendChatMessageForUser(
   }
 }
 
+export async function sendChatPhotoForUser(
+  telegramUsername: string,
+  chatId: number,
+  photoBase64: string,
+  options?: {
+    caption?: string | null;
+    mime?: string | null;
+    replyToMessageId?: number | null;
+  },
+): Promise<{ message: Awaited<ReturnType<typeof sendChatPhotoMessage>>; error: string | null }> {
+  const raw = typeof photoBase64 === "string" ? photoBase64.trim() : "";
+  if (!raw) {
+    return { message: null, error: "photo_required" };
+  }
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(raw.replace(/^data:[^;]+;base64,/, ""), "base64");
+  } catch {
+    return { message: null, error: "invalid_photo" };
+  }
+  if (bytes.length === 0) {
+    return { message: null, error: "photo_required" };
+  }
+  if (bytes.length > 8 * 1024 * 1024) {
+    return { message: null, error: "photo_too_large" };
+  }
+
+  const caption = typeof options?.caption === "string" ? options.caption.trim() : "";
+  if (caption.length > 4096) {
+    return { message: null, error: "text_too_long" };
+  }
+
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { message: null, error: "session_not_ready" };
+  }
+
+  try {
+    const message = await sendChatPhotoMessage(record.client, chatId, bytes, {
+      caption,
+      mime: options?.mime ?? null,
+      replyToMessageId: options?.replyToMessageId ?? null,
+    });
+    if (!message) {
+      return { message: null, error: "send_failed" };
+    }
+    return { message, error: null };
+  } catch (err) {
+    return { message: null, error: classifyTdlibSendError(err, chatId) };
+  }
+}
+
 export async function resolvePublicChatForUser(
   telegramUsername: string,
   username: string,
@@ -1567,6 +1620,95 @@ export async function getCustomEmojiForUser(
   customEmojiId: string,
 ): Promise<{ data: Buffer; mime: string } | null> {
   return getTelegramEmojiForUser(telegramUsername, { customEmojiId });
+}
+
+export async function getChatVoiceParticipantsForUser(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  participant_count: number;
+  participants: Array<{
+    user_id: number | null;
+    chat_id: number | null;
+    title: string;
+    is_speaking: boolean;
+  }>;
+}> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready", participant_count: 0, participants: [] };
+  }
+
+  try {
+    const { fetchChatVoiceParticipants } = await import("./voiceParticipants.js");
+    return await fetchChatVoiceParticipants(record.client, chatId, groupCallId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "participants_failed";
+    return { ok: false, error: message, participant_count: 0, participants: [] };
+  }
+}
+
+export async function leaveChatVoiceForUser(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  has_active_voice_chat: boolean;
+  voice_chat_group_call_id: number | null;
+}> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return {
+      ok: false,
+      error: "session_not_ready",
+      has_active_voice_chat: false,
+      voice_chat_group_call_id: null,
+    };
+  }
+
+  try {
+    let callId = Number(groupCallId);
+    if (!Number.isFinite(callId) || callId <= 0) {
+      const chat = (await record.client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+      callId = Number(chat.video_chat?.group_call_id);
+    }
+    if (!Number.isFinite(callId) || callId <= 0) {
+      return {
+        ok: false,
+        error: "no_active_voice_chat",
+        has_active_voice_chat: false,
+        voice_chat_group_call_id: null,
+      };
+    }
+
+    await record.client.invoke({
+      _: "leaveGroupCall",
+      group_call_id: Math.trunc(callId),
+    });
+
+    const chat = (await record.client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+    const voice = voiceChatFromTdChat(chat);
+    patchLiveChatVideoChat(telegramUsername, chatId, voice);
+    return {
+      ok: true,
+      error: null,
+      has_active_voice_chat: voice.has_active_voice_chat,
+      voice_chat_group_call_id: voice.voice_chat_group_call_id,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "leave_failed";
+    return {
+      ok: false,
+      error: message,
+      has_active_voice_chat: false,
+      voice_chat_group_call_id: null,
+    };
+  }
 }
 
 export function gatewayHealth(): { ok: boolean; tdlibConfigured: boolean; hasApiCredentials: boolean } {

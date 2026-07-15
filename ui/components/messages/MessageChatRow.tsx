@@ -84,6 +84,9 @@ export type MessageChatRowData = {
   is_pinned?: boolean;
   pin_order?: string | null;
   list_tier?: "pinned" | "positioned" | "unpositioned" | null;
+  /** Active Telegram voice/video chat on this chat. */
+  has_active_voice_chat?: boolean;
+  voice_chat_group_call_id?: number | null;
 };
 
 function resolveAvatarUrl(item: MessageChatRowData): string | null {

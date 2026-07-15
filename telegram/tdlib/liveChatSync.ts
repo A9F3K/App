@@ -1,8 +1,8 @@
 import type { Client } from "tdl";
 import { safeTelegramUserIdForLog } from "../../shared/appLog.js";
 import { logGateway } from "./gatewayLog.js";
-import { clearLiveChatCache, getLiveChatList, patchLiveChatAction, patchLiveChatChatEmojiStatus, patchLiveChatEmojiStatus, patchLiveChatFromTdlib, patchLiveChatPresence } from "./liveChatCache.js";
-import { chatActionFromTdlib, presenceFromTdlibStatus, isGenericMessagePreviewLabel, previewFromMessage, resolveLastMessagePreviewPayload, usernameFromTdUser, type TdChat, type TdMessage } from "./chatPreview.js";
+import { clearLiveChatCache, getLiveChatList, patchLiveChatAction, patchLiveChatChatEmojiStatus, patchLiveChatEmojiStatus, patchLiveChatFromTdlib, patchLiveChatPresence, patchLiveChatVideoChat } from "./liveChatCache.js";
+import { chatActionFromTdlib, presenceFromTdlibStatus, isGenericMessagePreviewLabel, previewFromMessage, resolveLastMessagePreviewPayload, usernameFromTdUser, voiceChatFromTdChat, type TdChat, type TdMessage } from "./chatPreview.js";
 import { shouldIncludeChatInList } from "./chatListFilter.js";
 import { emojiStatusCustomIdFromUser, parseEmojiStatusCustomId } from "./emojiStatus.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
@@ -25,6 +25,7 @@ const LIVE_UPDATE_TYPES = new Set([
   "updateUserEmojiStatus",
   "updateUserChatAction",
   "updateChatReadOutbox",
+  "updateChatVideoChat",
 ]);
 
 type LiveSyncRecord = {
@@ -307,6 +308,25 @@ async function applyLiveUpdate(record: LiveSyncRecord, update: Record<string, un
       userName,
     });
     logLiveSync(record, "live_chat_action_applied", { chatId, userId, action: parsed });
+    return;
+  }
+
+  if (type === "updateChatVideoChat") {
+    const chatId = update.chat_id;
+    if (typeof chatId !== "number") return;
+    const voice = voiceChatFromTdChat({
+      id: chatId,
+      video_chat:
+        update.video_chat && typeof update.video_chat === "object"
+          ? (update.video_chat as TdChat["video_chat"])
+          : undefined,
+    });
+    patchLiveChatVideoChat(record.telegramUsername, chatId, voice);
+    logLiveSync(record, "live_chat_video_chat_applied", {
+      chatId,
+      hasActiveVoiceChat: voice.has_active_voice_chat,
+      groupCallId: voice.voice_chat_group_call_id,
+    });
     return;
   }
 

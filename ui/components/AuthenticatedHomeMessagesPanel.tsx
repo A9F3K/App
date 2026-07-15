@@ -170,6 +170,11 @@ function normalizeChat(raw: unknown): MessageChatRowData | null {
       row.list_tier === "unpositioned"
         ? row.list_tier
         : null,
+    has_active_voice_chat: Boolean(row.has_active_voice_chat),
+    voice_chat_group_call_id: (() => {
+      const raw = Number(row.voice_chat_group_call_id);
+      return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : null;
+    })(),
   };
 }
 

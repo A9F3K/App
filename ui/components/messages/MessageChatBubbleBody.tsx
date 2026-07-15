@@ -508,7 +508,9 @@ export function MessageChatBubbleBody({
       contentKind === "animation" ||
       contentKind === "photo" ||
       contentKind === "sticker");
-  const mediaUrl = showMedia ? resolveMediaUrl(chatId, item.telegram_message_id) : null;
+  const mediaUrl = showMedia
+    ? item.local_media_uri?.trim() || resolveMediaUrl(chatId, item.telegram_message_id)
+    : null;
   const callIndicator = isCall
     ? { outgoing: item.is_outgoing, successful: Boolean(item.call_success) }
     : null;

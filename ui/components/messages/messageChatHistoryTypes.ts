@@ -55,6 +55,11 @@ export type MessageChatHistoryItem = {
   has_media?: boolean;
   media_width?: number | null;
   media_height?: number | null;
+  /**
+   * Client-only optimistic / pasted photo preview (`blob:` / `data:`).
+   * Not returned by the history API.
+   */
+  local_media_uri?: string | null;
   reply_to?: MessageChatReplyPreview | null;
   /** Id of the message being replied to (even when preview text is unresolved). */
   reply_to_message_id?: number | null;

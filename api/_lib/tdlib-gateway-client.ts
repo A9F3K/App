@@ -722,6 +722,114 @@ export async function gatewayFetchChatMessages(
   }
 }
 
+export async function gatewayLeaveChatVoice(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  has_active_voice_chat: boolean;
+  voice_chat_group_call_id: number | null;
+}> {
+  const callId = Number(groupCallId);
+  const { response, json } = await gatewayFetch("/v1/chat/voice/leave", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+      ...(Number.isFinite(callId) && callId > 0
+        ? { groupCallId: Math.trunc(callId) }
+        : {}),
+    }),
+  });
+  const hasActive = Boolean(json.has_active_voice_chat);
+  const voiceCallId = Number(json.voice_chat_group_call_id);
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "leave_failed",
+      has_active_voice_chat: hasActive,
+      voice_chat_group_call_id:
+        Number.isFinite(voiceCallId) && voiceCallId > 0 ? Math.trunc(voiceCallId) : null,
+    };
+  }
+  return {
+    ok: true,
+    error: null,
+    has_active_voice_chat: hasActive,
+    voice_chat_group_call_id:
+      Number.isFinite(voiceCallId) && voiceCallId > 0 ? Math.trunc(voiceCallId) : null,
+  };
+}
+
+export async function gatewayFetchChatVoiceParticipants(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  participant_count: number;
+  participants: Array<{
+    user_id: number | null;
+    chat_id: number | null;
+    title: string;
+    is_speaking: boolean;
+  }>;
+}> {
+  const callId = Number(groupCallId);
+  const params = new URLSearchParams({
+    telegramUsername,
+    chatId: String(chatId),
+  });
+  if (Number.isFinite(callId) && callId > 0) {
+    params.set("groupCallId", String(Math.trunc(callId)));
+  }
+  const { response, json } = await gatewayFetch(
+    `/v1/chat/voice/participants?${params.toString()}`,
+    { method: "GET" },
+  );
+  const participants = Array.isArray(json.participants)
+    ? (json.participants as Array<{
+        user_id?: unknown;
+        chat_id?: unknown;
+        title?: unknown;
+        is_speaking?: unknown;
+      }>).map((row) => {
+        const userId = Number(row.user_id);
+        const senderChatId = Number(row.chat_id);
+        return {
+          user_id: Number.isFinite(userId) && userId > 0 ? Math.trunc(userId) : null,
+          chat_id:
+            Number.isFinite(senderChatId) && senderChatId !== 0
+              ? Math.trunc(senderChatId)
+              : null,
+          title: typeof row.title === "string" ? row.title : "",
+          is_speaking: Boolean(row.is_speaking),
+        };
+      })
+    : [];
+  const participantCount = Number(json.participant_count);
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "participants_failed",
+      participant_count: 0,
+      participants: [],
+    };
+  }
+  return {
+    ok: true,
+    error: null,
+    participant_count:
+      Number.isFinite(participantCount) && participantCount >= 0
+        ? Math.trunc(participantCount)
+        : participants.length,
+    participants,
+  };
+}
+
 export async function gatewaySendChatMessage(
   telegramUsername: string,
   chatId: number,
@@ -736,6 +844,43 @@ export async function gatewaySendChatMessage(
       chatId,
       text,
       ...(Number.isFinite(replyId) && replyId > 0 ? { replyToMessageId: Math.trunc(replyId) } : {}),
+    }),
+  });
+  const message =
+    json.message && typeof json.message === "object" && !Array.isArray(json.message)
+      ? (json.message as Record<string, unknown>)
+      : null;
+  if (!response.ok || !json.ok) {
+    return {
+      message: null,
+      error: typeof json.error === "string" ? json.error : "send_failed",
+    };
+  }
+  return { message, error: null };
+}
+
+export async function gatewaySendChatPhoto(
+  telegramUsername: string,
+  chatId: number,
+  photoBase64: string,
+  options?: {
+    caption?: string | null;
+    mime?: string | null;
+    replyToMessageId?: number | null;
+  },
+): Promise<{ message: Record<string, unknown> | null; error: string | null }> {
+  const replyId = Number(options?.replyToMessageId);
+  const { response, json } = await gatewayFetch("/v1/chat/messages/send-photo", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+      photoBase64,
+      caption: options?.caption ?? "",
+      mime: options?.mime ?? "image/jpeg",
+      ...(Number.isFinite(replyId) && replyId > 0
+        ? { replyToMessageId: Math.trunc(replyId) }
+        : {}),
     }),
   });
   const message =
