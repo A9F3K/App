@@ -7,7 +7,13 @@ export type OutgoingChatMessageEvent = {
   message: MessageChatHistoryItem;
 };
 
+export type OutgoingChatMessageRemoveEvent = {
+  chatId: number;
+  messageId: number;
+};
+
 const listeners = new Set<(event: OutgoingChatMessageEvent) => void>();
+const removeListeners = new Set<(event: OutgoingChatMessageRemoveEvent) => void>();
 
 export function publishOutgoingChatMessage(chatId: number, message: MessageChatHistoryItem): void {
   const normalized: MessageChatHistoryItem = {
@@ -30,5 +36,21 @@ export function subscribeOutgoingChatMessages(
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
+  };
+}
+
+export function removeOutgoingChatMessage(chatId: number, messageId: number): void {
+  const event = { chatId, messageId };
+  for (const listener of removeListeners) {
+    listener(event);
+  }
+}
+
+export function subscribeOutgoingChatMessageRemovals(
+  listener: (event: OutgoingChatMessageRemoveEvent) => void,
+): () => void {
+  removeListeners.add(listener);
+  return () => {
+    removeListeners.delete(listener);
   };
 }

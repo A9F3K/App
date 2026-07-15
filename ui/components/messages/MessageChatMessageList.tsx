@@ -25,7 +25,7 @@ import {
   scrollYFromCachedPosition,
   type CachedChatScrollPosition,
 } from "../../messageChatScrollCache";
-import { subscribeOutgoingChatMessages } from "../../messageChatOutgoing";
+import { subscribeOutgoingChatMessages, subscribeOutgoingChatMessageRemovals } from "../../messageChatOutgoing";
 import { layout, type ThemeColors } from "../../theme";
 import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesConnectionContext";
 import {
@@ -47,6 +47,7 @@ import { HspScrollColumn, type HspItemAnchor, type HspScrollAnchor, type HspScro
 import {
   MESSAGE_BUBBLE_ROW_GAP_PX,
   MESSAGE_CHAT_BODY_PADDING_PX,
+  MESSAGE_CHAT_COMPOSE_PILL_HEIGHT_PX,
   MESSAGE_CHAT_HISTORY_LIVE_TAIL_SIZE,
   MESSAGE_CHAT_HISTORY_NEWER_PAGE_SIZE,
   MESSAGE_CHAT_HISTORY_PAGE_SIZE,
@@ -112,6 +113,10 @@ import {
 import { useChatScrollHooks } from "./useChatScrollHooks";
 import { isNearChatTop } from "./chatEdgeLoadPolicy";
 import type { MessageChatHistoryItem, MessageChatKind } from "./messageChatHistoryTypes";
+import {
+  isOptimisticOutgoingMessageId,
+  stripMatchingPendingOutgoingMessages,
+} from "./optimisticOutgoingMessage";
 import { patchAuthenticatedHomeSelectedChatReadInbox, patchAuthenticatedHomeSelectedChatReadOutbox, patchAuthenticatedHomeSelectedChatGroupMeta, patchAuthenticatedHomeSelectedChatUnread, setAuthenticatedHomeOpenChatFollowingBottom } from "../../authenticatedHomeSelectedChat";
 import {
   effectiveReadOutboxMessageId as mergeReadOutboxCursor,
@@ -238,6 +243,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const [columnWidthPx, setColumnWidthPx] = useState(0);
   /** Viewport height for 3-screen edge prefetch / sentinel rootMargin. */
   const [scrollViewportH, setScrollViewportH] = useState(0);
+  /** Measured compose pill height in the two-column overlay (grows with multiline input). */
+  const [composePillHeightPx, setComposePillHeightPx] = useState(MESSAGE_CHAT_COMPOSE_PILL_HEIGHT_PX);
   const openSession = useMemo(
     () => resolveChatOpenSession(chat),
     // generation forces re-resolve on reopen of the same chat id
@@ -917,6 +924,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
     };
   }, [chat.telegram_chat_id, historyLoad.generation]);
+
+  useEffect(() => {
+    setComposePillHeightPx(MESSAGE_CHAT_COMPOSE_PILL_HEIGHT_PX);
+  }, [chat.telegram_chat_id]);
 
   const onColumnLayout = useCallback((event: LayoutChangeEvent) => {
     const next = Math.round(event.nativeEvent.layout.width);
@@ -4087,14 +4098,41 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   ]);
 
   useEffect(() => {
-    return subscribeOutgoingChatMessages(({ chatId, message }) => {
+    const onOutgoing = ({ chatId, message }: { chatId: number; message: MessageChatHistoryItem }) => {
       if (chatId !== chat.telegram_chat_id) return;
-      if (!followingBottomRef.current) {
+      const optimistic = isOptimisticOutgoingMessageId(message.telegram_message_id);
+      if (optimistic || followingBottomRef.current) {
+        followingBottomRef.current = true;
+        setIsFollowingBottom(true);
+        setAuthenticatedHomeOpenChatFollowingBottom(true);
+        if (optimistic) {
+          requestAnimationFrame(() => {
+            scrollControllerRef.current?.scrollToEnd();
+          });
+        }
+      } else {
         const anchor = scrollControllerRef.current?.captureScrollAnchor();
         if (anchor) assignPendingScrollAnchor(anchor);
       }
-      setMessages((prev) => mergeHistoryWithWindow(prev, [message], true));
-    });
+      setMessages((prev) => {
+        const base = optimistic
+          ? prev
+          : stripMatchingPendingOutgoingMessages(prev, message);
+        return mergeHistoryWithWindow(base, [message], true);
+      });
+    };
+
+    const onRemove = ({ chatId, messageId }: { chatId: number; messageId: number }) => {
+      if (chatId !== chat.telegram_chat_id) return;
+      setMessages((prev) => prev.filter((row) => row.telegram_message_id !== messageId));
+    };
+
+    const unsubscribeOutgoing = subscribeOutgoingChatMessages(onOutgoing);
+    const unsubscribeRemove = subscribeOutgoingChatMessageRemovals(onRemove);
+    return () => {
+      unsubscribeOutgoing();
+      unsubscribeRemove();
+    };
   }, [chat.telegram_chat_id, assignPendingScrollAnchor, mergeHistoryWithWindow]);
 
   useEffect(() => {
@@ -6301,7 +6339,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     displayMessages.length > 0 && !chatScrollPaintReady;
   const showComposeOverlay =
     isTwoColumnWide && (chatKind ?? chat.chat_kind) !== "channel";
-  const bottomOverlayHeightPx = showComposeOverlay ? messageChatBottomOverlayHeightPx() : 0;
+  const bottomOverlayHeightPx = showComposeOverlay
+    ? messageChatBottomOverlayHeightPx(composePillHeightPx)
+    : 0;
 
   return (
     <View
@@ -6468,12 +6508,14 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         >
           <MessageChatWriteBottomBar
             embedded
+            onComposeOverlayHeightChange={setComposePillHeightPx}
             trailing={
               showScrollToBottomButton ? (
                 <MessageChatScrollToBottomButton
                   unreadLabel={scrollToBottomUnreadLabel}
                   colors={colors}
                   onPress={scrollToBottom}
+                  composeOverlayStyle
                 />
               ) : null
             }

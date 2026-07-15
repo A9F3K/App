@@ -7,7 +7,10 @@ import {
   clearMessageChatCompose,
   useMessageChatCompose,
 } from "../../messageChatCompose";
-import { publishOutgoingChatMessage } from "../../messageChatOutgoing";
+import {
+  publishOutgoingChatMessage,
+  removeOutgoingChatMessage,
+} from "../../messageChatOutgoing";
 import { editTelegramChatMessage } from "../../telegram/editTelegramChatMessage";
 import { sendTelegramChatMessage } from "../../telegram/sendTelegramChatMessage";
 import { enrichHistoryMessageDisplay } from "../messages/messageChatHistoryTypes";
@@ -19,15 +22,22 @@ import { MessageChatComposePill } from "./MessageChatComposePill";
 import { MessageChatComposeStrip } from "../messages/MessageChatComposeStrip";
 import { MessageChatPublicGroupsBanModal } from "../messages/MessageChatPublicGroupsBanModal";
 import { MESSAGE_CHAT_BOTTOM_COMPOSE_FAB_GAP_PX } from "./messageChatLayout";
+import { buildOptimisticOutgoingMessage } from "./optimisticOutgoingMessage";
 
 type Props = {
   /** Pill row inside the open chat overlay (left of the scroll FAB). */
   embedded?: boolean;
   /** Trailing control in the overlay row — typically scroll-to-bottom FAB. */
   trailing?: ReactNode;
+  /** Reports measured compose pill height for message list bottom inset. */
+  onComposeOverlayHeightChange?: (heightPx: number) => void;
 };
 
-export function MessageChatWriteBottomBar({ embedded = false, trailing = null }: Props) {
+export function MessageChatWriteBottomBar({
+  embedded = false,
+  trailing = null,
+  onComposeOverlayHeightChange,
+}: Props) {
   const { t } = useAppStrings();
   const colors = useColors();
   const selectedChat = useAuthenticatedHomeSelectedChat();
@@ -79,6 +89,14 @@ export function MessageChatWriteBottomBar({ embedded = false, trailing = null }:
         }
 
         const replyTarget = compose?.reply ?? null;
+        const optimistic = buildOptimisticOutgoingMessage({
+          text,
+          replyTarget,
+        });
+        publishOutgoingChatMessage(selectedChat.telegram_chat_id, optimistic);
+        clearMessageChatCompose(selectedChat.telegram_chat_id);
+        setDraft("");
+
         const result = await sendTelegramChatMessage(
           selectedChat.telegram_chat_id,
           text,
@@ -106,12 +124,13 @@ export function MessageChatWriteBottomBar({ embedded = false, trailing = null }:
             selectedChat.telegram_chat_id,
             enrichHistoryMessageDisplay(message),
           );
-          clearMessageChatCompose(selectedChat.telegram_chat_id);
-          setDraft("");
         } else if (result.error === TELEGRAM_SEND_ERROR_PUBLIC_GROUPS_BANNED) {
+          removeOutgoingChatMessage(selectedChat.telegram_chat_id, optimistic.telegram_message_id);
           setDraft(text);
           setPublicGroupsBanVisible(true);
         } else {
+          removeOutgoingChatMessage(selectedChat.telegram_chat_id, optimistic.telegram_message_id);
+          setDraft(text);
           appWarn("[message-send]", String(result.error), {
             chatId: selectedChat.telegram_chat_id,
           });
@@ -144,6 +163,7 @@ export function MessageChatWriteBottomBar({ embedded = false, trailing = null }:
       onSubmit={canSend ? onSubmit : () => {}}
       sendAccessibilityLabel={t("messages.chatWrite.send")}
       canSend={canSend}
+      onHeightChange={embedded ? onComposeOverlayHeightChange : undefined}
     />
   );
 
@@ -157,7 +177,7 @@ export function MessageChatWriteBottomBar({ embedded = false, trailing = null }:
           pointerEvents="box-none"
           style={{
             flexDirection: "row",
-            alignItems: "center",
+            alignItems: "flex-end",
             gap: MESSAGE_CHAT_BOTTOM_COMPOSE_FAB_GAP_PX,
           }}
         >
