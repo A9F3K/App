@@ -1,5 +1,9 @@
 import { emitLiveChatRevision } from "./liveChatRevisionNotify.js";
 import {
+  clearLiveChatMessageDeletes,
+  peekLiveChatMessageDeletes,
+} from "./liveChatDeletedMessages.js";
+import {
   CHAT_ACTION_TTL_MS,
   chatTitle,
   isChatPinnedInMainList,
@@ -65,6 +69,8 @@ export type LiveChatRow = {
   has_active_voice_chat: boolean;
   /** TDLib `video_chat.group_call_id` when active; otherwise null. */
   voice_chat_group_call_id: number | null;
+  /** Recent deleted message ids for open-chat UI removal (ephemeral). */
+  pending_deleted_message_ids?: number[];
   /** Monotonic version bumped on each update (for client diffing). */
   revision: number;
 };
@@ -169,6 +175,11 @@ function bumpRevision(cache: UserCache, telegramUsername: string): number {
   return cache.revision;
 }
 
+/** Bump list revision so SSE clients refetch (e.g. after message deletes). */
+export function bumpLiveChatRevision(telegramUsername: string): number {
+  return bumpRevision(userCache(telegramUsername), telegramUsername);
+}
+
 /** Metadata-only row update — does not bump list revision or emit SSE. */
 function replaceLiveChatRowQuietly(
   telegramUsername: string,
@@ -187,22 +198,37 @@ function replaceLiveChatRowQuietly(
 export function clearLiveChatCache(telegramUsername: string): void {
   caches.delete(telegramUsername);
   selfUserIds.delete(telegramUsername);
+  clearLiveChatMessageDeletes(telegramUsername);
 }
 
 export function getLiveChatListRevision(telegramUsername: string): number {
   return caches.get(telegramUsername)?.revision ?? 0;
 }
 
+function attachPendingDeletes(telegramUsername: string, rows: LiveChatRow[]): LiveChatRow[] {
+  return rows.map((row) => {
+    const pending = peekLiveChatMessageDeletes(telegramUsername, row.telegram_chat_id);
+    if (pending.length === 0) {
+      if (!row.pending_deleted_message_ids?.length) return row;
+      return { ...row, pending_deleted_message_ids: undefined };
+    }
+    return { ...row, pending_deleted_message_ids: pending };
+  });
+}
+
 export function getLiveChatList(telegramUsername: string): LiveChatRow[] | null {
   const cache = caches.get(telegramUsername);
   if (!cache || cache.chats.size === 0) return null;
   if (cache.sortedList && cache.sortedListRevision === cache.revision) {
-    return cache.sortedList.map(expireChatActionIfStale);
+    return attachPendingDeletes(
+      telegramUsername,
+      cache.sortedList.map(expireChatActionIfStale),
+    );
   }
   const sorted = sortLiveChatRows([...cache.chats.values()].map(expireChatActionIfStale));
   cache.sortedList = sorted;
   cache.sortedListRevision = cache.revision;
-  return sorted;
+  return attachPendingDeletes(telegramUsername, sorted);
 }
 
 export function seedLiveChatList(

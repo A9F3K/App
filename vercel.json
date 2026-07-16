@@ -38,6 +38,14 @@
       "destination": "/api/telegram-messages-edit"
     },
     {
+      "source": "/api/telegram/messages/delete",
+      "destination": "/api/telegram-messages-delete"
+    },
+    {
+      "source": "/api/telegram/messages/voice/start",
+      "destination": "/api/telegram-messages-voice-start"
+    },
+    {
       "source": "/api/telegram/messages/voice/leave",
       "destination": "/api/telegram-messages-voice-leave"
     },

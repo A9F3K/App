@@ -48,6 +48,7 @@ import { resolveTelegramThreadAvatarUrl } from "./resolveTelegramThreadAvatarUrl
 import { resolveMessageSenderDisplayName } from "./resolveMessageSenderDisplayName";
 import { specialUserBadgeExtraWidthPx } from "./specialTelegramUserDisplay";
 import {
+  canDeleteMessage,
   canEditMessage,
   canReplyToMessage,
 } from "./messageChatActionUtils";
@@ -59,6 +60,9 @@ import {
   setMessageChatComposeEdit,
   setMessageChatComposeReply,
 } from "../../messageChatCompose";
+import { removeOutgoingChatMessage } from "../../messageChatOutgoing";
+import { deleteTelegramChatMessages } from "../../telegram/deleteTelegramChatMessages";
+import { appWarn } from "../../../shared/appLog";
 import { useElementVisible } from "./useElementVisible";
 
 function fittedBubbleLayoutFromTextLayout(
@@ -386,7 +390,8 @@ export function MessageChatMessageRow({
 
   const canReply = canReplyToMessage(item);
   const canEdit = canEditMessage(item, selfUserId, chat.peer_user_id);
-  const showActionSheet = canReply || canEdit;
+  const canDelete = canDeleteMessage(item, selfUserId, chat.peer_user_id);
+  const showActionSheet = canReply || canEdit || canDelete;
 
   const openActionSheet = useCallback(
     (anchor?: MessageContextMenuAnchor | null) => {
@@ -458,6 +463,23 @@ export function MessageChatMessageRow({
     setMenuAnchor(null);
     setMessageChatComposeEdit(chat.telegram_chat_id, item);
   }, [chat.telegram_chat_id, item]);
+
+  const onDelete = useCallback(() => {
+    setActionSheetVisible(false);
+    setMenuAnchor(null);
+    const messageId = Number(item.telegram_message_id);
+    if (!Number.isFinite(messageId) || messageId <= 0) return;
+    // Optimistic remove — list + cache update immediately.
+    removeOutgoingChatMessage(chat.telegram_chat_id, messageId);
+    void deleteTelegramChatMessages(chat.telegram_chat_id, [messageId]).then((result) => {
+      if (!result.ok) {
+        appWarn("[message-delete]", result.error, {
+          chatId: chat.telegram_chat_id,
+          messageId,
+        });
+      }
+    });
+  }, [chat.telegram_chat_id, item.telegram_message_id]);
 
   if (columnWidthPx <= 0) {
     return (
@@ -604,12 +626,14 @@ export function MessageChatMessageRow({
         anchor={menuAnchor}
         colors={colors}
         canEdit={canEdit}
+        canDelete={canDelete}
         onClose={() => {
           setActionSheetVisible(false);
           setMenuAnchor(null);
         }}
         onReply={onReply}
         onEdit={onEdit}
+        onDelete={onDelete}
       />
     </View>
   );

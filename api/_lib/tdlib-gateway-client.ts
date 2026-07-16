@@ -1,3 +1,4 @@
+import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
 import { getGatewayBaseUrl, getGatewaySecret } from "../../telegram/tdlib/env.js";
 import {
   gatewayHealthCheckDetailed,
@@ -722,6 +723,132 @@ export async function gatewayFetchChatMessages(
   }
 }
 
+export async function gatewaySetChatVoiceMicMuted(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  isMuted: boolean,
+): Promise<{ ok: boolean; error: string | null }> {
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  const { response, json } = await gatewayFetch("/v1/chat/voice/mute", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+      ...(callId != null ? { groupCallId: callId } : {}),
+      isMuted,
+    }),
+  });
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "mute_failed",
+    };
+  }
+  return { ok: true, error: null };
+}
+
+export async function gatewaySetChatVoiceParticipantSpeaking(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  audioSourceId: number,
+  isSpeaking: boolean,
+): Promise<{ ok: boolean; error: string | null }> {
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  const { response, json } = await gatewayFetch("/v1/chat/voice/speaking", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+      ...(callId != null ? { groupCallId: callId } : {}),
+      audioSourceId,
+      isSpeaking,
+    }),
+  });
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "speaking_failed",
+    };
+  }
+  return { ok: true, error: null };
+}
+
+export async function gatewayJoinChatVoice(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  joinParameters: {
+    audio_source_id: number;
+    payload: string;
+    is_muted: boolean;
+    is_my_video_enabled?: boolean;
+  },
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  join_payload: string;
+}> {
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  const { response, json } = await gatewayFetch("/v1/chat/voice/join", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+      ...(callId != null ? { groupCallId: callId } : {}),
+      joinParameters,
+    }),
+  });
+  const joinPayload = typeof json.join_payload === "string" ? json.join_payload : "";
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "join_failed",
+      join_payload: joinPayload,
+    };
+  }
+  return {
+    ok: true,
+    error: null,
+    join_payload: joinPayload,
+  };
+}
+
+export async function gatewayStartChatVoice(
+  telegramUsername: string,
+  chatId: number,
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  has_active_voice_chat: boolean;
+  voice_chat_group_call_id: number | null;
+}> {
+  const { response, json } = await gatewayFetch("/v1/chat/voice/start", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+    }),
+  });
+  const hasActive = Boolean(json.has_active_voice_chat);
+  const voiceCallId = normalizeTelegramGroupCallId(json.voice_chat_group_call_id);
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "start_failed",
+      has_active_voice_chat: hasActive,
+      voice_chat_group_call_id: voiceCallId,
+    };
+  }
+  return {
+    ok: true,
+    error: null,
+    has_active_voice_chat: hasActive,
+    voice_chat_group_call_id: voiceCallId,
+  };
+}
+
 export async function gatewayLeaveChatVoice(
   telegramUsername: string,
   chatId: number,
@@ -732,34 +859,30 @@ export async function gatewayLeaveChatVoice(
   has_active_voice_chat: boolean;
   voice_chat_group_call_id: number | null;
 }> {
-  const callId = Number(groupCallId);
+  const callId = normalizeTelegramGroupCallId(groupCallId);
   const { response, json } = await gatewayFetch("/v1/chat/voice/leave", {
     method: "POST",
     body: JSON.stringify({
       telegramUsername,
       chatId,
-      ...(Number.isFinite(callId) && callId > 0
-        ? { groupCallId: Math.trunc(callId) }
-        : {}),
+      ...(callId != null ? { groupCallId: callId } : {}),
     }),
   });
   const hasActive = Boolean(json.has_active_voice_chat);
-  const voiceCallId = Number(json.voice_chat_group_call_id);
+  const voiceCallId = normalizeTelegramGroupCallId(json.voice_chat_group_call_id);
   if (!response.ok || !json.ok) {
     return {
       ok: false,
       error: typeof json.error === "string" ? json.error : "leave_failed",
       has_active_voice_chat: hasActive,
-      voice_chat_group_call_id:
-        Number.isFinite(voiceCallId) && voiceCallId > 0 ? Math.trunc(voiceCallId) : null,
+      voice_chat_group_call_id: voiceCallId,
     };
   }
   return {
     ok: true,
     error: null,
     has_active_voice_chat: hasActive,
-    voice_chat_group_call_id:
-      Number.isFinite(voiceCallId) && voiceCallId > 0 ? Math.trunc(voiceCallId) : null,
+    voice_chat_group_call_id: voiceCallId,
   };
 }
 
@@ -775,16 +898,19 @@ export async function gatewayFetchChatVoiceParticipants(
     user_id: number | null;
     chat_id: number | null;
     title: string;
+    description: string;
+    emoji_status_custom_emoji_id: string | null;
     is_speaking: boolean;
+    is_self: boolean;
   }>;
 }> {
-  const callId = Number(groupCallId);
+  const callId = normalizeTelegramGroupCallId(groupCallId);
   const params = new URLSearchParams({
     telegramUsername,
     chatId: String(chatId),
   });
-  if (Number.isFinite(callId) && callId > 0) {
-    params.set("groupCallId", String(Math.trunc(callId)));
+  if (callId != null) {
+    params.set("groupCallId", String(callId));
   }
   const { response, json } = await gatewayFetch(
     `/v1/chat/voice/participants?${params.toString()}`,
@@ -795,10 +921,18 @@ export async function gatewayFetchChatVoiceParticipants(
         user_id?: unknown;
         chat_id?: unknown;
         title?: unknown;
+        description?: unknown;
+        emoji_status_custom_emoji_id?: unknown;
         is_speaking?: unknown;
+        is_self?: unknown;
       }>).map((row) => {
         const userId = Number(row.user_id);
         const senderChatId = Number(row.chat_id);
+        const emojiStatus =
+          typeof row.emoji_status_custom_emoji_id === "string" &&
+          row.emoji_status_custom_emoji_id.trim()
+            ? row.emoji_status_custom_emoji_id.trim()
+            : null;
         return {
           user_id: Number.isFinite(userId) && userId > 0 ? Math.trunc(userId) : null,
           chat_id:
@@ -806,7 +940,10 @@ export async function gatewayFetchChatVoiceParticipants(
               ? Math.trunc(senderChatId)
               : null,
           title: typeof row.title === "string" ? row.title : "",
+          description: typeof row.description === "string" ? row.description : "",
+          emoji_status_custom_emoji_id: emojiStatus,
           is_speaking: Boolean(row.is_speaking),
+          is_self: Boolean(row.is_self),
         };
       })
     : [];
@@ -939,6 +1076,31 @@ export async function gatewayEditChatMessage(
     };
   }
   return { message, error: null };
+}
+
+export async function gatewayDeleteChatMessages(
+  telegramUsername: string,
+  chatId: number,
+  messageIds: number[],
+): Promise<{ deleted_message_ids: number[]; error: string | null }> {
+  const { response, json } = await gatewayFetch("/v1/chat/messages/delete", {
+    method: "POST",
+    body: JSON.stringify({ telegramUsername, chatId, messageIds }),
+  });
+  const deleted =
+    Array.isArray(json.deleted_message_ids)
+      ? json.deleted_message_ids
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id > 0)
+          .map((id) => Math.trunc(id))
+      : [];
+  if (!response.ok || !json.ok) {
+    return {
+      deleted_message_ids: [],
+      error: typeof json.error === "string" ? json.error : "delete_failed",
+    };
+  }
+  return { deleted_message_ids: deleted, error: null };
 }
 
 export async function gatewayFetchMessageMedia(

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { buildApiUrl } from "../../api/_base";
 import { normalizeFormattedTextSegments, type FormattedTextSegment } from "../../shared/formattedTextSegments";
+import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp";
 import { useAuth } from "../../auth/AuthContext";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { logPageDisplay, firstChatListLogFields, chatLogFields } from "../pageDisplayLog";
@@ -171,9 +172,14 @@ function normalizeChat(raw: unknown): MessageChatRowData | null {
         ? row.list_tier
         : null,
     has_active_voice_chat: Boolean(row.has_active_voice_chat),
-    voice_chat_group_call_id: (() => {
-      const raw = Number(row.voice_chat_group_call_id);
-      return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : null;
+    voice_chat_group_call_id: normalizeTelegramGroupCallId(row.voice_chat_group_call_id),
+    pending_deleted_message_ids: (() => {
+      if (!Array.isArray(row.pending_deleted_message_ids)) return null;
+      const ids = row.pending_deleted_message_ids
+        .map((id: unknown) => Number(id))
+        .filter((id: number) => Number.isFinite(id) && id > 0)
+        .map((id: number) => Math.trunc(id));
+      return ids.length > 0 ? ids : null;
     })(),
   };
 }

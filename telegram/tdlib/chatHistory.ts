@@ -760,3 +760,31 @@ export async function editChatTextMessage(
   if (!mapped || !mapped.is_outgoing) return mapped;
   return mapped;
 }
+
+/** Delete messages in a chat (own messages for 1:1; revoke where Telegram allows). */
+export async function deleteChatMessages(
+  client: Client,
+  chatId: number,
+  messageIds: number[],
+): Promise<{ ok: boolean; deleted_message_ids: number[] }> {
+  const ids = [
+    ...new Set(
+      messageIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+        .map((id) => Math.trunc(id)),
+    ),
+  ];
+  if (ids.length === 0) {
+    return { ok: false, deleted_message_ids: [] };
+  }
+
+  await client.invoke({
+    _: "deleteMessages",
+    chat_id: chatId,
+    message_ids: ids,
+    revoke: true,
+  });
+
+  return { ok: true, deleted_message_ids: ids };
+}

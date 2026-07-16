@@ -1,10 +1,14 @@
 import { buildApiUrl } from "../../api/_base";
+import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp";
 
 export type TelegramChatVoiceParticipant = {
   user_id: number | null;
   chat_id: number | null;
   title: string;
+  description: string;
+  emoji_status_custom_emoji_id: string | null;
   is_speaking: boolean;
+  is_self: boolean;
 };
 
 export type FetchTelegramChatVoiceParticipantsResult =
@@ -19,9 +23,9 @@ export async function fetchTelegramChatVoiceParticipants(
     return { ok: false, error: "chat_id_required" };
   }
   const params = new URLSearchParams({ chat_id: String(Math.trunc(chatId)) });
-  const callId = Number(groupCallId);
-  if (Number.isFinite(callId) && callId > 0) {
-    params.set("group_call_id", String(Math.trunc(callId)));
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  if (callId != null) {
+    params.set("group_call_id", String(callId));
   }
   const response = await fetch(
     buildApiUrl(`/api/telegram-messages-voice-participants?${params.toString()}`),
@@ -48,7 +52,14 @@ export async function fetchTelegramChatVoiceParticipants(
             chat_id:
               Number.isFinite(chatIdRaw) && chatIdRaw !== 0 ? Math.trunc(chatIdRaw) : null,
             title: typeof item.title === "string" ? item.title : "",
+            description: typeof item.description === "string" ? item.description : "",
+            emoji_status_custom_emoji_id:
+              typeof item.emoji_status_custom_emoji_id === "string" &&
+              item.emoji_status_custom_emoji_id.trim()
+                ? item.emoji_status_custom_emoji_id.trim()
+                : null,
             is_speaking: Boolean(item.is_speaking),
+            is_self: Boolean(item.is_self),
           } satisfies TelegramChatVoiceParticipant;
         })
         .filter((row): row is TelegramChatVoiceParticipant => row != null)

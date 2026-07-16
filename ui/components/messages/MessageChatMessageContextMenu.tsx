@@ -31,16 +31,20 @@ type Props = {
   anchor: MessageContextMenuAnchor | null;
   colors: ThemeColors;
   canEdit: boolean;
+  canDelete: boolean;
   onClose: () => void;
   onReply: () => void;
   onEdit: () => void;
+  onDelete: () => void;
 };
 
-function menuHeightPx(canEdit: boolean): number {
-  if (!canEdit) {
-    return MENU_PADDING_PX * 2 + MENU_ITEM_HEIGHT_PX;
-  }
-  return MENU_PADDING_PX * 2 + MENU_ITEM_HEIGHT_PX * 2 + MENU_ITEM_GAP_PX;
+function menuItemCount(canEdit: boolean, canDelete: boolean): number {
+  return 1 + (canEdit ? 1 : 0) + (canDelete ? 1 : 0);
+}
+
+function menuHeightPx(canEdit: boolean, canDelete: boolean): number {
+  const items = menuItemCount(canEdit, canDelete);
+  return MENU_PADDING_PX * 2 + MENU_ITEM_HEIGHT_PX * items + MENU_ITEM_GAP_PX * Math.max(0, items - 1);
 }
 
 function clampMenuPosition(
@@ -99,14 +103,18 @@ function ContextMenuDivider({ color }: { color: string }) {
 function ContextMenuPanel({
   colors,
   canEdit,
+  canDelete,
   onReply,
   onEdit,
+  onDelete,
   onLayout,
 }: {
   colors: ThemeColors;
   canEdit: boolean;
+  canDelete: boolean;
   onReply: () => void;
   onEdit: () => void;
+  onDelete: () => void;
   onLayout?: (event: LayoutChangeEvent) => void;
 }) {
   const { t } = useAppStrings();
@@ -166,6 +174,21 @@ function ContextMenuPanel({
           </Pressable>
         </>
       ) : null}
+      {canDelete ? (
+        <>
+          <ContextMenuDivider color={colors.highlight} />
+          <Pressable
+            onPress={onDelete}
+            style={({ pressed }) => ({
+              height: MENU_ITEM_HEIGHT_PX,
+              justifyContent: "center",
+              opacity: pressed ? 0.7 : 1,
+            })}
+          >
+            <Text style={textStyle}>{t("messages.action.delete")}</Text>
+          </Pressable>
+        </>
+      ) : null}
     </View>
   );
 }
@@ -175,13 +198,15 @@ function MessageChatMessageContextMenuNative({
   anchor,
   colors,
   canEdit,
+  canDelete,
   onClose,
   onReply,
   onEdit,
+  onDelete,
 }: Props) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [menuWidth, setMenuWidth] = useState(MENU_MIN_WIDTH_PX);
-  const menuHeight = menuHeightPx(canEdit);
+  const menuHeight = menuHeightPx(canEdit, canDelete);
   const position =
     anchor != null
       ? clampMenuPosition(anchor, menuWidth, menuHeight, windowWidth, windowHeight)
@@ -202,8 +227,10 @@ function MessageChatMessageContextMenuNative({
           <ContextMenuPanel
             colors={colors}
             canEdit={canEdit}
+            canDelete={canDelete}
             onReply={onReply}
             onEdit={onEdit}
+            onDelete={onDelete}
             onLayout={(event) => {
               const next = Math.ceil(event.nativeEvent.layout.width);
               if (next > 0) setMenuWidth(next);
@@ -220,14 +247,16 @@ function MessageChatMessageContextMenuWeb({
   anchor,
   colors,
   canEdit,
+  canDelete,
   onClose,
   onReply,
   onEdit,
+  onDelete,
 }: Props) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [menuWidth, setMenuWidth] = useState(MENU_MIN_WIDTH_PX);
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-  const menuHeight = menuHeightPx(canEdit);
+  const menuHeight = menuHeightPx(canEdit, canDelete);
 
   useEffect(() => {
     if (typeof document !== "undefined") {
@@ -274,8 +303,10 @@ function MessageChatMessageContextMenuWeb({
         <ContextMenuPanel
           colors={colors}
           canEdit={canEdit}
+          canDelete={canDelete}
           onReply={onReply}
           onEdit={onEdit}
+          onDelete={onDelete}
           onLayout={(event) => {
             const next = Math.ceil(event.nativeEvent.layout.width);
             if (next > 0) setMenuWidth(next);

@@ -1,7 +1,7 @@
 import { buildApiUrl } from "../../api/_base";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp";
 
-export type LeaveTelegramChatVoiceResult =
+export type StartTelegramChatVoiceResult =
   | {
       ok: true;
       has_active_voice_chat: boolean;
@@ -9,22 +9,17 @@ export type LeaveTelegramChatVoiceResult =
     }
   | { ok: false; error: string };
 
-export async function leaveTelegramChatVoice(
+export async function startTelegramChatVoice(
   chatId: number,
-  groupCallId?: number | null,
-): Promise<LeaveTelegramChatVoiceResult> {
+): Promise<StartTelegramChatVoiceResult> {
   if (!Number.isFinite(chatId) || chatId === 0) {
     return { ok: false, error: "chat_id_required" };
   }
-  const callId = normalizeTelegramGroupCallId(groupCallId);
-  const response = await fetch(buildApiUrl("/api/telegram-messages-voice-leave"), {
+  const response = await fetch(buildApiUrl("/api/telegram-messages-voice-start"), {
     method: "POST",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      ...(callId != null ? { group_call_id: callId } : {}),
-    }),
+    body: JSON.stringify({ chat_id: chatId }),
   });
   const json = (await response.json().catch(() => ({}))) as {
     ok?: boolean;
@@ -33,7 +28,7 @@ export async function leaveTelegramChatVoice(
     voice_chat_group_call_id?: number | null;
   };
   if (!response.ok || !json.ok) {
-    return { ok: false, error: json.error ?? "leave_failed" };
+    return { ok: false, error: json.error ?? "start_failed" };
   }
   return {
     ok: true,

@@ -20,10 +20,11 @@ import {
   isBackgroundChatSyncInProgress,
   isTier3ChatSyncInProgress,
 } from "./syncChats.js";
-import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, sendChatTextMessage, sendChatPhotoMessage, editChatTextMessage, viewChatInboxMessagesUpTo } from "./chatHistory.js";
+import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, sendChatTextMessage, sendChatPhotoMessage, editChatTextMessage, deleteChatMessages, viewChatInboxMessagesUpTo } from "./chatHistory.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
 import { isPositionedComplete } from "./chatListSyncState.js";
 import { getLiveChatList, getLiveChatListRevision, patchLiveChatVideoChat } from "./liveChatCache.js";
+import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
 import { voiceChatFromTdChat, type TdChat } from "./chatPreview.js";
 
 export type ConnectAuthMethod = "qr" | "phone";
@@ -1510,6 +1511,48 @@ export async function editChatMessageForUser(
   }
 }
 
+export async function deleteChatMessagesForUser(
+  telegramUsername: string,
+  chatId: number,
+  messageIds: number[],
+): Promise<{ deleted_message_ids: number[]; error: string | null }> {
+  const ids = [
+    ...new Set(
+      messageIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+        .map((id) => Math.trunc(id)),
+    ),
+  ];
+  if (ids.length === 0) {
+    return { deleted_message_ids: [], error: "message_id_required" };
+  }
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return { deleted_message_ids: [], error: "chat_id_required" };
+  }
+
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { deleted_message_ids: [], error: "session_not_ready" };
+  }
+
+  try {
+    const result = await deleteChatMessages(record.client, chatId, ids);
+    if (!result.ok) {
+      return { deleted_message_ids: [], error: "delete_failed" };
+    }
+    const { noteLiveChatMessageDeletes } = await import("./liveChatDeletedMessages.js");
+    const { bumpLiveChatRevision } = await import("./liveChatCache.js");
+    if (noteLiveChatMessageDeletes(telegramUsername, chatId, result.deleted_message_ids)) {
+      bumpLiveChatRevision(telegramUsername);
+    }
+    return { deleted_message_ids: result.deleted_message_ids, error: null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "delete_failed";
+    return { deleted_message_ids: [], error: message };
+  }
+}
+
 export async function focusChatForUser(
   telegramUsername: string,
   chatId: number,
@@ -1634,10 +1677,15 @@ export async function getChatVoiceParticipantsForUser(
     user_id: number | null;
     chat_id: number | null;
     title: string;
+    description: string;
+    emoji_status_custom_emoji_id: string | null;
     is_speaking: boolean;
+    is_self: boolean;
   }>;
 }> {
-  const record = await requireReadySession(telegramUsername, 30_000);
+  // Presence polls every ~0.8–2s. Do not block 30s on restore — that piles up
+  // overlapping waits and returns session_not_ready storms after reconnect.
+  const record = await requireReadySessionFast(telegramUsername);
   if (!record) {
     return { ok: false, error: "session_not_ready", participant_count: 0, participants: [] };
   }
@@ -1648,6 +1696,122 @@ export async function getChatVoiceParticipantsForUser(
   } catch (err) {
     const message = err instanceof Error ? err.message : "participants_failed";
     return { ok: false, error: message, participant_count: 0, participants: [] };
+  }
+}
+
+export async function setChatVoiceParticipantSpeakingForUser(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  audioSourceId: number,
+  isSpeaking: boolean,
+): Promise<{ ok: boolean; error: string | null }> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+
+  try {
+    const { setChatVoiceParticipantSpeaking } = await import("./voiceSpeaking.js");
+    return await setChatVoiceParticipantSpeaking(
+      record.client,
+      chatId,
+      groupCallId,
+      audioSourceId,
+      isSpeaking,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "speaking_failed";
+    return { ok: false, error: message };
+  }
+}
+
+export async function setChatVoiceMicMutedForUser(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  isMuted: boolean,
+): Promise<{ ok: boolean; error: string | null }> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+
+  try {
+    const { setChatVoiceMicMuted } = await import("./voiceMute.js");
+    return await setChatVoiceMicMuted(record.client, chatId, groupCallId, isMuted);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "mute_failed";
+    return { ok: false, error: message };
+  }
+}
+
+export async function joinChatVoiceForUser(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  joinParameters: {
+    audio_source_id: number;
+    payload: string;
+    is_muted: boolean;
+    is_my_video_enabled?: boolean;
+  },
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  join_payload: string;
+}> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready", join_payload: "" };
+  }
+
+  try {
+    const { joinChatVoiceForUser: joinVoice } = await import("./voiceJoin.js");
+    return await joinVoice(record.client, chatId, groupCallId, joinParameters);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "join_failed";
+    return { ok: false, error: message, join_payload: "" };
+  }
+}
+
+export async function startChatVoiceForUser(
+  telegramUsername: string,
+  chatId: number,
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  has_active_voice_chat: boolean;
+  voice_chat_group_call_id: number | null;
+}> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return {
+      ok: false,
+      error: "session_not_ready",
+      has_active_voice_chat: false,
+      voice_chat_group_call_id: null,
+    };
+  }
+
+  try {
+    const { startChatVoiceForUser: startVoice } = await import("./voiceStart.js");
+    const result = await startVoice(record.client, chatId);
+    if (result.ok) {
+      patchLiveChatVideoChat(telegramUsername, chatId, {
+        has_active_voice_chat: result.has_active_voice_chat,
+        voice_chat_group_call_id: result.voice_chat_group_call_id,
+      });
+    }
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "start_failed";
+    return {
+      ok: false,
+      error: message,
+      has_active_voice_chat: false,
+      voice_chat_group_call_id: null,
+    };
   }
 }
 
@@ -1672,12 +1836,18 @@ export async function leaveChatVoiceForUser(
   }
 
   try {
-    let callId = Number(groupCallId);
-    if (!Number.isFinite(callId) || callId <= 0) {
+    // Prefer live TDLib state — client-cached call ids can be stale (e.g. Number(true) → 1).
+    let callId = 0;
+    try {
       const chat = (await record.client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
-      callId = Number(chat.video_chat?.group_call_id);
+      callId = normalizeTelegramGroupCallId(chat.video_chat?.group_call_id) ?? 0;
+    } catch {
+      callId = 0;
     }
-    if (!Number.isFinite(callId) || callId <= 0) {
+    if (callId <= 0) {
+      callId = normalizeTelegramGroupCallId(groupCallId) ?? 0;
+    }
+    if (callId <= 0) {
       return {
         ok: false,
         error: "no_active_voice_chat",
@@ -1688,7 +1858,7 @@ export async function leaveChatVoiceForUser(
 
     await record.client.invoke({
       _: "leaveGroupCall",
-      group_call_id: Math.trunc(callId),
+      group_call_id: callId,
     });
 
     const chat = (await record.client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;

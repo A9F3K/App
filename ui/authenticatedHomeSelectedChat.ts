@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { normalizeTelegramGroupCallId } from "../shared/telegramGroupCallSdp";
 import type { MessageChatRowData } from "./components/messages/MessageChatRow";
 
 const STORAGE_KEY = "hyperlinks_authenticated_home_selected_chat_v1";
@@ -107,10 +108,13 @@ function readStoredChat(): MessageChatRowData | null {
           : null,
         is_pinned: Boolean(row.is_pinned),
         has_active_voice_chat: Boolean(row.has_active_voice_chat),
-        voice_chat_group_call_id: (() => {
-          const raw = Number(row.voice_chat_group_call_id);
-          return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : null;
-        })(),
+        voice_chat_group_call_id: normalizeTelegramGroupCallId(row.voice_chat_group_call_id),
+        pending_deleted_message_ids: Array.isArray(row.pending_deleted_message_ids)
+          ? row.pending_deleted_message_ids
+              .map((id) => Number(id))
+              .filter((id) => Number.isFinite(id) && id > 0)
+              .map((id) => Math.trunc(id))
+          : null,
       };
     }
   } catch {
@@ -203,7 +207,13 @@ export function selectAuthenticatedHomeChat(chat: MessageChatRowData | null) {
     selectedChat.last_read_outbox_message_id === chat.last_read_outbox_message_id &&
     selectedChat.last_read_inbox_message_id === chat.last_read_inbox_message_id &&
     selectedChat.has_active_voice_chat === chat.has_active_voice_chat &&
-    selectedChat.voice_chat_group_call_id === chat.voice_chat_group_call_id
+    selectedChat.voice_chat_group_call_id === chat.voice_chat_group_call_id &&
+    (Array.isArray(selectedChat.pending_deleted_message_ids)
+      ? selectedChat.pending_deleted_message_ids.join(",")
+      : "") ===
+      (Array.isArray(chat.pending_deleted_message_ids)
+        ? chat.pending_deleted_message_ids.join(",")
+        : "")
   ) {
     return;
   }
@@ -461,6 +471,12 @@ export function syncAuthenticatedHomeSelectedChat(chats: readonly MessageChatRow
     fresh.chat_action_expires_at !== selectedChat.chat_action_expires_at ||
     fresh.has_active_voice_chat !== selectedChat.has_active_voice_chat ||
     fresh.voice_chat_group_call_id !== selectedChat.voice_chat_group_call_id ||
+    (Array.isArray(fresh.pending_deleted_message_ids)
+      ? fresh.pending_deleted_message_ids.join(",")
+      : "") !==
+      (Array.isArray(selectedChat.pending_deleted_message_ids)
+        ? selectedChat.pending_deleted_message_ids.join(",")
+        : "") ||
     fresh.last_read_outbox_message_id !== selectedChat.last_read_outbox_message_id ||
     fresh.last_read_inbox_message_id !== selectedChat.last_read_inbox_message_id
   ) {

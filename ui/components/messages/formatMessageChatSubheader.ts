@@ -111,11 +111,8 @@ export function formatMessageChatSubheaderLabel(chat: MessageChatRowData, locale
     return formatChatActionLabel(chat, locale);
   }
   if (isGroupLikeChatRow(chat)) {
-    const usernameLabel = formatMessageChatRowUsernameLabel(chat);
-    const memberCount = formatMessageChatMemberCountLabel(chat, locale);
-    if (usernameLabel && memberCount) return `${usernameLabel} · ${memberCount}`;
-    if (usernameLabel) return usernameLabel;
-    return memberCount;
+    // Same placement/role as private "last seen…": count only under the title.
+    return formatMessageChatMemberCountLabel(chat, locale);
   }
   const usernameLabel = formatMessageChatRowUsernameLabel(chat);
   const presence = formatMessageChatPresenceLabel(chat, locale);

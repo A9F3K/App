@@ -389,6 +389,32 @@ export function mergeCachedChatHistoryMessages(
   });
 }
 
+/** Drop deleted messages from the in-memory history cache and notify subscribers. */
+export function removeCachedChatHistoryMessages(
+  chatId: number,
+  messageIds: number[],
+): void {
+  const ids = new Set(
+    messageIds
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id > 0)
+      .map((id) => Math.trunc(id)),
+  );
+  if (ids.size === 0) return;
+  const existing = cache.get(chatId) ?? hydrateFromSession(chatId);
+  if (!existing) return;
+  const nextMessages = existing.messages.filter((row) => !ids.has(row.telegram_message_id));
+  if (nextMessages.length === existing.messages.length) return;
+  const next: CachedChatHistoryPage = {
+    ...existing,
+    messages: nextMessages,
+    fetchedAt: Date.now(),
+  };
+  cache.set(chatId, next);
+  writeSessionCache(chatId, next);
+  emitCacheUpdate(chatId);
+}
+
 export function invalidateChatHistoryCache(chatId: number): void {
   cache.delete(chatId);
 }

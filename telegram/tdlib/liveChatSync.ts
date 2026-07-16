@@ -1,11 +1,13 @@
 import type { Client } from "tdl";
 import { safeTelegramUserIdForLog } from "../../shared/appLog.js";
 import { logGateway } from "./gatewayLog.js";
-import { clearLiveChatCache, getLiveChatList, patchLiveChatAction, patchLiveChatChatEmojiStatus, patchLiveChatEmojiStatus, patchLiveChatFromTdlib, patchLiveChatPresence, patchLiveChatVideoChat } from "./liveChatCache.js";
+import { clearLiveChatCache, getLiveChatList, patchLiveChatAction, patchLiveChatChatEmojiStatus, patchLiveChatEmojiStatus, patchLiveChatFromTdlib, patchLiveChatPresence, patchLiveChatVideoChat, bumpLiveChatRevision } from "./liveChatCache.js";
+import { noteLiveChatMessageDeletes } from "./liveChatDeletedMessages.js";
 import { chatActionFromTdlib, presenceFromTdlibStatus, isGenericMessagePreviewLabel, previewFromMessage, resolveLastMessagePreviewPayload, usernameFromTdUser, voiceChatFromTdChat, type TdChat, type TdMessage } from "./chatPreview.js";
 import { shouldIncludeChatInList } from "./chatListFilter.js";
 import { emojiStatusCustomIdFromUser, parseEmojiStatusCustomId } from "./emojiStatus.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
+import { ingestGroupCallParticipantUpdate } from "./voiceParticipants.js";
 
 const CHAT_REFRESH_DEBOUNCE_MS = 800;
 
@@ -373,10 +375,38 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
   client.on("update", (update: Record<string, unknown>) => {
     if (record.authState !== "ready") return;
     const type = update._;
+    // Always ingest voice roster updates — they are not chat-list events.
+    if (type === "updateGroupCallParticipant") {
+      ingestGroupCallParticipantUpdate(update);
+      return;
+    }
     if (typeof type !== "string" || !LIVE_UPDATE_TYPES.has(type)) return;
 
     if (type === "updateNewMessage" || type === "updateChatLastMessage" || type === "updateUserStatus" || type === "updateUser" || type === "updateUserEmojiStatus" || type === "updateUserChatAction" || type === "updateChatReadOutbox") {
       void applyLiveUpdate(record, update);
+      return;
+    }
+
+    if (type === "updateDeleteMessages") {
+      const chatId = update.chat_id;
+      const fromCache = Boolean(update.from_cache);
+      const rawIds = Array.isArray(update.message_ids) ? update.message_ids : [];
+      const messageIds = rawIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+        .map((id) => Math.trunc(id));
+      if (typeof chatId === "number" && !fromCache && messageIds.length > 0) {
+        if (noteLiveChatMessageDeletes(record.telegramUsername, chatId, messageIds)) {
+          bumpLiveChatRevision(record.telegramUsername);
+          logLiveSync(record, "live_chat_messages_deleted", {
+            chatId,
+            count: messageIds.length,
+          });
+        }
+      }
+      if (typeof chatId === "number") {
+        scheduleChatRefresh(record, chatId, update);
+      }
       return;
     }
 

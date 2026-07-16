@@ -87,6 +87,8 @@ export type MessageChatRowData = {
   /** Active Telegram voice/video chat on this chat. */
   has_active_voice_chat?: boolean;
   voice_chat_group_call_id?: number | null;
+  /** Message ids recently deleted — open chat should drop them immediately. */
+  pending_deleted_message_ids?: number[] | null;
 };
 
 function resolveAvatarUrl(item: MessageChatRowData): string | null {

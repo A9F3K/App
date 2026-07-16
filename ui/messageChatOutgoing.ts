@@ -1,6 +1,9 @@
 import type { MessageChatHistoryItem } from "./components/messages/messageChatHistoryTypes";
 import { normalizeSuccessfulSendOutgoingStatus } from "./components/messages/messageChatHistoryTypes";
-import { mergeCachedChatHistoryMessages } from "./messageChatHistoryCache";
+import {
+  mergeCachedChatHistoryMessages,
+  removeCachedChatHistoryMessages,
+} from "./messageChatHistoryCache";
 
 export type OutgoingChatMessageEvent = {
   chatId: number;
@@ -40,6 +43,7 @@ export function subscribeOutgoingChatMessages(
 }
 
 export function removeOutgoingChatMessage(chatId: number, messageId: number): void {
+  removeCachedChatHistoryMessages(chatId, [messageId]);
   const event = { chatId, messageId };
   for (const listener of removeListeners) {
     listener(event);

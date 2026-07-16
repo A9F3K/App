@@ -41,3 +41,14 @@ export function canEditMessage(
   if (item.content_kind === "sticker" || item.content_kind === "animation") return false;
   return item.text.trim().length > 0;
 }
+
+/** Own messages that can be deleted from the context menu. */
+export function canDeleteMessage(
+  item: MessageChatHistoryItem,
+  selfUserId?: number | null,
+  peerUserId?: number | null,
+): boolean {
+  if (!isOwnMessage(item, selfUserId, peerUserId)) return false;
+  if (item.content_kind === "call") return false;
+  return Number(item.telegram_message_id) > 0;
+}

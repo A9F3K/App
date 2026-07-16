@@ -25,7 +25,7 @@ import {
   scrollYFromCachedPosition,
   type CachedChatScrollPosition,
 } from "../../messageChatScrollCache";
-import { subscribeOutgoingChatMessages, subscribeOutgoingChatMessageRemovals } from "../../messageChatOutgoing";
+import { subscribeOutgoingChatMessages, subscribeOutgoingChatMessageRemovals, removeOutgoingChatMessage } from "../../messageChatOutgoing";
 import { layout, type ThemeColors } from "../../theme";
 import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesConnectionContext";
 import {
@@ -4136,6 +4136,26 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       unsubscribeRemove();
     };
   }, [chat.telegram_chat_id, assignPendingScrollAnchor, mergeHistoryWithWindow]);
+
+  // Remote / gateway-noted deletes arriving via chat-list payload.
+  useEffect(() => {
+    const ids = chat.pending_deleted_message_ids;
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    const idSet = new Set(
+      ids
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+        .map((id) => Math.trunc(id)),
+    );
+    if (idSet.size === 0) return;
+    setMessages((prev) => {
+      const next = prev.filter((row) => !idSet.has(row.telegram_message_id));
+      return next.length === prev.length ? prev : next;
+    });
+    for (const messageId of idSet) {
+      removeOutgoingChatMessage(chat.telegram_chat_id, messageId);
+    }
+  }, [chat.telegram_chat_id, chat.pending_deleted_message_ids]);
 
   useEffect(() => {
     if (!shouldLoadHistory) return;

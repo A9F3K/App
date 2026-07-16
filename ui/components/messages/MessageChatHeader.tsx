@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { Platform, PixelRatio, Text, View, type ViewStyle } from "react-native";
+import { Platform, PixelRatio, Pressable, Text, View, type ViewStyle } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { layout, type ThemeColors } from "../../theme";
@@ -14,10 +14,18 @@ import {
 } from "./messageListLayout";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
 import { resolveTelegramUserAccentColor } from "./resolveTelegramUserAccentColor";
+import { MessageChatStartVoiceIcon } from "./MessageChatVoiceIcons";
+
+const START_VOICE_ICON_HIT_PX = 36;
+const START_VOICE_ICON_SIZE_PX = 22;
 
 type Props = {
   chat: MessageChatRowData;
   colors: ThemeColors;
+  /** No live voice yet, but this chat can start one — show voice-start icon. */
+  showStartVoice?: boolean;
+  onStartVoice?: () => void;
+  startVoicePending?: boolean;
 };
 
 function menuStripRuleThickness(): number {
@@ -30,9 +38,15 @@ function menuStripRuleThickness(): number {
   return PixelRatio.roundToNearestPixel(1 / PixelRatio.get());
 }
 
-/** Centered title (name + status badge) and multifunction subheader for the open chat. */
-export function MessageChatHeader({ chat, colors }: Props) {
-  const { locale } = useAppStrings();
+/** Left-aligned title/subheader for the open chat; optional start-voice icon on the right. */
+export function MessageChatHeader({
+  chat,
+  colors,
+  showStartVoice,
+  onStartVoice,
+  startVoicePending,
+}: Props) {
+  const { locale, t } = useAppStrings();
   const { colorScheme } = useTelegram();
   const lineT = menuStripRuleThickness();
   const stripPaddingX = layout.contentSideInsetPx;
@@ -45,6 +59,7 @@ export function MessageChatHeader({ chat, colors }: Props) {
     ) ?? colors.primary;
   const subheaderLabel = formatMessageChatSubheaderLabel(chat, locale);
   const subheaderIsLiveAction = isMessageChatActionLive(chat);
+  const showStart = Boolean(showStartVoice && onStartVoice);
 
   const textBase = {
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
@@ -81,12 +96,13 @@ export function MessageChatHeader({ chat, colors }: Props) {
             default: {},
             web: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0 },
           }),
+          flexDirection: "row",
           justifyContent: "center",
           alignItems: "center",
           paddingHorizontal: stripPaddingX,
         }}
       >
-        <View style={{ maxWidth: "100%", alignItems: "center" }}>
+        <View style={{ flex: 1, minWidth: 0, alignItems: "flex-start" }}>
           <SpecialTelegramUserName
             name={title}
             telegramUserId={chat.peer_user_id ?? null}
@@ -96,7 +112,7 @@ export function MessageChatHeader({ chat, colors }: Props) {
             inlineEmojiFetchEnabled
             inlineEmojiFetchPriority
             inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
-            textAlign="center"
+            textAlign="left"
             numberOfLines={1}
             textStyle={{
               ...textBase,
@@ -110,7 +126,7 @@ export function MessageChatHeader({ chat, colors }: Props) {
               style={{
                 ...textBase,
                 color: subheaderIsLiveAction ? colors.accent : colors.secondary,
-                textAlign: "center",
+                textAlign: "left",
                 maxWidth: "100%",
                 marginTop: 0,
               }}
@@ -119,6 +135,26 @@ export function MessageChatHeader({ chat, colors }: Props) {
             </Text>
           ) : null}
         </View>
+        {showStart ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("messages.voiceChat.start")}
+            onPress={onStartVoice}
+            disabled={Boolean(startVoicePending)}
+            hitSlop={8}
+            style={({ pressed }) => ({
+              marginLeft: 8,
+              flexShrink: 0,
+              width: START_VOICE_ICON_HIT_PX,
+              height: START_VOICE_ICON_HIT_PX,
+              alignItems: "center",
+              justifyContent: "center",
+              opacity: startVoicePending ? 0.5 : pressed ? 0.7 : 1,
+            })}
+          >
+            <MessageChatStartVoiceIcon color={colors.primary} size={START_VOICE_ICON_SIZE_PX} />
+          </Pressable>
+        ) : null}
       </View>
       <View pointerEvents="none" collapsable={false} style={borderLineStyle} />
     </View>

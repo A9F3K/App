@@ -1,5 +1,6 @@
 import type { Client } from "tdl";
 import type { FormattedTextSegment } from "../../shared/formattedTextSegments.js";
+import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
 import { previewSegmentsFromMessage } from "./formattedTextSegments.js";
 
 export type TdMessage = {
@@ -69,13 +70,19 @@ export function voiceChatFromTdChat(chat: TdChat): {
   has_active_voice_chat: boolean;
   voice_chat_group_call_id: number | null;
 } {
-  const groupCallId = Number(chat.video_chat?.group_call_id);
-  if (!Number.isFinite(groupCallId) || groupCallId <= 0) {
+  const groupCallId = normalizeTelegramGroupCallId(chat.video_chat?.group_call_id);
+  if (groupCallId == null) {
+    return { has_active_voice_chat: false, voice_chat_group_call_id: null };
+  }
+  // TDLib often keeps a non-zero group_call_id after the room empties.
+  // Only surface voice UI while someone is actually in the call (started by
+  // you or someone else) — matches Telegram's live voice-chat chrome.
+  if (chat.video_chat?.has_participants !== true) {
     return { has_active_voice_chat: false, voice_chat_group_call_id: null };
   }
   return {
     has_active_voice_chat: true,
-    voice_chat_group_call_id: Math.trunc(groupCallId),
+    voice_chat_group_call_id: groupCallId,
   };
 }
 
