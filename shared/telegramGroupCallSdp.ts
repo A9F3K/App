@@ -16,7 +16,10 @@ export function normalizeTelegramGroupCallId(value: unknown): number | null {
   if (typeof value === "boolean" || value == null) return null;
   if (typeof value === "number") {
     if (!Number.isFinite(value) || value <= 0) return null;
-    return Math.trunc(value);
+    const n = Math.trunc(value);
+    // Known bogus cache value (Number(true) === 1). Server resolves via getChat.
+    if (n === 1) return null;
+    return n;
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -106,7 +109,9 @@ export function buildGroupCallJoinPayloadJson(parsed: ParsedGroupCallOfferSdp): 
     fingerprints: [
       {
         hash: parsed.hash,
-        setup: parsed.setup ?? "active",
+        // Browser is DTLS server (passive); Telegram SFU is DTLS client (active).
+        // Matches tweb/tdesktop — client-active breaks DTLS on modern Chrome.
+        setup: "passive",
         fingerprint: parsed.fingerprint,
       },
     ],
@@ -118,6 +123,16 @@ export function buildGroupCallJoinPayloadJson(parsed: ParsedGroupCallOfferSdp): 
       },
     ],
   });
+}
+
+/** DTLS setup for the remote answer SDP (we create the offer in-browser). */
+export function groupCallAnswerDtlsSetup(offerSdp?: string): "active" | "passive" {
+  if (!offerSdp) return "active";
+  const offerSetup =
+    offerSdp.match(/^a=setup:(\S+)/m)?.[1]?.trim().toLowerCase() ?? "";
+  if (offerSetup === "active") return "passive";
+  // actpass | passive | missing — SFU drives DTLS (answer is active).
+  return "active";
 }
 
 export function parseGroupCallJoinTransport(joinPayload: string): TelegramGroupCallTransport | null {
@@ -160,11 +175,11 @@ class SdpBuilder {
   private newLine: string[] = [];
 
   join(): string {
-    return this.lines.join("\n");
+    return this.lines.join("\r\n");
   }
 
   finalize(): string {
-    return `${this.join()}\n`;
+    return `${this.join()}\r\n`;
   }
 
   add(line: string): void {
@@ -195,48 +210,67 @@ class SdpBuilder {
     this.add(`o=- ${sessionId} 2 IN IP4 0.0.0.0`);
     this.add("s=-");
     this.add("t=0 0");
+    this.add("a=extmap-allow-mixed");
     this.add("a=group:BUNDLE 0 1");
+    // Telegram's SFU is an ICE-lite peer: it only answers connectivity checks and
+    // never initiates them. Declaring ice-lite in the remote (answer) description
+    // makes Chrome the sole controlling agent, nominate the single pair immediately,
+    // and skip the RFC 7675 consent-freshness handshake the SFU cannot satisfy.
+    // Without it Chrome connects, receives a little audio, then tears the pair down
+    // (pairsSucceeded=0 pairsInProgress=1 → disconnected → failed).
     this.add("a=ice-lite");
+    this.add("a=ice-options:trickle");
+    this.add("a=msid-semantic:WMS *");
   }
 
-  addTransport(transport: TelegramGroupCallTransport): void {
+  addTransport(
+    transport: TelegramGroupCallTransport,
+    dtlsSetup: "active" | "passive",
+    opts?: { includeCandidates?: boolean },
+  ): void {
     this.add(`a=ice-ufrag:${transport.ufrag}`);
     this.add(`a=ice-pwd:${transport.pwd}`);
     for (const fingerprint of transport.fingerprints) {
-      const setup = fingerprint.setup?.trim() || "passive";
       this.add(`a=fingerprint:${fingerprint.hash} ${fingerprint.fingerprint}`);
-      this.add(`a=setup:${setup}`);
+      // Answer DTLS role: SFU is active (ClientHello). Ignore Telegram's
+      // fingerprint.setup if present — some payloads echo our join "passive"
+      // and that would leave both peers as DTLS servers (no media).
+      this.add(`a=setup:${dtlsSetup}`);
     }
-    for (const candidate of transport.candidates) {
-      this.addCandidate(candidate);
+    if (opts?.includeCandidates !== false) {
+      for (const candidate of transport.candidates) {
+        // Prefer IPv4 — broken IPv6 routes often stall ICE to Telegram SFU.
+        if (candidate.ip.includes(":")) continue;
+        this.addCandidate(candidate);
+      }
     }
   }
 
+  /** Browser-compatible answer (UDP/TLS/RTP/SAVPF, port 9, sendrecv). */
   addSsrcEntry(
     transport: TelegramGroupCallTransport,
-    mediaProfile: "UDP/TLS/RTP/SAVPF" | "RTP/SAVPF",
+    dtlsSetup: "active" | "passive" = "active",
   ): void {
-    // sendrecv is required so the SFU can deliver remote participant audio
-    // (tgcalls recvonly is for send-only bots).
-    this.add(`m=audio 9 ${mediaProfile} 111 126`);
+    this.add("m=audio 9 UDP/TLS/RTP/SAVPF 111 126");
     this.add("c=IN IP4 0.0.0.0");
     this.add("a=rtcp:9 IN IP4 0.0.0.0");
+    this.add("a=rtcp-mux");
     this.add("a=mid:0");
     this.add("a=sendrecv");
-    this.addTransport(transport);
+    this.addTransport(transport, dtlsSetup, { includeCandidates: true });
     this.add("a=rtpmap:111 opus/48000/2");
     this.add("a=rtpmap:126 telephone-event/8000");
     this.add("a=fmtp:111 minptime=10;useinbandfec=1;usedtx=1");
-    this.add("a=rtcp-mux");
     this.add("a=rtcp-fb:111 transport-cc");
     this.add("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level");
 
-    this.add(`m=video 9 ${mediaProfile} 100 101 102 103`);
+    this.add("m=video 9 UDP/TLS/RTP/SAVPF 100 101 102 103");
     this.add("c=IN IP4 0.0.0.0");
     this.add("a=rtcp:9 IN IP4 0.0.0.0");
+    this.add("a=rtcp-mux");
     this.add("a=mid:1");
     this.add("a=sendrecv");
-    this.addTransport(transport);
+    this.addTransport(transport, dtlsSetup, { includeCandidates: false });
     this.add("a=rtpmap:100 VP8/90000");
     this.add("a=fmtp:100 x-google-start-bitrate=800");
     this.add("a=rtcp-fb:100 goog-remb");
@@ -254,16 +288,15 @@ class SdpBuilder {
     this.add("a=rtcp-fb:102 nack pli");
     this.add("a=rtpmap:103 rtx/90000");
     this.add("a=fmtp:103 apt=102");
-    this.add("a=rtcp-mux");
   }
 
   addConference(
     sessionId: number,
     transport: TelegramGroupCallTransport,
-    mediaProfile: "UDP/TLS/RTP/SAVPF" | "RTP/SAVPF",
+    dtlsSetup: "active" | "passive" = "active",
   ): void {
     this.addHeader(sessionId);
-    this.addSsrcEntry(transport, mediaProfile);
+    this.addSsrcEntry(transport, dtlsSetup);
   }
 }
 
@@ -271,11 +304,9 @@ export function groupCallAnswerSdpFromTransport(
   transport: TelegramGroupCallTransport,
   offerSdp?: string,
 ): string {
-  const mediaProfile: "UDP/TLS/RTP/SAVPF" | "RTP/SAVPF" =
-    offerSdp && /m=audio \d+ RTP\/SAVPF/i.test(offerSdp) && !/UDP\/TLS\/RTP\/SAVPF/i.test(offerSdp)
-      ? "RTP/SAVPF"
-      : "UDP/TLS/RTP/SAVPF";
   const sdp = new SdpBuilder();
-  sdp.addConference(Date.now(), transport, mediaProfile);
+  // Browser offered actpass/passive → answer must be active so SFU drives DTLS.
+  const dtlsSetup = groupCallAnswerDtlsSetup(offerSdp);
+  sdp.addConference(Date.now(), transport, dtlsSetup);
   return sdp.finalize();
 }

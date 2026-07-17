@@ -2,13 +2,29 @@ import Svg, { Path } from "react-native-svg";
 
 type Props = {
   speaking: boolean;
+  muted: boolean;
   color: string;
   size?: number;
 };
 
-/** Native fallback for participant mic state (on / off). */
-export function VoiceParticipantStateMicIcon({ speaking, color, size = 20 }: Props) {
-  if (speaking) {
+/** Native fallback for participant mic state (speaking / on / off). */
+export function VoiceParticipantStateMicIcon({
+  speaking,
+  muted,
+  color,
+  size = 20,
+}: Props) {
+  if (!muted && speaking) {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Path
+          d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"
+          fill={color}
+        />
+      </Svg>
+    );
+  }
+  if (!muted) {
     return (
       <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
         <Path

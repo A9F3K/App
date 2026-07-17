@@ -1,13 +1,17 @@
 import { RiChatVoiceAiLine } from "react-icons/ri";
-import { MdCallEnd, MdMic } from "react-icons/md";
+import { MdCallEnd, MdMic, MdMicOff } from "react-icons/md";
 
 type Props = {
   color: string;
   size?: number;
+  muted?: boolean;
 };
 
 /** Web: microphone from `react-icons/md`. */
-export function MessageChatMicIcon({ color, size = 20 }: Props) {
+export function MessageChatMicIcon({ color, size = 20, muted = false }: Props) {
+  if (muted) {
+    return <MdMicOff color={color} size={size} aria-hidden />;
+  }
   return <MdMic color={color} size={size} aria-hidden />;
 }
 

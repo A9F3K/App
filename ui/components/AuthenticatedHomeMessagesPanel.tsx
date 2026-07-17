@@ -16,6 +16,7 @@ import {
   useAuthenticatedHomeSelectedChat,
 } from "../authenticatedHomeSelectedChat";
 import { prefetchChatHistory, prefetchChatHistoryPriority, prefetchVisibleChatNeighbors } from "../messageChatHistoryPrefetch";
+import { unlockVoiceAutoplay } from "../telegram/unlockVoiceAutoplay";
 import { getCachedChatHistory } from "../messageChatHistoryCache";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
 import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
@@ -760,6 +761,11 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const handleChatPress = useCallback(
     (item: MessageChatRowData) => {
       if (!chatSelectionEnabled) return;
+      // Unlock autoplay in the same user gesture as chat selection so WebRTC
+      // remote audio can play after auto listen-only join (useEffect is too late).
+      if (item.has_active_voice_chat) {
+        unlockVoiceAutoplay();
+      }
       logPageDisplay("messages_chat_open", chatLogFields({
         chatId: item.telegram_chat_id,
         peerUserId: item.peer_user_id,

@@ -172,8 +172,13 @@ function VoiceParticipantRow({
         }}
       >
         <VoiceParticipantStateMicIcon
-          speaking={participant.is_speaking}
-          color={participant.is_speaking ? VOICE_SPEAKING_MIC_COLOR : colors.primary}
+          speaking={Boolean(participant.is_speaking) && !participant.is_muted}
+          muted={Boolean(participant.is_muted)}
+          color={
+            participant.is_speaking && !participant.is_muted
+              ? VOICE_SPEAKING_MIC_COLOR
+              : colors.primary
+          }
           size={20}
         />
       </View>
@@ -783,7 +788,11 @@ export function MessageChatVoicePopover({
                 onPress={onMicPress}
                 disabled={micJoining}
               >
-                <VoiceMicControlIcon color={iconColor} size={CONTROL_ICON_PX} />
+                <VoiceMicControlIcon
+                  color={iconColor}
+                  size={CONTROL_ICON_PX}
+                  muted={!micActive}
+                />
               </VoiceControlChip>
               <VoiceControlChip
                 key="chat"

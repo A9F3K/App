@@ -3,6 +3,12 @@
 let unlockAudioEl: HTMLAudioElement | null = null;
 let unlockCtx: AudioContext | null = null;
 
+/** Shared AudioContext resumed during a user gesture — reuse for WebRTC playback. */
+export function getVoiceAutoplayAudioContext(): AudioContext | null {
+  if (!unlockCtx || unlockCtx.state === "closed") return null;
+  return unlockCtx;
+}
+
 /** Minimal silent WAV so play() succeeds without a MediaStream. */
 const SILENT_WAV =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";

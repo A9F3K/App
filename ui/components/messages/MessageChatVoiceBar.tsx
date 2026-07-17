@@ -87,6 +87,8 @@ export function MessageChatVoiceBar({
     groupCallId,
     active: Platform.OS === "web",
   });
+  const micActiveRef = useRef(voiceSession.micActive);
+  micActiveRef.current = voiceSession.micActive;
   const localSpeakingRef = useRef(voiceSession.localSpeaking);
   localSpeakingRef.current = voiceSession.localSpeaking;
   const joinListenRef = useRef(voiceSession.joinListen);
@@ -99,7 +101,8 @@ export function MessageChatVoiceBar({
   // Do not depend on `joining` — that would cancel backoff and spin the effect.
   useEffect(() => {
     if (!joined || !isTelegramMessagesConnected) return;
-    if (voiceSession.joined) return;
+    if (voiceSession.joined && (voiceSession.mediaConnected || voiceSession.joining)) return;
+    if (voiceSession.negotiating) return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -130,6 +133,9 @@ export function MessageChatVoiceBar({
     joined,
     isTelegramMessagesConnected,
     voiceSession.joined,
+    voiceSession.mediaConnected,
+    voiceSession.negotiating,
+    voiceSession.joining,
     chatId,
     groupCallId,
   ]);
@@ -152,6 +158,7 @@ export function MessageChatVoiceBar({
           left.description !== right.description ||
           left.emoji_status_custom_emoji_id !== right.emoji_status_custom_emoji_id ||
           Boolean(left.is_speaking) !== Boolean(right.is_speaking) ||
+          Boolean(left.is_muted) !== Boolean(right.is_muted) ||
           Boolean(left.is_self) !== Boolean(right.is_self)
         ) {
           return false;
@@ -170,11 +177,14 @@ export function MessageChatVoiceBar({
     try {
       const result = await fetchTelegramChatVoiceParticipants(chatId, groupCallId);
       if (result.ok) {
-        const withLocalSpeaking = result.participants.map((row) =>
-          row.is_self && localSpeakingRef.current
-            ? { ...row, is_speaking: true }
-            : row,
-        );
+        const withLocalSpeaking = result.participants.map((row) => {
+          if (!row.is_self) return row;
+          return {
+            ...row,
+            is_speaking: localSpeakingRef.current ? true : row.is_speaking,
+            is_muted: !micActiveRef.current,
+          };
+        });
         setParticipants((prev) => {
           let next = withLocalSpeaking;
           // Keep local self visible across polls that omit muted/hidden listeners.
@@ -185,6 +195,7 @@ export function MessageChatVoiceBar({
                 {
                   ...prevSelf,
                   is_speaking: localSpeakingRef.current ? true : prevSelf.is_speaking,
+                  is_muted: !micActiveRef.current,
                 },
                 ...next,
               ];
@@ -212,17 +223,19 @@ export function MessageChatVoiceBar({
   }, [chatId, groupCallId, isTelegramMessagesConnected, participantsEqual]);
 
   useEffect(() => {
-    if (!voiceSession.localSpeaking) return;
     setParticipants((prev) => {
       let changed = false;
       const next = prev.map((row) => {
-        if (!row.is_self || row.is_speaking) return row;
+        if (!row.is_self) return row;
+        const isSpeaking = voiceSession.localSpeaking;
+        const isMuted = !voiceSession.micActive;
+        if (row.is_speaking === isSpeaking && row.is_muted === isMuted) return row;
         changed = true;
-        return { ...row, is_speaking: true };
+        return { ...row, is_speaking: isSpeaking, is_muted: isMuted };
       });
       return changed ? next : prev;
     });
-  }, [voiceSession.localSpeaking]);
+  }, [voiceSession.localSpeaking, voiceSession.micActive]);
 
   // Presence poll even before Join so avatars show who's already in the call.
   // Back off hard while TDLib is disconnected / restoring so we do not stampede.
@@ -362,6 +375,7 @@ export function MessageChatVoiceBar({
             style={{ width: 28, height: 28, alignItems: "center", justifyContent: "center" }}
           >
             <MessageChatMicIcon
+              muted={!(joined && voiceSession.micActive)}
               color={joined && voiceSession.micActive ? colors.accent : colors.primary}
               size={20}
             />

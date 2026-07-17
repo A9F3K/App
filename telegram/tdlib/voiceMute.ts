@@ -35,6 +35,21 @@ export async function setChatVoiceMicMuted(
   }
 
   try {
+    // Mute/unmute requires an active TDLib join. Surface JOIN_MISSING so the
+    // browser can rejoin instead of treating a 502 as a permanent failure.
+    try {
+      const groupCall = (await client.invoke({
+        _: "getGroupCall",
+        group_call_id: callId,
+      })) as { is_joined?: boolean; need_rejoin?: boolean };
+      if (!groupCall.is_joined && !groupCall.need_rejoin) {
+        logGateway("voice_mic_mute_not_joined", { chatId, groupCallId: callId, isMuted });
+        return { ok: false, error: "GROUPCALL_JOIN_MISSING" };
+      }
+    } catch {
+      // Fall through to toggle — getGroupCall can race during join.
+    }
+
     const me = (await client.invoke({ _: "getMe" })) as { id?: number };
     const userId = Number(me.id);
     if (!Number.isFinite(userId) || userId <= 0) {

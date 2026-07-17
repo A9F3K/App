@@ -8,6 +8,7 @@ export type TelegramChatVoiceParticipant = {
   description: string;
   emoji_status_custom_emoji_id: string | null;
   is_speaking: boolean;
+  is_muted: boolean;
   is_self: boolean;
 };
 
@@ -59,6 +60,7 @@ export async function fetchTelegramChatVoiceParticipants(
                 ? item.emoji_status_custom_emoji_id.trim()
                 : null,
             is_speaking: Boolean(item.is_speaking),
+            is_muted: Boolean(item.is_muted),
             is_self: Boolean(item.is_self),
           } satisfies TelegramChatVoiceParticipant;
         })

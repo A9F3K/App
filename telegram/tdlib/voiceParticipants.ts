@@ -12,6 +12,8 @@ export type VoiceParticipantRow = {
   description: string;
   emoji_status_custom_emoji_id: string | null;
   is_speaking: boolean;
+  /** True when muted for all users (`is_muted_for_all_users`). */
+  is_muted: boolean;
   is_self: boolean;
 };
 
@@ -31,6 +33,7 @@ type GroupCallSnapshot = {
 type GroupCallParticipantUpdate = {
   participant_id?: { _?: string; user_id?: number; chat_id?: number };
   is_speaking?: boolean;
+  is_muted_for_all_users?: boolean;
   order?: string;
 };
 
@@ -38,6 +41,7 @@ type CollectedParticipant = {
   userId: number | null;
   chatId: number | null;
   isSpeaking: boolean;
+  isMuted: boolean;
 };
 
 type ProfileCacheEntry = {
@@ -105,7 +109,13 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
     // order while the roster is still loading (join floods partial updates).
     if (userId != null && pinnedSelfUserIds.has(userId)) {
       const prev = cached.members.get(key);
-      if (prev) cached.members.set(key, { ...prev, isSpeaking: false });
+      if (prev) {
+        cached.members.set(key, {
+          ...prev,
+          isSpeaking: false,
+          isMuted: participant.is_muted_for_all_users ?? prev.isMuted,
+        });
+      }
     } else if (cached.loadedAll) {
       cached.members.delete(key);
     }
@@ -114,6 +124,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       userId,
       chatId,
       isSpeaking: Boolean(participant.is_speaking),
+      isMuted: Boolean(participant.is_muted_for_all_users),
     });
   }
   cached.loadedAt = Date.now();
@@ -257,6 +268,8 @@ function speakersFromGroupCall(groupCall: GroupCallSnapshot): Map<string, Collec
       userId,
       chatId,
       isSpeaking: Boolean(speaker.is_speaking),
+      // recent_speakers omit mute — speaking implies unmuted; otherwise unknown → unmuted UI.
+      isMuted: false,
     });
   }
   return map;
@@ -272,6 +285,7 @@ function applySpeakingOverlay(
     next.set(key, {
       ...row,
       isSpeaking: speaker ? Boolean(speaker.isSpeaking) : false,
+      isMuted: row.isMuted,
     });
   }
   for (const [key, speaker] of speakers) {
@@ -289,7 +303,7 @@ function mergeParticipantMaps(
   const next = new Map(base);
   for (const [key, row] of overlay) {
     const prev = next.get(key);
-    next.set(key, prev ? { ...prev, isSpeaking: row.isSpeaking } : { ...row });
+    next.set(key, prev ? { ...prev, isSpeaking: row.isSpeaking, isMuted: row.isMuted } : { ...row });
   }
   return next;
 }
@@ -340,7 +354,13 @@ async function loadJoinedParticipants(
     if (!order) {
       if (userId != null && pinnedSelfUserIds.has(userId)) {
         const prev = map.get(key);
-        if (prev) map.set(key, { ...prev, isSpeaking: false });
+        if (prev) {
+          map.set(key, {
+            ...prev,
+            isSpeaking: false,
+            isMuted: participant.is_muted_for_all_users ?? prev.isMuted,
+          });
+        }
       } else if (sawLoadedAll) {
         map.delete(key);
       }
@@ -350,6 +370,7 @@ async function loadJoinedParticipants(
       userId,
       chatId,
       isSpeaking: Boolean(participant.is_speaking),
+      isMuted: Boolean(participant.is_muted_for_all_users),
     });
   };
 
@@ -522,6 +543,7 @@ export async function fetchChatVoiceParticipants(
         userId: selfUserId,
         chatId: null,
         isSpeaking: false,
+        isMuted: true,
       });
       const cached = callMembersCache.get(callId);
       if (cached) {
@@ -529,6 +551,7 @@ export async function fetchChatVoiceParticipants(
           userId: selfUserId,
           chatId: null,
           isSpeaking: false,
+          isMuted: true,
         });
       } else if (uniqueId) {
         callMembersCache.set(callId, {
@@ -536,7 +559,7 @@ export async function fetchChatVoiceParticipants(
           members: new Map([
             [
               selfKey,
-              { userId: selfUserId, chatId: null, isSpeaking: false },
+              { userId: selfUserId, chatId: null, isSpeaking: false, isMuted: true },
             ],
           ]),
           loadedAt: Date.now(),
@@ -562,6 +585,7 @@ export async function fetchChatVoiceParticipants(
       description: profile.description,
       emoji_status_custom_emoji_id: profile.emoji_status_custom_emoji_id,
       is_speaking: row.isSpeaking,
+      is_muted: row.isMuted,
       is_self: selfUserId != null && row.userId === selfUserId,
     };
   });

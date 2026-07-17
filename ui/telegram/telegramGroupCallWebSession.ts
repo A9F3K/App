@@ -8,6 +8,7 @@ import {
 import { joinTelegramChatVoice } from "./joinTelegramChatVoice";
 import { setTelegramChatVoiceMicMuted } from "./setTelegramChatVoiceMicMuted";
 import { setTelegramChatVoiceSpeaking } from "./setTelegramChatVoiceSpeaking";
+import { getVoiceAutoplayAudioContext } from "./unlockVoiceAutoplay";
 
 type SessionInput = {
   chatId: number;
@@ -74,6 +75,10 @@ export class TelegramGroupCallWebSession {
   private usingSilentAudio = false;
   private remoteAudio: HTMLAudioElement | null = null;
   private remoteStream: MediaStream | null = null;
+  private playbackCtx: AudioContext | null = null;
+  private playbackSource: MediaStreamAudioSourceNode | null = null;
+  /** Serialize play() / graph rebuild — concurrent calls interrupt each other. */
+  private remotePlayChain: Promise<void> = Promise.resolve();
   private audioSourceId: number | null = null;
   /** One-shot document gesture listener to unmute after auto-join. */
   private gestureUnmuteCleanup: (() => void) | null = null;
@@ -89,6 +94,8 @@ export class TelegramGroupCallWebSession {
   /** After GROUPCALL_JOIN_MISSING, stop hammering speaking until we rejoin. */
   private speakingSyncBlockedUntil = 0;
   private joinLostListeners = new Set<() => void>();
+  private iceDisconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private playbackWatchdog: ReturnType<typeof setInterval> | null = null;
 
   constructor(private input: SessionInput) {
     // Pre-create the element so unlockRemoteAudio during Join hits the real sink.
@@ -106,6 +113,64 @@ export class TelegramGroupCallWebSession {
     return this.joined;
   }
 
+  /** True when ICE/DTLS path is up and RTP can flow. */
+  isMediaConnected(): boolean {
+    const pc = this.connection;
+    if (!this.joined || !pc) return false;
+    const ice = pc.iceConnectionState;
+    const conn = pc.connectionState;
+    return (
+      ice === "connected" ||
+      ice === "completed" ||
+      conn === "connected"
+    );
+  }
+
+  /** Offer/answer done but ICE still checking — do not tear down yet. */
+  isNegotiating(): boolean {
+    const pc = this.connection;
+    if (!this.joined || !pc) return false;
+    const ice = pc.iceConnectionState;
+    const conn = pc.connectionState;
+    return (
+      ice === "new" ||
+      ice === "checking" ||
+      conn === "new" ||
+      conn === "connecting"
+    );
+  }
+
+  /** Drop stale joined flag when WebRTC died but UI still thinks we're in. */
+  rejoinIfStale(): boolean {
+    if (!this.joined || this.joining) return false;
+    const pc = this.connection;
+    if (!pc) {
+      if (this.joined) {
+        this.markJoinLost("stale_no_pc");
+        return true;
+      }
+      return false;
+    }
+    if (this.isNegotiating() || this.isMediaConnected()) return false;
+    // disconnected / failed — scheduleJoinLostIfStillBroken owns teardown timing.
+    if (
+      pc.iceConnectionState === "disconnected" ||
+      pc.connectionState === "disconnected"
+    ) {
+      return false;
+    }
+    if (
+      pc.iceConnectionState === "failed" ||
+      pc.iceConnectionState === "closed" ||
+      pc.connectionState === "failed" ||
+      pc.connectionState === "closed"
+    ) {
+      this.markJoinLost("stale_connection");
+      return true;
+    }
+    return false;
+  }
+
   /** Fired when TDLib reports we are no longer joined (roster/speaking broken). */
   onJoinLost(listener: () => void): () => void {
     this.joinLostListeners.add(listener);
@@ -114,7 +179,85 @@ export class TelegramGroupCallWebSession {
     };
   }
 
-  private markJoinLost(reason: string): void {
+  private async logIceDiagnostics(
+    connection: RTCPeerConnection,
+    label: string,
+  ): Promise<void> {
+    try {
+      const stats = await connection.getStats();
+      let inboundAudio = 0;
+      let pairsSucceeded = 0;
+      let pairsInProgress = 0;
+      let pairsFailed = 0;
+      const locals: string[] = [];
+      const remotes: string[] = [];
+      stats.forEach((report) => {
+        if (report.type === "inbound-rtp" && report.kind === "audio") {
+          inboundAudio += Number(report.bytesReceived) || 0;
+        }
+        if (report.type === "candidate-pair") {
+          if (report.state === "succeeded") pairsSucceeded++;
+          else if (report.state === "in-progress") pairsInProgress++;
+          else if (report.state === "failed") pairsFailed++;
+        }
+        if (report.type === "local-candidate") {
+          const addr = report.address || report.ip || "?";
+          locals.push(`${addr}:${report.port}/${report.candidateType}`);
+        }
+        if (report.type === "remote-candidate") {
+          const addr = report.address || report.ip || "?";
+          remotes.push(`${addr}:${report.port}/${report.candidateType}`);
+        }
+      });
+      appWarn("[voice-ice-stats]", label, {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        ice: connection.iceConnectionState,
+        conn: connection.connectionState,
+        inboundAudio,
+        pairsSucceeded,
+        pairsInProgress,
+        pairsFailed,
+        localCandidates: locals.join(","),
+        remoteCandidates: remotes.join(","),
+      });
+    } catch {
+      // ignore stats errors
+    }
+  }
+
+  private scheduleJoinLostIfStillBroken(
+    connection: RTCPeerConnection,
+    reason: string,
+    delayMs = 12_000,
+  ): void {
+    if (this.iceDisconnectTimer) return;
+    this.iceDisconnectTimer = window.setTimeout(() => {
+      this.iceDisconnectTimer = null;
+      if (this.connection !== connection) return;
+      if (this.isMediaConnected()) return;
+      const ice = connection.iceConnectionState;
+      const conn = connection.connectionState;
+      if (
+        ice === "failed" ||
+        ice === "closed" ||
+        ice === "disconnected" ||
+        conn === "failed" ||
+        conn === "disconnected"
+      ) {
+        this.markJoinLost(reason);
+      }
+    }, delayMs);
+  }
+
+  private clearJoinLostTimer(): void {
+    if (this.iceDisconnectTimer) {
+      window.clearTimeout(this.iceDisconnectTimer);
+      this.iceDisconnectTimer = null;
+    }
+  }
+
+  private markJoinLost(reason: string, opts?: { silent?: boolean }): void {
     if (!this.joined && !this.connection) return;
     this.speakingSyncBlockedUntil = Date.now() + 4_000;
     this.lastSpeakingSynced = null;
@@ -135,6 +278,19 @@ export class TelegramGroupCallWebSession {
       this.connection.close();
       this.connection = null;
     }
+    if (this.iceDisconnectTimer) {
+      window.clearTimeout(this.iceDisconnectTimer);
+      this.iceDisconnectTimer = null;
+    }
+    this.clearPlaybackWatchdog();
+    this.teardownWebAudioPlayback();
+    if (this.remoteStream) {
+      this.remoteStream.getTracks().forEach((track) => track.stop());
+      this.remoteStream = null;
+    }
+    if (this.remoteAudio) {
+      this.remoteAudio.srcObject = null;
+    }
     const wasJoined = this.joined;
     this.joined = false;
     this.micEnabled = false;
@@ -142,7 +298,9 @@ export class TelegramGroupCallWebSession {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
       wasJoined,
+      silent: Boolean(opts?.silent),
     });
+    if (opts?.silent) return;
     for (const listener of this.joinLostListeners) {
       try {
         listener();
@@ -168,7 +326,11 @@ export class TelegramGroupCallWebSession {
   }
 
   async ensureJoinedListenOnly(): Promise<void> {
-    if (this.joined) return;
+    if (this.joined) {
+      if (this.isNegotiating() || this.isMediaConnected()) return;
+      this.rejoinIfStale();
+      if (this.joined) return;
+    }
     if (this.joining) {
       await this.joining;
       return;
@@ -263,13 +425,31 @@ export class TelegramGroupCallWebSession {
           enabled,
         });
         const err = muteResult.error;
-        if (
+        const needsRejoin =
           typeof err === "string" &&
           (err.includes("GROUPCALL_JOIN_MISSING") ||
             err.includes("GROUPCALL_FORBIDDEN") ||
-            err.includes("GROUPCALL_INVALID"))
+            err.includes("GROUPCALL_INVALID") ||
+            err.includes("GROUPCALL_SSRC_DUPLICATE_SIMULTANEOUS"));
+        if (needsRejoin) {
+          // TDLib lost the join — rebuild WebRTC with the desired mute baked into join.
+          // Silent: keep React mic intent until joinInternal finishes.
+          this.markJoinLost(err, { silent: true });
+          await this.joinInternal(!enabled);
+          if (enabled) {
+            await this.ensureLocalMic();
+            if (this.audioTrack) this.audioTrack.enabled = true;
+            this.micEnabled = true;
+          }
+          this.resumeRemoteAudio();
+        } else if (
+          typeof err === "string" &&
+          /Can't unmute user/i.test(err)
         ) {
-          this.markJoinLost(err);
+          // Admin-muted / no permission — revert local mic to muted.
+          if (this.audioTrack) this.audioTrack.enabled = false;
+          this.micEnabled = false;
+          this.setLocalSpeaking(false);
         }
       }
     } catch (err) {
@@ -425,63 +605,158 @@ export class TelegramGroupCallWebSession {
     };
   }
 
-  private playRemoteHtml(reason: string): void {
-    if (typeof document === "undefined") return;
-    const audio = this.ensureRemoteAudioElement();
+  private ensureRemoteStream(): MediaStream {
     if (!this.remoteStream) {
       this.remoteStream = new MediaStream();
     }
-    if (audio.srcObject !== this.remoteStream) {
-      audio.srcObject = this.remoteStream;
+    return this.remoteStream;
+  }
+
+  private ensurePlaybackContext(): AudioContext | null {
+    if (typeof AudioContext === "undefined") return null;
+    const shared = getVoiceAutoplayAudioContext();
+    if (shared) {
+      this.playbackCtx = shared;
+    } else if (!this.playbackCtx || this.playbackCtx.state === "closed") {
+      this.playbackCtx = new AudioContext();
     }
-    audio.volume = 1;
-    void (async () => {
-      try {
-        // Muted play is allowed without a gesture; then unmute for audible output.
-        audio.muted = true;
-        await audio.play();
-        audio.muted = false;
-      } catch {
-        try {
-          audio.muted = false;
-          await audio.play();
-        } catch (err) {
-          this.armGestureUnmute();
-          appWarn("[voice-remote-audio]", err instanceof Error ? err.message : String(err), {
-            reason,
-            chatId: this.input.chatId,
-            groupCallId: this.input.groupCallId,
-            tracks: this.remoteStream?.getAudioTracks().length ?? 0,
-          });
+    return this.playbackCtx;
+  }
+
+  private teardownWebAudioPlayback(): void {
+    try {
+      this.playbackSource?.disconnect();
+    } catch {
+      // ignore
+    }
+    this.playbackSource = null;
+  }
+
+  private rebuildWebAudioPlayback(): boolean {
+    const ctx = this.playbackCtx;
+    const stream = this.remoteStream;
+    if (!ctx || !stream || stream.getAudioTracks().length === 0) return false;
+    try {
+      this.teardownWebAudioPlayback();
+      // Fresh MediaStream snapshot so createMediaStreamSource sees current tracks.
+      const snapshot = new MediaStream(stream.getAudioTracks());
+      this.playbackSource = ctx.createMediaStreamSource(snapshot);
+      this.playbackSource.connect(ctx.destination);
+      return true;
+    } catch (err) {
+      appWarn(
+        "[voice-webaudio]",
+        err instanceof Error ? err.message : String(err),
+        { chatId: this.input.chatId, groupCallId: this.input.groupCallId },
+      );
+      return false;
+    }
+  }
+
+  private queueRemotePlayback(reason: string): void {
+    this.remotePlayChain = this.remotePlayChain
+      .then(() => this.ensureRemotePlaybackInternal(reason))
+      .catch(() => undefined);
+  }
+
+  private async ensureRemotePlaybackInternal(reason: string): Promise<void> {
+    if (typeof document === "undefined") return;
+
+    // Re-pull live receivers — ontrack can fire before our stream is ready, and
+    // SFU SSRC switches can replace tracks without a fresh attach.
+    const pc = this.connection;
+    if (pc) {
+      for (const receiver of pc.getReceivers()) {
+        if (receiver.track?.kind === "audio") {
+          this.attachRemoteAudioTrack(receiver.track);
         }
       }
-    })();
+    }
+
+    const stream = this.remoteStream;
+    if (!stream || stream.getAudioTracks().length === 0) return;
+
+    for (const track of stream.getAudioTracks()) {
+      track.enabled = true;
+    }
+
+    const ctx = this.ensurePlaybackContext();
+    if (ctx) {
+      await ctx.resume().catch(() => undefined);
+    }
+
+    // HTML <audio> is the reliable sink after a user gesture. The previous
+    // Web-Audio-only path often stayed silent (tracks added after the source
+    // node was created, or the shared unlock context was stale after rejoin).
+    this.teardownWebAudioPlayback();
+    const audio = this.ensureRemoteAudioElement();
+    if (audio.srcObject !== stream) {
+      audio.srcObject = stream;
+    }
+    audio.muted = false;
+    audio.volume = 1;
+    try {
+      if (audio.paused) {
+        await audio.play();
+      }
+      appWarn("[voice-remote-playback]", "html", {
+        reason,
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        tracks: stream.getAudioTracks().length,
+        ctxState: ctx?.state ?? "none",
+        paused: audio.paused,
+        readyState: audio.readyState,
+      });
+      return;
+    } catch (err) {
+      this.armGestureUnmute();
+      appWarn("[voice-remote-audio]", err instanceof Error ? err.message : String(err), {
+        reason,
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        tracks: stream.getAudioTracks().length,
+        ctxState: ctx?.state ?? "none",
+      });
+    }
+
+    // Fallback when HTML autoplay is blocked but AudioContext was resumed.
+    if (ctx?.state === "running" && this.rebuildWebAudioPlayback()) {
+      appWarn("[voice-remote-playback]", "webaudio-fallback", {
+        reason,
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        tracks: stream.getAudioTracks().length,
+        ctxState: ctx.state,
+      });
+    }
   }
 
   private attachRemoteAudioTrack(track: MediaStreamTrack): void {
     if (track.kind !== "audio") return;
     track.enabled = true;
-    if (!this.remoteStream) {
-      this.remoteStream = new MediaStream();
-    }
-    const already = this.remoteStream.getAudioTracks().some((t) => t.id === track.id);
+    const stream = this.ensureRemoteStream();
+    const already = stream.getAudioTracks().some((t) => t.id === track.id);
     if (!already) {
-      this.remoteStream.addTrack(track);
+      stream.addTrack(track);
       appWarn("[voice-remote-track]", "attached", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         trackId: track.id,
         muted: track.muted,
         readyState: track.readyState,
-        trackCount: this.remoteStream.getAudioTracks().length,
+        trackCount: stream.getAudioTracks().length,
       });
     }
-    const audio = this.ensureRemoteAudioElement();
-    // Only assign srcObject once. Re-assigning interrupts an in-flight play().
-    if (audio.srcObject !== this.remoteStream) {
-      audio.srcObject = this.remoteStream;
-    }
-    this.playRemoteHtml("track");
+    track.onunmute = () => {
+      appWarn("[voice-remote-track]", "unmuted", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        trackId: track.id,
+      });
+      this.queueRemotePlayback("track-unmute");
+    };
+    this.queueRemotePlayback("track");
   }
 
   /**
@@ -490,33 +765,21 @@ export class TelegramGroupCallWebSession {
    */
   unlockRemoteAudio(): void {
     if (typeof document === "undefined") return;
-    const audio = this.ensureRemoteAudioElement();
-    if (!this.remoteStream) {
-      this.remoteStream = new MediaStream();
-    }
-    if (audio.srcObject !== this.remoteStream) {
-      audio.srcObject = this.remoteStream;
-    }
-    audio.muted = false;
-    audio.volume = 1;
-    void audio.play().catch(() => undefined);
-    this.playRemoteHtml("unlock");
+    this.ensureRemoteStream();
+    const ctx = this.ensurePlaybackContext();
+    void ctx?.resume().catch(() => undefined);
+    this.gestureUnmuteCleanup?.();
+    this.gestureUnmuteCleanup = null;
+    this.queueRemotePlayback("unlock");
   }
 
   /** Retry autoplay after a user gesture (mic toggle / UI click). */
   resumeRemoteAudio(): void {
     if (typeof document === "undefined") return;
-    const audio = this.ensureRemoteAudioElement();
-    if (!this.remoteStream) {
-      this.remoteStream = new MediaStream();
-    }
-    if (audio.srcObject !== this.remoteStream) {
-      audio.srcObject = this.remoteStream;
-    }
-    audio.muted = false;
-    audio.volume = 1;
-    void audio.play().catch(() => undefined);
-    this.playRemoteHtml("resume");
+    this.ensureRemoteStream();
+    const ctx = this.ensurePlaybackContext();
+    void ctx?.resume().catch(() => undefined);
+    this.queueRemotePlayback("resume");
   }
 
   private async joinInternal(startMuted: boolean): Promise<void> {
@@ -548,8 +811,15 @@ export class TelegramGroupCallWebSession {
     const videoTrack = createSilentVideoTrack();
     const localStream = new MediaStream([audioTrack, videoTrack]);
 
+    // Match tweb/tgcalls: no STUN. Telegram SFU is a public host candidate;
+    // extra srflx pairs confuse ICE (pairsInProgress without nomination) and
+    // then Chrome consent-freshness tears the link down after a brief audio blip.
     const connection = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      iceServers: [],
+      iceTransportPolicy: "all",
+      bundlePolicy: "max-bundle",
+      rtcpMuxPolicy: "require",
+      iceCandidatePoolSize: 0,
     });
     connection.addTrack(audioTrack, localStream);
     connection.addTrack(videoTrack, localStream);
@@ -573,7 +843,34 @@ export class TelegramGroupCallWebSession {
       } else if (track.kind === "audio") {
         this.attachRemoteAudioTrack(track);
       }
-      this.resumeRemoteAudio();
+    };
+
+    connection.oniceconnectionstatechange = () => {
+      const ice = connection.iceConnectionState;
+      appWarn("[voice-pc-ice]", ice, {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        conn: connection.connectionState,
+      });
+      if (ice === "failed" || ice === "closed") {
+        void this.logIceDiagnostics(connection, `ice_${ice}`);
+        this.scheduleJoinLostIfStillBroken(connection, `ice_${ice}`);
+        return;
+      }
+      if (ice === "disconnected") {
+        void this.logIceDiagnostics(connection, "ice_disconnected");
+        this.scheduleJoinLostIfStillBroken(connection, "ice_disconnected");
+        return;
+      }
+      this.clearJoinLostTimer();
+      if (ice === "connected" || ice === "completed") {
+        for (const receiver of connection.getReceivers()) {
+          if (receiver.track?.kind === "audio") {
+            this.attachRemoteAudioTrack(receiver.track);
+          }
+        }
+        this.queueRemotePlayback("ice-connected");
+      }
     };
 
     connection.onconnectionstatechange = () => {
@@ -595,7 +892,9 @@ export class TelegramGroupCallWebSession {
             this.attachRemoteAudioTrack(receiver.track);
           }
         }
-        this.resumeRemoteAudio();
+        this.queueRemotePlayback("pc-connected");
+      } else if (state === "failed" || state === "disconnected") {
+        this.scheduleJoinLostIfStillBroken(connection, `pc_${state}`);
       }
     };
 
@@ -610,7 +909,36 @@ export class TelegramGroupCallWebSession {
       throw new Error("offer_sdp_missing");
     }
 
-    const parsed = parseGroupCallOfferSdp(offer.sdp);
+    await new Promise<void>((resolve) => {
+      if (connection.iceGatheringState === "complete") {
+        resolve();
+        return;
+      }
+      const timeout = window.setTimeout(() => {
+        connection.removeEventListener("icegatheringstatechange", onGather);
+        resolve();
+      }, 8_000);
+      const onGather = () => {
+        if (connection.iceGatheringState === "complete") {
+          window.clearTimeout(timeout);
+          connection.removeEventListener("icegatheringstatechange", onGather);
+          resolve();
+        }
+      };
+      connection.addEventListener("icegatheringstatechange", onGather);
+    });
+
+    const localSdp = connection.localDescription?.sdp ?? offer.sdp;
+    const localCandidateCount = (localSdp.match(/a=candidate:/g) ?? []).length;
+    appWarn("[voice-ice-local]", "gathered", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      candidateCount: localCandidateCount,
+      iceGather: connection.iceGatheringState,
+      hostCount: (localSdp.match(/ typ host /g) ?? []).length,
+      srflxCount: (localSdp.match(/ typ srflx /g) ?? []).length,
+    });
+    const parsed = parseGroupCallOfferSdp(localSdp);
     const joinPayloadJson = buildGroupCallJoinPayloadJson(parsed);
     if (!joinPayloadJson || parsed.source == null) {
       connection.close();
@@ -655,23 +983,38 @@ export class TelegramGroupCallWebSession {
       videoTrack.stop();
       throw new Error("join_transport_invalid");
     }
+    const answerDtlsSetup =
+      transport.fingerprints[0]?.setup?.trim().toLowerCase() === "passive"
+        ? "passive"
+        : "active";
+    appWarn("[voice-dtls]", "roles", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      offerSetup: parsed.setup,
+      joinSetup: "passive",
+      answerSetup: answerDtlsSetup,
+    });
+    appWarn("[voice-join-transport]", "ok", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      candidateCount: transport.candidates.length,
+      fingerprintCount: transport.fingerprints.length,
+      answerDtlsSetup,
+      candidateIps: transport.candidates.map((c) => `${c.ip}:${c.port}/${c.type}`).join(","),
+    });
 
     try {
       await connection.setRemoteDescription({
         type: "answer",
-        sdp: groupCallAnswerSdpFromTransport(transport, offer.sdp),
+        sdp: groupCallAnswerSdpFromTransport(transport, localSdp),
       });
     } catch (err) {
-      // Older Chrome / mismatched profile — retry with classic tgcalls RTP/SAVPF.
       appWarn(
         "[voice-sdp-answer]",
         err instanceof Error ? err.message : String(err),
         { chatId: this.input.chatId, groupCallId: this.input.groupCallId },
       );
-      await connection.setRemoteDescription({
-        type: "answer",
-        sdp: groupCallAnswerSdpFromTransport(transport, "m=audio 1 RTP/SAVPF 111"),
-      });
+      throw err;
     }
 
     this.connection = connection;
@@ -686,12 +1029,58 @@ export class TelegramGroupCallWebSession {
     // Tracks may already be present; unlock was done on the open-dialog click.
     this.resumeRemoteAudio();
     this.armGestureUnmute();
+    this.startPlaybackWatchdog(connection);
+
+    const joinChatId = this.input.chatId;
+    const joinCallId = this.input.groupCallId;
+    window.setTimeout(() => {
+      if (!this.joined || this.connection !== connection) return;
+      if (this.isMediaConnected()) return;
+      const ice = connection.iceConnectionState;
+      const conn = connection.connectionState;
+      if (ice === "checking" || ice === "new" || conn === "connecting") {
+        appWarn("[voice-join-timeout]", "ice_still_pending", {
+          chatId: joinChatId,
+          groupCallId: joinCallId,
+          ice,
+          conn,
+        });
+        this.markJoinLost("ice_timeout");
+      }
+    }, 20_000);
+  }
+
+  /** Keep HTML audio playing while ICE stays up (autoplay / track swaps). */
+  private startPlaybackWatchdog(connection: RTCPeerConnection): void {
+    this.clearPlaybackWatchdog();
+    this.playbackWatchdog = window.setInterval(() => {
+      if (this.connection !== connection || !this.joined) {
+        this.clearPlaybackWatchdog();
+        return;
+      }
+      if (!this.isMediaConnected()) return;
+      this.queueRemotePlayback("watchdog");
+    }, 2_500);
+  }
+
+  private clearPlaybackWatchdog(): void {
+    if (this.playbackWatchdog != null) {
+      window.clearInterval(this.playbackWatchdog);
+      this.playbackWatchdog = null;
+    }
   }
 
   dispose(): void {
     this.stopSpeakingMonitor();
+    this.clearPlaybackWatchdog();
+    this.clearJoinLostTimer();
     this.gestureUnmuteCleanup?.();
     this.gestureUnmuteCleanup = null;
+    this.teardownWebAudioPlayback();
+    if (this.playbackCtx && this.playbackCtx !== getVoiceAutoplayAudioContext()) {
+      void this.playbackCtx.close().catch(() => undefined);
+    }
+    this.playbackCtx = null;
     if (this.remoteAudio) {
       this.remoteAudio.pause();
       this.remoteAudio.srcObject = null;

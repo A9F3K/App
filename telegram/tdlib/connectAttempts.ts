@@ -1680,6 +1680,7 @@ export async function getChatVoiceParticipantsForUser(
     description: string;
     emoji_status_custom_emoji_id: string | null;
     is_speaking: boolean;
+    is_muted: boolean;
     is_self: boolean;
   }>;
 }> {

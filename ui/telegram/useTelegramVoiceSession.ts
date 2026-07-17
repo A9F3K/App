@@ -19,6 +19,8 @@ export type TelegramVoiceSession = {
   localSpeaking: boolean;
   joining: boolean;
   joined: boolean;
+  mediaConnected: boolean;
+  negotiating: boolean;
   error: string | null;
   unlockAudio: () => void;
   /** Resolves true when the WebRTC join succeeded (or was already joined). */
@@ -38,6 +40,8 @@ export function useTelegramVoiceSession({
   const [localSpeaking, setLocalSpeaking] = useState(false);
   const [joining, setJoining] = useState(false);
   const [joined, setJoined] = useState(false);
+  const [mediaConnected, setMediaConnected] = useState(false);
+  const [negotiating, setNegotiating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const sessionRef = useRef<TelegramGroupCallWebSession | null>(null);
   const micActiveRef = useRef(false);
@@ -49,6 +53,8 @@ export function useTelegramVoiceSession({
 
   const resetLocalUi = useCallback(() => {
     setJoined(false);
+    setMediaConnected(false);
+    setNegotiating(false);
     setJoining(false);
     setMicActive(false);
     setLocalSpeaking(false);
@@ -74,6 +80,12 @@ export function useTelegramVoiceSession({
       });
       joinLostUnsubRef.current = session.onJoinLost(() => {
         setJoined(false);
+        setMediaConnected(false);
+        setNegotiating(false);
+        // markJoinLost clears session mic — keep React state in sync.
+        setMicActive(false);
+        setLocalSpeaking(false);
+        micActiveRef.current = false;
       });
     },
     [],
@@ -114,21 +126,48 @@ export function useTelegramVoiceSession({
     sessionRef.current?.updateGroupCallId(groupCallId);
   }, [groupCallId]);
 
+  useEffect(() => {
+    if (!joined || Platform.OS !== "web") return;
+    const id = window.setInterval(() => {
+      const session = sessionRef.current;
+      if (!session?.isJoined) {
+        setMediaConnected(false);
+        setNegotiating(false);
+        return;
+      }
+      setMediaConnected(session.isMediaConnected());
+      setNegotiating(session.isNegotiating());
+    }, 1_500);
+    return () => window.clearInterval(id);
+  }, [joined]);
+
   const joinListen = useCallback(async (): Promise<boolean> => {
     if (Platform.OS !== "web") return false;
     const session = sessionRef.current;
     if (!session) return false;
     if (session.isJoined) {
-      setJoined(true);
-      session.resumeRemoteAudio();
-      return true;
+      if (session.isNegotiating()) {
+        setJoined(true);
+        return false;
+      }
+      session.rejoinIfStale();
+      if (session.isJoined && session.isMediaConnected()) {
+        setJoined(true);
+        setMediaConnected(true);
+        session.resumeRemoteAudio();
+        return true;
+      }
     }
+
+    setMediaConnected(false);
+    setNegotiating(false);
 
     setJoining(true);
     setError(null);
     try {
       await session.ensureJoinedListenOnly();
       setJoined(true);
+      setMediaConnected(session.isMediaConnected());
       session.resumeRemoteAudio();
       if (micActiveRef.current) {
         await session.setMicEnabled(true);
@@ -167,11 +206,18 @@ export function useTelegramVoiceSession({
       session.unlockRemoteAudio();
       await session.setMicEnabled(next);
       setJoined(session.isJoined);
+      setMediaConnected(session.isMediaConnected());
       session.resumeRemoteAudio();
-      setMicActive(micActiveRef.current);
+      // Prefer session truth after sync/rejoin (may have failed to unmute).
+      const enabled = session.isMicEnabled;
+      micActiveRef.current = enabled;
+      setMicActive(enabled);
+      if (!enabled) setLocalSpeaking(false);
     } catch (err) {
       const message = err instanceof Error ? err.message : "mic_toggle_failed";
       setError(message);
+      micActiveRef.current = session.isMicEnabled;
+      setMicActive(session.isMicEnabled);
       appWarn("[voice-session-mic]", message, { chatId, groupCallId });
     }
   }, [chatId, groupCallId]);
@@ -198,6 +244,8 @@ export function useTelegramVoiceSession({
     localSpeaking,
     joining,
     joined,
+    mediaConnected,
+    negotiating,
     error,
     unlockAudio,
     joinListen,
