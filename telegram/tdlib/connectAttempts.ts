@@ -845,6 +845,31 @@ async function requireReadySessionFast(
   return requireReadySession(telegramUsername, 8_000);
 }
 
+/** Resolve the live group call id for SSE (prefer getChat over stale client ids). */
+export async function resolveVoiceStreamGroupCallId(
+  telegramUsername: string,
+  chatId: number,
+  preferredGroupCallId?: number | null,
+): Promise<number | null> {
+  const record = await requireReadySessionFast(telegramUsername);
+  if (!record?.client) {
+    return normalizeTelegramGroupCallId(preferredGroupCallId);
+  }
+  try {
+    const { resolveBoundGroupCallId } = await import("./voiceParticipants.js");
+    const resolved = await resolveBoundGroupCallId(
+      record.client,
+      Math.trunc(chatId),
+      preferredGroupCallId,
+      { allowHistoryProbe: false },
+    );
+    if (resolved.callId > 0) return resolved.callId;
+  } catch {
+    /* fall through */
+  }
+  return normalizeTelegramGroupCallId(preferredGroupCallId);
+}
+
 type AvatarImageResult = { data: Buffer; mime: string } | "no_avatar" | null;
 const userAvatarCache = new Map<string, AvatarImageResult>();
 const chatAvatarCache = new Map<string, AvatarImageResult>();
@@ -1572,6 +1597,21 @@ export async function focusChatForUser(
     const chat = (await record.client.invoke({ _: "getChat", chat_id: chatId })) as chatPreview.TdChat;
     const { patchLiveChatFromTdlib } = await import("./liveChatCache.js");
     patchLiveChatFromTdlib(telegramUsername, chat, {});
+    const { resolveBoundGroupCallId } = await import("./voiceParticipants.js");
+    const resolved = await resolveBoundGroupCallId(record.client, chatId, null, {
+      allowHistoryProbe: true,
+    });
+    if (resolved.voice.has_active_voice_chat) {
+      patchLiveChatVideoChat(telegramUsername, chatId, resolved.voice);
+    }
+    logGateway("chat_focus_video_chat", {
+      telegramUsername,
+      chatId,
+      videoChat: resolved.videoChatRaw,
+      hasActiveVoiceChat: resolved.voice.has_active_voice_chat,
+      groupCallId: resolved.voice.voice_chat_group_call_id,
+      resolveSource: resolved.source,
+    });
     const peerUserId = chatPreview.peerUserIdFromChat(chat);
     if (peerUserId != null) {
       const { refreshPeerEmojiStatus } = await import("./syncChats.js");
@@ -1669,6 +1709,7 @@ export async function getChatVoiceParticipantsForUser(
   telegramUsername: string,
   chatId: number,
   groupCallId?: number | null,
+  options?: { forceReload?: boolean },
 ): Promise<{
   ok: boolean;
   error: string | null;
@@ -1683,20 +1724,46 @@ export async function getChatVoiceParticipantsForUser(
     is_muted: boolean;
     is_self: boolean;
   }>;
+  has_active_voice_chat: boolean;
+  voice_chat_group_call_id: number | null;
+  voice_resolve_source: string;
 }> {
   // Presence polls every ~0.8–2s. Do not block 30s on restore — that piles up
   // overlapping waits and returns session_not_ready storms after reconnect.
   const record = await requireReadySessionFast(telegramUsername);
   if (!record) {
-    return { ok: false, error: "session_not_ready", participant_count: 0, participants: [] };
+    return {
+      ok: false,
+      error: "session_not_ready",
+      participant_count: 0,
+      participants: [],
+      has_active_voice_chat: false,
+      voice_chat_group_call_id: null,
+      voice_resolve_source: "none",
+    };
   }
 
   try {
     const { fetchChatVoiceParticipants } = await import("./voiceParticipants.js");
-    return await fetchChatVoiceParticipants(record.client, chatId, groupCallId);
+    const result = await fetchChatVoiceParticipants(record.client, chatId, groupCallId, {
+      forceReload: Boolean(options?.forceReload),
+    });
+    patchLiveChatVideoChat(telegramUsername, chatId, {
+      has_active_voice_chat: result.has_active_voice_chat,
+      voice_chat_group_call_id: result.voice_chat_group_call_id,
+    });
+    return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : "participants_failed";
-    return { ok: false, error: message, participant_count: 0, participants: [] };
+    return {
+      ok: false,
+      error: message,
+      participant_count: 0,
+      participants: [],
+      has_active_voice_chat: false,
+      voice_chat_group_call_id: null,
+      voice_resolve_source: "none",
+    };
   }
 }
 
@@ -1850,17 +1917,31 @@ export async function leaveChatVoiceForUser(
     }
     if (callId <= 0) {
       return {
-        ok: false,
-        error: "no_active_voice_chat",
+        ok: true,
+        error: null,
         has_active_voice_chat: false,
         voice_chat_group_call_id: null,
       };
     }
 
-    await record.client.invoke({
-      _: "leaveGroupCall",
-      group_call_id: callId,
-    });
+    // Idempotent: if we are not in the call, skip leaveGroupCall (avoids 502/hangs
+    // when the UI cleans up a phantom self row from a stale presence snapshot).
+    let alreadyOut = false;
+    try {
+      const groupCall = (await record.client.invoke({
+        _: "getGroupCall",
+        group_call_id: callId,
+      })) as { is_joined?: boolean };
+      alreadyOut = !Boolean(groupCall.is_joined);
+    } catch {
+      alreadyOut = false;
+    }
+    if (!alreadyOut) {
+      await record.client.invoke({
+        _: "leaveGroupCall",
+        group_call_id: callId,
+      });
+    }
 
     const chat = (await record.client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
     const voice = voiceChatFromTdChat(chat);

@@ -6,6 +6,8 @@ export const MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX = 44;
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_PX = 28;
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX = 10;
 export const MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS = 5;
+/** Max height for the in-chat remote camera / screen-share plane (16:9). */
+export const MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX = 320;
 
 /** Shared list row metrics — aligned with {@link AuthenticatedHomeFeedPanel} feed rows. */
 export const MESSAGE_ROW_HEIGHT_PX = 40;

@@ -8,7 +8,7 @@ import { applyAuthApiCors, authApiPreflightResponse } from "../_lib/auth-cors.js
 import { telegramUsernameFromSessionCookie } from "../_lib/session-auth.js";
 import { appLog, safeTelegramUserIdForLog, telegramUserIdLogField } from "../../shared/appLog.js";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
-import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayDeleteChatMessages,   gatewayJoinChatVoice, gatewaySetChatVoiceMicMuted, gatewaySetChatVoiceParticipantSpeaking, gatewayStartChatVoice, gatewayLeaveChatVoice, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
+import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayOpenChatMessagesStream, gatewayOpenVoiceParticipantsStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayDeleteChatMessages,   gatewayJoinChatVoice, gatewaySetChatVoiceMicMuted, gatewaySetChatVoiceParticipantSpeaking, gatewayStartChatVoice, gatewayLeaveChatVoice, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
 
 type NodeRes = {
   status: (code: number) => void;
@@ -540,6 +540,207 @@ export async function telegramMessagesChatsStreamHandler(
 
   logTelegramMessagesApi("messages_chats_stream_open", {
     telegramUsername: userOrRes,
+    sinceRevision:
+      sinceRevision != null && Number.isFinite(sinceRevision) && sinceRevision > 0
+        ? sinceRevision
+        : null,
+  });
+
+  if (res && typeof res.write === "function") {
+    res.status(200);
+    sseHeaders.forEach((v, k) => res.setHeader(k, v));
+    const reader = gatewayResponse.body.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          res.write(decoder.decode(value, { stream: true }));
+        }
+      }
+    } catch {
+      /* client disconnected */
+    } finally {
+      abortController.abort();
+      res.end();
+    }
+    return;
+  }
+
+  return new Response(gatewayResponse.body, { status: 200, headers: sseHeaders });
+}
+
+export async function telegramMessagesVoiceParticipantsStreamHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
+  }
+
+  const url = requestUrl(request);
+  const chatId = Number(url.searchParams.get("chat_id"));
+  const groupCallId = normalizeTelegramGroupCallId(url.searchParams.get("group_call_id"));
+  const sinceRevisionRaw = url.searchParams.get("since_revision");
+  const sinceRevision =
+    sinceRevisionRaw != null && sinceRevisionRaw.trim() !== "" ? Number(sinceRevisionRaw) : null;
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
+  }
+
+  const abortController = new AbortController();
+  const upstreamSignal =
+    request instanceof Request && request.signal ? request.signal : undefined;
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      abortController.abort();
+    } else {
+      upstreamSignal.addEventListener("abort", () => abortController.abort(), { once: true });
+    }
+  }
+
+  const gatewayResponse = await gatewayOpenVoiceParticipantsStream(
+    userOrRes,
+    Math.trunc(chatId),
+    groupCallId,
+    sinceRevision != null && Number.isFinite(sinceRevision) && sinceRevision > 0
+      ? sinceRevision
+      : null,
+    abortController.signal,
+  );
+  if (!gatewayResponse?.body) {
+    return finishJson(request, res, { ok: false, error: "stream_unavailable" }, 503);
+  }
+
+  const sseHeaders = new Headers({
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  applyAuthApiCors(request, sseHeaders);
+
+  logTelegramMessagesApi("messages_voice_participants_stream_open", {
+    telegramUsername: userOrRes,
+    chatId: Math.trunc(chatId),
+    groupCallId,
+    sinceRevision:
+      sinceRevision != null && Number.isFinite(sinceRevision) && sinceRevision > 0
+        ? sinceRevision
+        : null,
+  });
+
+  if (res && typeof res.write === "function") {
+    res.status(200);
+    sseHeaders.forEach((v, k) => res.setHeader(k, v));
+    const reader = gatewayResponse.body.getReader();
+    const decoder = new TextDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          res.write(decoder.decode(value, { stream: true }));
+        }
+      }
+    } catch {
+      /* client disconnected */
+    } finally {
+      abortController.abort();
+      res.end();
+    }
+    return;
+  }
+
+  return new Response(gatewayResponse.body, { status: 200, headers: sseHeaders });
+}
+
+export async function telegramMessagesHistoryStreamHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
+  }
+
+  const url = requestUrl(request);
+  const chatId = Number(url.searchParams.get("chat_id"));
+  const sinceRevisionRaw = url.searchParams.get("since_revision");
+  const sinceRevision =
+    sinceRevisionRaw != null && sinceRevisionRaw.trim() !== "" ? Number(sinceRevisionRaw) : null;
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
+  }
+
+  const abortController = new AbortController();
+  const upstreamSignal =
+    request instanceof Request && request.signal ? request.signal : undefined;
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      abortController.abort();
+    } else {
+      upstreamSignal.addEventListener("abort", () => abortController.abort(), { once: true });
+    }
+  }
+
+  const gatewayResponse = await gatewayOpenChatMessagesStream(
+    userOrRes,
+    Math.trunc(chatId),
+    sinceRevision != null && Number.isFinite(sinceRevision) && sinceRevision > 0
+      ? sinceRevision
+      : null,
+    abortController.signal,
+  );
+  if (!gatewayResponse?.body) {
+    return finishJson(request, res, { ok: false, error: "stream_unavailable" }, 503);
+  }
+
+  const sseHeaders = new Headers({
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+  });
+  applyAuthApiCors(request, sseHeaders);
+
+  logTelegramMessagesApi("messages_history_stream_open", {
+    telegramUsername: userOrRes,
+    chatId: Math.trunc(chatId),
     sinceRevision:
       sinceRevision != null && Number.isFinite(sinceRevision) && sinceRevision > 0
         ? sinceRevision
@@ -1640,6 +1841,8 @@ export async function telegramMessagesVoiceParticipantsHandler(
   const url = requestUrl(request);
   const chatId = Number(url.searchParams.get("chat_id"));
   const groupCallId = normalizeTelegramGroupCallId(url.searchParams.get("group_call_id"));
+  const forceReload =
+    url.searchParams.get("force") === "1" || url.searchParams.get("force") === "true";
   if (!Number.isFinite(chatId) || chatId === 0) {
     return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
   }
@@ -1649,6 +1852,7 @@ export async function telegramMessagesVoiceParticipantsHandler(
     userOrRes,
     chatId,
     groupCallId,
+    { forceReload },
   );
   logTelegramMessagesApi("messages_voice_participants", {
     telegramUsername: userOrRes,
@@ -1675,6 +1879,9 @@ export async function telegramMessagesVoiceParticipantsHandler(
       ok: true,
       participants: result.participants,
       participant_count: result.participant_count,
+      has_active_voice_chat: result.has_active_voice_chat,
+      voice_chat_group_call_id: result.voice_chat_group_call_id,
+      voice_resolve_source: result.voice_resolve_source,
     },
     200,
   );

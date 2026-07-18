@@ -134,10 +134,10 @@ export const MESSAGE_CHAT_LOAD_OLDER_PREFETCH_PX = 750;
 export const MESSAGE_CHAT_EDGE_PREFETCH_SCREENS = 3;
 /**
  * IntersectionObserver rootMargin for photo/video full-size fetch around the
- * viewport (tdesktop-style nearby preload — not limited to the emoji 160px band).
+ * viewport. Keep tight: each full JPEG decode fights the main thread with voice.
  */
-/** ~3× typical chat viewport (~480–800) plus slack for fast flings (tdesktop kPreloadHeights). */
-export const MESSAGE_CHAT_MEDIA_PREFETCH_PX = 2400;
+/** ~2× typical chat viewport — enough for fling, not the whole 80-row window. */
+export const MESSAGE_CHAT_MEDIA_PREFETCH_PX = 900;
 
 /**
  * Older rows seeded above the open anchor (bottom / restore / around).

@@ -24,6 +24,8 @@ import { warmupTelegramChatSession } from "./warmupTelegramChatSession";
 
 const FETCH_PAGE_SIZE = MESSAGE_CHAT_HISTORY_PAGE_SIZE;
 const MAX_FETCH_ROUNDS = 40;
+/** Hard cap: media-heavy chats fill char budgets with hundreds of rows otherwise. */
+const MAX_MESSAGES_PER_CHAR_PAGE = MESSAGE_CHAT_HISTORY_PAGE_SIZE * 2;
 
 function seedContextMessageCount(charBudget: number): number {
   return Math.max(4, Math.min(30, Math.ceil(charBudget / 400)));
@@ -634,6 +636,7 @@ export async function fetchOlderHistoryCharBudget(
         }
         if (recovered) {
           if (totalCharacterWeight(messages) >= charBudget) break;
+          if (messages.length >= MAX_MESSAGES_PER_CHAR_PAGE) break;
           if (!hasMoreOlder || nextBeforeMessageId == null) break;
           cursor = nextBeforeMessageId;
           continue;
@@ -645,6 +648,7 @@ export async function fetchOlderHistoryCharBudget(
     hasMoreOlder = result.hasMoreOlder;
     nextBeforeMessageId = result.nextBeforeMessageId;
     if (totalCharacterWeight(messages) >= charBudget) break;
+    if (messages.length >= MAX_MESSAGES_PER_CHAR_PAGE) break;
     if (!result.hasMoreOlder || result.nextBeforeMessageId == null) break;
     cursor = result.nextBeforeMessageId;
   }
@@ -660,9 +664,14 @@ export async function fetchOlderHistoryCharBudget(
     used += weight;
     startIndex = index;
     if (used >= charBudget) break;
+    if (messages.length - startIndex >= MAX_MESSAGES_PER_CHAR_PAGE) break;
   }
 
-  const sliced = messages.slice(startIndex);
+  // Prefer newest-within-page when both char and count caps apply.
+  let sliced = messages.slice(startIndex);
+  if (sliced.length > MAX_MESSAGES_PER_CHAR_PAGE) {
+    sliced = sliced.slice(sliced.length - MAX_MESSAGES_PER_CHAR_PAGE);
+  }
   const slicedHeadId =
     sliced.length > 0 ? sliced[0]!.telegram_message_id : null;
   // tdesktop: a non-empty older window is never EOF. TDLib often returns a short
@@ -714,6 +723,7 @@ export async function fetchNewerHistoryCharBudget(
     if (result.messages.length === 0) break;
     messages = mergeSortedMessages(messages, result.messages);
     if (totalCharacterWeight(messages) >= charBudget) break;
+    if (messages.length >= MAX_MESSAGES_PER_CHAR_PAGE) break;
     const tailId = messages[messages.length - 1]?.telegram_message_id ?? 0;
     if (tailId <= cursor) break;
     cursor = tailId;
@@ -730,10 +740,11 @@ export async function fetchNewerHistoryCharBudget(
     used += weight;
     endIndex = index;
     if (used >= charBudget) break;
+    if (index + 1 >= MAX_MESSAGES_PER_CHAR_PAGE) break;
   }
 
   return {
-    messages: messages.slice(0, endIndex + 1),
+    messages: messages.slice(0, Math.min(endIndex + 1, MAX_MESSAGES_PER_CHAR_PAGE)),
     chatKind,
     error: null,
     hasMoreOlder: false,

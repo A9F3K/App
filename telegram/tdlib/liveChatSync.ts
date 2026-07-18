@@ -2,12 +2,13 @@ import type { Client } from "tdl";
 import { safeTelegramUserIdForLog } from "../../shared/appLog.js";
 import { logGateway } from "./gatewayLog.js";
 import { clearLiveChatCache, getLiveChatList, patchLiveChatAction, patchLiveChatChatEmojiStatus, patchLiveChatEmojiStatus, patchLiveChatFromTdlib, patchLiveChatPresence, patchLiveChatVideoChat, bumpLiveChatRevision } from "./liveChatCache.js";
+import { bumpLiveChatMessageRevision, clearLiveChatMessageRevisions } from "./liveChatMessageRevisionNotify.js";
 import { noteLiveChatMessageDeletes } from "./liveChatDeletedMessages.js";
 import { chatActionFromTdlib, presenceFromTdlibStatus, isGenericMessagePreviewLabel, previewFromMessage, resolveLastMessagePreviewPayload, usernameFromTdUser, voiceChatFromTdChat, type TdChat, type TdMessage } from "./chatPreview.js";
 import { shouldIncludeChatInList } from "./chatListFilter.js";
 import { emojiStatusCustomIdFromUser, parseEmojiStatusCustomId } from "./emojiStatus.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
-import { ingestGroupCallParticipantUpdate } from "./voiceParticipants.js";
+import { ingestGroupCallParticipantUpdate, ingestGroupCallUpdate } from "./voiceParticipants.js";
 
 const CHAT_REFRESH_DEBOUNCE_MS = 800;
 
@@ -21,6 +22,7 @@ const LIVE_UPDATE_TYPES = new Set([
   "updateChatPhoto",
   "updateChatPosition",
   "updateMessageEdited",
+  "updateMessageContent",
   "updateDeleteMessages",
   "updateUserStatus",
   "updateUser",
@@ -68,7 +70,7 @@ function chatIdFromUpdate(update: Record<string, unknown>): number | null {
     const chat = update.chat as { id?: number } | undefined;
     return typeof chat?.id === "number" ? chat.id : null;
   }
-  if (type === "updateMessageEdited" || type === "updateDeleteMessages") {
+  if (type === "updateMessageEdited" || type === "updateMessageContent" || type === "updateDeleteMessages") {
     const chatId = update.chat_id;
     return typeof chatId === "number" ? chatId : null;
   }
@@ -113,6 +115,7 @@ async function applyLiveUpdate(record: LiveSyncRecord, update: Record<string, un
         subtitle_segments: subtitleSegments,
         last_message: lastMessage,
       });
+      bumpLiveChatMessageRevision(record.telegramUsername, message.chat_id);
       logLiveSync(record, "live_chat_message_applied", {
         chatId: message.chat_id,
         userId: safeTelegramUserIdForLog(
@@ -149,6 +152,7 @@ async function applyLiveUpdate(record: LiveSyncRecord, update: Record<string, un
     } catch {
       /* ignore */
     }
+    bumpLiveChatMessageRevision(record.telegramUsername, chatId);
     logLiveSync(record, "live_chat_last_message_applied", { chatId });
     return;
   }
@@ -321,13 +325,16 @@ async function applyLiveUpdate(record: LiveSyncRecord, update: Record<string, un
       video_chat:
         update.video_chat && typeof update.video_chat === "object"
           ? (update.video_chat as TdChat["video_chat"])
-          : undefined,
+          : update.videoChat && typeof update.videoChat === "object"
+            ? (update.videoChat as TdChat["video_chat"])
+            : undefined,
     });
     patchLiveChatVideoChat(record.telegramUsername, chatId, voice);
     logLiveSync(record, "live_chat_video_chat_applied", {
       chatId,
       hasActiveVoiceChat: voice.has_active_voice_chat,
       groupCallId: voice.voice_chat_group_call_id,
+      rawVideoChat: update.video_chat ?? update.videoChat ?? null,
     });
     return;
   }
@@ -338,6 +345,13 @@ async function applyLiveUpdate(record: LiveSyncRecord, update: Record<string, un
   try {
     const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
     patchLiveChatFromTdlib(record.telegramUsername, chat, { last_message: chat.last_message ?? null });
+    if (
+      type === "updateMessageEdited" ||
+      type === "updateMessageContent" ||
+      type === "updateDeleteMessages"
+    ) {
+      bumpLiveChatMessageRevision(record.telegramUsername, chatId);
+    }
     logLiveSync(record, "live_chat_refreshed", { chatId, updateType: type });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -380,6 +394,10 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
       ingestGroupCallParticipantUpdate(update);
       return;
     }
+    if (type === "updateGroupCall") {
+      ingestGroupCallUpdate(update);
+      return;
+    }
     if (typeof type !== "string" || !LIVE_UPDATE_TYPES.has(type)) return;
 
     if (type === "updateNewMessage" || type === "updateChatLastMessage" || type === "updateUserStatus" || type === "updateUser" || type === "updateUserEmojiStatus" || type === "updateUserChatAction" || type === "updateChatReadOutbox") {
@@ -398,6 +416,7 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
       if (typeof chatId === "number" && !fromCache && messageIds.length > 0) {
         if (noteLiveChatMessageDeletes(record.telegramUsername, chatId, messageIds)) {
           bumpLiveChatRevision(record.telegramUsername);
+          bumpLiveChatMessageRevision(record.telegramUsername, chatId);
           logLiveSync(record, "live_chat_messages_deleted", {
             chatId,
             count: messageIds.length,
@@ -405,6 +424,15 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
         }
       }
       if (typeof chatId === "number") {
+        scheduleChatRefresh(record, chatId, update);
+      }
+      return;
+    }
+
+    if (type === "updateMessageEdited" || type === "updateMessageContent") {
+      const chatId = chatIdFromUpdate(update);
+      if (chatId != null) {
+        bumpLiveChatMessageRevision(record.telegramUsername, chatId);
         scheduleChatRefresh(record, chatId, update);
       }
       return;
@@ -425,4 +453,5 @@ export function detachLiveChatSync(telegramUsername: string): void {
     refreshTimers.delete(telegramUsername);
   }
   clearLiveChatCache(telegramUsername);
+  clearLiveChatMessageRevisions(telegramUsername);
 }

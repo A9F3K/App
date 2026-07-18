@@ -1,7 +1,7 @@
 import type { Client } from "tdl";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
 import { logGateway } from "./gatewayLog.js";
-import type { TdChat } from "./chatPreview.js";
+import { readTdVideoChat, type TdChat } from "./chatPreview.js";
 
 function chatSupportsBoundVoiceChat(chat: TdChat): boolean {
   const type = chat.type?._;
@@ -32,7 +32,7 @@ export async function startChatVoiceForUser(
       };
     }
 
-    let callId = normalizeTelegramGroupCallId(chat.video_chat?.group_call_id) ?? 0;
+    let callId = readTdVideoChat(chat).group_call_id ?? 0;
     if (callId <= 0) {
       const created = (await client.invoke({
         _: "createVideoChat",
@@ -40,16 +40,18 @@ export async function startChatVoiceForUser(
         title: "",
         start_date: 0,
         is_rtmp_stream: false,
-      })) as { id?: number; group_call_id?: number };
+      })) as { id?: number; group_call_id?: number; groupCallId?: number };
 
       callId =
-        normalizeTelegramGroupCallId(created?.id ?? created?.group_call_id) ?? 0;
+        normalizeTelegramGroupCallId(
+          created?.id ?? created?.group_call_id ?? created?.groupCallId,
+        ) ?? 0;
       if (callId <= 0) {
         const refreshed = (await client.invoke({
           _: "getChat",
           chat_id: chatId,
         })) as TdChat;
-        callId = normalizeTelegramGroupCallId(refreshed.video_chat?.group_call_id) ?? 0;
+        callId = readTdVideoChat(refreshed).group_call_id ?? 0;
       }
     }
 
@@ -65,8 +67,7 @@ export async function startChatVoiceForUser(
 
     logGateway("voice_start_ok", { chatId, groupCallId: callId });
 
-    // Starter is about to join — treat as live so chat list / header update immediately
-    // even before TDLib flips has_participants.
+    // Starter is about to join — treat as live so chat list / header update immediately.
     return {
       ok: true,
       error: null,
@@ -80,7 +81,7 @@ export async function startChatVoiceForUser(
     // Race: another client created the call — reuse it when present.
     try {
       const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
-      const callId = normalizeTelegramGroupCallId(chat.video_chat?.group_call_id);
+      const callId = readTdVideoChat(chat).group_call_id;
       if (callId != null) {
         return {
           ok: true,

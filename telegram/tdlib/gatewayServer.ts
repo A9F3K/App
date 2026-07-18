@@ -5,6 +5,8 @@ import { getGatewayBindHost, getGatewayPort, getGatewaySecret, getTdlibDbRoot } 
 import { logGateway } from "./gatewayLog.js";
 import { safeTelegramUserIdForLog } from "../../shared/appLog.js";
 import { serveLiveChatRevisionStream } from "./liveChatStream.js";
+import { serveLiveChatMessageRevisionStream } from "./liveChatMessageStream.js";
+import { serveVoiceParticipantsStream } from "./voiceParticipantsStream.js";
 import { buildChatListSyncStatus } from "./chatListSyncState.js";
 import {
   disconnectUserSession,
@@ -324,6 +326,28 @@ export function startTdlibGatewayServer(): http.Server {
             req,
             res,
             telegramUsername,
+            sinceRevision != null && Number.isFinite(sinceRevision) ? sinceRevision : null,
+          );
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/chat/messages/stream") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const chatId = Number(url.searchParams.get("chatId"));
+          if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const sinceRevisionRaw = url.searchParams.get("sinceRevision");
+          const sinceRevision =
+            sinceRevisionRaw != null && sinceRevisionRaw.trim() !== ""
+              ? Number(sinceRevisionRaw)
+              : null;
+          serveLiveChatMessageRevisionStream(
+            req,
+            res,
+            telegramUsername,
+            Math.trunc(chatId),
             sinceRevision != null && Number.isFinite(sinceRevision) ? sinceRevision : null,
           );
           return;
@@ -766,6 +790,8 @@ export function startTdlibGatewayServer(): http.Server {
           const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
           const chatId = Number(url.searchParams.get("chatId"));
           const groupCallId = normalizeTelegramGroupCallId(url.searchParams.get("groupCallId"));
+          const forceReload =
+            url.searchParams.get("force") === "1" || url.searchParams.get("force") === "true";
           if (!telegramUsername || !Number.isFinite(chatId)) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
             return;
@@ -775,6 +801,7 @@ export function startTdlibGatewayServer(): http.Server {
             telegramUsername,
             chatId,
             groupCallId,
+            { forceReload },
           );
           logGateway("chat_voice_participants", {
             telegramUsername,
@@ -782,6 +809,9 @@ export function startTdlibGatewayServer(): http.Server {
             ok: result.ok,
             count: result.participants.length,
             participantCount: result.participant_count,
+            hasActiveVoiceChat: result.has_active_voice_chat,
+            groupCallId: result.voice_chat_group_call_id,
+            resolveSource: result.voice_resolve_source,
             error: result.error,
             ms: Date.now() - started,
           });
@@ -789,8 +819,49 @@ export function startTdlibGatewayServer(): http.Server {
             ok: result.ok,
             participants: result.participants,
             participant_count: result.participant_count,
+            has_active_voice_chat: result.has_active_voice_chat,
+            voice_chat_group_call_id: result.voice_chat_group_call_id,
+            voice_resolve_source: result.voice_resolve_source,
+            video_chat: (result as { video_chat?: unknown }).video_chat ?? null,
             error: result.error,
           });
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/chat/voice/participants/stream") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const chatId = Number(url.searchParams.get("chatId"));
+          const groupCallId = normalizeTelegramGroupCallId(url.searchParams.get("groupCallId"));
+          if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const sinceRevisionRaw = url.searchParams.get("sinceRevision");
+          const sinceRevision =
+            sinceRevisionRaw != null && sinceRevisionRaw.trim() !== ""
+              ? Number(sinceRevisionRaw)
+              : null;
+          // Resolve live call id from getChat (same as join) so a stale client
+          // preferred id cannot subscribe SSE to the wrong call.
+          let resolvedCallId = groupCallId;
+          try {
+            const { resolveVoiceStreamGroupCallId } = await import("./connectAttempts.js");
+            resolvedCallId = await resolveVoiceStreamGroupCallId(
+              telegramUsername,
+              Math.trunc(chatId),
+              groupCallId,
+            );
+          } catch {
+            /* fall back to client preferred / cache map */
+          }
+          serveVoiceParticipantsStream(
+            req,
+            res,
+            telegramUsername,
+            Math.trunc(chatId),
+            resolvedCallId,
+            sinceRevision != null && Number.isFinite(sinceRevision) ? sinceRevision : null,
+          );
           return;
         }
 

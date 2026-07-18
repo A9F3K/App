@@ -56,7 +56,17 @@ export type TdChat = {
   video_chat?: {
     _?: string;
     group_call_id?: number;
+    groupCallId?: number;
     has_participants?: boolean;
+    hasParticipants?: boolean;
+  };
+  /** Some tdl builds expose camelCase on the chat object. */
+  videoChat?: {
+    _?: string;
+    group_call_id?: number;
+    groupCallId?: number;
+    has_participants?: boolean;
+    hasParticipants?: boolean;
   };
   positions?: Array<{
     list?: { _?: string };
@@ -65,19 +75,50 @@ export type TdChat = {
   }>;
 };
 
-/** Active Telegram voice/video chat attached to a chat, if any. */
+type TdVideoChatFields = NonNullable<TdChat["video_chat"]>;
+
+/** Normalize TDLib `video_chat` / `videoChat` (snake or camel) from a chat or update. */
+export function readTdVideoChat(
+  chat: Pick<TdChat, "video_chat" | "videoChat"> | { video_chat?: TdVideoChatFields; videoChat?: TdVideoChatFields } | null | undefined,
+): {
+  group_call_id: number | null;
+  has_participants: boolean | null;
+  raw: TdVideoChatFields | null;
+} {
+  const raw =
+    (chat?.video_chat && typeof chat.video_chat === "object" ? chat.video_chat : null) ??
+    (chat?.videoChat && typeof chat.videoChat === "object" ? chat.videoChat : null);
+  if (!raw) {
+    return { group_call_id: null, has_participants: null, raw: null };
+  }
+  const groupCallIdRaw = raw.group_call_id ?? raw.groupCallId;
+  // TDLib group_call_id can legitimately be `1`. Do not route positive numbers
+  // through helpers that once treated `1` as `Number(true)` pollution.
+  let groupCallId: number | null = null;
+  if (typeof groupCallIdRaw === "number" && Number.isFinite(groupCallIdRaw) && groupCallIdRaw > 0) {
+    groupCallId = Math.trunc(groupCallIdRaw);
+  } else if (typeof groupCallIdRaw === "string") {
+    groupCallId = normalizeTelegramGroupCallId(groupCallIdRaw);
+  }
+  const hasParticipantsRaw = raw.has_participants ?? raw.hasParticipants;
+  const hasParticipants =
+    typeof hasParticipantsRaw === "boolean" ? hasParticipantsRaw : null;
+  return { group_call_id: groupCallId, has_participants: hasParticipants, raw };
+}
+
+/**
+ * Active Telegram voice/video chat attached to a chat, if any.
+ *
+ * TDLib docs: non-zero `group_call_id` means an active video chat exists.
+ * `has_participants` is a hint, but it can stay false with hidden listeners /
+ * brief sync races — requiring it hid live Desktop calls from the web UI.
+ */
 export function voiceChatFromTdChat(chat: TdChat): {
   has_active_voice_chat: boolean;
   voice_chat_group_call_id: number | null;
 } {
-  const groupCallId = normalizeTelegramGroupCallId(chat.video_chat?.group_call_id);
+  const { group_call_id: groupCallId } = readTdVideoChat(chat);
   if (groupCallId == null) {
-    return { has_active_voice_chat: false, voice_chat_group_call_id: null };
-  }
-  // TDLib often keeps a non-zero group_call_id after the room empties.
-  // Only surface voice UI while someone is actually in the call (started by
-  // you or someone else) — matches Telegram's live voice-chat chrome.
-  if (chat.video_chat?.has_participants !== true) {
     return { has_active_voice_chat: false, voice_chat_group_call_id: null };
   }
   return {

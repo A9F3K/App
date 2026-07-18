@@ -6,7 +6,7 @@ import type { TelegramEmojiFetchRef } from "./fetchTelegramEmojiBytes";
 const TAG = "[telegram-emoji]";
 
 const eventCounts = new Map<string, number>();
-const MAX_PER_KEY = 8;
+const MAX_PER_KEY = 2;
 
 function shouldLog(key: string): boolean {
   const count = eventCounts.get(key) ?? 0;

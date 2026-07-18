@@ -12,8 +12,8 @@ import { resolvePreviewMediaUrl } from "./MessageChatMediaContent";
 import { MESSAGE_CHAT_EDGE_PREFETCH_SCREENS } from "./messageChatLayout";
 
 /** Cap concurrent full-photo warmups per display-window tick (tdesktop nearby band). */
-const DISPLAY_FULL_PREFETCH_MAX = 48;
-const DISPLAY_PREVIEW_PREFETCH_MAX = 80;
+const DISPLAY_FULL_PREFETCH_MAX = 8;
+const DISPLAY_PREVIEW_PREFETCH_MAX = 16;
 
 type LayoutEntry = { y: number; height: number };
 
@@ -73,21 +73,23 @@ export function prefetchDisplayChatMedia(
       previewQueued += 1;
     }
 
-    // Stickers + photos: full bytes for the whole painted window.
-    // Video/gif: full only inside the 3-screen preload band (heavy).
-    let wantFull = isPhoto || kind === "sticker";
-    if (isStreamable && layouts) {
-      const entry = layouts.get(item.telegram_message_id);
-      if (entry) {
-        const top = entry.y;
-        const bottom = entry.y + entry.height;
-        wantFull =
-          bottom >= scrollY - preloadBandPx && top <= scrollY + layoutH + preloadBandPx;
-      } else {
-        wantFull = false;
+    // Photos + stickers: full bytes only inside the preload band (was the whole
+    // 80-message window — 35× full JPEGs at chat open froze the tab alongside voice).
+    // Video/gif: same band rule.
+    let wantFull = false;
+    if (isPhoto || kind === "sticker" || isStreamable) {
+      if (layouts) {
+        const entry = layouts.get(item.telegram_message_id);
+        if (entry) {
+          const top = entry.y;
+          const bottom = entry.y + entry.height;
+          wantFull =
+            bottom >= scrollY - preloadBandPx && top <= scrollY + layoutH + preloadBandPx;
+        }
+      } else if (isPhoto || kind === "sticker") {
+        // No layouts yet (first paint): warm a small head of the window only.
+        wantFull = fullQueued < 4;
       }
-    } else if (isStreamable) {
-      wantFull = false;
     }
 
     if (wantFull && fullQueued < DISPLAY_FULL_PREFETCH_MAX && !getCachedMessageMedia(uri)) {

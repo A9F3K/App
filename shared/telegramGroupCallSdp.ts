@@ -10,16 +10,14 @@ export function telegramInt32AudioSourceId(ssrc: number): number {
 
 /**
  * Normalize a Telegram group_call_id from API / cache / TDLib JSON.
- * Rejects booleans: `Number(true) === 1`, which previously leaked as a fake call id.
+ * Rejects booleans (`Number(true) === 1`) — never coerce them to a call id.
+ * Real TDLib ids can be `1`; do not treat that as bogus.
  */
 export function normalizeTelegramGroupCallId(value: unknown): number | null {
   if (typeof value === "boolean" || value == null) return null;
   if (typeof value === "number") {
     if (!Number.isFinite(value) || value <= 0) return null;
-    const n = Math.trunc(value);
-    // Known bogus cache value (Number(true) === 1). Server resolves via getChat.
-    if (n === 1) return null;
-    return n;
+    return Math.trunc(value);
   }
   if (typeof value === "string") {
     const trimmed = value.trim();

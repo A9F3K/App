@@ -2,6 +2,11 @@ import { appLog, appWarn } from "../../../shared/appLog";
 
 const TAG = "[message-media]";
 
+/** Hot-path mount/fetch spam freezes DevTools — enable with `window.__HSP_MEDIA_DEBUG__ = true`. */
+const MEDIA_DEBUG =
+  typeof window !== "undefined" &&
+  Boolean((window as { __HSP_MEDIA_DEBUG__?: boolean }).__HSP_MEDIA_DEBUG__);
+
 function bytesHexPrefix(bytes: Uint8Array, max = 12): string {
   const slice = bytes.subarray(0, Math.min(bytes.length, max));
   return [...slice].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -62,6 +67,7 @@ export function logMessageMediaDebug(
     appWarn(TAG, event, details);
     return;
   }
+  if (!MEDIA_DEBUG) return;
   appLog(TAG, event, details);
 }
 

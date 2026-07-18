@@ -103,6 +103,7 @@ import {
 } from "./chatHistoryMerge";
 import { enrichReplyPreviewsFromLoadedHistory } from "./messageChatReplyEnrichment";
 import { chatLiveSignature, chatMessageTailSignature } from "./chatListSignatures";
+import { useTelegramChatHistoryStream } from "./useTelegramChatHistoryStream";
 import {
   formatMessageDateDividerLabel,
   MessageDateDivider,
@@ -183,8 +184,7 @@ type Props = {
 /** Rows kept below the viewport before tail eviction while scrolled up. */
 const MESSAGE_TAIL_EVICT_BUFFER_ROWS = 15;
 const MESSAGE_CHAT_LIVE_POLL_MS = 3_000;
-const MESSAGE_CHAT_LIVE_POLL_STREAM_FALLBACK_MS = 30_000;
-const CHAT_HISTORY_STREAM_ENABLED = typeof EventSource !== "undefined";
+const MESSAGE_CHAT_LIVE_POLL_STREAM_FALLBACK_MS = 45_000;
 /** User must scroll up this far before older history loads after reopen. */
 const LOAD_OLDER_PAGE_COOLDOWN_MS = 500;
 /** Empty older pages may be TDLib warmup; soft-fail before permanent EOF. */
@@ -477,6 +477,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const lastDisplayMessageIdRef = useRef(0);
   const historyPollInFlightRef = useRef(false);
   const historyPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyStreamRevisionRef = useRef(0);
+  const historyStreamActiveRef = useRef(false);
+  const forceHistoryPollRef = useRef(false);
+  const scheduleHistoryPollRef = useRef<(delayMs?: number) => void>(() => {});
   const messagesCountRef = useRef(0);
   const lastTailMessageIdRef = useRef(0);
   const lastAppliedCacheSignatureRef = useRef("");
@@ -702,6 +706,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       setViewportSliceTick(0);
       lastLiveSignatureRef.current = "";
       lastMessageTailSigRef.current = "";
+      historyStreamRevisionRef.current = 0;
+      forceHistoryPollRef.current = false;
       lastDisplayMessageIdRef.current = 0;
       prevDisplayLengthRef.current = 0;
       prevDisplayHeadIdRef.current = 0;
@@ -792,6 +798,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     } else if (generationChanged) {
       lastLiveSignatureRef.current = "";
       lastMessageTailSigRef.current = "";
+      historyStreamRevisionRef.current = 0;
+      forceHistoryPollRef.current = false;
       lastAppliedCacheSignatureRef.current = "";
       lastAvatarPrefetchGenerationRef.current = 0;
       unreadMarkingArmedRef.current = false;
@@ -4636,13 +4644,16 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     const pollLatest = async () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       if (historyPollInFlightRef.current) return;
+      const force = forceHistoryPollRef.current;
+      if (force) forceHistoryPollRef.current = false;
+
       const signature = chatLiveSignatureValue;
-      if (signature === lastLiveSignatureRef.current) return;
+      if (!force && signature === lastLiveSignatureRef.current) return;
 
       const messageTailSig = chatMessageTailSignature(chat);
-      const listTailChanged = messageTailSig !== lastMessageTailSigRef.current;
+      const listTailChanged = force || messageTailSig !== lastMessageTailSigRef.current;
 
-      if (!listTailChanged && lastMessageTailSigRef.current !== "") {
+      if (!force && !listTailChanged && lastMessageTailSigRef.current !== "") {
         lastLiveSignatureRef.current = signature;
         return;
       }
@@ -4779,28 +4790,37 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
     };
 
-    const schedulePollLatest = () => {
+    const schedulePollLatest = (delayMs = 300) => {
       if (historyPollTimerRef.current != null) {
         clearTimeout(historyPollTimerRef.current);
       }
       historyPollTimerRef.current = setTimeout(() => {
         historyPollTimerRef.current = null;
         void pollLatest();
-      }, 300);
+      }, delayMs);
     };
+    scheduleHistoryPollRef.current = schedulePollLatest;
 
-    schedulePollLatest();
+    // List-row signature change → poll immediately (Phase 3: no leftover lag).
+    const messageTailSig = chatMessageTailSignature(chat);
+    const listTailChanged = messageTailSig !== lastMessageTailSigRef.current;
+    schedulePollLatest(listTailChanged ? 0 : 50);
 
-    const pollMs = CHAT_HISTORY_STREAM_ENABLED
-      ? MESSAGE_CHAT_LIVE_POLL_STREAM_FALLBACK_MS
-      : MESSAGE_CHAT_LIVE_POLL_MS;
-    const timer = setInterval(() => {
-      schedulePollLatest();
-    }, pollMs);
+    let safetyTimer: ReturnType<typeof setTimeout> | null = null;
+    const armSafetyPoll = () => {
+      const pollMs = historyStreamActiveRef.current
+        ? MESSAGE_CHAT_LIVE_POLL_STREAM_FALLBACK_MS
+        : MESSAGE_CHAT_LIVE_POLL_MS;
+      safetyTimer = setTimeout(() => {
+        schedulePollLatest(historyStreamActiveRef.current ? 0 : 300);
+        armSafetyPoll();
+      }, pollMs);
+    };
+    armSafetyPoll();
 
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      if (safetyTimer != null) clearTimeout(safetyTimer);
       if (historyPollTimerRef.current != null) {
         clearTimeout(historyPollTimerRef.current);
         historyPollTimerRef.current = null;
@@ -4819,6 +4839,21 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     shouldLoadHistory,
     loadingInitial,
   ]);
+
+  useTelegramChatHistoryStream({
+    enabled:
+      shouldLoadHistory && isAuthenticated && isTelegramMessagesConnected && !loadingInitial,
+    chatId: chat.telegram_chat_id,
+    getSinceRevision: () => historyStreamRevisionRef.current || null,
+    onRevision: (revision) => {
+      historyStreamRevisionRef.current = Math.max(historyStreamRevisionRef.current, revision);
+      forceHistoryPollRef.current = true;
+      scheduleHistoryPollRef.current(0);
+    },
+    onStreamActiveChange: (active) => {
+      historyStreamActiveRef.current = active;
+    },
+  });
 
   /** Merge older rows from the local history cache when the API page is empty. */
   const hydrateOlderHistoryFromCache = useCallback((): {

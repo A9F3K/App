@@ -5,6 +5,7 @@ import { layout, type ThemeColors } from "../../theme";
 import { patchAuthenticatedHomeSelectedChatVoice } from "../../authenticatedHomeSelectedChat";
 import { unlockVoiceAutoplay } from "../../telegram/unlockVoiceAutoplay";
 import { startTelegramChatVoice } from "../../telegram/startTelegramChatVoice";
+import { fetchTelegramChatVoiceParticipants } from "../../telegram/fetchTelegramChatVoiceParticipants";
 import { appWarn } from "../../../shared/appLog";
 import { MessageChatHeader } from "./MessageChatHeader";
 import { MessageChatMessageList } from "./MessageChatMessageList";
@@ -15,6 +16,8 @@ import type { MessageChatRowData } from "./MessageChatRow";
 type Props = {
   chat: MessageChatRowData;
   colors: ThemeColors;
+  /** Chat pane is the on-screen focus — voice audio only plays while visible. */
+  visible?: boolean;
 };
 
 function isLiveVoiceChat(chat: MessageChatRowData): boolean {
@@ -39,7 +42,7 @@ function resolveGroupCallId(
 }
 
 /** Wide-layout chat pane (middle column). */
-export function MessageChatPanel({ chat, colors }: Props) {
+export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const columnBleedPx = layout.contentSideInsetPx;
   const liveVoiceAvailable = isLiveVoiceChat(chat);
   const canStart = canStartVoiceChat(chat);
@@ -49,6 +52,8 @@ export function MessageChatPanel({ chat, colors }: Props) {
   const [startedCallId, setStartedCallId] = useState<number | null>(null);
   /** After an explicit leave, do not auto-listen again until the user rejoins or opens another chat. */
   const userLeftVoiceRef = useRef(false);
+  /** Closing the sheet can click-through onto the voice strip and reopen it — ignore briefly. */
+  const ignoreVoicePopoverOpenUntilRef = useRef(0);
   const groupCallId = resolveGroupCallId(chat, startedCallId);
   const showVoiceBar = liveVoiceAvailable || voiceJoined;
 
@@ -57,32 +62,80 @@ export function MessageChatPanel({ chat, colors }: Props) {
     setVoicePopoverOpen(false);
     setStartPending(false);
     setStartedCallId(null);
-    // Listen-only on enter when a call is already live (mic stays off until toggled).
-    if (isLiveVoiceChat(chat)) {
-      unlockVoiceAutoplay();
-      setVoiceJoined(true);
-    } else {
-      setVoiceJoined(false);
-    }
+    // tdesktop parity: opening a chat with a live call shows the bar + roster but
+    // does NOT connect audio. The user must press Join (or open the popover) to
+    // hear the call. Prevents remote voice leaking in just from loading the chat.
+    setVoiceJoined(false);
   }, [chat.telegram_chat_id]);
 
   useEffect(() => {
-    if (!liveVoiceAvailable) {
-      if (!voiceJoined) setStartedCallId(null);
-      return;
+    if (!liveVoiceAvailable && !voiceJoined) {
+      setStartedCallId(null);
     }
-    if (userLeftVoiceRef.current || voiceJoined) return;
-    unlockVoiceAutoplay();
-    setVoiceJoined(true);
   }, [liveVoiceAvailable, voiceJoined]);
+
+  // TDLib chat-list sync can miss video_chat OR keep a stale flag after the call
+  // ends. Always verify while this group is open (not only when the flag is false).
+  useEffect(() => {
+    if (!canStart || voiceJoined || !visible) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const probe = async () => {
+      const result = await fetchTelegramChatVoiceParticipants(chat.telegram_chat_id);
+      if (cancelled || !result.ok) return;
+      const nonSelf = result.participants.filter((row) => !row.is_self);
+      // Empty / self-only "active" flags are usually a stale TDLib join — hide the bar.
+      const live =
+        Boolean(result.has_active_voice_chat) &&
+        (result.participant_count > 0 || nonSelf.length > 0);
+      patchAuthenticatedHomeSelectedChatVoice({
+        has_active_voice_chat: live,
+        voice_chat_group_call_id: live ? result.voice_chat_group_call_id : null,
+      });
+      if (!live) return;
+      appWarn("[message-voice-detect]", result.voice_resolve_source, {
+        chatId: chat.telegram_chat_id,
+        groupCallId: result.voice_chat_group_call_id,
+        participantCount: result.participant_count,
+      });
+    };
+
+    void probe();
+    const schedule = () => {
+      timer = setTimeout(() => {
+        void probe().finally(() => {
+          if (!cancelled) schedule();
+        });
+      }, 5000);
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer != null) clearTimeout(timer);
+    };
+  }, [canStart, chat.telegram_chat_id, visible, voiceJoined]);
+
+  const openVoicePopover = useCallback(() => {
+    if (Date.now() < ignoreVoicePopoverOpenUntilRef.current) return;
+    setVoicePopoverOpen(true);
+  }, []);
+
+  const closeVoicePopover = useCallback(() => {
+    // Swallow the same pointer's click-through onto the strip / Join control.
+    ignoreVoicePopoverOpenUntilRef.current = Date.now() + 500;
+    setVoicePopoverOpen(false);
+  }, []);
 
   const joinVoice = useCallback(() => {
     if (!liveVoiceAvailable && groupCallId == null) return;
     userLeftVoiceRef.current = false;
     unlockVoiceAutoplay();
     setVoiceJoined(true);
-    setVoicePopoverOpen(true);
-  }, [groupCallId, liveVoiceAvailable]);
+    // Open the participant dialog with Join — strip/Join were listen-only and left
+    // users hearing audio with no sheet (felt like a stuck UI).
+    openVoicePopover();
+  }, [groupCallId, liveVoiceAvailable, openVoicePopover]);
 
   const startVoice = useCallback(async () => {
     if (liveVoiceAvailable || startPending || !canStart) return;
@@ -106,18 +159,18 @@ export function MessageChatPanel({ chat, colors }: Props) {
         voice_chat_group_call_id: result.voice_chat_group_call_id,
       });
       setVoiceJoined(true);
-      setVoicePopoverOpen(true);
+      openVoicePopover();
     } finally {
       setStartPending(false);
     }
-  }, [canStart, chat.telegram_chat_id, liveVoiceAvailable, startPending]);
+  }, [canStart, chat.telegram_chat_id, liveVoiceAvailable, openVoicePopover, startPending]);
 
   const leaveVoiceUi = useCallback(() => {
     userLeftVoiceRef.current = true;
     setVoiceJoined(false);
-    setVoicePopoverOpen(false);
+    closeVoicePopover();
     setStartedCallId(null);
-  }, []);
+  }, [closeVoicePopover]);
 
   return (
     <View
@@ -143,6 +196,7 @@ export function MessageChatPanel({ chat, colors }: Props) {
           title={chat.title}
           colors={colors}
           joined={voiceJoined}
+          visible={visible}
           popoverOpen={voicePopoverOpen}
           onJoin={joinVoice}
           onOpenPopover={() => {
@@ -151,9 +205,9 @@ export function MessageChatPanel({ chat, colors }: Props) {
               return;
             }
             unlockVoiceAutoplay();
-            setVoicePopoverOpen(true);
+            openVoicePopover();
           }}
-          onClosePopover={() => setVoicePopoverOpen(false)}
+          onClosePopover={closeVoicePopover}
           onLeftVoice={leaveVoiceUi}
         />
       ) : null}

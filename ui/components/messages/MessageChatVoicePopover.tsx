@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Modal,
   Platform,
@@ -16,10 +16,10 @@ import {
   type ThemeColors,
 } from "../../theme";
 import { useAppStrings } from "../../../locales/AppStringsContext";
-import { HspScrollColumn } from "../HspScrollColumn";
 import { LiquidGlassShaderUndercover } from "../LiquidGlassShaderUndercover";
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
+import { logPageDisplay } from "../../pageDisplayLog";
 import type { TelegramChatVoiceParticipant } from "../../telegram/fetchTelegramChatVoiceParticipants";
 import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
@@ -27,6 +27,7 @@ import { resolveTelegramUserAvatarUrl } from "./resolveTelegramUserAvatarUrl";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
 import {
   MESSAGE_AVATAR_PX,
+  MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
   MESSAGE_FONT_SIZE_PX,
   MESSAGE_ICON_TEXT_GAP_PX,
   MESSAGE_LINE_HEIGHT_PX,
@@ -43,9 +44,82 @@ import {
   VoiceWindowTrayIcon,
 } from "./MessageChatVoiceControlIcons";
 import { VoiceParticipantStateMicIcon } from "./MessageChatVoiceParticipantMicIcon";
+import { MessageChatVoiceVideoPlane } from "./MessageChatVoiceVideoPlane";
 
 const WINDOW_ICON_SIZE_PX = 15;
 const WINDOW_ICON_GAP_PX = 12;
+/** Reserve top-right chrome so resize hit strips cannot steal close/minimize presses. */
+const WINDOW_CONTROLS_RESERVE_PX = 120;
+
+function VoiceWindowChromeButton({
+  label,
+  onPress,
+  children,
+  hitExtraPx = 8,
+}: {
+  label: string;
+  onPress: () => void;
+  children: ReactNode;
+  hitExtraPx?: number;
+}) {
+  const sizePx = WINDOW_ICON_SIZE_PX + hitExtraPx;
+  if (Platform.OS === "web") {
+    // Native <button> — RN Pressable often misses clicks under absolute resize
+    // handles / SVG children, and closing can click-through to the voice strip.
+    return createElement(
+      "button",
+      {
+        type: "button",
+        "aria-label": label,
+        title: label,
+        onPointerDown: (e: { stopPropagation?: () => void; preventDefault?: () => void }) => {
+          e.stopPropagation?.();
+        },
+        onClick: (e: { stopPropagation?: () => void; preventDefault?: () => void }) => {
+          e.stopPropagation?.();
+          e.preventDefault?.();
+          onPress();
+        },
+        style: {
+          width: sizePx,
+          height: sizePx,
+          margin: 0,
+          padding: 0,
+          border: "none",
+          background: "transparent",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          position: "relative",
+          zIndex: 30,
+          WebkitAppearance: "none",
+          appearance: "none",
+        },
+      },
+      createElement("span", { style: { pointerEvents: "none", display: "flex" } }, children),
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      onPress={onPress}
+      hitSlop={12}
+      style={({ pressed }) => ({
+        width: sizePx,
+        height: sizePx,
+        alignItems: "center",
+        justifyContent: "center",
+        opacity: pressed ? 0.7 : 1,
+        zIndex: 30,
+      })}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
 const CONTROL_CHIP_PX = 50;
 const CONTROL_ICON_PX = 20;
 const CONTROL_CHIP_GAP_PX = 15;
@@ -57,6 +131,16 @@ const MIN_SHEET_HEIGHT_PX = 280;
 const SHEET_CHROME_HEIGHT_PX = 148;
 const VOICE_SIZE_STORAGE_KEY = "hsp.voiceChatDialog.size.v1";
 const VOICE_SPEAKING_MIC_COLOR = "#34C759";
+
+function compareVoiceDialogParticipants(
+  a: TelegramChatVoiceParticipant,
+  b: TelegramChatVoiceParticipant,
+): number {
+  if (a.is_speaking !== b.is_speaking) return a.is_speaking ? -1 : 1;
+  if (a.is_self !== b.is_self) return a.is_self ? -1 : 1;
+  return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+}
+
 const AH = layout.authenticatedHome;
 const HIT = AH.splitPaneDividerHitWidthPx;
 const STROKE = AH.splitPaneDividerStrokePx;
@@ -77,6 +161,9 @@ type Props = {
   onMicPress: () => void;
   onDropPress: () => void;
   dropLeaving: boolean;
+  /** Remote camera / screenshare for the in-dialog video plane. */
+  remoteVideoStream?: MediaStream | null;
+  videoActive?: boolean;
 };
 
 type SheetSize = { width: number; height: number };
@@ -129,7 +216,7 @@ function cursorForHandle(handle: ResizeHandle): string {
   }
 }
 
-function VoiceParticipantRow({
+const VoiceParticipantRow = memo(function VoiceParticipantRow({
   participant,
   isLast,
   colors,
@@ -142,6 +229,7 @@ function VoiceParticipantRow({
   const title = participant.title.trim() || "?";
   const description = participant.description.trim();
   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
+  const speaking = Boolean(participant.is_speaking);
   const textBase = {
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
     fontSize: MESSAGE_FONT_SIZE_PX,
@@ -161,42 +249,26 @@ function VoiceParticipantRow({
       }}
     >
       <View
-        accessibilityRole="image"
-        style={{
-          width: 28,
-          height: 28,
-          alignItems: "center",
-          justifyContent: "center",
-          marginRight: 8,
-          flexShrink: 0,
-        }}
-      >
-        <VoiceParticipantStateMicIcon
-          speaking={Boolean(participant.is_speaking) && !participant.is_muted}
-          muted={Boolean(participant.is_muted)}
-          color={
-            participant.is_speaking && !participant.is_muted
-              ? VOICE_SPEAKING_MIC_COLOR
-              : colors.primary
-          }
-          size={20}
-        />
-      </View>
-      <View
         style={{
           width: MESSAGE_AVATAR_PX,
           height: MESSAGE_AVATAR_PX,
           alignItems: "center",
           justifyContent: "center",
+          borderRadius: MESSAGE_AVATAR_PX / 2,
+          borderWidth: speaking ? 2 : 0,
+          borderColor: VOICE_SPEAKING_MIC_COLOR,
+          backgroundColor: colors.background,
+          overflow: "hidden",
+          flexShrink: 0,
         }}
       >
         <MessageChatAvatarSlot
           iconUrl={avatarUrl}
           initials={extractChatAvatarInitials(title)}
-          sizePx={MESSAGE_AVATAR_PX}
+          sizePx={speaking ? MESSAGE_AVATAR_PX - 4 : MESSAGE_AVATAR_PX}
           colors={colors}
           scheme={colorScheme}
-          fetchPriority="high"
+          fetchPriority={speaking ? "high" : "low"}
         />
       </View>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />
@@ -206,9 +278,10 @@ function VoiceParticipantRow({
           telegramUserId={participant.user_id}
           telegramChatId={participant.chat_id}
           emojiStatusCustomEmojiId={participant.emoji_status_custom_emoji_id}
-          emojiStatusPriority
-          inlineEmojiFetchEnabled
-          inlineEmojiFetchPriority
+          emojiStatusPriority={false}
+          // Lottie/TGS fetch+animate per row stalls the main thread in a long call.
+          inlineEmojiFetchEnabled={false}
+          inlineEmojiFetchPriority={false}
           inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
           textAlign="left"
           numberOfLines={1}
@@ -231,9 +304,27 @@ function VoiceParticipantRow({
           </Text>
         ) : null}
       </View>
+      <View
+        accessibilityRole="image"
+        style={{
+          width: 28,
+          height: 28,
+          alignItems: "center",
+          justifyContent: "center",
+          marginLeft: 8,
+          flexShrink: 0,
+        }}
+      >
+        <VoiceParticipantStateMicIcon
+          speaking={speaking}
+          muted={Boolean(participant.is_muted) && !speaking}
+          color={colors.primary}
+          size={20}
+        />
+      </View>
     </View>
   );
-}
+});
 
 function VoiceControlChip({
   label,
@@ -323,19 +414,40 @@ function ResizeEdgeHandle({
   let geometry: ViewStyle;
   switch (handle) {
     case "n":
-      geometry = { top: -half, left: HIT, right: HIT, height: HIT };
+      // Leave the top-right window controls (close / size / tray) clickable.
+      geometry = {
+        top: -half,
+        left: HIT,
+        right: HIT + WINDOW_CONTROLS_RESERVE_PX,
+        height: HIT,
+      };
       break;
     case "s":
       geometry = { bottom: -half, left: HIT, right: HIT, height: HIT };
       break;
     case "e":
-      geometry = { top: HIT, bottom: HIT, right: -half, width: HIT };
+      // Start below the header row so east-edge drag does not cover close.
+      geometry = {
+        top: HIT + 52,
+        bottom: HIT,
+        right: -half,
+        width: HIT,
+      };
       break;
     case "w":
       geometry = { top: HIT, bottom: HIT, left: -half, width: HIT };
       break;
     case "ne":
-      geometry = { top: -half, right: -half, width: HIT, height: HIT };
+      // Keep NE away from the close cluster — NW still covers the true corner.
+      geometry = {
+        top: -half,
+        right: -half,
+        width: HIT,
+        height: HIT,
+        // Invisible and non-interactive; N + E edges still resize this corner.
+        pointerEvents: "none",
+        opacity: 0,
+      };
       break;
     case "nw":
       geometry = { top: -half, left: -half, width: HIT, height: HIT };
@@ -375,6 +487,8 @@ export function MessageChatVoicePopover({
   onMicPress,
   onDropPress,
   dropLeaving,
+  remoteVideoStream = null,
+  videoActive = false,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -435,19 +549,7 @@ export function MessageChatVoicePopover({
     setSheetSize((prev) => clampSize(prev));
   }, [clampSize]);
 
-  useEffect(() => {
-    if (!visible || Platform.OS !== "web" || typeof document === "undefined") return;
-    const html = document.documentElement;
-    const body = document.body;
-    const prevHtmlOverflow = html.style.overflow;
-    const prevBodyOverflow = body.style.overflow;
-    html.style.overflow = "hidden";
-    body.style.overflow = "hidden";
-    return () => {
-      html.style.overflow = prevHtmlOverflow;
-      body.style.overflow = prevBodyOverflow;
-    };
-  }, [visible]);
+  // Modal already captures input — do not lock document overflow (that froze the app).
 
   const activeEdges = useMemo(() => {
     const edges = new Set<Edge>();
@@ -565,24 +667,33 @@ export function MessageChatVoicePopover({
 
   const listMaxHeight = Math.max(80, sheetSize.height - SHEET_CHROME_HEIGHT_PX);
   const handles: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+  const displayParticipants = useMemo(
+    () => [...participants].sort(compareVoiceDialogParticipants).slice(0, 64),
+    [participants],
+  );
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <HspScrollColumn
-        style={{ height: windowHeight, width: "100%", minHeight: 0 }}
-        contentContainerStyle={{
-          flexGrow: 1,
+      {/* Plain overlay — do not use HspScrollColumn here: its children-driven
+          layout effects rebind on every roster SSE tick and freeze the sheet. */}
+      <View
+        style={{
+          height: windowHeight,
+          width: "100%",
           minHeight: windowHeight,
           justifyContent: "center",
           alignItems: "center",
         }}
-        containOverscroll
-        scrollEnabled={!draggingHandle}
       >
         <View style={[appModalSheetStyles.overlayBlock, { minHeight: windowHeight }]}>
           <Pressable
             style={appModalSheetStyles.backdropFill}
-            onPress={onClose}
+            onPress={() => {
+              logPageDisplay("messages_voice_dialog_close_click", {
+                source: "backdrop",
+              });
+              onClose();
+            }}
             accessibilityRole="button"
             accessibilityLabel={t("common.back")}
           />
@@ -607,8 +718,10 @@ export function MessageChatVoicePopover({
               ? ({
                   onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
                 } as object)
-              : {})}
-            onStartShouldSetResponder={() => true}
+              : {
+                  // Native only — on web this steals presses from the close Pressable.
+                  onStartShouldSetResponder: () => true,
+                })}
           >
             {Platform.OS === "web"
               ? handles.map((handle) => (
@@ -633,6 +746,8 @@ export function MessageChatVoicePopover({
                 paddingHorizontal: 20,
                 marginBottom: 16,
                 gap: 12,
+                zIndex: 10,
+                ...(Platform.OS === "web" ? ({ position: "relative" } as object) : {}),
               }}
             >
               <View style={{ flex: 1, minWidth: 0 }}>
@@ -669,60 +784,51 @@ export function MessageChatVoicePopover({
                   alignItems: "center",
                   gap: WINDOW_ICON_GAP_PX,
                   flexShrink: 0,
+                  zIndex: 20,
+                  ...(Platform.OS === "web" ? ({ position: "relative" } as object) : {}),
                 }}
               >
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("common.back")}
-                  onPress={onClose}
-                  hitSlop={8}
-                  style={({ pressed }) => ({
-                    width: WINDOW_ICON_SIZE_PX + 4,
-                    height: WINDOW_ICON_SIZE_PX + 4,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    opacity: pressed ? 0.7 : 1,
-                  })}
+                <VoiceWindowChromeButton
+                  label={t("common.back")}
+                  hitExtraPx={8}
+                  onPress={() => {
+                    logPageDisplay("messages_voice_dialog_close_click", {
+                      source: "chrome_x",
+                    });
+                    onClose();
+                  }}
                 >
                   <VoiceWindowCrossIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("messages.voiceChat.expand")}
+                </VoiceWindowChromeButton>
+                <VoiceWindowChromeButton
+                  label={t("messages.voiceChat.expand")}
+                  hitExtraPx={4}
                   onPress={expandToDefault}
-                  hitSlop={8}
-                  style={({ pressed }) => ({
-                    width: WINDOW_ICON_SIZE_PX + 4,
-                    height: WINDOW_ICON_SIZE_PX + 4,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    opacity: pressed ? 0.7 : 1,
-                  })}
                 >
                   <VoiceWindowSizeIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel={t("messages.voiceChat.minimize")}
+                </VoiceWindowChromeButton>
+                <VoiceWindowChromeButton
+                  label={t("messages.voiceChat.minimize")}
+                  hitExtraPx={4}
                   onPress={minimizeSheet}
-                  hitSlop={8}
-                  style={({ pressed }) => ({
-                    width: WINDOW_ICON_SIZE_PX + 4,
-                    height: WINDOW_ICON_SIZE_PX + 4,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    opacity: pressed ? 0.7 : 1,
-                  })}
                 >
                   <VoiceWindowTrayIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
-                </Pressable>
+                </VoiceWindowChromeButton>
               </View>
             </View>
 
+            <MessageChatVoiceVideoPlane
+              stream={remoteVideoStream}
+              active={Boolean(visible && videoActive && remoteVideoStream)}
+              maxHeightPx={Math.min(220, MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX)}
+              horizontalInsetPx={20}
+              marginBottomPx={16}
+            />
+
             <View style={{ paddingHorizontal: 20, flex: 1, minHeight: 0, maxHeight: listMaxHeight }}>
               <ScrollView style={{ flex: 1, maxHeight: listMaxHeight }} nestedScrollEnabled>
-                {participants.length > 0 ? (
-                  participants.map((participant, index) => (
+                {displayParticipants.length > 0 ? (
+                  displayParticipants.map((participant, index) => (
                     <VoiceParticipantRow
                       key={
                         participant.user_id != null
@@ -730,7 +836,7 @@ export function MessageChatVoicePopover({
                           : `c:${participant.chat_id}:${index}`
                       }
                       participant={participant}
-                      isLast={index === participants.length - 1}
+                      isLast={index === displayParticipants.length - 1}
                       colors={colors}
                     />
                   ))
@@ -781,7 +887,9 @@ export function MessageChatVoicePopover({
               <VoiceControlChip
                 key="mic"
                 label={t("messages.voiceChat.controls.mic")}
-                variant={micActive ? "liquid" : "simple"}
+                // Never run liquid-glass WebGL inside the modal — its rAF loop
+                // was a primary cause of Chrome "Page Unresponsive" after a while.
+                variant="simple"
                 undercoverColor={colors.undercover}
                 isLightTheme={isLightTheme}
                 phaseOffset={0.38}
@@ -815,7 +923,7 @@ export function MessageChatVoicePopover({
             </View>
           </View>
         </View>
-      </HspScrollColumn>
+      </View>
     </Modal>
   );
 }

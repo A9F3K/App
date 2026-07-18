@@ -1608,7 +1608,7 @@ export function HomeAuthenticatedScreen() {
     >
       <AuthenticatedHomePersistedPanelSlot active={messagesChatOpen}>
         {selectedMessageChat ? (
-          <MessageChatPanel chat={selectedMessageChat} colors={colors} />
+          <MessageChatPanel chat={selectedMessageChat} colors={colors} visible={messagesChatOpen} />
         ) : null}
       </AuthenticatedHomePersistedPanelSlot>
       <AuthenticatedHomePersistedPanelSlot active={!messagesChatOpen && headerPanelVisibleOnWide && rightPanel === "swap"}>

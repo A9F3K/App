@@ -611,11 +611,9 @@ export function MessageChatMessageRow({
               emojiContentActive={contentActive && rowInView}
               mediaFetchEnabled={contentActive}
               deferFullMediaFetch={
-                // Photos/stickers: full as soon as painted (list also prefetches the window).
-                // Video/gif: wait for the wider nearby preload band.
-                item.content_kind === "video" || item.content_kind === "animation"
-                  ? !(contentActive && mediaNearView)
-                  : !contentActive
+                // All kinds: full bytes only near the viewport. Painted-but-far
+                // rows used to fetch every full JPEG at once and freeze the tab.
+                !(contentActive && mediaNearView)
               }
             />
           </View>

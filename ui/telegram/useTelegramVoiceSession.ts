@@ -9,9 +9,15 @@ type Input = {
   groupCallId: number | null;
   /**
    * Keep a WebRTC session shell alive. Media joins via `joinListen` /
-   * `toggleMic` once the parent sets `active` (listen-only on chat enter, or Join).
+   * `toggleMic` once the parent sets `active` after explicit Join.
    */
   active: boolean;
+  /**
+   * Whether the chat dialog is currently on-screen. When false (panel hidden /
+   * user navigated away) remote audio is muted so voice is only heard in-dialog.
+   * Defaults to true.
+   */
+  visible?: boolean;
 };
 
 export type TelegramVoiceSession = {
@@ -22,6 +28,8 @@ export type TelegramVoiceSession = {
   mediaConnected: boolean;
   negotiating: boolean;
   error: string | null;
+  /** Live remote camera / screen-share stream while someone is presenting. */
+  remoteVideoStream: MediaStream | null;
   unlockAudio: () => void;
   /** Resolves true when the WebRTC join succeeded (or was already joined). */
   joinListen: () => Promise<boolean>;
@@ -35,6 +43,7 @@ export function useTelegramVoiceSession({
   chatId,
   groupCallId,
   active,
+  visible = true,
 }: Input): TelegramVoiceSession {
   const [micActive, setMicActive] = useState(false);
   const [localSpeaking, setLocalSpeaking] = useState(false);
@@ -43,6 +52,7 @@ export function useTelegramVoiceSession({
   const [mediaConnected, setMediaConnected] = useState(false);
   const [negotiating, setNegotiating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [remoteVideoStream, setRemoteVideoStream] = useState<MediaStream | null>(null);
   const sessionRef = useRef<TelegramGroupCallWebSession | null>(null);
   const micActiveRef = useRef(false);
   const groupCallIdRef = useRef(groupCallId);
@@ -50,6 +60,7 @@ export function useTelegramVoiceSession({
 
   const speakingUnsubRef = useRef<(() => void) | null>(null);
   const joinLostUnsubRef = useRef<(() => void) | null>(null);
+  const videoUnsubRef = useRef<(() => void) | null>(null);
 
   const resetLocalUi = useCallback(() => {
     setJoined(false);
@@ -58,6 +69,7 @@ export function useTelegramVoiceSession({
     setJoining(false);
     setMicActive(false);
     setLocalSpeaking(false);
+    setRemoteVideoStream(null);
     micActiveRef.current = false;
   }, []);
 
@@ -66,15 +78,22 @@ export function useTelegramVoiceSession({
     speakingUnsubRef.current = null;
     joinLostUnsubRef.current?.();
     joinLostUnsubRef.current = null;
+    videoUnsubRef.current?.();
+    videoUnsubRef.current = null;
+    const wasJoined = Boolean(sessionRef.current?.isJoined);
     sessionRef.current?.dispose();
     sessionRef.current = null;
+    if (wasJoined) {
+      void leaveTelegramChatVoice(chatId, groupCallIdRef.current).catch(() => undefined);
+    }
     resetLocalUi();
-  }, [resetLocalUi]);
+  }, [chatId, resetLocalUi]);
 
   const bindSession = useCallback(
     (session: TelegramGroupCallWebSession) => {
       speakingUnsubRef.current?.();
       joinLostUnsubRef.current?.();
+      videoUnsubRef.current?.();
       speakingUnsubRef.current = session.onLocalSpeakingChange((speaking) => {
         setLocalSpeaking(speaking);
       });
@@ -82,10 +101,13 @@ export function useTelegramVoiceSession({
         setJoined(false);
         setMediaConnected(false);
         setNegotiating(false);
-        // markJoinLost clears session mic — keep React state in sync.
         setMicActive(false);
         setLocalSpeaking(false);
+        setRemoteVideoStream(null);
         micActiveRef.current = false;
+      });
+      videoUnsubRef.current = session.onRemoteVideoChange((stream) => {
+        setRemoteVideoStream(stream);
       });
     },
     [],
@@ -96,6 +118,8 @@ export function useTelegramVoiceSession({
     speakingUnsubRef.current = null;
     joinLostUnsubRef.current?.();
     joinLostUnsubRef.current = null;
+    videoUnsubRef.current?.();
+    videoUnsubRef.current = null;
     sessionRef.current?.dispose();
     const session = new TelegramGroupCallWebSession({
       chatId,
@@ -104,6 +128,7 @@ export function useTelegramVoiceSession({
     sessionRef.current = session;
     bindSession(session);
     setError(null);
+    setRemoteVideoStream(null);
     return session;
   }, [bindSession, chatId]);
 
@@ -126,6 +151,14 @@ export function useTelegramVoiceSession({
     sessionRef.current?.updateGroupCallId(groupCallId);
   }, [groupCallId]);
 
+  // Gate remote audio on dialog visibility — call stays joined, output is muted
+  // while the chat panel is hidden so voice is heard only while in the dialog.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    sessionRef.current?.setRemoteAudioEnabled(visible);
+    if (visible) sessionRef.current?.resumeRemoteAudio();
+  }, [visible, joined, mediaConnected]);
+
   useEffect(() => {
     if (!joined || Platform.OS !== "web") return;
     const id = window.setInterval(() => {
@@ -146,29 +179,34 @@ export function useTelegramVoiceSession({
     const session = sessionRef.current;
     if (!session) return false;
     if (session.isJoined) {
-      if (session.isNegotiating()) {
-        setJoined(true);
-        return false;
-      }
-      session.rejoinIfStale();
-      if (session.isJoined && session.isMediaConnected()) {
-        setJoined(true);
-        setMediaConnected(true);
+      setJoined(true);
+      setMediaConnected(session.isMediaConnected());
+      setNegotiating(session.isNegotiating());
+      if (visible) {
+        session.setRemoteAudioEnabled(true);
         session.resumeRemoteAudio();
-        return true;
+      } else {
+        session.setRemoteAudioEnabled(false);
       }
+      return true;
+    }
+    if (session.isNegotiating()) {
+      setJoined(false);
+      setNegotiating(true);
+      return false;
     }
 
     setMediaConnected(false);
     setNegotiating(false);
-
     setJoining(true);
     setError(null);
     try {
       await session.ensureJoinedListenOnly();
       setJoined(true);
       setMediaConnected(session.isMediaConnected());
-      session.resumeRemoteAudio();
+      setNegotiating(session.isNegotiating());
+      session.setRemoteAudioEnabled(Boolean(visible));
+      if (visible) session.resumeRemoteAudio();
       if (micActiveRef.current) {
         await session.setMicEnabled(true);
         setMicActive(true);
@@ -186,7 +224,7 @@ export function useTelegramVoiceSession({
     } finally {
       setJoining(false);
     }
-  }, [chatId, groupCallId]);
+  }, [chatId, groupCallId, visible]);
 
   const unlockAudio = useCallback(() => {
     sessionRef.current?.unlockRemoteAudio();
@@ -208,7 +246,6 @@ export function useTelegramVoiceSession({
       setJoined(session.isJoined);
       setMediaConnected(session.isMediaConnected());
       session.resumeRemoteAudio();
-      // Prefer session truth after sync/rejoin (may have failed to unmute).
       const enabled = session.isMicEnabled;
       micActiveRef.current = enabled;
       setMicActive(enabled);
@@ -223,21 +260,19 @@ export function useTelegramVoiceSession({
   }, [chatId, groupCallId]);
 
   const leaveVoice = useCallback(async () => {
-    // Stop WebRTC immediately, then leave TDLib, then recreate the shell
-    // so the next Join gesture can unlock remote audio / AudioContext again.
     speakingUnsubRef.current?.();
     speakingUnsubRef.current = null;
     joinLostUnsubRef.current?.();
     joinLostUnsubRef.current = null;
+    videoUnsubRef.current?.();
+    videoUnsubRef.current = null;
     sessionRef.current?.dispose();
     sessionRef.current = null;
     const result = await leaveTelegramChatVoice(chatId, groupCallId);
+    createSessionShell();
     resetLocalUi();
-    if (Platform.OS === "web" && active) {
-      createSessionShell();
-    }
     return result;
-  }, [active, chatId, groupCallId, createSessionShell, resetLocalUi]);
+  }, [chatId, createSessionShell, groupCallId, resetLocalUi]);
 
   return {
     micActive,
@@ -247,6 +282,7 @@ export function useTelegramVoiceSession({
     mediaConnected,
     negotiating,
     error,
+    remoteVideoStream,
     unlockAudio,
     joinListen,
     toggleMic,

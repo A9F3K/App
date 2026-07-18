@@ -26,6 +26,10 @@
       "destination": "/api/telegram-messages-chats-stream"
     },
     {
+      "source": "/api/telegram/messages/history/stream",
+      "destination": "/api/telegram-messages-history-stream"
+    },
+    {
       "source": "/api/telegram/messages/send",
       "destination": "/api/telegram-messages-send"
     },
@@ -52,6 +56,10 @@
     {
       "source": "/api/telegram/messages/voice/participants",
       "destination": "/api/telegram-messages-voice-participants"
+    },
+    {
+      "source": "/api/telegram/messages/voice/participants/stream",
+      "destination": "/api/telegram-messages-voice-participants-stream"
     },
     {
       "source": "/api/telegram/messages/resolve-chat",

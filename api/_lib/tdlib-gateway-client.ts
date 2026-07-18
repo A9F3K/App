@@ -542,6 +542,149 @@ export function gatewayLiveChatsStreamUrl(
   return `${base}/v1/chats/stream?${params.toString()}`;
 }
 
+export function gatewayVoiceParticipantsStreamUrl(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+  sinceRevision?: number | null,
+): string {
+  const base = getGatewayBaseUrl();
+  const params = new URLSearchParams({
+    telegramUsername,
+    chatId: String(Math.trunc(chatId)),
+  });
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  if (callId != null) {
+    params.set("groupCallId", String(callId));
+  }
+  if (
+    sinceRevision != null &&
+    Number.isFinite(sinceRevision) &&
+    sinceRevision > 0
+  ) {
+    params.set("sinceRevision", String(sinceRevision));
+  }
+  return `${base}/v1/chat/voice/participants/stream?${params.toString()}`;
+}
+
+export async function gatewayOpenVoiceParticipantsStream(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+  sinceRevision?: number | null,
+  signal?: AbortSignal,
+): Promise<Response | null> {
+  const url = gatewayVoiceParticipantsStreamUrl(
+    telegramUsername,
+    chatId,
+    groupCallId,
+    sinceRevision,
+  );
+  const secret = getGatewaySecret();
+  const started = Date.now();
+  logTdlibGatewayApi("gateway_stream_start", {
+    method: "GET",
+    path: "/v1/chat/voice/participants/stream",
+    gatewayHost: safeHost(url),
+  });
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { "X-Gateway-Secret": secret },
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      logTdlibGatewayApi("gateway_stream_done", {
+        path: "/v1/chat/voice/participants/stream",
+        status: response.status,
+        ok: false,
+        elapsedMs: Date.now() - started,
+      });
+      return null;
+    }
+    logTdlibGatewayApi("gateway_stream_open", {
+      path: "/v1/chat/voice/participants/stream",
+      status: response.status,
+      ok: true,
+      elapsedMs: Date.now() - started,
+    });
+    return response;
+  } catch (err) {
+    logTdlibGatewayApi("gateway_stream_error", {
+      path: "/v1/chat/voice/participants/stream",
+      elapsedMs: Date.now() - started,
+      fetchError: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+    });
+    return null;
+  }
+}
+
+export function gatewayChatMessagesStreamUrl(
+  telegramUsername: string,
+  chatId: number,
+  sinceRevision?: number | null,
+): string {
+  const base = getGatewayBaseUrl();
+  const params = new URLSearchParams({
+    telegramUsername,
+    chatId: String(Math.trunc(chatId)),
+  });
+  if (
+    sinceRevision != null &&
+    Number.isFinite(sinceRevision) &&
+    sinceRevision > 0
+  ) {
+    params.set("sinceRevision", String(sinceRevision));
+  }
+  return `${base}/v1/chat/messages/stream?${params.toString()}`;
+}
+
+export async function gatewayOpenChatMessagesStream(
+  telegramUsername: string,
+  chatId: number,
+  sinceRevision?: number | null,
+  signal?: AbortSignal,
+): Promise<Response | null> {
+  const url = gatewayChatMessagesStreamUrl(telegramUsername, chatId, sinceRevision);
+  const secret = getGatewaySecret();
+  const started = Date.now();
+  logTdlibGatewayApi("gateway_stream_start", {
+    method: "GET",
+    path: "/v1/chat/messages/stream",
+    gatewayHost: safeHost(url),
+  });
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { "X-Gateway-Secret": secret },
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      logTdlibGatewayApi("gateway_stream_done", {
+        path: "/v1/chat/messages/stream",
+        status: response.status,
+        ok: false,
+        elapsedMs: Date.now() - started,
+      });
+      return null;
+    }
+    logTdlibGatewayApi("gateway_stream_open", {
+      path: "/v1/chat/messages/stream",
+      status: response.status,
+      ok: true,
+      elapsedMs: Date.now() - started,
+    });
+    return response;
+  } catch (err) {
+    logTdlibGatewayApi("gateway_stream_error", {
+      path: "/v1/chat/messages/stream",
+      elapsedMs: Date.now() - started,
+      fetchError: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+    });
+    return null;
+  }
+}
+
 export async function gatewayOpenLiveChatsStream(
   telegramUsername: string,
   sinceRevision?: number | null,
@@ -890,6 +1033,7 @@ export async function gatewayFetchChatVoiceParticipants(
   telegramUsername: string,
   chatId: number,
   groupCallId?: number | null,
+  options?: { forceReload?: boolean },
 ): Promise<{
   ok: boolean;
   error: string | null;
@@ -901,8 +1045,12 @@ export async function gatewayFetchChatVoiceParticipants(
     description: string;
     emoji_status_custom_emoji_id: string | null;
     is_speaking: boolean;
+    is_muted: boolean;
     is_self: boolean;
   }>;
+  has_active_voice_chat: boolean;
+  voice_chat_group_call_id: number | null;
+  voice_resolve_source: string;
 }> {
   const callId = normalizeTelegramGroupCallId(groupCallId);
   const params = new URLSearchParams({
@@ -911,6 +1059,9 @@ export async function gatewayFetchChatVoiceParticipants(
   });
   if (callId != null) {
     params.set("groupCallId", String(callId));
+  }
+  if (options?.forceReload) {
+    params.set("force", "1");
   }
   const { response, json } = await gatewayFetch(
     `/v1/chat/voice/participants?${params.toString()}`,
@@ -924,6 +1075,7 @@ export async function gatewayFetchChatVoiceParticipants(
         description?: unknown;
         emoji_status_custom_emoji_id?: unknown;
         is_speaking?: unknown;
+        is_muted?: unknown;
         is_self?: unknown;
       }>).map((row) => {
         const userId = Number(row.user_id);
@@ -933,6 +1085,7 @@ export async function gatewayFetchChatVoiceParticipants(
           row.emoji_status_custom_emoji_id.trim()
             ? row.emoji_status_custom_emoji_id.trim()
             : null;
+        const isSpeaking = Boolean(row.is_speaking);
         return {
           user_id: Number.isFinite(userId) && userId > 0 ? Math.trunc(userId) : null,
           chat_id:
@@ -942,18 +1095,27 @@ export async function gatewayFetchChatVoiceParticipants(
           title: typeof row.title === "string" ? row.title : "",
           description: typeof row.description === "string" ? row.description : "",
           emoji_status_custom_emoji_id: emojiStatus,
-          is_speaking: Boolean(row.is_speaking),
+          is_speaking: isSpeaking,
+          // Speaking wins over a stale muted flag from the gateway/TDLib race.
+          is_muted: isSpeaking ? false : Boolean(row.is_muted),
           is_self: Boolean(row.is_self),
         };
       })
     : [];
   const participantCount = Number(json.participant_count);
+  const voiceCallId = normalizeTelegramGroupCallId(json.voice_chat_group_call_id);
+  const hasActive = Boolean(json.has_active_voice_chat) || voiceCallId != null;
+  const resolveSource =
+    typeof json.voice_resolve_source === "string" ? json.voice_resolve_source : "none";
   if (!response.ok || !json.ok) {
     return {
       ok: false,
       error: typeof json.error === "string" ? json.error : "participants_failed",
       participant_count: 0,
       participants: [],
+      has_active_voice_chat: false,
+      voice_chat_group_call_id: null,
+      voice_resolve_source: "none",
     };
   }
   return {
@@ -964,6 +1126,9 @@ export async function gatewayFetchChatVoiceParticipants(
         ? Math.trunc(participantCount)
         : participants.length,
     participants,
+    has_active_voice_chat: hasActive,
+    voice_chat_group_call_id: voiceCallId,
+    voice_resolve_source: resolveSource,
   };
 }
 

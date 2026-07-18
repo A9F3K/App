@@ -1,7 +1,11 @@
 import type { MessageChatHistoryItem } from "./messageChatHistoryTypes";
 
-/** Fallback weight for media-only bubbles when `text` is empty. */
-const MEDIA_MESSAGE_CHAR_WEIGHT = 80;
+/**
+ * Fallback weight for media-only bubbles when `text` is empty.
+ * Photos are tall in the list; under-weighting them let a 20k char page pull
+ * 200+ media rows and freeze the tab on decode.
+ */
+const MEDIA_MESSAGE_CHAR_WEIGHT = 320;
 
 /** Count characters used for history window budgets. */
 export function messageCharacterWeight(item: MessageChatHistoryItem): number {
