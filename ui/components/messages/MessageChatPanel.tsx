@@ -85,10 +85,11 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       const result = await fetchTelegramChatVoiceParticipants(chat.telegram_chat_id);
       if (cancelled || !result.ok) return;
       const nonSelf = result.participants.filter((row) => !row.is_self);
-      // Empty / self-only "active" flags are usually a stale TDLib join — hide the bar.
+      const hasSelf = result.participants.some((row) => row.is_self);
+      // Self-only is live when this account is already in the call elsewhere.
       const live =
         Boolean(result.has_active_voice_chat) &&
-        (result.participant_count > 0 || nonSelf.length > 0);
+        (result.participant_count > 0 || nonSelf.length > 0 || hasSelf);
       patchAuthenticatedHomeSelectedChatVoice({
         has_active_voice_chat: live,
         voice_chat_group_call_id: live ? result.voice_chat_group_call_id : null,

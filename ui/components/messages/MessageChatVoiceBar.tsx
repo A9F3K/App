@@ -56,7 +56,8 @@ type Props = {
 
 /**
  * Under-header strip for an active chat voice.
- * Shows participant avatars while a call is live. WebRTC starts only after
+ * Shows participant avatars while a call is live (including self when this
+ * account is already in from another client). WebRTC starts only after
  * explicit Join (`joined`) so opening a chat preview never saturates the link.
  */
 export function MessageChatVoiceBar({
@@ -112,9 +113,12 @@ export function MessageChatVoiceBar({
       options?: { allowClear?: boolean },
     ) => {
       const nonSelf = rows.filter((row) => !row.is_self);
+      // Account already in the call from another Telegram client still counts as
+      // live presence — otherwise a solo self join hides the preview strip.
+      const hasSelf = rows.some((row) => row.is_self);
       const live =
         Boolean(hasActive) &&
-        (Math.max(0, countHint) > 0 || nonSelf.length > 0);
+        (Math.max(0, countHint) > 0 || nonSelf.length > 0 || hasSelf);
 
       if (voiceJoinedRef.current) {
         setPresenceConfirmed(true);
@@ -344,13 +348,11 @@ export function MessageChatVoiceBar({
           ? performance.now()
           : Date.now();
       const joinedLocally = voiceJoinedRef.current;
-      // Presence can include self when TDLib still has a stale join from a prior
-      // session. Only show "You" after an explicit Join in this UI — never auto-leave
-      // on open (that raced Join and hung the gateway → stuck voice UI).
-      const base = joinedLocally ? incoming : incoming.filter((row) => !row.is_self);
-      const hadServerSelf = incoming.some((row) => row.is_self);
-      const withLocalSpeaking = base.map((row) => {
-        if (!row.is_self) return row;
+      // Keep server `is_self` in the preview when this account is already in the
+      // call from another client. WebRTC still waits for an explicit Join — we only
+      // overlay local mic/speaking state after that.
+      const withLocalSpeaking = incoming.map((row) => {
+        if (!row.is_self || !joinedLocally) return row;
         return {
           ...row,
           is_speaking: localSpeakingRef.current ? true : row.is_speaking,
@@ -468,9 +470,7 @@ export function MessageChatVoiceBar({
       setParticipantCount((prev) => {
         // Prefer TDLib participant_count. Only fall back to listed length when
         // the server did not send a count (never inflate above Telegram).
-        const hint = joinedLocally
-          ? countHint
-          : Math.max(0, countHint - (hadServerSelf ? 1 : 0));
+        const hint = Math.max(0, countHint);
         const nextCount =
           hint > 0
             ? hint
@@ -600,6 +600,9 @@ export function MessageChatVoiceBar({
   }, [applyRosterRows, chatId, groupCallId, isTelegramMessagesConnected, syncVoicePresence]);
 
   useEffect(() => {
+    // Local WebRTC mic/speaking only applies after an explicit Join on this client.
+    // Before that, keep server mute/speaking for the account's other-client presence.
+    if (!joined) return;
     setParticipants((prev) => {
       let changed = false;
       const next = prev.map((row) => {
@@ -613,11 +616,12 @@ export function MessageChatVoiceBar({
       if (!changed) return prev;
       return applySpeakingHold(next);
     });
-  }, [applySpeakingHold, voiceSession.localSpeaking, voiceSession.micActive]);
+  }, [applySpeakingHold, joined, voiceSession.localSpeaking, voiceSession.micActive]);
 
-  // As soon as we join, show self immediately — don't wait for the first poll
-  // (solo muted calls often come back empty until TDLib catches up).
-  // When not joined, strip any stale self row from a prior TDLib session.
+  // As soon as we join locally, show self immediately — don't wait for the first
+  // poll (solo muted calls often come back empty until TDLib catches up).
+  // On local leave, drop the optimistic self row; the next poll restores it if
+  // the account is still in the call from another client.
   useEffect(() => {
     if (!joined) {
       setParticipants((prev) => {
