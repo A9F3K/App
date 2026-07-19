@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
@@ -80,18 +80,16 @@ export function MessageChatVoiceBar({
   const [leaving, setLeaving] = useState(false);
   const [participants, setParticipants] = useState<TelegramChatVoiceParticipant[]>([]);
   const [participantCount, setParticipantCount] = useState(0);
+  /** Speaking glow is a side map (tdesktop parity) — never rebuilds roster order. */
+  const [speakingByKey, setSpeakingByKey] = useState<Record<string, true>>({});
   /** Hide the empty strip until a poll/SSE proves real (non-self) presence. */
   const [presenceConfirmed, setPresenceConfirmed] = useState(false);
   const stripPaddingX = layout.contentSideInsetPx;
   const totalParticipantCount = Math.max(participantCount, participants.length);
-  // Speakers first in the strip so the active talker isn't buried behind self/+N.
-  const stackedParticipants = [...participants]
-    .sort((a, b) => {
-      if (a.is_speaking !== b.is_speaking) return a.is_speaking ? -1 : 1;
-      if (a.is_self !== b.is_self) return a.is_self ? -1 : 1;
-      return 0;
-    })
-    .slice(0, MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS);
+  const speakingByKeyRef = useRef(speakingByKey);
+  speakingByKeyRef.current = speakingByKey;
+  // Stable strip order — do not re-sort by speaking (that remounted avatars every pulse).
+  const stackedParticipants = participants.slice(0, MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS);
   const overflowCount = Math.max(0, totalParticipantCount - stackedParticipants.length);
   const participantsA11yLabel =
     totalParticipantCount > 0
@@ -206,14 +204,16 @@ export function MessageChatVoiceBar({
       joinAttemptsRef.current += 1;
       unlockVoiceAutoplay();
       unlockAudioRef.current();
-      // Yield so the voice dialog portal can bind Close / Escape before SDP work.
+      // Yield longer so the voice dialog portal can bind Close / Escape before
+      // getUserMedia + SDP — that work was freezing the sheet on open.
       await new Promise<void>((resolve) => {
         if (typeof window === "undefined") {
           resolve();
           return;
         }
+        const delayMs = popoverOpenRef.current ? 480 : 80;
         window.requestAnimationFrame(() => {
-          window.setTimeout(resolve, 32);
+          window.setTimeout(resolve, delayMs);
         });
       });
       if (cancelled) {
@@ -279,7 +279,6 @@ export function MessageChatVoiceBar({
           left.title !== right.title ||
           left.description !== right.description ||
           left.emoji_status_custom_emoji_id !== right.emoji_status_custom_emoji_id ||
-          Boolean(left.is_speaking) !== Boolean(right.is_speaking) ||
           Boolean(left.is_muted) !== Boolean(right.is_muted) ||
           Boolean(left.is_self) !== Boolean(right.is_self) ||
           (left.video_info?.endpoint_id ?? "") !== (right.video_info?.endpoint_id ?? "") ||
@@ -307,27 +306,29 @@ export function MessageChatVoiceBar({
     return `t:${row.title}`;
   }, []);
 
-  const applySpeakingHold = useCallback(
-    (rows: TelegramChatVoiceParticipant[]): TelegramChatVoiceParticipant[] => {
-      // Keep a short hold so brief speaking pulses remain visible whether they
-      // arrived via SSE or the safety poll (SSE can miss sub-debounce flashes).
+  const applySpeakingMap = useCallback(
+    (rows: TelegramChatVoiceParticipant[]) => {
+      // Speaking glow lives in speakingByKey so membership rows stay referentially
+      // stable (tdesktop parity). A short hold keeps brief pulses visible.
       const now = Date.now();
       const holdMs = 1_200;
       let soonestExpiry = 0;
-      const next = rows.map((row) => {
+      const next: Record<string, true> = {};
+      for (const row of rows) {
         const key = participantSpeakKey(row);
         if (row.is_speaking) {
           speakingHoldUntilRef.current.set(key, now + holdMs);
-          return row;
+          next[key] = true;
+          continue;
         }
         const until = speakingHoldUntilRef.current.get(key) ?? 0;
         if (until > now) {
+          next[key] = true;
           if (soonestExpiry === 0 || until < soonestExpiry) soonestExpiry = until;
-          return { ...row, is_speaking: true };
+        } else {
+          speakingHoldUntilRef.current.delete(key);
         }
-        speakingHoldUntilRef.current.delete(key);
-        return row;
-      });
+      }
       if (speakingHoldTimerRef.current) {
         clearTimeout(speakingHoldTimerRef.current);
         speakingHoldTimerRef.current = null;
@@ -336,27 +337,47 @@ export function MessageChatVoiceBar({
         speakingHoldTimerRef.current = setTimeout(() => {
           speakingHoldTimerRef.current = null;
           const expiredAt = Date.now();
-          setParticipants((prev) => {
+          setSpeakingByKey((prev) => {
             let changed = false;
-            const cleared = prev.map((row) => {
-              const key = participantSpeakKey(row);
+            const cleared: Record<string, true> = { ...prev };
+            for (const key of Object.keys(cleared)) {
               const until = speakingHoldUntilRef.current.get(key) ?? 0;
               if (until > 0 && until <= expiredAt) {
                 speakingHoldUntilRef.current.delete(key);
-                if (row.is_speaking) {
-                  changed = true;
-                  return { ...row, is_speaking: false };
-                }
+                delete cleared[key];
+                changed = true;
               }
-              return row;
-            });
+            }
             return changed ? cleared : prev;
           });
         }, soonestExpiry - now + 16);
       }
-      return next;
+      setSpeakingByKey((prev) => {
+        const prevKeys = Object.keys(prev);
+        const nextKeys = Object.keys(next);
+        if (prevKeys.length === nextKeys.length) {
+          let same = true;
+          for (const key of nextKeys) {
+            if (!prev[key]) {
+              same = false;
+              break;
+            }
+          }
+          if (same) return prev;
+        }
+        if (nextKeys.length > 0) {
+          logPageDisplay("messages_voice_roster_speaking_applied", {
+            chatId,
+            speakingCount: nextKeys.length,
+            listed: rows.length,
+            applyMs: 0,
+            popoverOpen: popoverOpenRef.current,
+          });
+        }
+        return next;
+      });
     },
-    [participantSpeakKey],
+    [chatId, participantSpeakKey],
   );
 
   const applyRosterRows = useCallback(
@@ -377,8 +398,9 @@ export function MessageChatVoiceBar({
           is_muted: !micActiveRef.current,
         };
       });
-      // Speaking must paint synchronously — startTransition deferred greens and a
-      // missing import threw ReferenceError on every roster tick (UI freeze).
+      // Speaking map updates separately — never rebuild membership for a mic pulse.
+      applySpeakingMap(withLocalSpeaking);
+
       setParticipants((prev) => {
         let next = withLocalSpeaking;
         if (joinedLocally && !next.some((row) => row.is_self)) {
@@ -390,7 +412,7 @@ export function MessageChatVoiceBar({
               title: prevSelf?.title?.trim() || selfTitleRef.current || "You",
               description: prevSelf?.description ?? "",
               emoji_status_custom_emoji_id: prevSelf?.emoji_status_custom_emoji_id ?? null,
-              is_speaking: localSpeakingRef.current,
+              is_speaking: false,
               is_muted: !micActiveRef.current,
               is_self: true,
             },
@@ -403,7 +425,7 @@ export function MessageChatVoiceBar({
         const nextByKey = new Map(next.map((row) => [speakKey(row), row]));
 
         // Thin recent-speakers snapshots (≤3) must not wipe a richer joined roster —
-        // only overlay speaking/mute. Full/near-full snapshots REPLACE so leavers
+        // only overlay mute/profile. Full/near-full snapshots REPLACE so leavers
         // disappear (the old merge-grow path kept ghosts forever).
         const hint = Math.max(0, countHint);
         const looksLikeRecentSpeakersOnly =
@@ -415,71 +437,99 @@ export function MessageChatVoiceBar({
           const merged = prev.map((row) => {
             const inc = nextByKey.get(speakKey(row));
             if (!inc) return row;
+            const nextMuted = Boolean(inc.is_muted);
+            const nextTitle = inc.title.trim() || row.title;
+            const nextDescription = inc.description || row.description;
+            const nextEmoji =
+              inc.emoji_status_custom_emoji_id ?? row.emoji_status_custom_emoji_id;
+            const nextVideo = inc.video_info ?? row.video_info ?? null;
+            const nextScreen =
+              inc.screen_sharing_video_info ?? row.screen_sharing_video_info ?? null;
+            if (
+              Boolean(row.is_muted) === nextMuted &&
+              row.title === nextTitle &&
+              row.description === nextDescription &&
+              row.emoji_status_custom_emoji_id === nextEmoji &&
+              (row.video_info?.endpoint_id ?? "") === (nextVideo?.endpoint_id ?? "") &&
+              (row.screen_sharing_video_info?.endpoint_id ?? "") ===
+                (nextScreen?.endpoint_id ?? "")
+            ) {
+              return row;
+            }
             return {
               ...row,
-              is_speaking: inc.is_speaking,
-              is_muted: inc.is_muted,
-              title: inc.title.trim() || row.title,
-              description: inc.description || row.description,
-              emoji_status_custom_emoji_id:
-                inc.emoji_status_custom_emoji_id ?? row.emoji_status_custom_emoji_id,
-              video_info: inc.video_info ?? row.video_info ?? null,
-              screen_sharing_video_info:
-                inc.screen_sharing_video_info ?? row.screen_sharing_video_info ?? null,
+              is_muted: nextMuted,
+              title: nextTitle,
+              description: nextDescription,
+              emoji_status_custom_emoji_id: nextEmoji,
+              video_info: nextVideo,
+              screen_sharing_video_info: nextScreen,
             };
           });
           for (const inc of next) {
-            if (!prevByKey.has(speakKey(inc))) merged.push(inc);
+            if (!prevByKey.has(speakKey(inc))) {
+              merged.push({ ...inc, is_speaking: false });
+            }
           }
           next = merged;
         } else {
           next = next.map((row) => {
             const prevMatch = prevByKey.get(speakKey(row));
+            const title = row.title.trim() || prevMatch?.title || "";
+            const description = row.description || prevMatch?.description || "";
+            const emoji =
+              row.emoji_status_custom_emoji_id ??
+              prevMatch?.emoji_status_custom_emoji_id ??
+              null;
+            const video = row.video_info ?? prevMatch?.video_info ?? null;
+            const screen =
+              row.screen_sharing_video_info ??
+              prevMatch?.screen_sharing_video_info ??
+              null;
+            if (
+              prevMatch &&
+              prevMatch.user_id === row.user_id &&
+              prevMatch.chat_id === row.chat_id &&
+              prevMatch.title === title &&
+              prevMatch.description === description &&
+              prevMatch.emoji_status_custom_emoji_id === emoji &&
+              Boolean(prevMatch.is_muted) === Boolean(row.is_muted) &&
+              Boolean(prevMatch.is_self) === Boolean(row.is_self) &&
+              (prevMatch.video_info?.endpoint_id ?? "") === (video?.endpoint_id ?? "") &&
+              (prevMatch.screen_sharing_video_info?.endpoint_id ?? "") ===
+                (screen?.endpoint_id ?? "")
+            ) {
+              return prevMatch;
+            }
             return {
               ...row,
-              title: row.title.trim() || prevMatch?.title || "",
-              description: row.description || prevMatch?.description || "",
-              emoji_status_custom_emoji_id:
-                row.emoji_status_custom_emoji_id ??
-                prevMatch?.emoji_status_custom_emoji_id ??
-                null,
-              video_info: row.video_info ?? prevMatch?.video_info ?? null,
-              screen_sharing_video_info:
-                row.screen_sharing_video_info ??
-                prevMatch?.screen_sharing_video_info ??
-                null,
+              is_speaking: false,
+              title,
+              description,
+              emoji_status_custom_emoji_id: emoji,
+              video_info: video,
+              screen_sharing_video_info: screen,
             };
           });
         }
 
+        // tdesktop parity: roster order is STABLE while rows exist.
+        const prevOrder = new Map(prev.map((row, index) => [speakKey(row), index]));
         next = [...next].sort((a, b) => {
-          // Active speakers always float to the top of the voice dialog.
-          if (a.is_speaking !== b.is_speaking) return a.is_speaking ? -1 : 1;
+          const ia = prevOrder.get(speakKey(a));
+          const ib = prevOrder.get(speakKey(b));
+          if (ia != null && ib != null) return ia - ib;
+          if (ia != null) return -1;
+          if (ib != null) return 1;
           if (a.is_self !== b.is_self) return a.is_self ? -1 : 1;
           return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
         });
-        next = applySpeakingHold(next);
-        // Re-sort after hold so briefly-held speakers stay pinned at the top.
-        next = [...next].sort((a, b) => {
-          if (a.is_speaking !== b.is_speaking) return a.is_speaking ? -1 : 1;
-          if (a.is_self !== b.is_self) return a.is_self ? -1 : 1;
-          return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
-        });
-        const speakingCount = next.filter((row) => row.is_speaking).length;
+        const speakingCount = Object.keys(speakingByKeyRef.current).length;
         const applyMs = Math.round(
           typeof performance !== "undefined" && typeof performance.now === "function"
             ? performance.now() - applyStarted
             : 0,
         );
-        if (speakingCount > 0 && speakingCount !== prev.filter((row) => row.is_speaking).length) {
-          logPageDisplay("messages_voice_roster_speaking_applied", {
-            chatId,
-            speakingCount,
-            listed: next.length,
-            applyMs,
-            popoverOpen: popoverOpenRef.current,
-          });
-        }
         if (applyMs >= 32 || next.length >= 40) {
           logPageDisplay("messages_voice_roster_apply_cost", {
             chatId,
@@ -503,17 +553,26 @@ export function MessageChatVoiceBar({
         return prev === nextCount ? prev : nextCount;
       });
     },
-    [applySpeakingHold, chatId, participantSpeakKey, participantsEqual],
+    [applySpeakingMap, chatId, participantSpeakKey, participantsEqual],
   );
 
   const pendingStreamSnapRef = useRef<VoiceParticipantsStreamSnapshot | null>(null);
-  const streamApplyRafRef = useRef<number | null>(null);
+  const streamApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastStreamApplyAtRef = useRef(0);
+  /** tdesktop repaints speaking glow on a slow tick — one apply per ~700ms max. */
+  const STREAM_APPLY_MIN_MS = 700;
 
   const flushPendingStreamSnap = useCallback(() => {
-    streamApplyRafRef.current = null;
+    if (streamApplyTimerRef.current != null) {
+      clearTimeout(streamApplyTimerRef.current);
+      streamApplyTimerRef.current = null;
+    }
+    lastStreamApplyAtRef.current = Date.now();
     const snapshot = pendingStreamSnapRef.current;
     pendingStreamSnapRef.current = null;
     if (!snapshot) return;
+    // Speaking glow first — membership apply can wait.
+    applySpeakingMap(snapshot.participants);
     const live = syncVoicePresence(
       true,
       snapshot.group_call_id,
@@ -531,7 +590,7 @@ export function MessageChatVoiceBar({
       });
     }
     applyRosterRows(snapshot.participants, snapshot.participant_count);
-  }, [applyRosterRows, chatId, syncVoicePresence]);
+  }, [applyRosterRows, applySpeakingMap, chatId, syncVoicePresence]);
 
   const onStreamParticipants = useCallback(
     (snapshot: VoiceParticipantsStreamSnapshot) => {
@@ -541,27 +600,28 @@ export function MessageChatVoiceBar({
         return;
       }
       streamRevisionRef.current = Math.max(streamRevisionRef.current, snapshot.revision);
-      // Coalesce SSE floods to one React apply per frame while the dialog is open —
-      // speaking updates can arrive every ~100ms and were freezing the page.
+      // Speaking must update immediately (green mics). Membership thrash is throttled.
+      applySpeakingMap(snapshot.participants);
       pendingStreamSnapRef.current = snapshot;
-      if (popoverOpenRef.current && typeof window !== "undefined") {
-        if (streamApplyRafRef.current == null) {
-          streamApplyRafRef.current = window.requestAnimationFrame(() => {
-            flushPendingStreamSnap();
-          });
-        }
+      if (streamApplyTimerRef.current != null) return;
+      const sinceLast = Date.now() - lastStreamApplyAtRef.current;
+      if (sinceLast >= STREAM_APPLY_MIN_MS) {
+        flushPendingStreamSnap();
         return;
       }
-      flushPendingStreamSnap();
+      streamApplyTimerRef.current = setTimeout(() => {
+        streamApplyTimerRef.current = null;
+        flushPendingStreamSnap();
+      }, STREAM_APPLY_MIN_MS - sinceLast);
     },
-    [flushPendingStreamSnap],
+    [applySpeakingMap, flushPendingStreamSnap],
   );
 
   useEffect(() => {
     return () => {
-      if (streamApplyRafRef.current != null && typeof window !== "undefined") {
-        window.cancelAnimationFrame(streamApplyRafRef.current);
-        streamApplyRafRef.current = null;
+      if (streamApplyTimerRef.current != null) {
+        clearTimeout(streamApplyTimerRef.current);
+        streamApplyTimerRef.current = null;
       }
     };
   }, []);
@@ -632,16 +692,18 @@ export function MessageChatVoiceBar({
       let changed = false;
       const next = prev.map((row) => {
         if (!row.is_self) return row;
-        const isSpeaking = voiceSession.localSpeaking;
         const isMuted = !voiceSession.micActive;
-        if (row.is_speaking === isSpeaking && row.is_muted === isMuted) return row;
+        if (row.is_muted === isMuted) return row;
         changed = true;
-        return { ...row, is_speaking: isSpeaking, is_muted: isMuted };
+        return { ...row, is_muted: isMuted };
       });
-      if (!changed) return prev;
-      return applySpeakingHold(next);
+      return changed ? next : prev;
     });
-  }, [applySpeakingHold, joined, voiceSession.localSpeaking, voiceSession.micActive]);
+    if (voiceSession.localSpeaking) {
+      setSpeakingByKey((prev) => (prev.self ? prev : { ...prev, self: true }));
+      speakingHoldUntilRef.current.set("self", Date.now() + 1_200);
+    }
+  }, [joined, voiceSession.localSpeaking, voiceSession.micActive]);
 
   // As soon as we join locally, show self immediately — don't wait for the first
   // poll (solo muted calls often come back empty until TDLib catches up).
@@ -692,8 +754,10 @@ export function MessageChatVoiceBar({
     const nextBaseMs = () => {
       const sheetOpen = popoverOpenRef.current;
       if (!visible) return 12_000;
+      // SSE owns live roster while the dialog is open — poll is a slow backup.
+      if (sheetOpen && streamActiveRef.current) return 8_000;
       if (joined) {
-        if (sheetOpen) return streamActiveRef.current ? 4_500 : 2_500;
+        if (sheetOpen) return 2_500;
         return 1_200;
       }
       return sheetOpen ? 3_000 : streamActiveRef.current ? 3_000 : 5_000;
@@ -778,9 +842,23 @@ export function MessageChatVoiceBar({
     void refreshParticipantsRef.current();
   }, [voiceSession.joined]);
 
+  const participantsRef = useRef(participants);
+  participantsRef.current = participants;
+  const participantCountRef = useRef(participantCount);
+  participantCountRef.current = participantCount;
+
   // Ask the SFU for any remote camera / screencast publishers listed in the roster.
   const setRemoteVideoRequests = voiceSession.setRemoteVideoRequests;
   const voiceJoined = voiceSession.joined;
+  const remoteVideoSourceKey = useMemo(() => {
+    return participants
+      .filter((row) => !row.is_self)
+      .map(
+        (row) =>
+          `${row.user_id ?? row.chat_id}:${row.video_info?.endpoint_id ?? ""}:${row.screen_sharing_video_info?.endpoint_id ?? ""}`,
+      )
+      .join("|");
+  }, [participants]);
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") {
       setRemoteVideoRequests([]);
@@ -791,7 +869,7 @@ export function MessageChatVoiceBar({
       kind: "camera" | "screen";
       ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
     }> = [];
-    for (const row of participants) {
+    for (const row of participantsRef.current) {
       if (row.is_self) continue;
       const screen = row.screen_sharing_video_info;
       if (screen?.source_groups?.length) {
@@ -822,17 +900,25 @@ export function MessageChatVoiceBar({
       return a.kind === "screen" ? -1 : 1;
     });
     setRemoteVideoRequests(requests.slice(0, 4));
-  }, [participants, setRemoteVideoRequests, voiceJoined]);
+  }, [remoteVideoSourceKey, setRemoteVideoRequests, voiceJoined]);
 
-  // Opening the sheet: refresh roster after the dialog paints (never force-reload).
+  const displayParticipants = useMemo(() => {
+    return participants.map((row) => {
+      const key = participantSpeakKey(row);
+      const speaking = Boolean(speakingByKey[key]);
+      return speaking === Boolean(row.is_speaking)
+        ? row
+        : { ...row, is_speaking: speaking };
+    });
+  }, [participantSpeakKey, participants, speakingByKey]);
+
+  // Opening the sheet: paint first, then load roster. Do NOT wait for WebRTC
+  // `joined` — that delayed the first reload until after SDP and left the sheet
+  // on a single grey row while speaking updates had nobody to light up.
   const applyRosterRowsRef = useRef(applyRosterRows);
   applyRosterRowsRef.current = applyRosterRows;
-  const participantsRef = useRef(participants);
-  participantsRef.current = participants;
-  const participantCountRef = useRef(participantCount);
-  participantCountRef.current = participantCount;
   useEffect(() => {
-    if (!popoverOpen || !joined) return;
+    if (!popoverOpen) return;
     if (!isTelegramMessagesConnected) return;
     let cancelled = false;
     const openedAt =
@@ -859,12 +945,13 @@ export function MessageChatVoiceBar({
         });
       });
       if (cancelled) return;
-      // Skip the open-time HTTP round-trip when the strip already has a full roster.
-      // A redundant fetch during WebRTC join was saturating the main thread and
-      // made Close miss pointer events.
+      // Always refresh when the dialog opens with an incomplete roster. Skipping
+      // left the sheet stuck on a single grey row while the header counted 8.
       const listed = participantsRef.current.length;
       const count = participantCountRef.current;
-      if (listed > 0 && (count <= 0 || listed >= Math.min(count, 3))) {
+      const rosterLooksComplete =
+        listed > 0 && count > 0 && listed >= Math.min(count, 5);
+      if (rosterLooksComplete) {
         logPageDisplay("messages_voice_dialog_open_skip_reload", {
           chatId,
           listed,
@@ -879,6 +966,7 @@ export function MessageChatVoiceBar({
       }
       try {
         const result = await fetchTelegramChatVoiceParticipants(chatId, null, {
+          // Soft reload on open — hard force waits until WebRTC is joined below.
           forceReload: false,
         });
         if (cancelled || !result.ok) return;
@@ -905,7 +993,40 @@ export function MessageChatVoiceBar({
       cancelled = true;
       logPageDisplay("messages_voice_dialog_close", { chatId });
     };
-  }, [popoverOpen, joined, chatId, isTelegramMessagesConnected, groupCallId]);
+  }, [popoverOpen, chatId, isTelegramMessagesConnected, groupCallId]);
+
+  // Once WebRTC is up, force a full TDLib roster load — pre-join loads are often
+  // self-only, which left greens with nobody to paint on.
+  useEffect(() => {
+    if (!popoverOpen || !voiceSession.joined) return;
+    if (!isTelegramMessagesConnected) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void (async () => {
+        const listed = participantsRef.current.length;
+        const count = participantCountRef.current;
+        if (listed > 0 && count > 0 && listed >= Math.min(count, 5)) return;
+        try {
+          const result = await fetchTelegramChatVoiceParticipants(chatId, null, {
+            forceReload: true,
+          });
+          if (cancelled || !result.ok) return;
+          applyRosterRowsRef.current(result.participants, result.participant_count);
+          logPageDisplay("messages_voice_dialog_postjoin_reload_ok", {
+            chatId,
+            listed: result.participants.length,
+            count: result.participant_count,
+          });
+        } catch {
+          /* ignore */
+        }
+      })();
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [popoverOpen, voiceSession.joined, chatId, isTelegramMessagesConnected]);
 
   // NOTE: exactly ONE effect computes remote-video requests (above). A second
   // duplicate with different endpoint fallbacks ping-ponged the renegotiation
@@ -1068,7 +1189,10 @@ export function MessageChatVoiceBar({
                 {stackedParticipants.map((participant, index) => {
                   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
                   const participantTitle = participant.title.trim() || "?";
-                  const speaking = Boolean(participant.is_speaking);
+                  const speaking = Boolean(
+                    speakingByKey[participantSpeakKey(participant)] ||
+                      participant.is_speaking,
+                  );
                   const avatarPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_PX;
                   return (
                     <View
@@ -1185,7 +1309,7 @@ export function MessageChatVoiceBar({
         onClose={onClosePopover}
         title={title}
         participantCount={totalParticipantCount}
-        participants={participants}
+        participants={displayParticipants}
         colors={colors}
         micActive={voiceSession.micActive}
         micJoining={voiceSession.joining}

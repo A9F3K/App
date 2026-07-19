@@ -137,9 +137,10 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     openVoicePopover();
     if (typeof window !== "undefined") {
       window.requestAnimationFrame(() => {
+        // Let the dialog paint + bind Escape/close before WebRTC join starts.
         window.setTimeout(() => {
           setVoiceJoined(true);
-        }, 0);
+        }, 400);
       });
     } else {
       setVoiceJoined(true);
@@ -172,7 +173,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
         window.requestAnimationFrame(() => {
           window.setTimeout(() => {
             setVoiceJoined(true);
-          }, 0);
+          }, 400);
         });
       } else {
         setVoiceJoined(true);

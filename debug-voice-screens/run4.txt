@@ -1,0 +1,5 @@
+TypeError: join is not a function
+    at main (file:///c:/1/1/1/1/1/HyperlinksSpaceProgram/scripts/debug-voice-browser.mjs:186:17)
+1\1\1\1\1\HyperlinksSpaceProgram\scripts\debug-voice-browser.mjs:66:61) {
+  name: 'TimeoutError'
+}

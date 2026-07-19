@@ -1,0 +1,14 @@
+{
+  "bundle": "https://program.hyperlinks.space/_expo/static/js/web/index-bc52662fd7f8757c838512487c9c0aad.js",
+  "chatFound": true,
+  "chatClick": "УБУкради Брейнрота Чат🦋19:39Photo99+",
+  "joinOrStrip": null,
+  "dialogOpen": false,
+  "closeWorked": false,
+  "closeMs": 0,
+  "reopenOk": false,
+  "xCloseWorked": false,
+  "speakingLogCount": 0,
+  "speakingLogs": [],
+  "voiceLogs": []
+}

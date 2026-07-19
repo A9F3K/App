@@ -7,7 +7,7 @@ const emitTimerByCall = new Map<number, ReturnType<typeof setTimeout>>();
 const quietLoadCalls = new Set<number>();
 
 /** Coalesce roster churn lightly; speaking=true always flushes immediately. */
-const EMIT_DEBOUNCE_MS = 100;
+const EMIT_DEBOUNCE_MS = 250;
 
 /** Suppress SSE spam while TDLib floods participant updates during a full load. */
 export function beginVoiceParticipantsQuietLoad(groupCallId: number): void {

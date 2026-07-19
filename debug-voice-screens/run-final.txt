@@ -1,0 +1,7 @@
+locator.click: Timeout 30000ms exceeded.
+Call log:
+  - waiting for getByText('Messages', { exact: true }).first()
+
+    at main (c:\1\1\1\1\1\HyperlinksSpaceProgram\scripts\debug-voice-browser.mjs:73:61) {
+  name: 'TimeoutError'
+}

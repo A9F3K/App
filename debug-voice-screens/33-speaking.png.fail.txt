@@ -1,0 +1,4 @@
+page.screenshot: Timeout 8000ms exceeded.
+Call log:
+  - taking page screenshot
+    - disabled all CSS animations

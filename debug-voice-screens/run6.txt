@@ -1,0 +1,38 @@
+{
+  "joinVisible": true,
+  "dialogOpenAt": 502,
+  "closeWorked": true,
+  "closeMs": 1648,
+  "midState": {
+    "dialogOpen": false
+  },
+  "xCloseWorked": false,
+  "xCloseMs": 0,
+  "speakingLogs": [
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=137 listed=1 speakingCount=0 popoverOpen=false level=warn",
+    "[log] [page-display] messages_voice_dialog_open chatId=-1003854776265 groupCallId=1"
+  ],
+  "voiceLogs": [
+    "[log] [page-display] messages_voice_participants_stream_connect chatId=-1003854776265 groupCallId=1",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=137 listed=1 speakingCount=0 popoverOpen=false level=warn",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=false status=ok elapsedMs=2160 tickCount=1 nextBaseMs=5000 level=warn",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=false status=ok elapsedMs=4950 tickCount=2 nextBaseMs=3000 level=warn",
+    "[log] [page-display] messages_voice_dialog_open chatId=-1003854776265 groupCallId=1",
+    "[log] [page-display] messages_voice_dialog_close_click source=escape_key",
+    "[log] [page-display] messages_voice_dialog_close chatId=-1003854776265",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=true joined=true status=ok elapsedMs=4270 tickCount=1 nextBaseMs=8000 level=warn"
+  ],
+  "agentLogs": [],
+  "all": [
+    "[log] [page-display] wallet_start_guard hasFlowError=false status=dev walletRequired=false hasDisplayAddress=false step=idle initDataLen=0 initDataOk=false browserSessionOk=false walletAuthOk=false action=skip_conditions reasons=[\"status_not_ok\",\"wallet_not_required\",\"wallet_auth_missing\"]",
+    "[log] [page-display] wallet_start_guard hasFlowError=false status=ok walletRequired=false hasDisplayAddress=true step=idle initDataLen=0 initDataOk=false browserSessionOk=true walletAuthOk=true action=skip_conditions reasons=[\"wallet_not_required\",\"has_address\"]",
+    "[log] [page-display] messages_voice_participants_stream_connect chatId=-1003854776265 groupCallId=1",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=137 listed=1 speakingCount=0 popoverOpen=false level=warn",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=false status=ok elapsedMs=2160 tickCount=1 nextBaseMs=5000 level=warn",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=false status=ok elapsedMs=4950 tickCount=2 nextBaseMs=3000 level=warn",
+    "[log] [page-display] messages_voice_dialog_open chatId=-1003854776265 groupCallId=1",
+    "[log] [page-display] messages_voice_dialog_close_click source=escape_key",
+    "[log] [page-display] messages_voice_dialog_close chatId=-1003854776265",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=true joined=true status=ok elapsedMs=4270 tickCount=1 nextBaseMs=8000 level=warn"
+  ]
+}

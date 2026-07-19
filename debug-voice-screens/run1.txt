@@ -1,0 +1,17 @@
+{
+  "authOk": true,
+  "clickedMessages": true,
+  "chatClick": false,
+  "joinClick": false,
+  "dialogState": {
+    "hasClose": false,
+    "hasVoiceTitle": false
+  },
+  "escapeCloseWorked": false,
+  "closeClick": false,
+  "xCloseWorked": false,
+  "escapeMs": 6581,
+  "speakingLogCount": 0,
+  "speakingLogs": [],
+  "allVoiceLogs": []
+}

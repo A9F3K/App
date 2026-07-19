@@ -300,6 +300,12 @@ type CallParticipantsCache = {
   revision: number;
   /** Last known TDLib participant_count hint for this call. */
   participantCountHint: number;
+  /**
+   * Latest recent_speakers overlay from getGroupCall. Kept separate from
+   * `members` (never inserted as roster ghosts) so the SSE snapshot can apply
+   * the same speaking overlay + thin-roster stub fallback as the poll path.
+   */
+  speakers?: Map<string, CollectedParticipant>;
 };
 
 const PROFILE_TTL_MS = 30 * 60_000;
@@ -436,9 +442,11 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       screenInfo: normalizeVideoInfo(participant.screen_sharing_video_info),
     });
   }
-  bumpVoiceCallRevision(callId, {
-    immediate: speakingBecameTrue || speakingBecameFalse,
-  });
+  // Only speaking START flushes immediately (green must light fast). Stops and
+  // roster churn ride the debounce — immediate stop-flushes flooded SSE several
+  // times per second during active calls and froze the client.
+  void speakingBecameFalse;
+  bumpVoiceCallRevision(callId, { immediate: speakingBecameTrue });
 }
 
 /**
@@ -494,8 +502,26 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
     changed = true;
   }
 
-  if (!changed) return;
-  bumpVoiceCallRevision(callId, { immediate: speakingBecameTrue || speakingBecameFalse });
+  // Keep the raw speakers overlay for the SSE snapshot. Before joining, TDLib
+  // sends no updateGroupCallParticipant, so the members map is often self-only —
+  // the stream must fall back to these stubs (like the poll path) or the dialog
+  // shows one grey row while the header counts 5.
+  const prevSpeakers = cached.speakers;
+  let speakersChanged = (prevSpeakers?.size ?? 0) !== speakers.size;
+  for (const [key, speaker] of speakers) {
+    const prev = prevSpeakers?.get(key);
+    if (!prev || Boolean(prev.isSpeaking) !== Boolean(speaker.isSpeaking)) {
+      speakersChanged = true;
+      // Immediate flush only for a speaker who newly STARTED — updateGroupCall
+      // fires several times a second and flushing every flap froze the client.
+      if (speaker.isSpeaking) speakingBecameTrue = true;
+    }
+  }
+  cached.speakers = speakers;
+
+  if (!changed && !speakersChanged) return;
+  void speakingBecameFalse;
+  bumpVoiceCallRevision(callId, { immediate: speakingBecameTrue });
 }
 
 function participantKey(userId: number | null, chatId: number | null): string | null {
@@ -1072,7 +1098,8 @@ async function loadJoinedParticipants(
 
 /** Telegram Desktop: higher `order` first; speaking floats up; then title. */
 function compareVoiceParticipantRows(a: VoiceParticipantRow, b: VoiceParticipantRow): number {
-  if (a.is_speaking !== b.is_speaking) return a.is_speaking ? -1 : 1;
+  // tdesktop parity: order by TDLib participant order, NOT by speaking — sorting
+  // speakers first made row order flap with every voice pulse.
   const orderA = a.order ?? "";
   const orderB = b.order ?? "";
   if (orderA && orderB && orderA !== orderB) {
@@ -1152,6 +1179,12 @@ export async function fetchChatVoiceParticipants(
 
   const participantCountHint = Number(groupCall.participant_count);
   const hasHiddenListeners = Boolean(groupCall.has_hidden_listeners);
+
+  // Write the fresh recent_speakers overlay into the shared cache. The SSE
+  // snapshot reads only the cache — without this, speaking learned via polling
+  // never reached the stream and green mics stayed grey while the dialog was
+  // open (SSE snapshots with is_speaking=false overrode poll data).
+  ingestGroupCallUpdate({ _: "updateGroupCall", group_call: groupCall });
 
   // TDLib only allows loadGroupCallParticipants after join. Until then we serve
   // cache + recent_speakers; after join we force a background load.
@@ -1391,12 +1424,28 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
   }
   const selfUserId = cachedSelfUserId;
   const nowMs = Date.now();
-  const participants: VoiceParticipantRow[] = [...cached.members.values()]
-    .filter((row) => {
-      if (row.order) return true;
-      if (selfUserId != null && row.userId === selfUserId) return true;
-      return false;
-    })
+  // Mirror the poll path: overlay recent_speakers onto the live roster, and
+  // while the roster is thinner than participant_count, union speaker stubs so
+  // the stream never regresses the dialog to a self-only grey list.
+  let collected = cached.members;
+  if (cached.speakers && cached.speakers.size > 0) {
+    collected = applySpeakingOverlay(cached.members, cached.speakers);
+    if (
+      !cached.loadedAll &&
+      cached.participantCountHint > collected.size
+    ) {
+      collected = mergeSpeakerStubsForDisplay(collected, cached.speakers);
+    }
+  }
+  const orderedRows = [...collected.values()].filter((row) => {
+    if (row.order) return true;
+    if (selfUserId != null && row.userId === selfUserId) return true;
+    return false;
+  });
+  const needSpeakerFallback =
+    !cached.loadedAll && cached.participantCountHint > orderedRows.length;
+  const displayRows = needSpeakerFallback ? [...collected.values()] : orderedRows;
+  const participants: VoiceParticipantRow[] = displayRows
     .map((row) => {
       const key = participantKey(row.userId, row.chatId);
       const profile = key ? profileCache.get(key) : undefined;

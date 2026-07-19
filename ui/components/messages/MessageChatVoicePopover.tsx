@@ -152,15 +152,6 @@ const SHEET_CHROME_HEIGHT_PX = 148;
 const VOICE_SIZE_STORAGE_KEY = "hsp.voiceChatDialog.size.v1";
 const VOICE_SPEAKING_MIC_COLOR = "#34C759";
 
-function compareVoiceDialogParticipants(
-  a: TelegramChatVoiceParticipant,
-  b: TelegramChatVoiceParticipant,
-): number {
-  if (a.is_speaking !== b.is_speaking) return a.is_speaking ? -1 : 1;
-  if (a.is_self !== b.is_self) return a.is_self ? -1 : 1;
-  return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
-}
-
 const AH = layout.authenticatedHome;
 const HIT = AH.splitPaneDividerHitWidthPx;
 const STROKE = AH.splitPaneDividerStrokePx;
@@ -296,7 +287,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
         <MessageChatAvatarSlot
           iconUrl={avatarUrl}
           initials={extractChatAvatarInitials(title)}
-          sizePx={speaking ? MESSAGE_AVATAR_PX - 4 : MESSAGE_AVATAR_PX}
+          sizePx={MESSAGE_AVATAR_PX}
           colors={colors}
           scheme={colorScheme}
           fetchPriority="normal"
@@ -799,7 +790,8 @@ export function MessageChatVoicePopover({
   const listMaxHeight = Math.max(80, sheetSize.height - SHEET_CHROME_HEIGHT_PX);
   const handles: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
   const displayParticipants = useMemo(
-    () => [...participants].sort(compareVoiceDialogParticipants).slice(0, 64),
+    // Preserve incoming order — do not re-sort by speaking (tdesktop parity).
+    () => participants.slice(0, 64),
     [participants],
   );
 

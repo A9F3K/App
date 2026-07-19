@@ -1,0 +1,58 @@
+{
+  "joinVisible": true,
+  "dialogOpenAt": 808,
+  "closeWorked": true,
+  "closeMs": 1324,
+  "midState": {
+    "dialogOpen": false
+  },
+  "xCloseWorked": false,
+  "xCloseMs": 0,
+  "speakingLogs": [
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=141 listed=1 speakingCount=0 popoverOpen=false level=warn",
+    "[log] [page-display] messages_voice_dialog_open chatId=-1003854776265 groupCallId=1",
+    "[log] [page-display] messages_voice_dialog_force_reload_ok chatId=-1003854776265 listed=1 count=4 elapsedMs=977",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=59 listed=1 speakingCount=0 popoverOpen=false level=info",
+    "[log] [page-display] messages_voice_participants_speaking chatId=-1003854776265 groupCallId=1 speakingCount=2 revision=526",
+    "[log] [page-display] messages_voice_participants_speaking chatId=-1003854776265 groupCallId=1 speakingCount=2 revision=529",
+    "[log] [page-display] messages_voice_roster_speaking_applied chatId=-1003854776265 speakingCount=2 listed=6 applyMs=0 popoverOpen=false",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=93 listed=6 speakingCount=2 popoverOpen=false level=warn"
+  ],
+  "voiceLogs": [
+    "[log] [page-display] messages_voice_participants_stream_connect chatId=-1003854776265 groupCallId=1",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=141 listed=1 speakingCount=0 popoverOpen=false level=warn",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=false status=ok elapsedMs=3399 tickCount=1 nextBaseMs=5000 level=warn",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=false status=ok elapsedMs=967 tickCount=2 nextBaseMs=3000 level=info",
+    "[log] [page-display] messages_voice_dialog_open chatId=-1003854776265 groupCallId=1",
+    "[log] [page-display] messages_voice_dialog_force_reload_ok chatId=-1003854776265 listed=1 count=4 elapsedMs=977",
+    "[log] [page-display] messages_voice_dialog_close_click source=escape_key",
+    "[log] [page-display] messages_voice_dialog_close chatId=-1003854776265",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=true joined=true status=ok elapsedMs=1638 tickCount=1 nextBaseMs=8000 level=warn",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=59 listed=1 speakingCount=0 popoverOpen=false level=info",
+    "[log] [page-display] messages_voice_participants_speaking chatId=-1003854776265 groupCallId=1 speakingCount=2 revision=526",
+    "[log] [page-display] messages_voice_participants_speaking chatId=-1003854776265 groupCallId=1 speakingCount=2 revision=529",
+    "[log] [page-display] messages_voice_roster_speaking_applied chatId=-1003854776265 speakingCount=2 listed=6 applyMs=0 popoverOpen=false",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=true status=ok elapsedMs=1194 tickCount=2 nextBaseMs=1200 level=info",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=93 listed=6 speakingCount=2 popoverOpen=false level=warn"
+  ],
+  "agentLogs": [],
+  "all": [
+    "[log] [page-display] wallet_start_guard hasFlowError=false status=dev walletRequired=false hasDisplayAddress=false step=idle initDataLen=0 initDataOk=false browserSessionOk=false walletAuthOk=false action=skip_conditions reasons=[\"status_not_ok\",\"wallet_not_required\",\"wallet_auth_missing\"]",
+    "[log] [page-display] wallet_start_guard hasFlowError=false status=ok walletRequired=false hasDisplayAddress=true step=idle initDataLen=0 initDataOk=false browserSessionOk=true walletAuthOk=true action=skip_conditions reasons=[\"wallet_not_required\",\"has_address\"]",
+    "[log] [page-display] messages_voice_participants_stream_connect chatId=-1003854776265 groupCallId=1",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=141 listed=1 speakingCount=0 popoverOpen=false level=warn",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=false status=ok elapsedMs=3399 tickCount=1 nextBaseMs=5000 level=warn",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=false status=ok elapsedMs=967 tickCount=2 nextBaseMs=3000 level=info",
+    "[log] [page-display] messages_voice_dialog_open chatId=-1003854776265 groupCallId=1",
+    "[log] [page-display] messages_voice_dialog_force_reload_ok chatId=-1003854776265 listed=1 count=4 elapsedMs=977",
+    "[log] [page-display] messages_voice_dialog_close_click source=escape_key",
+    "[log] [page-display] messages_voice_dialog_close chatId=-1003854776265",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=true joined=true status=ok elapsedMs=1638 tickCount=1 nextBaseMs=8000 level=warn",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=59 listed=1 speakingCount=0 popoverOpen=false level=info",
+    "[log] [page-display] messages_voice_participants_speaking chatId=-1003854776265 groupCallId=1 speakingCount=2 revision=526",
+    "[log] [page-display] messages_voice_participants_speaking chatId=-1003854776265 groupCallId=1 speakingCount=2 revision=529",
+    "[log] [page-display] messages_voice_roster_speaking_applied chatId=-1003854776265 speakingCount=2 listed=6 applyMs=0 popoverOpen=false",
+    "[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=true status=ok elapsedMs=1194 tickCount=2 nextBaseMs=1200 level=info",
+    "[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=93 listed=6 speakingCount=2 popoverOpen=false level=warn"
+  ]
+}

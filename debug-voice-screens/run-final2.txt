@@ -1,0 +1,7 @@
+page.goto: net::ERR_CONNECTION_RESET at https://program.hyperlinks.space/?t=pw-voice-final
+Call log:
+  - navigating to "https://program.hyperlinks.space/?t=pw-voice-final", waiting until "domcontentloaded"
+
+    at main (c:\1\1\1\1\1\HyperlinksSpaceProgram\scripts\debug-voice-browser.mjs:68:14) {
+  name: 'Error'
+}
