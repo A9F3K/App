@@ -93,8 +93,22 @@ export function VoiceStatusMicIcon({ color, size = 20 }: IconProps) {
   );
 }
 
-/** Control from `assets/voice_controls/camera.svg` (20×20). */
-export function VoiceCameraIcon({ color, size = 20 }: IconProps) {
+/** Control from `assets/voice_controls/camera.svg` (20×20). Pass muted for off glyph. */
+export function VoiceCameraIcon({
+  color,
+  size = 20,
+  muted = false,
+}: IconProps & { muted?: boolean }) {
+  if (muted) {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Path
+          d="M21 6.5l-4 2.5V7c0-1.1-.9-2-2-2H7.82L21 18.18V6.5zM3.27 2L2 3.27 4.73 6H4c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h12c.21 0 .39-.04.57-.1L19.73 21 21 19.73 3.27 2z"
+          fill={color}
+        />
+      </Svg>
+    );
+  }
   return (
     <Svg width={size} height={size} viewBox="0 0 20 20" fill="none">
       <Path

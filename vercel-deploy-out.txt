@@ -1,0 +1,187 @@
+npm warn exec The following package was not found and will be installed: vercel@56.3.2
+Vercel CLI 56.3.2 (Node.js 22.18.0)
+Retrieving project…
+Deploying somewallets-projects/hsbexpo
+Uploading [--------------------] (0.0B/2.2MB)
+Uploading [=====---------------] (567.6KB/2.2MB)
+Uploading [==========----------] (1.1MB/2.2MB)
+Uploading [===============-----] (1.7MB/2.2MB)
+Uploading [====================] (2.2MB/2.2MB)
+  Inspect         https://vercel.com/somewallets-projects/hsbexpo/8RcJmt7oZ3HUiDXWuagddGaBg4q6
+  Production      https://hsbexpo-nhz9pc98u-somewallets-projects.vercel.app
+Building…
+Building…
+Running build in Cleveland, USA (East) – cle1
+Build machine configuration: 4 cores, 8 GB
+Retrieving list of deployment files...
+Downloading 2901 deployment files...
+Restored build cache from previous deployment (CRXrsjZ1WtNMbkCikiA17ND3anMc)
+Warning: "vercel" found in project dependencies and will be ignored.
+Running "vercel build"
+Vercel CLI 56.2.0
+Running "install" command: `npm install`...
+npm warn deprecated cross-spawn-async@2.2.5: cross-spawn no longer requires a build toolchain, use it instead
+added 2 packages, and audited 3305 packages in 16s
+276 packages are looking for funding
+run `npm fund` for details
+214 vulnerabilities (11 low, 81 moderate, 79 high, 43 critical)
+To address issues that do not require attention, run:
+npm audit fix
+To address all issues possible (including breaking changes), run:
+npm audit fix --force
+Some issues need review, and may require choosing
+a different dependency.
+Run `npm audit` for details.
+> hyperlinks-space-program@53.0.1399 build:vercel
+> npm run db:migrate && npx tsx scripts/vercel-export-web.ts && npx tsx scripts/set-webhook.ts
+> hyperlinks-space-program@53.0.1399 db:migrate
+> npx tsx scripts/migrate-db.ts
+[db] Running schema migrations against DATABASE_URL...
+[db] Schema is up to date.
+[vercel-export] EXPO_PUBLIC_DEPLOY_VERSION=300 deploymentId=dpl_8RcJmt7oZ3HUiDXWuagddGaBg4q6
+Starting Metro Bundler
+Static rendering is enabled. Learn more: https://docs.expo.dev/router/reference/static-rendering/
+Web ./index.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+λ node_modules/expo-router/node/render.js ░░░░░░░░░░░░░░░░  0.0% (0/1)
+Web ./index.js ▓░░░░░░░░░░░░░░░  9.0% (3/4)
+λ node_modules/expo-router/node/render.js ▓░░░░░░░░░░░░░░░  8.3% ( 59/205)
+Web ./index.js ▓▓▓▓▓░░░░░░░░░░░ 36.0% ( 6/10)
+λ node_modules/expo-router/node/render.js ▓▓▓▓░░░░░░░░░░░░ 27.9% (206/390)
+Web ./index.js ▓▓▓▓▓░░░░░░░░░░░ 36.0% (21/47)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓░░░░░░░░ 55.3% (406/546)
+Web ./index.js ▓▓▓▓▓░░░░░░░░░░░ 36.0% ( 38/156)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓░░░░░░░ 60.5% (514/661)
+Web ./index.js ▓▓▓▓▓░░░░░░░░░░░ 36.0% (107/261)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓░░░░░░ 66.8% (635/847)
+Web ./index.js ▓▓▓▓▓░░░░░░░░░░░ 36.0% (233/413)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓░░░░░░ 66.8% (766/947)
+Web ./index.js ▓▓▓▓▓▓░░░░░░░░░░ 41.0% (294/459)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓░░░░░░ 66.8% ( 863/1213)
+Web ./index.js ▓▓▓▓▓▓▓░░░░░░░░░ 48.1% (432/623)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓░░░░░░ 66.8% ( 937/1278)
+Web ./index.js ▓▓▓▓▓▓▓░░░░░░░░░ 48.1% (432/623)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓░░░░░ 72.2% (1110/1306)
+Web ./index.js ▓▓▓▓▓▓▓▓▓░░░░░░░ 57.2% (513/694)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓░░░░ 80.9% (1221/1358)
+Web ./index.js ▓▓▓▓▓▓▓▓▓░░░░░░░ 57.2% (623/845)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░ 83.8% (1292/1411)
+Web ./index.js ▓▓▓▓▓▓▓▓▓░░░░░░░ 57.2% (623/845)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░ 84.7% (1306/1419)
+Web ./index.js ▓▓▓▓▓▓▓▓▓░░░░░░░ 59.3% (684/888)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 87.7% (1354/1479)
+Web ./index.js ▓▓▓▓▓▓▓▓▓░░░░░░░ 61.0% ( 753/1001)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 87.7% (1362/1483)
+Web ./index.js ▓▓▓▓▓▓▓▓▓░░░░░░░ 61.0% ( 807/1170)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 91.2% (1472/1541)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓░░░░░░ 65.9% (1030/1269)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 91.2% (1514/1609)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░ 81.7% (1159/1317)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 91.2% (1557/1634)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░ 81.7% (1178/1329)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 92.1% (1577/1643)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░ 81.7% (1221/1396)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 93.0% (1598/1658)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░ 84.0% (1348/1471)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 93.5% (1643/1737)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓░░░ 84.7% (1366/1494)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 93.5% (1687/1793)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 91.8% (1492/1557)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░ 93.5% (1740/1817)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 94.1% (1553/1601)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 93.9% (1857/1916)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 96.4% (1619/1655)
+λ node_modules/expo-router/node/render.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 98.0% (1950/1973)
+λ Bundled 87196ms node_modules/expo-router/node/render.js (2054 modules)
+Web ./index.js ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░ 96.4% (1770/1821)
+Web Bundled 90651ms index.js (1943 modules)
+› web bundles (2):
+_expo/static/css/global-da526c9d878c7fd93877e8fdba5a0722.css (16.3 kB)
+_expo/static/js/web/index-42d701995d675da3700820d1eddf4524.js (9.54 MB)
+› Static routes (23):
+/ai (21.3 kB)
+/get (21.3 kB)
+/key (21.3 kB)
+/home (21.3 kB)
+/send (21.3 kB)
+/ (index) (21.3 kB)
+/smart (21.3 kB)
+/trade (21.3 kB)
+/welcome (21.3 kB)
+/_sitemap (21.1 kB)
+/(app)/ai (21.3 kB)
+/(app)/get (21.3 kB)
+/(app)/key (21.3 kB)
+/+not-found (21.1 kB)
+/(app)/home (21.3 kB)
+/(app)/send (21.3 kB)
+/swap (21.3 kB)
+/(app)/smart (21.3 kB)
+/(app)/trade (21.3 kB)
+/swap/currency (21.3 kB)
+/(auth)/welcome (21.3 kB)
+/(app)/swap (21.3 kB)
+/(app)/swap/currency (21.3 kB)
+Exported: .vercel/output/static
+[set-webhook] env: VERCEL_ENV=production VERCEL_URL=hsbexpo-nhz9pc98u-somewallets-projects.vercel.app VERCEL_PROJECT_PRODUCTION_URL=app.hyperlinks.space
+[set-webhook] Setting webhook to: https://app.hyperlinks.space/api/bot
+[set-webhook] OK: https://app.hyperlinks.space/api/bot
+Installing dependencies...
+npm warn deprecated cross-spawn-async@2.2.5: cross-spawn no longer requires a build toolchain, use it instead
+up to date in 4s
+276 packages are looking for funding
+run `npm fund` for details
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+Using TypeScript 5.9.3 (local user-provided)
+api/wallet/_auth.ts(153,44): error TS2345: Argument of type 'CookieRequest' is not assignable to parameter of type 'AnyRequest'.
+Type '{ headers?: Record<string, string | string[] | undefined> | Headers | undefined; }' is not assignable to type 'AnyRequest'.
+Type '{ headers?: Record<string, string | string[] | undefined> | Headers | undefined; }' is not assignable to type '{ method?: string | undefined; headers?: Record<string, string | string[] | undefined> | undefined; url?: string | undefined; }'.
+Types of property 'headers' are incompatible.
+Type 'Record<string, string | string[] | undefined> | Headers | undefined' is not assignable to type 'Record<string, string | string[] | undefined> | undefined'.
+Type 'Headers' is not assignable to type 'Record<string, string | string[] | undefined>'.
+Index signature for type 'string' is missing in type 'Headers'.
+Using TypeScript 5.9.3 (local user-provided)
+node_modules/expo-modules-core/src/index.ts(15,42): error TS6142: Module './NativeViewManagerAdapter' was resolved to '/vercel/path0/node_modules/expo-modules-core/src/NativeViewManagerAdapter.tsx', but '--jsx' is not set.
+Using TypeScript 5.9.3 (local user-provided)
+telegram/post.ts(435,9): error TS2345: Argument of type 'Request | { json?: (() => Promise<unknown>) | undefined; body?: unknown; }' is not assignable to parameter of type 'Request | { headers?: Record<string, string | string[] | undefined> | undefined; url?: string | undefined; }'.
+Type '{ json?: (() => Promise<unknown>) | undefined; body?: unknown; }' is not assignable to type 'Request | { headers?: Record<string, string | string[] | undefined> | undefined; url?: string | undefined; }'.
+Type '{ json?: (() => Promise<unknown>) | undefined; body?: unknown; }' is missing the following properties from type 'Request': cache, credentials, destination, headers, and 16 more.
+telegram/post.ts(455,7): error TS2345: Argument of type 'Request | { json?: (() => Promise<unknown>) | undefined; body?: unknown; }' is not assignable to parameter of type 'Request | { headers?: Record<string, string | string[] | undefined> | undefined; url?: string | undefined; }'.
+Type '{ json?: (() => Promise<unknown>) | undefined; body?: unknown; }' is not assignable to type 'Request | { headers?: Record<string, string | string[] | undefined> | undefined; url?: string | undefined; }'.
+Type '{ json?: (() => Promise<unknown>) | undefined; body?: unknown; }' is missing the following properties from type 'Request': cache, credentials, destination, headers, and 16 more.
+Build Completed in /vercel/output [2m]
+Deploying outputs...
+[2K[1A[2K[G  Production      https://hsbexpo-nhz9pc98u-somewallets-projects.vercel.app
+Completing…
+▲ Aliased         https://hsbexpo.vercel.app
+{
+  "status": "ok",
+  "deployment": {
+    "id": "dpl_8RcJmt7oZ3HUiDXWuagddGaBg4q6",
+    "url": "https://hsbexpo-nhz9pc98u-somewallets-projects.vercel.app",
+    "inspectorUrl": "https://vercel.com/somewallets-projects/hsbexpo/8RcJmt7oZ3HUiDXWuagddGaBg4q6",
+    "readyState": "READY",
+    "target": "production",
+    "deploymentApiUrl": "https://api.vercel.com/v13/deployments/dpl_8RcJmt7oZ3HUiDXWuagddGaBg4q6"
+  },
+  "message": "Deployment hsbexpo-nhz9pc98u-somewallets-projects.vercel.app ready.",
+  "next": [
+    {
+      "command": "vercel inspect hsbexpo-nhz9pc98u-somewallets-projects.vercel.app",
+      "when": "Inspect deployment"
+    },
+    {
+      "command": "vercel deploy --prod",
+      "when": "Promote to production"
+    }
+  ]
+}

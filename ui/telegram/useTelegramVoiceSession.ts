@@ -2,7 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { appWarn } from "../../shared/appLog";
 import { leaveTelegramChatVoice } from "./leaveTelegramChatVoice";
-import { TelegramGroupCallWebSession } from "./telegramGroupCallWebSession";
+import {
+  TelegramGroupCallWebSession,
+  type TelegramRemoteVideoRequest,
+} from "./telegramGroupCallWebSession";
 
 type Input = {
   chatId: number;
@@ -22,6 +25,8 @@ type Input = {
 
 export type TelegramVoiceSession = {
   micActive: boolean;
+  cameraActive: boolean;
+  screenSharing: boolean;
   localSpeaking: boolean;
   joining: boolean;
   joined: boolean;
@@ -30,10 +35,17 @@ export type TelegramVoiceSession = {
   error: string | null;
   /** Live remote camera / screen-share stream while someone is presenting. */
   remoteVideoStream: MediaStream | null;
+  localCameraStream: MediaStream | null;
+  localScreenStream: MediaStream | null;
   unlockAudio: () => void;
   /** Resolves true when the WebRTC join succeeded (or was already joined). */
   joinListen: () => Promise<boolean>;
   toggleMic: () => Promise<void>;
+  toggleCamera: () => Promise<void>;
+  startScreenShare: () => Promise<void>;
+  stopScreenShare: () => Promise<void>;
+  /** Subscribe to remote camera / screencast publishers from the roster. */
+  setRemoteVideoRequests: (requests: TelegramRemoteVideoRequest[]) => void;
   leaveVoice: () => Promise<
     Awaited<ReturnType<typeof leaveTelegramChatVoice>>
   >;
@@ -46,6 +58,8 @@ export function useTelegramVoiceSession({
   visible = true,
 }: Input): TelegramVoiceSession {
   const [micActive, setMicActive] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [screenSharing, setScreenSharing] = useState(false);
   const [localSpeaking, setLocalSpeaking] = useState(false);
   const [joining, setJoining] = useState(false);
   const [joined, setJoined] = useState(false);
@@ -53,14 +67,18 @@ export function useTelegramVoiceSession({
   const [negotiating, setNegotiating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [remoteVideoStream, setRemoteVideoStream] = useState<MediaStream | null>(null);
+  const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const sessionRef = useRef<TelegramGroupCallWebSession | null>(null);
   const micActiveRef = useRef(false);
+  const cameraActiveRef = useRef(false);
   const groupCallIdRef = useRef(groupCallId);
   groupCallIdRef.current = groupCallId;
 
   const speakingUnsubRef = useRef<(() => void) | null>(null);
   const joinLostUnsubRef = useRef<(() => void) | null>(null);
   const videoUnsubRef = useRef<(() => void) | null>(null);
+  const localMediaUnsubRef = useRef<(() => void) | null>(null);
 
   const resetLocalUi = useCallback(() => {
     setJoined(false);
@@ -68,9 +86,14 @@ export function useTelegramVoiceSession({
     setNegotiating(false);
     setJoining(false);
     setMicActive(false);
+    setCameraActive(false);
+    setScreenSharing(false);
     setLocalSpeaking(false);
     setRemoteVideoStream(null);
+    setLocalCameraStream(null);
+    setLocalScreenStream(null);
     micActiveRef.current = false;
+    cameraActiveRef.current = false;
   }, []);
 
   const disposeSession = useCallback(() => {
@@ -80,6 +103,8 @@ export function useTelegramVoiceSession({
     joinLostUnsubRef.current = null;
     videoUnsubRef.current?.();
     videoUnsubRef.current = null;
+    localMediaUnsubRef.current?.();
+    localMediaUnsubRef.current = null;
     const wasJoined = Boolean(sessionRef.current?.isJoined);
     sessionRef.current?.dispose();
     sessionRef.current = null;
@@ -94,6 +119,7 @@ export function useTelegramVoiceSession({
       speakingUnsubRef.current?.();
       joinLostUnsubRef.current?.();
       videoUnsubRef.current?.();
+      localMediaUnsubRef.current?.();
       speakingUnsubRef.current = session.onLocalSpeakingChange((speaking) => {
         setLocalSpeaking(speaking);
       });
@@ -102,12 +128,24 @@ export function useTelegramVoiceSession({
         setMediaConnected(false);
         setNegotiating(false);
         setMicActive(false);
+        setCameraActive(false);
+        setScreenSharing(false);
         setLocalSpeaking(false);
         setRemoteVideoStream(null);
+        setLocalCameraStream(null);
+        setLocalScreenStream(null);
         micActiveRef.current = false;
+        cameraActiveRef.current = false;
       });
       videoUnsubRef.current = session.onRemoteVideoChange((stream) => {
         setRemoteVideoStream(stream);
+      });
+      localMediaUnsubRef.current = session.onLocalMediaChange((state) => {
+        setCameraActive(state.cameraActive);
+        setScreenSharing(state.screenSharing);
+        setLocalCameraStream(state.localCameraStream);
+        setLocalScreenStream(state.localScreenStream);
+        cameraActiveRef.current = state.cameraActive;
       });
     },
     [],
@@ -120,6 +158,8 @@ export function useTelegramVoiceSession({
     joinLostUnsubRef.current = null;
     videoUnsubRef.current?.();
     videoUnsubRef.current = null;
+    localMediaUnsubRef.current?.();
+    localMediaUnsubRef.current = null;
     sessionRef.current?.dispose();
     const session = new TelegramGroupCallWebSession({
       chatId,
@@ -129,6 +169,8 @@ export function useTelegramVoiceSession({
     bindSession(session);
     setError(null);
     setRemoteVideoStream(null);
+    setLocalCameraStream(null);
+    setLocalScreenStream(null);
     return session;
   }, [bindSession, chatId]);
 
@@ -207,13 +249,15 @@ export function useTelegramVoiceSession({
       setNegotiating(session.isNegotiating());
       session.setRemoteAudioEnabled(Boolean(visible));
       if (visible) session.resumeRemoteAudio();
+      // Mic stays OFF by default after join. Do NOT call setMicEnabled(false) here —
+      // that used to force getUserMedia via the silent-audio branch and freeze the
+      // dialog on open. Join already negotiated is_muted=true with the SFU.
       if (micActiveRef.current) {
         await session.setMicEnabled(true);
         setMicActive(true);
       } else {
-        const enabled = session.isMicEnabled;
-        setMicActive(enabled);
-        micActiveRef.current = enabled;
+        setMicActive(false);
+        micActiveRef.current = false;
       }
       return true;
     } catch (err) {
@@ -259,6 +303,75 @@ export function useTelegramVoiceSession({
     }
   }, [chatId, groupCallId]);
 
+  const toggleCamera = useCallback(async () => {
+    const next = !cameraActiveRef.current;
+    cameraActiveRef.current = next;
+    setCameraActive(next);
+
+    const session = sessionRef.current;
+    if (!session || Platform.OS !== "web") return;
+
+    try {
+      setError(null);
+      session.unlockRemoteAudio();
+      await session.setCameraEnabled(next);
+      setJoined(session.isJoined);
+      setMediaConnected(session.isMediaConnected());
+      const enabled = session.isCameraEnabled;
+      cameraActiveRef.current = enabled;
+      setCameraActive(enabled);
+      setLocalCameraStream(session.getLiveLocalCameraStream());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "camera_toggle_failed";
+      setError(message);
+      cameraActiveRef.current = session.isCameraEnabled;
+      setCameraActive(session.isCameraEnabled);
+      setLocalCameraStream(session.getLiveLocalCameraStream());
+      appWarn("[voice-session-camera]", message, { chatId, groupCallId });
+    }
+  }, [chatId, groupCallId]);
+
+  const startScreenShare = useCallback(async () => {
+    const session = sessionRef.current;
+    if (!session || Platform.OS !== "web") return;
+    try {
+      setError(null);
+      session.unlockRemoteAudio();
+      await session.startScreenShare();
+      setJoined(session.isJoined);
+      setMediaConnected(session.isMediaConnected());
+      setScreenSharing(session.isScreenSharing);
+      setLocalScreenStream(session.getLiveLocalScreenStream());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "screen_share_failed";
+      setError(message);
+      setScreenSharing(session.isScreenSharing);
+      setLocalScreenStream(session.getLiveLocalScreenStream());
+      appWarn("[voice-session-screen]", message, { chatId, groupCallId });
+    }
+  }, [chatId, groupCallId]);
+
+  const stopScreenShare = useCallback(async () => {
+    const session = sessionRef.current;
+    if (!session || Platform.OS !== "web") return;
+    try {
+      setError(null);
+      await session.stopScreenShare();
+      setScreenSharing(false);
+      setLocalScreenStream(null);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "screen_share_stop_failed";
+      setError(message);
+      setScreenSharing(session.isScreenSharing);
+      setLocalScreenStream(session.getLiveLocalScreenStream());
+      appWarn("[voice-session-screen-stop]", message, { chatId, groupCallId });
+    }
+  }, [chatId, groupCallId]);
+
+  const setRemoteVideoRequests = useCallback((requests: TelegramRemoteVideoRequest[]) => {
+    sessionRef.current?.setRequestedRemoteVideos(requests);
+  }, []);
+
   const leaveVoice = useCallback(async () => {
     speakingUnsubRef.current?.();
     speakingUnsubRef.current = null;
@@ -266,6 +379,8 @@ export function useTelegramVoiceSession({
     joinLostUnsubRef.current = null;
     videoUnsubRef.current?.();
     videoUnsubRef.current = null;
+    localMediaUnsubRef.current?.();
+    localMediaUnsubRef.current = null;
     sessionRef.current?.dispose();
     sessionRef.current = null;
     const result = await leaveTelegramChatVoice(chatId, groupCallId);
@@ -276,6 +391,8 @@ export function useTelegramVoiceSession({
 
   return {
     micActive,
+    cameraActive,
+    screenSharing,
     localSpeaking,
     joining,
     joined,
@@ -283,9 +400,15 @@ export function useTelegramVoiceSession({
     negotiating,
     error,
     remoteVideoStream,
+    localCameraStream,
+    localScreenStream,
     unlockAudio,
     joinListen,
     toggleMic,
+    toggleCamera,
+    startScreenShare,
+    stopScreenShare,
+    setRemoteVideoRequests,
     leaveVoice,
   };
 }

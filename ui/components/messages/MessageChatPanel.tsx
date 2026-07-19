@@ -132,10 +132,18 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     if (!liveVoiceAvailable && groupCallId == null) return;
     userLeftVoiceRef.current = false;
     unlockVoiceAutoplay();
-    setVoiceJoined(true);
-    // Open the participant dialog with Join — strip/Join were listen-only and left
-    // users hearing audio with no sheet (felt like a stuck UI).
+    // Paint the dialog first so Close / Escape stay interactive, then start
+    // WebRTC on the next frames (SDP/ICE used to freeze the sheet on open).
     openVoicePopover();
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        window.setTimeout(() => {
+          setVoiceJoined(true);
+        }, 0);
+      });
+    } else {
+      setVoiceJoined(true);
+    }
   }, [groupCallId, liveVoiceAvailable, openVoicePopover]);
 
   const startVoice = useCallback(async () => {
@@ -159,8 +167,16 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
         has_active_voice_chat: result.has_active_voice_chat,
         voice_chat_group_call_id: result.voice_chat_group_call_id,
       });
-      setVoiceJoined(true);
       openVoicePopover();
+      if (typeof window !== "undefined") {
+        window.requestAnimationFrame(() => {
+          window.setTimeout(() => {
+            setVoiceJoined(true);
+          }, 0);
+        });
+      } else {
+        setVoiceJoined(true);
+      }
     } finally {
       setStartPending(false);
     }

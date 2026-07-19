@@ -1,0 +1,12 @@
+navigating...
+bundle https://program.hyperlinks.space/_expo/static/js/web/index-42d701995d675da3700820d1eddf4524.js
+clicking join
+raf_samples_before_close [
+  84.90000000037253,
+  84.09999999962747,
+  90.79999999981374,
+  142.70000000018626,
+  74.59999999962747
+]
+clicking close X
+{"bundle":"https://program.hyperlinks.space/_expo/static/js/web/index-42d701995d675da3700820d1eddf4524.js","closeClicked":true,"escapePressed":false,"closeStillVisible":false,"raf_samples_before_close":[84.90000000037253,84.09999999962747,90.79999999981374,142.70000000018626,74.59999999962747],"voiceLogs":["[log] [page-display] messages_voice_participants_stream_connect chatId=-1003854776265 groupCallId=1","[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=false joined=false status=ok elapsedMs=2197 tickCount=1 nextBaseMs=5000 level=warn","[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=161 listed=1 speakingCount=0 popoverOpen=false level=warn","[log] [page-display] messages_voice_roster_apply_cost chatId=-1003854776265 applyMs=141 listed=1 speakingCount=0 popoverOpen=false level=warn","[log] [page-display] messages_voice_dialog_open chatId=-1003854776265 groupCallId=1","[log] [page-display] messages_voice_dialog_close_click source=chrome_x_capture","[log] [page-display] messages_voice_dialog_close chatId=-1003854776265","[log] [page-display] messages_voice_dialog_poll_tick chatId=-1003854776265 popoverOpen=true joined=true status=backoff elapsedMs=4567 tickCount=1 nextBaseMs=4500 level=warn"]}

@@ -29,6 +29,15 @@ export function demoteQueuedNetworkFetches(): void {
   normalWaiters.push(...highWaiters.splice(0, highWaiters.length));
 }
 
+/**
+ * Drop pending high/normal jobs (e.g. voice dialog just opened). In-flight
+ * requests keep running; callers re-queue when their components stay mounted.
+ */
+export function clearQueuedNetworkFetches(): void {
+  highWaiters.length = 0;
+  normalWaiters.length = 0;
+}
+
 /** Limit parallel browser fetches; critical > high > normal. */
 export function runQueuedNetworkFetch<T>(
   fn: () => Promise<T>,

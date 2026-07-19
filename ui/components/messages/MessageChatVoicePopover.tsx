@@ -1,4 +1,5 @@
 import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   Modal,
   Platform,
@@ -44,7 +45,14 @@ import {
   VoiceWindowTrayIcon,
 } from "./MessageChatVoiceControlIcons";
 import { VoiceParticipantStateMicIcon } from "./MessageChatVoiceParticipantMicIcon";
-import { MessageChatVoiceVideoPlane } from "./MessageChatVoiceVideoPlane";
+import {
+  MessageChatVoiceMediaStage,
+  type VoiceMediaStageSource,
+} from "./MessageChatVoiceVideoPlane";
+import {
+  MessageChatVoiceMoreMenu,
+  type VoiceMoreMenuAnchor,
+} from "./MessageChatVoiceMoreMenu";
 
 const WINDOW_ICON_SIZE_PX = 15;
 const WINDOW_ICON_GAP_PX = 12;
@@ -56,11 +64,13 @@ function VoiceWindowChromeButton({
   onPress,
   children,
   hitExtraPx = 8,
+  testId,
 }: {
   label: string;
   onPress: () => void;
   children: ReactNode;
   hitExtraPx?: number;
+  testId?: string;
 }) {
   const sizePx = WINDOW_ICON_SIZE_PX + hitExtraPx;
   if (Platform.OS === "web") {
@@ -72,13 +82,23 @@ function VoiceWindowChromeButton({
         type: "button",
         "aria-label": label,
         title: label,
-        onPointerDown: (e: { stopPropagation?: () => void; preventDefault?: () => void }) => {
+        "data-voice-chrome": testId ?? "button",
+        onPointerDown: (e: {
+          stopPropagation?: () => void;
+          preventDefault?: () => void;
+          button?: number;
+        }) => {
           e.stopPropagation?.();
+          // Fire on pointerdown so a frozen main-thread click never eats the close.
+          if (e.button == null || e.button === 0) {
+            e.preventDefault?.();
+            onPress();
+          }
         },
         onClick: (e: { stopPropagation?: () => void; preventDefault?: () => void }) => {
+          // pointerdown already handled — block the duplicate click.
           e.stopPropagation?.();
           e.preventDefault?.();
-          onPress();
         },
         style: {
           width: sizePx,
@@ -92,7 +112,7 @@ function VoiceWindowChromeButton({
           justifyContent: "center",
           cursor: "pointer",
           position: "relative",
-          zIndex: 30,
+          zIndex: 60,
           WebkitAppearance: "none",
           appearance: "none",
         },
@@ -159,10 +179,17 @@ type Props = {
   micActive: boolean;
   micJoining: boolean;
   onMicPress: () => void;
+  cameraActive: boolean;
+  onCameraPress: () => void;
+  screenSharing: boolean;
+  onStartScreenShare: () => void;
+  onStopScreenShare: () => void;
   onDropPress: () => void;
   dropLeaving: boolean;
   /** Remote camera / screenshare for the in-dialog video plane. */
   remoteVideoStream?: MediaStream | null;
+  localCameraStream?: MediaStream | null;
+  localScreenStream?: MediaStream | null;
   videoActive?: boolean;
 };
 
@@ -226,7 +253,11 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   colors: ThemeColors;
 }) {
   const { colorScheme } = useTelegram();
-  const title = participant.title.trim() || "?";
+  const title =
+    participant.title.trim() ||
+    (participant.user_id != null ? `User ${participant.user_id}` : "") ||
+    (participant.chat_id != null ? `Chat ${Math.abs(participant.chat_id)}` : "") ||
+    "?";
   const description = participant.description.trim();
   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
   const speaking = Boolean(participant.is_speaking);
@@ -268,7 +299,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           sizePx={speaking ? MESSAGE_AVATAR_PX - 4 : MESSAGE_AVATAR_PX}
           colors={colors}
           scheme={colorScheme}
-          fetchPriority={speaking ? "high" : "low"}
+          fetchPriority="normal"
         />
       </View>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />
@@ -401,7 +432,7 @@ function ResizeEdgeHandle({
   const half = HIT / 2;
   const base: ViewStyle = {
     position: "absolute",
-    zIndex: 4,
+    zIndex: 2,
     ...(Platform.OS === "web"
       ? ({
           cursor: cursorForHandle(handle),
@@ -485,9 +516,16 @@ export function MessageChatVoicePopover({
   micActive,
   micJoining,
   onMicPress,
+  cameraActive,
+  onCameraPress,
+  screenSharing,
+  onStartScreenShare,
+  onStopScreenShare,
   onDropPress,
   dropLeaving,
   remoteVideoStream = null,
+  localCameraStream = null,
+  localScreenStream = null,
   videoActive = false,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
@@ -502,6 +540,56 @@ export function MessageChatVoicePopover({
           count: totalParticipantCount.toLocaleString(locale === "ru" ? "ru-RU" : "en-US"),
         })
       : "";
+  const [moreMenuAnchor, setMoreMenuAnchor] = useState<VoiceMoreMenuAnchor | null>(null);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  const moreChipRef = useRef<View | null>(null);
+
+  useEffect(() => {
+    if (Platform.OS === "web" && typeof document !== "undefined") {
+      setPortalTarget(document.body);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!visible) setMoreMenuAnchor(null);
+  }, [visible]);
+
+  // Escape / Alt+F4-style close that does not depend on the chrome button being
+  // able to receive pointer events while React is busy painting the roster.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!visible || Platform.OS !== "web" || typeof window === "undefined") return;
+    const closeNow = (source: string) => {
+      logPageDisplay("messages_voice_dialog_close_click", { source });
+      onCloseRef.current();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" || e.key === "Esc") {
+        e.preventDefault();
+        e.stopPropagation();
+        closeNow("escape_key");
+      }
+    };
+    // Capture-phase pointerdown anywhere on a close chrome control — survives
+    // React re-render storms that can replace the button's inline handler.
+    const onPointer = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const target = e.target as Element | null;
+      if (!target || typeof target.closest !== "function") return;
+      const closeEl = target.closest('[data-voice-chrome="close"]');
+      if (!closeEl) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeNow("chrome_x_capture");
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("pointerdown", onPointer, true);
+    };
+  }, [visible]);
 
   const maxWidth = Math.max(
     MIN_SHEET_WIDTH_PX,
@@ -548,8 +636,6 @@ export function MessageChatVoicePopover({
   useEffect(() => {
     setSheetSize((prev) => clampSize(prev));
   }, [clampSize]);
-
-  // Modal already captures input — do not lock document overflow (that froze the app).
 
   const activeEdges = useMemo(() => {
     const edges = new Set<Edge>();
@@ -665,6 +751,51 @@ export function MessageChatVoicePopover({
     writeStoredSize(next);
   }, [clampSize]);
 
+  const openMoreMenu = useCallback(() => {
+    const node = moreChipRef.current as unknown as {
+      measureInWindow?: (cb: (x: number, y: number, width: number, height: number) => void) => void;
+    } | null;
+    if (node && typeof node.measureInWindow === "function") {
+      node.measureInWindow((x, y, _width, height) => {
+        setMoreMenuAnchor({
+          x: Math.round(x),
+          y: Math.round(y + height + 6),
+        });
+      });
+      return;
+    }
+    setMoreMenuAnchor({
+      x: Math.round(windowWidth / 2 - 60),
+      y: Math.round(windowHeight / 2),
+    });
+  }, [windowHeight, windowWidth]);
+
+  const mediaSources = useMemo((): VoiceMediaStageSource[] => {
+    const rows: VoiceMediaStageSource[] = [];
+    if (localScreenStream) {
+      rows.push({ id: "local-screen", stream: localScreenStream });
+    }
+    if (localCameraStream) {
+      rows.push({ id: "local-camera", stream: localCameraStream });
+    }
+    if (rows.length === 0 && remoteVideoStream) {
+      const tracks = remoteVideoStream
+        .getVideoTracks()
+        .filter((track) => track.readyState === "live");
+      if (tracks.length <= 1) {
+        rows.push({ id: "remote", stream: remoteVideoStream });
+      } else {
+        for (const [index, track] of tracks.entries()) {
+          rows.push({
+            id: `remote:${track.id || index}`,
+            stream: new MediaStream([track]),
+          });
+        }
+      }
+    }
+    return rows;
+  }, [localCameraStream, localScreenStream, remoteVideoStream]);
+
   const listMaxHeight = Math.max(80, sheetSize.height - SHEET_CHROME_HEIGHT_PX);
   const handles: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
   const displayParticipants = useMemo(
@@ -672,10 +803,337 @@ export function MessageChatVoicePopover({
     [participants],
   );
 
+  const moreMenuItems = useMemo(
+    () => [
+      {
+        key: "share",
+        label: screenSharing
+          ? t("messages.voiceChat.controls.stopSharing")
+          : t("messages.voiceChat.controls.startSharing"),
+        onPress: () => {
+          setMoreMenuAnchor(null);
+          if (screenSharing) onStopScreenShare();
+          else onStartScreenShare();
+        },
+      },
+      {
+        key: "settings",
+        label: t("messages.voiceChat.controls.settingsSoon"),
+        disabled: true,
+      },
+    ],
+    [onStartScreenShare, onStopScreenShare, screenSharing, t],
+  );
+
+  const sheetBody = (
+    <View
+      pointerEvents="box-none"
+      style={[
+        appModalSheetStyles.overlayBlock,
+        {
+          minHeight: windowHeight,
+          zIndex: 2,
+        },
+      ]}
+    >
+      <Pressable
+        style={[appModalSheetStyles.backdropFill, { zIndex: 0 }]}
+        onPress={() => {
+          logPageDisplay("messages_voice_dialog_close_click", {
+            source: "backdrop",
+          });
+          onClose();
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={t("common.back")}
+      />
+      <View
+        pointerEvents="auto"
+        style={[
+          appModalSheetStyles.sheet,
+          {
+            width: sheetSize.width,
+            maxWidth: sheetSize.width,
+            height: sheetSize.height,
+            maxHeight: sheetSize.height,
+            backgroundColor: colors.background,
+            borderColor: colors.highlight,
+            borderWidth: STROKE,
+            ...borderColors,
+            paddingTop: 20,
+            paddingBottom: 20,
+            overflow: "visible",
+            zIndex: 5,
+            ...(Platform.OS === "web"
+              ? ({
+                  position: "relative",
+                  isolation: "isolate",
+                } as object)
+              : {}),
+          },
+        ]}
+        {...(Platform.OS === "web"
+          ? ({
+              onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
+            } as object)
+          : {
+              onStartShouldSetResponder: () => true,
+            })}
+      >
+        {Platform.OS === "web"
+          ? handles.map((handle) => (
+              <ResizeEdgeHandle
+                key={handle}
+                handle={handle}
+                onHoverChange={(hovered) =>
+                  setHoveredHandle((prev) => {
+                    if (hovered) return handle;
+                    return prev === handle ? null : prev;
+                  })
+                }
+                onPointerDown={(e) => beginDrag(handle, e)}
+              />
+            ))
+          : null}
+
+        <View
+          pointerEvents="box-none"
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            paddingHorizontal: 20,
+            marginBottom: 16,
+            gap: 12,
+            zIndex: 40,
+            ...(Platform.OS === "web" ? ({ position: "relative" } as object) : {}),
+          }}
+        >
+          <View style={{ flex: 1, minWidth: 0 }} pointerEvents="none">
+            <Text
+              numberOfLines={1}
+              style={[
+                typographyRect15,
+                { color: colors.primary, marginBottom: 0 },
+              ]}
+            >
+              {chatTitle}
+            </Text>
+            {participantCountLabel ? (
+              <Text
+                numberOfLines={1}
+                style={[
+                  typographyRect15,
+                  {
+                    color: colors.secondary,
+                    marginBottom: 0,
+                    marginTop: 2,
+                    fontSize: 13,
+                    lineHeight: 16,
+                  },
+                ]}
+              >
+                {participantCountLabel}
+              </Text>
+            ) : null}
+          </View>
+          <View
+            pointerEvents="auto"
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: WINDOW_ICON_GAP_PX,
+              flexShrink: 0,
+              zIndex: 50,
+              ...(Platform.OS === "web" ? ({ position: "relative" } as object) : {}),
+            }}
+          >
+            <VoiceWindowChromeButton
+              label={t("messages.voiceChat.minimize")}
+              hitExtraPx={4}
+              onPress={minimizeSheet}
+            >
+              <VoiceWindowTrayIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
+            </VoiceWindowChromeButton>
+            <VoiceWindowChromeButton
+              label={t("messages.voiceChat.expand")}
+              hitExtraPx={4}
+              onPress={expandToDefault}
+            >
+              <VoiceWindowSizeIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
+            </VoiceWindowChromeButton>
+            <VoiceWindowChromeButton
+              label={t("common.back")}
+              hitExtraPx={8}
+              testId="close"
+              onPress={() => {
+                logPageDisplay("messages_voice_dialog_close_click", {
+                  source: "chrome_x",
+                });
+                onClose();
+              }}
+            >
+              <VoiceWindowCrossIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
+            </VoiceWindowChromeButton>
+          </View>
+        </View>
+
+        <MessageChatVoiceMediaStage
+          sources={mediaSources}
+          // Local previews (own screencast / camera) must not wait for the remote
+          // `videoActive` join flag — sharing starts capturing immediately.
+          active={Boolean(
+            visible &&
+              mediaSources.length > 0 &&
+              (videoActive || localScreenStream != null || localCameraStream != null),
+          )}
+          maxHeightPx={Math.min(220, MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX)}
+          horizontalInsetPx={20}
+          marginBottomPx={16}
+        />
+
+        <View style={{ paddingHorizontal: 20, flex: 1, minHeight: 0, maxHeight: listMaxHeight }}>
+          <ScrollView style={{ flex: 1, maxHeight: listMaxHeight }} nestedScrollEnabled>
+            {displayParticipants.length > 0 ? (
+              displayParticipants.map((participant, index) => (
+                <VoiceParticipantRow
+                  key={
+                    participant.user_id != null
+                      ? `u:${participant.user_id}`
+                      : `c:${participant.chat_id}:${index}`
+                  }
+                  participant={participant}
+                  isLast={index === displayParticipants.length - 1}
+                  colors={colors}
+                />
+              ))
+            ) : (
+              <Text style={[typographyRect15, { color: colors.secondary }]}>
+                {participantCountLabel || t("messages.voiceChat.participants")}
+              </Text>
+            )}
+          </ScrollView>
+        </View>
+
+        <View
+          style={{
+            height: 1,
+            marginTop: 16,
+            marginBottom: 16,
+            marginHorizontal: DIVIDER_INSET_PX,
+            backgroundColor: colors.highlight,
+          }}
+        />
+
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: CONTROL_CHIP_GAP_PX,
+            paddingHorizontal: 20,
+            zIndex: 20,
+            ...(Platform.OS === "web" ? ({ direction: "ltr" } as object) : {}),
+          }}
+        >
+          <View ref={moreChipRef} collapsable={false}>
+            <VoiceControlChip
+              key="more"
+              label={t("messages.voiceChat.controls.more")}
+              variant="simple"
+              undercoverColor={colors.undercover}
+              onPress={openMoreMenu}
+            >
+              <VoiceMoreIcon color={iconColor} size={CONTROL_ICON_PX} />
+            </VoiceControlChip>
+          </View>
+          <VoiceControlChip
+            key="video"
+            label={t("messages.voiceChat.controls.camera")}
+            variant="simple"
+            undercoverColor={colors.undercover}
+            onPress={onCameraPress}
+            disabled={micJoining}
+          >
+            <VoiceCameraIcon
+              color={iconColor}
+              size={CONTROL_ICON_PX}
+              muted={!cameraActive}
+            />
+          </VoiceControlChip>
+          <VoiceControlChip
+            key="mic"
+            label={t("messages.voiceChat.controls.mic")}
+            variant="simple"
+            undercoverColor={colors.undercover}
+            isLightTheme={isLightTheme}
+            phaseOffset={0.38}
+            onPress={onMicPress}
+            disabled={micJoining}
+          >
+            <VoiceMicControlIcon
+              color={iconColor}
+              size={CONTROL_ICON_PX}
+              muted={!micActive}
+            />
+          </VoiceControlChip>
+          <VoiceControlChip
+            key="chat"
+            label={t("messages.voiceChat.controls.messages")}
+            variant="simple"
+            undercoverColor={colors.undercover}
+          >
+            <VoiceMessagesIcon color={iconColor} size={CONTROL_ICON_PX} />
+          </VoiceControlChip>
+          <VoiceControlChip
+            key="phone"
+            label={t("messages.voiceChat.controls.drop")}
+            variant="simple"
+            undercoverColor={colors.undercover}
+            onPress={onDropPress}
+            disabled={dropLeaving}
+          >
+            <VoiceDropIcon color={iconColor} size={CONTROL_ICON_PX} />
+          </VoiceControlChip>
+        </View>
+      </View>
+      <MessageChatVoiceMoreMenu
+        visible={moreMenuAnchor != null}
+        anchor={moreMenuAnchor}
+        colors={colors}
+        items={moreMenuItems}
+        onClose={() => setMoreMenuAnchor(null)}
+      />
+    </View>
+  );
+
+  if (!visible) return null;
+
+  if (Platform.OS === "web") {
+    if (!portalTarget) return null;
+    return createPortal(
+      <View
+        style={{
+          position: "fixed",
+          left: 0,
+          top: 0,
+          right: 0,
+          bottom: 0,
+          zIndex: 9000,
+          height: windowHeight,
+          width: "100%",
+          justifyContent: "center",
+          alignItems: "center",
+        }}
+        pointerEvents="box-none"
+      >
+        {sheetBody}
+      </View>,
+      portalTarget,
+    );
+  }
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      {/* Plain overlay — do not use HspScrollColumn here: its children-driven
-          layout effects rebind on every roster SSE tick and freeze the sheet. */}
       <View
         style={{
           height: windowHeight,
@@ -684,245 +1142,9 @@ export function MessageChatVoicePopover({
           justifyContent: "center",
           alignItems: "center",
         }}
+        pointerEvents="box-none"
       >
-        <View style={[appModalSheetStyles.overlayBlock, { minHeight: windowHeight }]}>
-          <Pressable
-            style={appModalSheetStyles.backdropFill}
-            onPress={() => {
-              logPageDisplay("messages_voice_dialog_close_click", {
-                source: "backdrop",
-              });
-              onClose();
-            }}
-            accessibilityRole="button"
-            accessibilityLabel={t("common.back")}
-          />
-          <View
-            style={[
-              appModalSheetStyles.sheet,
-              {
-                width: sheetSize.width,
-                maxWidth: sheetSize.width,
-                height: sheetSize.height,
-                maxHeight: sheetSize.height,
-                backgroundColor: colors.background,
-                borderColor: colors.highlight,
-                borderWidth: STROKE,
-                ...borderColors,
-                paddingTop: 20,
-                paddingBottom: 20,
-                overflow: "visible",
-              },
-            ]}
-            {...(Platform.OS === "web"
-              ? ({
-                  onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
-                } as object)
-              : {
-                  // Native only — on web this steals presses from the close Pressable.
-                  onStartShouldSetResponder: () => true,
-                })}
-          >
-            {Platform.OS === "web"
-              ? handles.map((handle) => (
-                  <ResizeEdgeHandle
-                    key={handle}
-                    handle={handle}
-                    onHoverChange={(hovered) =>
-                      setHoveredHandle((prev) => {
-                        if (hovered) return handle;
-                        return prev === handle ? null : prev;
-                      })
-                    }
-                    onPointerDown={(e) => beginDrag(handle, e)}
-                  />
-                ))
-              : null}
-
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                paddingHorizontal: 20,
-                marginBottom: 16,
-                gap: 12,
-                zIndex: 10,
-                ...(Platform.OS === "web" ? ({ position: "relative" } as object) : {}),
-              }}
-            >
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <Text
-                  numberOfLines={1}
-                  style={[
-                    typographyRect15,
-                    { color: colors.primary, marginBottom: 0 },
-                  ]}
-                >
-                  {chatTitle}
-                </Text>
-                {participantCountLabel ? (
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      typographyRect15,
-                      {
-                        color: colors.secondary,
-                        marginBottom: 0,
-                        marginTop: 2,
-                        fontSize: 13,
-                        lineHeight: 16,
-                      },
-                    ]}
-                  >
-                    {participantCountLabel}
-                  </Text>
-                ) : null}
-              </View>
-              <View
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: WINDOW_ICON_GAP_PX,
-                  flexShrink: 0,
-                  zIndex: 20,
-                  ...(Platform.OS === "web" ? ({ position: "relative" } as object) : {}),
-                }}
-              >
-                <VoiceWindowChromeButton
-                  label={t("common.back")}
-                  hitExtraPx={8}
-                  onPress={() => {
-                    logPageDisplay("messages_voice_dialog_close_click", {
-                      source: "chrome_x",
-                    });
-                    onClose();
-                  }}
-                >
-                  <VoiceWindowCrossIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
-                </VoiceWindowChromeButton>
-                <VoiceWindowChromeButton
-                  label={t("messages.voiceChat.expand")}
-                  hitExtraPx={4}
-                  onPress={expandToDefault}
-                >
-                  <VoiceWindowSizeIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
-                </VoiceWindowChromeButton>
-                <VoiceWindowChromeButton
-                  label={t("messages.voiceChat.minimize")}
-                  hitExtraPx={4}
-                  onPress={minimizeSheet}
-                >
-                  <VoiceWindowTrayIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
-                </VoiceWindowChromeButton>
-              </View>
-            </View>
-
-            <MessageChatVoiceVideoPlane
-              stream={remoteVideoStream}
-              active={Boolean(visible && videoActive && remoteVideoStream)}
-              maxHeightPx={Math.min(220, MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX)}
-              horizontalInsetPx={20}
-              marginBottomPx={16}
-            />
-
-            <View style={{ paddingHorizontal: 20, flex: 1, minHeight: 0, maxHeight: listMaxHeight }}>
-              <ScrollView style={{ flex: 1, maxHeight: listMaxHeight }} nestedScrollEnabled>
-                {displayParticipants.length > 0 ? (
-                  displayParticipants.map((participant, index) => (
-                    <VoiceParticipantRow
-                      key={
-                        participant.user_id != null
-                          ? `u:${participant.user_id}`
-                          : `c:${participant.chat_id}:${index}`
-                      }
-                      participant={participant}
-                      isLast={index === displayParticipants.length - 1}
-                      colors={colors}
-                    />
-                  ))
-                ) : (
-                  <Text style={[typographyRect15, { color: colors.secondary }]}>
-                    {participantCountLabel || t("messages.voiceChat.participants")}
-                  </Text>
-                )}
-              </ScrollView>
-            </View>
-
-            <View
-              style={{
-                height: 1,
-                marginTop: 16,
-                marginBottom: 16,
-                marginHorizontal: DIVIDER_INSET_PX,
-                backgroundColor: colors.highlight,
-              }}
-            />
-
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: CONTROL_CHIP_GAP_PX,
-                paddingHorizontal: 20,
-                ...(Platform.OS === "web" ? ({ direction: "ltr" } as object) : {}),
-              }}
-            >
-              <VoiceControlChip
-                key="more"
-                label={t("messages.voiceChat.controls.more")}
-                variant="simple"
-                undercoverColor={colors.undercover}
-              >
-                <VoiceMoreIcon color={iconColor} size={CONTROL_ICON_PX} />
-              </VoiceControlChip>
-              <VoiceControlChip
-                key="video"
-                label={t("messages.voiceChat.controls.camera")}
-                variant="simple"
-                undercoverColor={colors.undercover}
-              >
-                <VoiceCameraIcon color={iconColor} size={CONTROL_ICON_PX} />
-              </VoiceControlChip>
-              <VoiceControlChip
-                key="mic"
-                label={t("messages.voiceChat.controls.mic")}
-                // Never run liquid-glass WebGL inside the modal — its rAF loop
-                // was a primary cause of Chrome "Page Unresponsive" after a while.
-                variant="simple"
-                undercoverColor={colors.undercover}
-                isLightTheme={isLightTheme}
-                phaseOffset={0.38}
-                onPress={onMicPress}
-                disabled={micJoining}
-              >
-                <VoiceMicControlIcon
-                  color={iconColor}
-                  size={CONTROL_ICON_PX}
-                  muted={!micActive}
-                />
-              </VoiceControlChip>
-              <VoiceControlChip
-                key="chat"
-                label={t("messages.voiceChat.controls.messages")}
-                variant="simple"
-                undercoverColor={colors.undercover}
-              >
-                <VoiceMessagesIcon color={iconColor} size={CONTROL_ICON_PX} />
-              </VoiceControlChip>
-              <VoiceControlChip
-                key="phone"
-                label={t("messages.voiceChat.controls.drop")}
-                variant="simple"
-                undercoverColor={colors.undercover}
-                onPress={onDropPress}
-                disabled={dropLeaving}
-              >
-                <VoiceDropIcon color={iconColor} size={CONTROL_ICON_PX} />
-              </VoiceControlChip>
-            </View>
-          </View>
-        </View>
+        {sheetBody}
       </View>
     </Modal>
   );

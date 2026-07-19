@@ -4,6 +4,8 @@ import {
   groupCallAnswerSdpFromTransport,
   parseGroupCallJoinTransport,
   parseGroupCallOfferSdp,
+  type TelegramGroupCallRemoteVideoSection,
+  type TelegramGroupCallTransport,
 } from "../../shared/telegramGroupCallSdp";
 import { joinTelegramChatVoice } from "./joinTelegramChatVoice";
 import { setTelegramChatVoiceMicMuted } from "./setTelegramChatVoiceMicMuted";
@@ -23,6 +25,22 @@ function voiceDebug(tag: string, event: string, details?: Record<string, unknown
 type SessionInput = {
   chatId: number;
   groupCallId: number | null;
+};
+
+export type TelegramRemoteVideoKind = "camera" | "screen";
+
+/** A remote participant video we want to receive (from TDLib participant info). */
+export type TelegramRemoteVideoRequest = {
+  endpointId: string;
+  kind: TelegramRemoteVideoKind;
+  ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
+};
+
+/** A live remote video source mapped back to its publisher endpoint. */
+export type TelegramRemoteVideoSource = {
+  endpointId: string;
+  kind: TelegramRemoteVideoKind;
+  stream: MediaStream;
 };
 
 function createSilentVideoTrack(): MediaStreamTrack {
@@ -83,11 +101,43 @@ export class TelegramGroupCallWebSession {
   private audioTrack: MediaStreamTrack | null = null;
   /** True when `audioTrack` is a placeholder (no real mic yet). */
   private usingSilentAudio = false;
+  /** Outbound video sender track (silent placeholder, camera, or screen). */
+  private outboundVideoTrack: MediaStreamTrack | null = null;
+  private cameraTrack: MediaStreamTrack | null = null;
+  private screenTrack: MediaStreamTrack | null = null;
+  private cameraEnabled = false;
+  private screenSharing = false;
+  private localCameraStream: MediaStream | null = null;
+  private localScreenStream: MediaStream | null = null;
+  private localMediaListeners = new Set<
+    (state: {
+      cameraActive: boolean;
+      screenSharing: boolean;
+      localCameraStream: MediaStream | null;
+      localScreenStream: MediaStream | null;
+    }) => void
+  >();
   private remoteAudio: HTMLAudioElement | null = null;
   private remoteStream: MediaStream | null = null;
   /** Remote camera / screen-share tracks (separate from audio so sinks stay independent). */
   private remoteVideoStream: MediaStream | null = null;
   private videoListeners = new Set<(stream: MediaStream | null) => void>();
+  /** Join-time SFU transport — reused to synthesize renegotiation answers. */
+  private lastTransport: TelegramGroupCallTransport | null = null;
+  /** Remote participant videos we want to receive (endpoint + ssrc groups). */
+  private requestedRemoteVideo: TelegramRemoteVideoRequest[] = [];
+  /** recvonly transceiver slots for remote video, in m-line order after mid 0/1. */
+  private videoRecvSlots: Array<{
+    transceiver: RTCRtpTransceiver;
+    endpointId: string | null;
+  }> = [];
+  /** Serialize renegotiations — parallel setLocalDescription calls throw. */
+  private renegotiationChain: Promise<void> = Promise.resolve();
+  private lastAppliedRemoteVideoKey = "";
+  private remoteVideoByEndpoint = new Map<string, MediaStream>();
+  private remoteVideoSourceListeners = new Set<
+    (sources: TelegramRemoteVideoSource[]) => void
+  >();
   /** Gate remote playback on chat-panel visibility (only hear while in the dialog). */
   private remoteAudioEnabled = true;
   private playbackCtx: AudioContext | null = null;
@@ -206,16 +256,90 @@ export class TelegramGroupCallWebSession {
     };
   }
 
+  /**
+   * Per-endpoint remote video sources (camera / screencast). Prefer this over
+   * {@link onRemoteVideoChange} when the UI needs to distinguish them.
+   */
+  onRemoteVideoSourcesChange(
+    listener: (sources: TelegramRemoteVideoSource[]) => void,
+  ): () => void {
+    this.remoteVideoSourceListeners.add(listener);
+    listener(this.getLiveRemoteVideoSources());
+    return () => {
+      this.remoteVideoSourceListeners.delete(listener);
+    };
+  }
+
   /** Current live remote video stream, or null. */
   getLiveRemoteVideoStream(): MediaStream | null {
-    const stream = this.remoteVideoStream;
-    if (!stream) return null;
-    // Keep muted SFU placeholders attached (first keyframe often lags). UI only
-    // paints once videoWidth/Height > 0 — returning null here hid real shares.
-    const active = stream
-      .getVideoTracks()
-      .some((t) => t.readyState === "live" && t.enabled);
-    return active ? stream : null;
+    const sources = this.getLiveRemoteVideoSources();
+    if (sources.length === 0) return null;
+    // Prefer screencast when both are live (tdesktop docks presentation first).
+    const preferred =
+      sources.find((s) => s.kind === "screen") ?? sources[0]!;
+    return preferred.stream;
+  }
+
+  getLiveRemoteVideoSources(): TelegramRemoteVideoSource[] {
+    const out: TelegramRemoteVideoSource[] = [];
+    for (const req of this.requestedRemoteVideo) {
+      const stream = this.remoteVideoByEndpoint.get(req.endpointId);
+      if (!stream) continue;
+      const live = stream
+        .getVideoTracks()
+        .some((t) => t.readyState === "live" && t.enabled);
+      if (!live) continue;
+      out.push({ endpointId: req.endpointId, kind: req.kind, stream });
+    }
+    // Fallback: tracks that arrived without an endpoint mapping yet.
+    if (out.length === 0 && this.remoteVideoStream) {
+      const live = this.remoteVideoStream
+        .getVideoTracks()
+        .some((t) => t.readyState === "live" && t.enabled);
+      if (live) {
+        out.push({
+          endpointId: "unknown",
+          kind: "screen",
+          stream: this.remoteVideoStream,
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Ask the SFU to deliver the given participant videos. Triggers a WebRTC
+   * renegotiation that declares each publisher's SSRC groups in the answer.
+   */
+  setRequestedRemoteVideos(requests: TelegramRemoteVideoRequest[]): void {
+    const normalized = requests
+      .filter((req) => req.endpointId && req.ssrcGroups.length > 0)
+      .map((req) => ({
+        endpointId: req.endpointId.trim(),
+        kind: req.kind,
+        ssrcGroups: req.ssrcGroups
+          .filter((g) => g.semantics && g.sourceIds.length > 0)
+          .map((g) => ({
+            semantics: g.semantics,
+            sourceIds: g.sourceIds.map((id) => Math.trunc(id)),
+          })),
+      }));
+    const nextKey = normalized
+      .map(
+        (r) =>
+          `${r.kind}:${r.endpointId}:${r.ssrcGroups
+            .map((g) => `${g.semantics}:${g.sourceIds.join(",")}`)
+            .join(";")}`,
+      )
+      .sort()
+      .join("|");
+    if (nextKey === this.lastAppliedRemoteVideoKey) return;
+    this.requestedRemoteVideo = normalized;
+    this.lastAppliedRemoteVideoKey = nextKey;
+    this.notifyVideoListeners();
+    this.notifyRemoteVideoSourceListeners();
+    if (!this.joined || !this.connection || !this.lastTransport) return;
+    this.queueRemoteVideoRenegotiation();
   }
 
   private notifyVideoListeners(): void {
@@ -225,6 +349,17 @@ export class TelegramGroupCallWebSession {
         listener(payload);
       } catch {
         // ignore listener errors
+      }
+    }
+  }
+
+  private notifyRemoteVideoSourceListeners(): void {
+    const payload = this.getLiveRemoteVideoSources();
+    for (const listener of this.remoteVideoSourceListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // ignore
       }
     }
   }
@@ -245,7 +380,18 @@ export class TelegramGroupCallWebSession {
       }
       this.remoteVideoStream = null;
     }
+    for (const stream of this.remoteVideoByEndpoint.values()) {
+      for (const track of stream.getVideoTracks()) {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      }
+    }
+    this.remoteVideoByEndpoint.clear();
     this.notifyVideoListeners();
+    this.notifyRemoteVideoSourceListeners();
   }
 
   private ensureRemoteVideoStream(): MediaStream {
@@ -255,7 +401,31 @@ export class TelegramGroupCallWebSession {
     return this.remoteVideoStream;
   }
 
-  private attachRemoteVideoTrack(track: MediaStreamTrack): void {
+  private resolveEndpointIdForTrack(
+    track: MediaStreamTrack,
+    eventStreams: readonly MediaStream[],
+  ): string | null {
+    for (const stream of eventStreams) {
+      if (this.remoteVideoByEndpoint.has(stream.id)) return stream.id;
+      const match = this.requestedRemoteVideo.find((r) => r.endpointId === stream.id);
+      if (match) return match.endpointId;
+    }
+    // Slot-based fallback: map by transceiver mid order.
+    const pc = this.connection;
+    if (pc) {
+      for (const slot of this.videoRecvSlots) {
+        if (slot.endpointId && slot.transceiver.receiver.track?.id === track.id) {
+          return slot.endpointId;
+        }
+      }
+    }
+    return this.requestedRemoteVideo[0]?.endpointId ?? null;
+  }
+
+  private attachRemoteVideoTrack(
+    track: MediaStreamTrack,
+    eventStreams: readonly MediaStream[] = [],
+  ): void {
     if (track.kind !== "video") return;
     // Ignore ended placeholders / silent negotiation leftovers from the SFU.
     if (track.readyState === "ended") return;
@@ -273,19 +443,45 @@ export class TelegramGroupCallWebSession {
         trackCount: stream.getVideoTracks().length,
       });
     }
+    const endpointId = this.resolveEndpointIdForTrack(track, eventStreams);
+    if (endpointId) {
+      let endpointStream = this.remoteVideoByEndpoint.get(endpointId);
+      if (!endpointStream) {
+        endpointStream = new MediaStream();
+        this.remoteVideoByEndpoint.set(endpointId, endpointStream);
+      }
+      if (!endpointStream.getVideoTracks().some((t) => t.id === track.id)) {
+        endpointStream.addTrack(track);
+      }
+    }
     track.onunmute = () => {
       voiceDebug("[voice-remote-video]", "unmuted", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         trackId: track.id,
+        endpointId,
       });
       this.notifyVideoListeners();
+      this.notifyRemoteVideoSourceListeners();
     };
     track.onended = () => {
       try {
         stream.removeTrack(track);
       } catch {
         // ignore
+      }
+      if (endpointId) {
+        const endpointStream = this.remoteVideoByEndpoint.get(endpointId);
+        if (endpointStream) {
+          try {
+            endpointStream.removeTrack(track);
+          } catch {
+            // ignore
+          }
+          if (endpointStream.getVideoTracks().length === 0) {
+            this.remoteVideoByEndpoint.delete(endpointId);
+          }
+        }
       }
       appWarn("[voice-remote-video]", "ended", {
         chatId: this.input.chatId,
@@ -294,8 +490,80 @@ export class TelegramGroupCallWebSession {
         remaining: stream.getVideoTracks().length,
       });
       this.notifyVideoListeners();
+      this.notifyRemoteVideoSourceListeners();
     };
     this.notifyVideoListeners();
+    this.notifyRemoteVideoSourceListeners();
+  }
+
+  private queueRemoteVideoRenegotiation(): void {
+    this.renegotiationChain = this.renegotiationChain
+      .then(() => this.renegotiateRemoteVideos())
+      .catch((err) => {
+        appWarn(
+          "[voice-remote-video-renegotiate]",
+          err instanceof Error ? err.message : String(err),
+          { chatId: this.input.chatId, groupCallId: this.input.groupCallId },
+        );
+      });
+  }
+
+  private async renegotiateRemoteVideos(): Promise<void> {
+    const connection = this.connection;
+    const transport = this.lastTransport;
+    if (!connection || !transport || !this.joined) return;
+
+    const wanted = this.requestedRemoteVideo.slice(0, 4);
+    // Grow recvonly slots to match. Never stop() surplus transceivers — a
+    // stopped m-line must be rejected (port 0) in every later answer and our
+    // builder emits live sections, which makes setRemoteDescription throw and
+    // renegotiation loop forever. Park unused slots as inactive instead.
+    while (this.videoRecvSlots.length < wanted.length) {
+      const transceiver = connection.addTransceiver("video", {
+        direction: "recvonly",
+      });
+      this.videoRecvSlots.push({ transceiver, endpointId: null });
+    }
+    for (let i = 0; i < this.videoRecvSlots.length; i += 1) {
+      const slot = this.videoRecvSlots[i]!;
+      const req = wanted[i];
+      slot.endpointId = req?.endpointId ?? null;
+      try {
+        slot.transceiver.direction = req ? "recvonly" : "inactive";
+      } catch {
+        // ignore
+      }
+    }
+
+    const offer = await connection.createOffer();
+    await connection.setLocalDescription(offer);
+    const localSdp = connection.localDescription?.sdp ?? offer.sdp ?? "";
+    if (!localSdp) return;
+
+    const sections: TelegramGroupCallRemoteVideoSection[] = wanted.map((req) => ({
+      endpointId: req.endpointId,
+      ssrcGroups: req.ssrcGroups.map((g) => ({
+        semantics: g.semantics,
+        sourceIds: g.sourceIds,
+      })),
+    }));
+    // Pad inactive slots so m-line counts still match if the offer grew more.
+    const offerMids = (localSdp.match(/^a=mid:.+$/gm) ?? []).length;
+    while (sections.length < Math.max(0, offerMids - 2)) {
+      sections.push(null);
+    }
+
+    await connection.setRemoteDescription({
+      type: "answer",
+      sdp: groupCallAnswerSdpFromTransport(transport, localSdp, sections),
+    });
+    voiceDebug("[voice-remote-video]", "renegotiated", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      sections: sections.filter(Boolean).length,
+      mids: offerMids,
+    });
+    this.pullRemoteMediaTracks(connection);
   }
 
   private pullRemoteMediaTracks(connection: RTCPeerConnection): void {
@@ -397,6 +665,8 @@ export class TelegramGroupCallWebSession {
       this.audioTrack = null;
     }
     this.usingSilentAudio = false;
+    this.stopLocalVideoCaptures();
+    this.outboundVideoTrack = null;
     this.audioSourceId = null;
     if (this.connection) {
       this.connection.close();
@@ -419,6 +689,9 @@ export class TelegramGroupCallWebSession {
     const wasJoined = this.joined;
     this.joined = false;
     this.micEnabled = false;
+    this.lastTransport = null;
+    this.videoRecvSlots = [];
+    this.lastAppliedRemoteVideoKey = "";
     appWarn("[voice-join-lost]", reason, {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
@@ -439,8 +712,207 @@ export class TelegramGroupCallWebSession {
     return this.micEnabled;
   }
 
+  get isCameraEnabled(): boolean {
+    return this.cameraEnabled;
+  }
+
+  get isScreenSharing(): boolean {
+    return this.screenSharing;
+  }
+
+  getLiveLocalCameraStream(): MediaStream | null {
+    return this.cameraEnabled ? this.localCameraStream : null;
+  }
+
+  getLiveLocalScreenStream(): MediaStream | null {
+    return this.screenSharing ? this.localScreenStream : null;
+  }
+
   get isLocalSpeaking(): boolean {
     return this.localSpeaking;
+  }
+
+  onLocalMediaChange(
+    listener: (state: {
+      cameraActive: boolean;
+      screenSharing: boolean;
+      localCameraStream: MediaStream | null;
+      localScreenStream: MediaStream | null;
+    }) => void,
+  ): () => void {
+    this.localMediaListeners.add(listener);
+    listener(this.getLocalMediaState());
+    return () => {
+      this.localMediaListeners.delete(listener);
+    };
+  }
+
+  private getLocalMediaState(): {
+    cameraActive: boolean;
+    screenSharing: boolean;
+    localCameraStream: MediaStream | null;
+    localScreenStream: MediaStream | null;
+  } {
+    return {
+      cameraActive: this.cameraEnabled,
+      screenSharing: this.screenSharing,
+      localCameraStream: this.getLiveLocalCameraStream(),
+      localScreenStream: this.getLiveLocalScreenStream(),
+    };
+  }
+
+  private notifyLocalMediaListeners(): void {
+    const payload = this.getLocalMediaState();
+    for (const listener of this.localMediaListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  private findVideoSender(): RTCRtpSender | null {
+    if (!this.connection) return null;
+    return (
+      this.connection.getSenders().find((s) => s.track?.kind === "video") ??
+      this.connection.getSenders().find((s) => !s.track || s.track.kind === "video") ??
+      null
+    );
+  }
+
+  private async replaceOutboundVideo(track: MediaStreamTrack): Promise<void> {
+    const sender = this.findVideoSender();
+    if (sender) {
+      await sender.replaceTrack(track);
+    }
+    this.outboundVideoTrack = track;
+    if (this.localStream) {
+      for (const existing of this.localStream.getVideoTracks()) {
+        this.localStream.removeTrack(existing);
+      }
+      this.localStream.addTrack(track);
+    }
+  }
+
+  /** Prefer screen, then camera, else keep/create a silent placeholder. */
+  private async syncOutboundVideoTrack(): Promise<void> {
+    const preferred = this.screenTrack ?? this.cameraTrack;
+    if (preferred) {
+      await this.replaceOutboundVideo(preferred);
+      return;
+    }
+    if (this.outboundVideoTrack && this.outboundVideoTrack.readyState === "live") {
+      // Already on silent / leftover — keep it if it isn't camera/screen.
+      if (this.outboundVideoTrack !== this.cameraTrack && this.outboundVideoTrack !== this.screenTrack) {
+        await this.replaceOutboundVideo(this.outboundVideoTrack);
+        return;
+      }
+    }
+    const silent = createSilentVideoTrack();
+    if (this.outboundVideoTrack && this.outboundVideoTrack !== silent) {
+      try {
+        this.outboundVideoTrack.stop();
+      } catch {
+        // ignore
+      }
+    }
+    await this.replaceOutboundVideo(silent);
+  }
+
+  async setCameraEnabled(enabled: boolean): Promise<void> {
+    if (enabled === this.cameraEnabled && (enabled ? this.cameraTrack != null : true)) {
+      this.notifyLocalMediaListeners();
+      return;
+    }
+    if (!enabled) {
+      this.cameraTrack?.stop();
+      this.cameraTrack = null;
+      this.localCameraStream = null;
+      this.cameraEnabled = false;
+      await this.syncOutboundVideoTrack();
+      this.notifyLocalMediaListeners();
+      return;
+    }
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error("camera_unavailable");
+    }
+    const camStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: "user",
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    });
+    const track = camStream.getVideoTracks()[0];
+    if (!track) {
+      camStream.getTracks().forEach((t) => t.stop());
+      throw new Error("camera_unavailable");
+    }
+    track.enabled = true;
+    this.cameraTrack?.stop();
+    this.cameraTrack = track;
+    this.localCameraStream = new MediaStream([track]);
+    this.cameraEnabled = true;
+    if (!this.joined) {
+      await this.ensureJoinedListenOnly();
+    }
+    await this.syncOutboundVideoTrack();
+    this.notifyLocalMediaListeners();
+  }
+
+  async startScreenShare(): Promise<void> {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error("screen_share_unavailable");
+    }
+    const displayStream = await navigator.mediaDevices.getDisplayMedia({
+      audio: false,
+      video: true,
+    });
+    const track = displayStream.getVideoTracks()[0];
+    if (!track) {
+      displayStream.getTracks().forEach((t) => t.stop());
+      throw new Error("screen_share_unavailable");
+    }
+    track.enabled = true;
+    this.screenTrack?.stop();
+    this.screenTrack = track;
+    this.localScreenStream = new MediaStream([track]);
+    this.screenSharing = true;
+    track.onended = () => {
+      void this.stopScreenShare();
+    };
+    if (!this.joined) {
+      await this.ensureJoinedListenOnly();
+    }
+    await this.syncOutboundVideoTrack();
+    this.notifyLocalMediaListeners();
+  }
+
+  async stopScreenShare(): Promise<void> {
+    if (!this.screenSharing && !this.screenTrack) {
+      this.notifyLocalMediaListeners();
+      return;
+    }
+    this.screenTrack?.stop();
+    this.screenTrack = null;
+    this.localScreenStream = null;
+    this.screenSharing = false;
+    await this.syncOutboundVideoTrack();
+    this.notifyLocalMediaListeners();
+  }
+
+  private stopLocalVideoCaptures(): void {
+    this.cameraTrack?.stop();
+    this.cameraTrack = null;
+    this.localCameraStream = null;
+    this.cameraEnabled = false;
+    this.screenTrack?.stop();
+    this.screenTrack = null;
+    this.localScreenStream = null;
+    this.screenSharing = false;
+    this.notifyLocalMediaListeners();
   }
 
   onLocalSpeakingChange(listener: (speaking: boolean) => void): () => void {
@@ -516,7 +988,10 @@ export class TelegramGroupCallWebSession {
   }
 
   async setMicEnabled(enabled: boolean): Promise<void> {
-    if (enabled || this.usingSilentAudio || !this.audioTrack) {
+    // Only acquire a real mic when unmuting. The previous `usingSilentAudio`
+    // branch called getUserMedia on every muted joinListen path and could hang
+    // the page (permission prompt / device enumeration) right as the dialog opened.
+    if (enabled) {
       await this.ensureLocalMic();
     }
     if (this.audioTrack) {
@@ -989,6 +1464,7 @@ export class TelegramGroupCallWebSession {
     });
     connection.addTrack(audioTrack, localStream);
     connection.addTrack(videoTrack, localStream);
+    this.outboundVideoTrack = videoTrack;
 
     connection.ontrack = (event) => {
       const track = event.track;
@@ -1000,6 +1476,7 @@ export class TelegramGroupCallWebSession {
         streams: event.streams.length,
         muted: track.muted,
         readyState: track.readyState,
+        streamIds: event.streams.map((s) => s.id).join(","),
       });
       if (event.streams[0]) {
         for (const streamTrack of event.streams[0].getAudioTracks()) {
@@ -1008,12 +1485,12 @@ export class TelegramGroupCallWebSession {
         }
         for (const streamTrack of event.streams[0].getVideoTracks()) {
           streamTrack.enabled = true;
-          this.attachRemoteVideoTrack(streamTrack);
+          this.attachRemoteVideoTrack(streamTrack, event.streams);
         }
       } else if (track.kind === "audio") {
         this.attachRemoteAudioTrack(track);
       } else if (track.kind === "video") {
-        this.attachRemoteVideoTrack(track);
+        this.attachRemoteVideoTrack(track, event.streams);
       }
     };
 
@@ -1179,6 +1656,7 @@ export class TelegramGroupCallWebSession {
     this.localStream = localStream;
     this.audioTrack = audioTrack;
     this.audioSourceId = parsed.source;
+    this.lastTransport = transport;
     this.joined = true;
     this.micEnabled = !startMuted;
     if (!this.usingSilentAudio) {
@@ -1188,6 +1666,11 @@ export class TelegramGroupCallWebSession {
     this.resumeRemoteAudio();
     this.armGestureUnmute();
     this.startPlaybackWatchdog(connection);
+    // Apply any video requests that arrived while we were still joining.
+    if (this.requestedRemoteVideo.length > 0) {
+      this.lastAppliedRemoteVideoKey = "";
+      this.setRequestedRemoteVideos(this.requestedRemoteVideo);
+    }
 
     const joinChatId = this.input.chatId;
     const joinCallId = this.input.groupCallId;
@@ -1256,6 +1739,11 @@ export class TelegramGroupCallWebSession {
     this.remoteStream = null;
     this.clearRemoteVideoStream();
     this.videoListeners.clear();
+    this.remoteVideoSourceListeners.clear();
+    this.lastTransport = null;
+    this.videoRecvSlots = [];
+    this.requestedRemoteVideo = [];
+    this.lastAppliedRemoteVideoKey = "";
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
       this.localStream = null;
@@ -1265,6 +1753,8 @@ export class TelegramGroupCallWebSession {
       this.audioTrack = null;
     }
     this.usingSilentAudio = false;
+    this.stopLocalVideoCaptures();
+    this.outboundVideoTrack = null;
     this.audioSourceId = null;
     if (this.connection) {
       this.connection.close();
@@ -1273,5 +1763,6 @@ export class TelegramGroupCallWebSession {
     this.joined = false;
     this.micEnabled = false;
     this.speakingListeners.clear();
+    this.localMediaListeners.clear();
   }
 }

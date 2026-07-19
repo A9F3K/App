@@ -1096,8 +1096,7 @@ export async function gatewayFetchChatVoiceParticipants(
           description: typeof row.description === "string" ? row.description : "",
           emoji_status_custom_emoji_id: emojiStatus,
           is_speaking: isSpeaking,
-          // Speaking wins over a stale muted flag from the gateway/TDLib race.
-          is_muted: isSpeaking ? false : Boolean(row.is_muted),
+          is_muted: Boolean(row.is_muted),
           is_self: Boolean(row.is_self),
         };
       })

@@ -55,8 +55,10 @@ async function fetchAvatarBlobOnce(uri: string): Promise<string | null> {
   const response = await fetch(uri, { method: "GET", credentials: "include" });
   if (!response.ok) {
     if (response.status === 404 || response.status === 403) {
+      // Record the miss but do NOT notify every avatar subscriber — a burst of
+      // 404s used to bump cacheRevision and re-run effects for every mounted
+      // avatar on the page (chat list + history + voice dialog), freezing the UI.
       avatarFailedUrls.add(uri);
-      notifyAvatarCacheListeners();
     }
     return null;
   }
@@ -164,7 +166,9 @@ export function MessageChatAvatarImage({
     return () => {
       cancelled = true;
     };
-  }, [uri, loadEnabled, fetchPriority, cacheRevision]);
+    // Intentionally omit cacheRevision — a successful sibling fetch must not
+    // re-queue every other avatar's network effect (that froze the voice dialog).
+  }, [uri, loadEnabled, fetchPriority]);
 
   if (!displayUri) return null;
 

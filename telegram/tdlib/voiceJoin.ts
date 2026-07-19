@@ -5,6 +5,7 @@ import {
 } from "../../shared/telegramGroupCallSdp.js";
 import { logGateway } from "./gatewayLog.js";
 import type { TdChat } from "./chatPreview.js";
+import { scheduleVoiceRosterReloadAfterJoin } from "./voiceParticipants.js";
 
 export type VoiceJoinParametersInput = {
   audio_source_id: number;
@@ -134,6 +135,9 @@ export async function joinChatVoiceForUser(
     if (!joinState.isJoined && !joinState.needRejoin) {
       logGateway("voice_join_not_confirmed", { chatId, groupCallId: callId });
       // Still return the payload — WebRTC may work; presence/roster need a later rejoin.
+    } else {
+      // TDLib only allows loadGroupCallParticipants after join.
+      scheduleVoiceRosterReloadAfterJoin(client, callId);
     }
 
     return { ok: true, error: null, join_payload: joinPayload };

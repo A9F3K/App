@@ -33,6 +33,7 @@ import {
   MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX,
   MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
 } from "./messageListLayout";
+import { clearQueuedNetworkFetches } from "./networkFetchQueue";
 
 const JOIN_BUTTON_HEIGHT_PX = 30;
 const JOIN_BUTTON_TEXT_INSET_PX = 30;
@@ -205,6 +206,20 @@ export function MessageChatVoiceBar({
       joinAttemptsRef.current += 1;
       unlockVoiceAutoplay();
       unlockAudioRef.current();
+      // Yield so the voice dialog portal can bind Close / Escape before SDP work.
+      await new Promise<void>((resolve) => {
+        if (typeof window === "undefined") {
+          resolve();
+          return;
+        }
+        window.requestAnimationFrame(() => {
+          window.setTimeout(resolve, 32);
+        });
+      });
+      if (cancelled) {
+        inFlight = false;
+        return;
+      }
       const ok = await joinListenRef.current();
       inFlight = false;
       if (cancelled || ok) return;
@@ -266,7 +281,10 @@ export function MessageChatVoiceBar({
           left.emoji_status_custom_emoji_id !== right.emoji_status_custom_emoji_id ||
           Boolean(left.is_speaking) !== Boolean(right.is_speaking) ||
           Boolean(left.is_muted) !== Boolean(right.is_muted) ||
-          Boolean(left.is_self) !== Boolean(right.is_self)
+          Boolean(left.is_self) !== Boolean(right.is_self) ||
+          (left.video_info?.endpoint_id ?? "") !== (right.video_info?.endpoint_id ?? "") ||
+          (left.screen_sharing_video_info?.endpoint_id ?? "") !==
+            (right.screen_sharing_video_info?.endpoint_id ?? "")
         ) {
           return false;
         }
@@ -405,6 +423,9 @@ export function MessageChatVoiceBar({
               description: inc.description || row.description,
               emoji_status_custom_emoji_id:
                 inc.emoji_status_custom_emoji_id ?? row.emoji_status_custom_emoji_id,
+              video_info: inc.video_info ?? row.video_info ?? null,
+              screen_sharing_video_info:
+                inc.screen_sharing_video_info ?? row.screen_sharing_video_info ?? null,
             };
           });
           for (const inc of next) {
@@ -412,17 +433,21 @@ export function MessageChatVoiceBar({
           }
           next = merged;
         } else {
-          // Prefer richer titles from previous poll when SSE snapshot titles are empty.
           next = next.map((row) => {
-            if (row.title.trim()) return row;
             const prevMatch = prevByKey.get(speakKey(row));
-            if (!prevMatch?.title.trim()) return row;
             return {
               ...row,
-              title: prevMatch.title,
-              description: row.description || prevMatch.description,
+              title: row.title.trim() || prevMatch?.title || "",
+              description: row.description || prevMatch?.description || "",
               emoji_status_custom_emoji_id:
-                row.emoji_status_custom_emoji_id ?? prevMatch.emoji_status_custom_emoji_id,
+                row.emoji_status_custom_emoji_id ??
+                prevMatch?.emoji_status_custom_emoji_id ??
+                null,
+              video_info: row.video_info ?? prevMatch?.video_info ?? null,
+              screen_sharing_video_info:
+                row.screen_sharing_video_info ??
+                prevMatch?.screen_sharing_video_info ??
+                null,
             };
           });
         }
@@ -753,9 +778,59 @@ export function MessageChatVoiceBar({
     void refreshParticipantsRef.current();
   }, [voiceSession.joined]);
 
-  // Opening the sheet: ask the gateway to refill beyond recent_speakers once.
+  // Ask the SFU for any remote camera / screencast publishers listed in the roster.
+  const setRemoteVideoRequests = voiceSession.setRemoteVideoRequests;
+  const voiceJoined = voiceSession.joined;
+  useEffect(() => {
+    if (!voiceJoined || Platform.OS !== "web") {
+      setRemoteVideoRequests([]);
+      return;
+    }
+    const requests: Array<{
+      endpointId: string;
+      kind: "camera" | "screen";
+      ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
+    }> = [];
+    for (const row of participants) {
+      if (row.is_self) continue;
+      const screen = row.screen_sharing_video_info;
+      if (screen?.source_groups?.length) {
+        requests.push({
+          endpointId: screen.endpoint_id || `screen-${row.user_id ?? row.chat_id ?? "x"}`,
+          kind: "screen",
+          ssrcGroups: screen.source_groups.map((g) => ({
+            semantics: g.semantics,
+            sourceIds: g.source_ids,
+          })),
+        });
+      }
+      const camera = row.video_info;
+      if (camera?.source_groups?.length) {
+        requests.push({
+          endpointId: camera.endpoint_id || `cam-${row.user_id ?? row.chat_id ?? "x"}`,
+          kind: "camera",
+          ssrcGroups: camera.source_groups.map((g) => ({
+            semantics: g.semantics,
+            sourceIds: g.source_ids,
+          })),
+        });
+      }
+    }
+    // Prefer screencasts first (tdesktop docks presentation above camera).
+    requests.sort((a, b) => {
+      if (a.kind === b.kind) return 0;
+      return a.kind === "screen" ? -1 : 1;
+    });
+    setRemoteVideoRequests(requests.slice(0, 4));
+  }, [participants, setRemoteVideoRequests, voiceJoined]);
+
+  // Opening the sheet: refresh roster after the dialog paints (never force-reload).
   const applyRosterRowsRef = useRef(applyRosterRows);
   applyRosterRowsRef.current = applyRosterRows;
+  const participantsRef = useRef(participants);
+  participantsRef.current = participants;
+  const participantCountRef = useRef(participantCount);
+  participantCountRef.current = participantCount;
   useEffect(() => {
     if (!popoverOpen || !joined) return;
     if (!isTelegramMessagesConnected) return;
@@ -768,10 +843,43 @@ export function MessageChatVoiceBar({
       chatId,
       groupCallId,
     });
+    // Drop leftover avatar/media jobs so Close stays interactive while joining.
+    clearQueuedNetworkFetches();
     void (async () => {
+      // Let the sheet paint and bind click handlers before any network work.
+      await new Promise<void>((resolve) => {
+        if (typeof window === "undefined") {
+          resolve();
+          return;
+        }
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            window.setTimeout(resolve, 80);
+          });
+        });
+      });
+      if (cancelled) return;
+      // Skip the open-time HTTP round-trip when the strip already has a full roster.
+      // A redundant fetch during WebRTC join was saturating the main thread and
+      // made Close miss pointer events.
+      const listed = participantsRef.current.length;
+      const count = participantCountRef.current;
+      if (listed > 0 && (count <= 0 || listed >= Math.min(count, 3))) {
+        logPageDisplay("messages_voice_dialog_open_skip_reload", {
+          chatId,
+          listed,
+          count,
+          elapsedMs: Math.round(
+            (typeof performance !== "undefined" && typeof performance.now === "function"
+              ? performance.now()
+              : Date.now()) - openedAt,
+          ),
+        });
+        return;
+      }
       try {
         const result = await fetchTelegramChatVoiceParticipants(chatId, null, {
-          forceReload: true,
+          forceReload: false,
         });
         if (cancelled || !result.ok) return;
         applyRosterRowsRef.current(result.participants, result.participant_count);
@@ -798,6 +906,10 @@ export function MessageChatVoiceBar({
       logPageDisplay("messages_voice_dialog_close", { chatId });
     };
   }, [popoverOpen, joined, chatId, isTelegramMessagesConnected, groupCallId]);
+
+  // NOTE: exactly ONE effect computes remote-video requests (above). A second
+  // duplicate with different endpoint fallbacks ping-ponged the renegotiation
+  // key and spun full SDP offer/answer cycles in a loop (CPU overload).
 
   const unlockThenJoin = useCallback(() => {
     unlockVoiceAutoplay();
@@ -867,6 +979,26 @@ export function MessageChatVoiceBar({
     }
     void voiceSession.toggleMic();
   }, [joined, unlockThenJoin, voiceSession]);
+
+  const onCameraPress = useCallback(() => {
+    if (!joined) {
+      unlockThenJoin();
+      return;
+    }
+    void voiceSession.toggleCamera();
+  }, [joined, unlockThenJoin, voiceSession]);
+
+  const onStartScreenShare = useCallback(() => {
+    if (!joined) {
+      unlockThenJoin();
+      return;
+    }
+    void voiceSession.startScreenShare();
+  }, [joined, unlockThenJoin, voiceSession]);
+
+  const onStopScreenShare = useCallback(() => {
+    void voiceSession.stopScreenShare();
+  }, [voiceSession]);
 
   const showStrip = Boolean(joined || presenceConfirmed);
 
@@ -1049,7 +1181,7 @@ export function MessageChatVoiceBar({
         active={Boolean(joined && voiceSession.joined && visible && !popoverOpen && showStrip)}
       />
       <MessageChatVoicePopover
-        visible={popoverOpen && joined}
+        visible={popoverOpen}
         onClose={onClosePopover}
         title={title}
         participantCount={totalParticipantCount}
@@ -1058,9 +1190,16 @@ export function MessageChatVoiceBar({
         micActive={voiceSession.micActive}
         micJoining={voiceSession.joining}
         onMicPress={() => void onMicPress()}
+        cameraActive={voiceSession.cameraActive}
+        onCameraPress={() => void onCameraPress()}
+        screenSharing={voiceSession.screenSharing}
+        onStartScreenShare={() => void onStartScreenShare()}
+        onStopScreenShare={() => void onStopScreenShare()}
         onDropPress={() => void onDropFromPopover()}
         dropLeaving={leaving}
         remoteVideoStream={voiceSession.remoteVideoStream}
+        localCameraStream={voiceSession.localCameraStream}
+        localScreenStream={voiceSession.localScreenStream}
         videoActive={Boolean(joined && voiceSession.joined && visible)}
       />
     </>

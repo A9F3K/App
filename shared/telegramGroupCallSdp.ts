@@ -55,6 +55,22 @@ export type TelegramGroupCallTransport = {
   candidates: TelegramGroupCallCandidate[];
 };
 
+/** One `a=ssrc-group` for a remote participant's video (SIM / FID semantics). */
+export type TelegramGroupCallVideoSsrcGroup = {
+  semantics: string;
+  /** Signed int32 ids from TDLib — reinterpreted as uint32 for SDP. */
+  sourceIds: number[];
+};
+
+/**
+ * A remote video source (camera or screencast) to receive. `null` slots render
+ * an inactive m-line so the answer keeps matching the offer's transceivers.
+ */
+export type TelegramGroupCallRemoteVideoSection = {
+  endpointId: string;
+  ssrcGroups: TelegramGroupCallVideoSsrcGroup[];
+} | null;
+
 export type ParsedGroupCallOfferSdp = {
   fingerprint: string | null;
   hash: string | null;
@@ -203,13 +219,13 @@ class SdpBuilder {
     this.addJoined();
   }
 
-  addHeader(sessionId: number): void {
+  addHeader(sessionId: number, mids: string[]): void {
     this.add("v=0");
     this.add(`o=- ${sessionId} 2 IN IP4 0.0.0.0`);
     this.add("s=-");
     this.add("t=0 0");
     this.add("a=extmap-allow-mixed");
-    this.add("a=group:BUNDLE 0 1");
+    this.add(`a=group:BUNDLE ${mids.join(" ")}`);
     // Telegram's SFU is an ICE-lite peer: it only answers connectivity checks and
     // never initiates them. Declaring ice-lite in the remote (answer) description
     // makes Chrome the sole controlling agent, nominate the single pair immediately,
@@ -244,31 +260,7 @@ class SdpBuilder {
     }
   }
 
-  /** Browser-compatible answer (UDP/TLS/RTP/SAVPF, port 9, sendrecv). */
-  addSsrcEntry(
-    transport: TelegramGroupCallTransport,
-    dtlsSetup: "active" | "passive" = "active",
-  ): void {
-    this.add("m=audio 9 UDP/TLS/RTP/SAVPF 111 126");
-    this.add("c=IN IP4 0.0.0.0");
-    this.add("a=rtcp:9 IN IP4 0.0.0.0");
-    this.add("a=rtcp-mux");
-    this.add("a=mid:0");
-    this.add("a=sendrecv");
-    this.addTransport(transport, dtlsSetup, { includeCandidates: true });
-    this.add("a=rtpmap:111 opus/48000/2");
-    this.add("a=rtpmap:126 telephone-event/8000");
-    this.add("a=fmtp:111 minptime=10;useinbandfec=1;usedtx=1");
-    this.add("a=rtcp-fb:111 transport-cc");
-    this.add("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level");
-
-    this.add("m=video 9 UDP/TLS/RTP/SAVPF 100 101 102 103");
-    this.add("c=IN IP4 0.0.0.0");
-    this.add("a=rtcp:9 IN IP4 0.0.0.0");
-    this.add("a=rtcp-mux");
-    this.add("a=mid:1");
-    this.add("a=sendrecv");
-    this.addTransport(transport, dtlsSetup, { includeCandidates: false });
+  private addVideoRtpMaps(): void {
     this.add("a=rtpmap:100 VP8/90000");
     this.add("a=fmtp:100 x-google-start-bitrate=800");
     this.add("a=rtcp-fb:100 goog-remb");
@@ -288,23 +280,128 @@ class SdpBuilder {
     this.add("a=fmtp:103 apt=102");
   }
 
+  /** Browser-compatible answer (UDP/TLS/RTP/SAVPF, port 9, sendrecv). */
+  addSsrcEntry(
+    transport: TelegramGroupCallTransport,
+    dtlsSetup: "active" | "passive" = "active",
+    mids: [string, string] = ["0", "1"],
+  ): void {
+    this.add("m=audio 9 UDP/TLS/RTP/SAVPF 111 126");
+    this.add("c=IN IP4 0.0.0.0");
+    this.add("a=rtcp:9 IN IP4 0.0.0.0");
+    this.add("a=rtcp-mux");
+    this.add(`a=mid:${mids[0]}`);
+    this.add("a=sendrecv");
+    this.addTransport(transport, dtlsSetup, { includeCandidates: true });
+    this.add("a=rtpmap:111 opus/48000/2");
+    this.add("a=rtpmap:126 telephone-event/8000");
+    this.add("a=fmtp:111 minptime=10;useinbandfec=1;usedtx=1");
+    this.add("a=rtcp-fb:111 transport-cc");
+    this.add("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level");
+
+    this.add("m=video 9 UDP/TLS/RTP/SAVPF 100 101 102 103");
+    this.add("c=IN IP4 0.0.0.0");
+    this.add("a=rtcp:9 IN IP4 0.0.0.0");
+    this.add("a=rtcp-mux");
+    this.add(`a=mid:${mids[1]}`);
+    this.add("a=sendrecv");
+    this.addTransport(transport, dtlsSetup, { includeCandidates: false });
+    this.addVideoRtpMaps();
+  }
+
+  /**
+   * Per-participant receive-only video section (camera or screencast). Declaring
+   * the publisher's SSRC groups here is what makes the SFU-forwarded RTP demux
+   * into an `ontrack` video — without them the browser drops the packets.
+   */
+  addRemoteVideoSection(
+    transport: TelegramGroupCallTransport,
+    dtlsSetup: "active" | "passive",
+    mid: string,
+    section: TelegramGroupCallRemoteVideoSection,
+  ): void {
+    this.add("m=video 9 UDP/TLS/RTP/SAVPF 100 101 102 103");
+    this.add("c=IN IP4 0.0.0.0");
+    this.add("a=rtcp:9 IN IP4 0.0.0.0");
+    this.add("a=rtcp-mux");
+    this.add(`a=mid:${mid}`);
+    if (!section || section.ssrcGroups.length === 0) {
+      // Keep the m-line count in sync with the offer, but park the slot.
+      this.add("a=inactive");
+      this.addTransport(transport, dtlsSetup, { includeCandidates: false });
+      this.addVideoRtpMaps();
+      return;
+    }
+    // Answer perspective: the SFU sends this video to us.
+    this.add("a=sendonly");
+    this.add("a=bundle-only");
+    this.addTransport(transport, dtlsSetup, { includeCandidates: false });
+    this.addVideoRtpMaps();
+    const endpoint = section.endpointId || `video-${mid}`;
+    const seen = new Set<number>();
+    for (const group of section.ssrcGroups) {
+      const ssrcs = group.sourceIds.map((id) => id >>> 0);
+      if (ssrcs.length === 0) continue;
+      this.add(`a=ssrc-group:${group.semantics} ${ssrcs.join(" ")}`);
+      for (const ssrc of ssrcs) {
+        if (seen.has(ssrc)) continue;
+        seen.add(ssrc);
+        this.add(`a=ssrc:${ssrc} cname:${endpoint}`);
+        // msid = endpointId so the client can map ontrack streams to a
+        // participant's camera vs screencast by MediaStream id.
+        this.add(`a=ssrc:${ssrc} msid:${endpoint} ${endpoint}`);
+        this.add(`a=ssrc:${ssrc} mslabel:${endpoint}`);
+        this.add(`a=ssrc:${ssrc} label:${endpoint}`);
+      }
+    }
+  }
+
   addConference(
     sessionId: number,
     transport: TelegramGroupCallTransport,
-    dtlsSetup: "active" | "passive" = "active",
+    dtlsSetup: "active" | "passive",
+    mids: string[],
+    remoteVideoSections: TelegramGroupCallRemoteVideoSection[],
   ): void {
-    this.addHeader(sessionId);
-    this.addSsrcEntry(transport, dtlsSetup);
+    this.addHeader(sessionId, mids);
+    this.addSsrcEntry(transport, dtlsSetup, [mids[0] ?? "0", mids[1] ?? "1"]);
+    for (let i = 0; i < remoteVideoSections.length; i += 1) {
+      const mid = mids[2 + i] ?? String(2 + i);
+      this.addRemoteVideoSection(transport, dtlsSetup, mid, remoteVideoSections[i] ?? null);
+    }
   }
+}
+
+/** Mids in m-line order from an SDP (offer) — used to mirror them in the answer. */
+export function parseSdpMids(sdp: string): string[] {
+  const mids: string[] = [];
+  for (const line of sdp.split(/\r?\n/)) {
+    if (line.startsWith("a=mid:")) mids.push(line.slice("a=mid:".length).trim());
+  }
+  return mids;
 }
 
 export function groupCallAnswerSdpFromTransport(
   transport: TelegramGroupCallTransport,
   offerSdp?: string,
+  remoteVideoSections: TelegramGroupCallRemoteVideoSection[] = [],
 ): string {
   const sdp = new SdpBuilder();
   // Browser offered actpass/passive → answer must be active so SFU drives DTLS.
   const dtlsSetup = groupCallAnswerDtlsSetup(offerSdp);
-  sdp.addConference(Date.now(), transport, dtlsSetup);
+  const offerMids = offerSdp ? parseSdpMids(offerSdp) : [];
+  // The answer must have exactly as many m-lines as the offer. Slots beyond the
+  // provided sections render inactive; sections beyond the offer are dropped.
+  const extraCount =
+    offerMids.length >= 2 ? Math.max(0, offerMids.length - 2) : remoteVideoSections.length;
+  const sections: TelegramGroupCallRemoteVideoSection[] = [];
+  for (let i = 0; i < extraCount; i += 1) {
+    sections.push(remoteVideoSections[i] ?? null);
+  }
+  const mids =
+    offerMids.length >= 2
+      ? offerMids
+      : ["0", "1", ...sections.map((_, i) => String(2 + i))];
+  sdp.addConference(Date.now(), transport, dtlsSetup, mids, sections);
   return sdp.finalize();
 }

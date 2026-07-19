@@ -1,34 +1,29 @@
-import { createElement, memo, useCallback, useEffect, useRef, useState } from "react";
-import { Platform, View } from "react-native";
+import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Platform, Pressable, View } from "react-native";
 import { MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX } from "./messageListLayout";
 
-type Props = {
-  stream: MediaStream | null;
-  /** When false (left call / panel hidden), hide the plane. */
-  active: boolean;
-  /** Override max height (e.g. tighter fit inside the voice dialog). */
-  maxHeightPx?: number;
-  /** Horizontal inset when embedded in the dialog (default 0 = full-bleed under bar). */
-  horizontalInsetPx?: number;
-  /** Bottom margin under the plane. */
-  marginBottomPx?: number;
+export type VoiceMediaStageSource = {
+  id: string;
+  stream: MediaStream;
 };
 
-/**
- * Remote camera / screen-share plane (muted video element — audio uses the session sink).
- * Used under the voice strip and inside the voice dialog.
- *
- * SFU often delivers muted placeholder tracks before the first keyframe. We keep
- * the element attached but only paint the plane once real frames arrive — avoids
- * a black 16:9 box that also thrash-layouts the voice sheet.
- */
-function MessageChatVoiceVideoPlaneInner({
+type PlaneProps = {
+  stream: MediaStream;
+  active: boolean;
+  objectFit?: "contain" | "cover";
+  onPress?: () => void;
+  accessibilityLabel?: string;
+  onHasFramesChange?: (hasFrames: boolean) => void;
+};
+
+function VoiceVideoElement({
   stream,
   active,
-  maxHeightPx = MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
-  horizontalInsetPx = 0,
-  marginBottomPx = 0,
-}: Props) {
+  objectFit = "contain",
+  onPress,
+  accessibilityLabel,
+  onHasFramesChange,
+}: PlaneProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [hasFrames, setHasFrames] = useState(false);
 
@@ -61,6 +56,10 @@ function MessageChatVoiceVideoPlaneInner({
   }, [active, attachStream, stream]);
 
   useEffect(() => {
+    onHasFramesChange?.(hasFrames);
+  }, [hasFrames, onHasFramesChange]);
+
+  useEffect(() => {
     if (Platform.OS !== "web") return;
     setHasFrames(false);
     if (!active || !stream) return;
@@ -73,10 +72,8 @@ function MessageChatVoiceVideoPlaneInner({
       }
     };
 
-    // Track unmute often lands before decoded frames — still re-check size.
     const onTrackUnmute = () => {
       markFrames();
-      // Retry briefly; first keyframe can lag unmute by a few frames.
       window.setTimeout(markFrames, 120);
       window.setTimeout(markFrames, 400);
     };
@@ -105,18 +102,106 @@ function MessageChatVoiceVideoPlaneInner({
     };
   }, [active, stream]);
 
-  if (Platform.OS !== "web" || !active || !stream) return null;
+  if (Platform.OS !== "web" || !active || !stream) {
+    return null;
+  }
 
-  // Keep a zero-size decoding element until frames exist so srcObject stays warm
-  // without painting a black sheet that freezes layout in the voice dialog.
-  const showPlane = hasFrames;
+  const videoNode = createElement("video", {
+    ref: setVideoNode,
+    autoPlay: true,
+    playsInline: true,
+    muted: true,
+    controls: false,
+    style: hasFrames
+      ? {
+          width: "100%",
+          height: "100%",
+          objectFit,
+          backgroundColor: "#000000",
+          display: "block",
+        }
+      : {
+          width: 1,
+          height: 1,
+          opacity: 0,
+          position: "absolute",
+          pointerEvents: "none",
+        },
+  });
+
+  if (!hasFrames) {
+    return <View style={{ width: 1, height: 1, opacity: 0 }}>{videoNode}</View>;
+  }
+
+  if (onPress) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+        onPress={onPress}
+        style={{ width: "100%", height: "100%" }}
+      >
+        {videoNode}
+      </Pressable>
+    );
+  }
 
   return (
     <View
-      accessibilityLabel={showPlane ? "Voice chat video" : undefined}
-      pointerEvents={showPlane ? "auto" : "none"}
+      accessibilityLabel={accessibilityLabel}
+      style={{ width: "100%", height: "100%" }}
+    >
+      {videoNode}
+    </View>
+  );
+}
+
+type StageProps = {
+  sources: VoiceMediaStageSource[];
+  active: boolean;
+  maxHeightPx?: number;
+  horizontalInsetPx?: number;
+  marginBottomPx?: number;
+};
+
+/**
+ * Main + optional PiP stage for camera / screen-share.
+ * With two sources, the second sits top-right; click swaps main ↔ PiP.
+ */
+function MessageChatVoiceMediaStageInner({
+  sources,
+  active,
+  maxHeightPx = MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
+  horizontalInsetPx = 0,
+  marginBottomPx = 0,
+}: StageProps) {
+  const [swapped, setSwapped] = useState(false);
+  const [mainHasFrames, setMainHasFrames] = useState(false);
+  const liveSources = useMemo(
+    () => sources.filter((row) => row.stream.getVideoTracks().some((t) => t.readyState === "live")),
+    [sources],
+  );
+
+  const sourceKey = liveSources.map((row) => row.id).join("|");
+
+  useEffect(() => {
+    if (liveSources.length < 2) setSwapped(false);
+  }, [liveSources.length]);
+
+  useEffect(() => {
+    setMainHasFrames(false);
+  }, [sourceKey, swapped]);
+
+  if (Platform.OS !== "web" || !active || liveSources.length === 0) return null;
+
+  const main = liveSources.length >= 2 && swapped ? liveSources[1]! : liveSources[0]!;
+  const pip =
+    liveSources.length >= 2 ? (swapped ? liveSources[0]! : liveSources[1]!) : null;
+
+  return (
+    <View
       style={
-        showPlane
+        mainHasFrames
           ? {
               alignSelf: "stretch",
               width: "100%",
@@ -126,9 +211,9 @@ function MessageChatVoiceVideoPlaneInner({
               maxHeight: maxHeightPx,
               backgroundColor: "#000000",
               overflow: "hidden",
+              position: "relative",
             }
           : {
-              // Non-zero size so the browser still decodes; no layout footprint.
               width: 1,
               height: 1,
               opacity: 0,
@@ -137,22 +222,97 @@ function MessageChatVoiceVideoPlaneInner({
             }
       }
     >
-      {createElement("video", {
-        ref: setVideoNode,
-        autoPlay: true,
-        playsInline: true,
-        muted: true,
-        controls: false,
-        style: {
-          width: "100%",
-          height: "100%",
-          objectFit: "contain",
-          backgroundColor: "#000000",
-          display: "block",
-        },
-      })}
+      <VoiceVideoElement
+        key={`main:${main.id}`}
+        stream={main.stream}
+        active={active}
+        objectFit="contain"
+        accessibilityLabel="Voice chat video"
+        onHasFramesChange={setMainHasFrames}
+      />
+      {pip && mainHasFrames ? (
+        <View
+          style={{
+            position: "absolute",
+            top: 10,
+            right: 10,
+            width: "28%",
+            aspectRatio: 16 / 9,
+            minWidth: 96,
+            maxWidth: 180,
+            backgroundColor: "#000000",
+            borderWidth: 1,
+            borderColor: "rgba(255,255,255,0.35)",
+            overflow: "hidden",
+            zIndex: 2,
+          }}
+        >
+          <VoiceVideoElement
+            key={`pip:${pip.id}`}
+            stream={pip.stream}
+            active={active}
+            objectFit="cover"
+            accessibilityLabel="Swap video layout"
+            onPress={() => setSwapped((prev) => !prev)}
+          />
+        </View>
+      ) : pip ? (
+        <VoiceVideoElement
+          key={`pip-warm:${pip.id}`}
+          stream={pip.stream}
+          active={active}
+          objectFit="cover"
+        />
+      ) : null}
     </View>
   );
 }
 
+type LegacyProps = {
+  stream: MediaStream | null;
+  /** When false (left call / panel hidden), hide the plane. */
+  active: boolean;
+  /** Override max height (e.g. tighter fit inside the voice dialog). */
+  maxHeightPx?: number;
+  /** Horizontal inset when embedded in the dialog (default 0 = full-bleed under bar). */
+  horizontalInsetPx?: number;
+  /** Bottom margin under the plane. */
+  marginBottomPx?: number;
+};
+
+/**
+ * Remote camera / screen-share plane (muted video element — audio uses the session sink).
+ * Used under the voice strip and inside the voice dialog.
+ */
+function MessageChatVoiceVideoPlaneInner({
+  stream,
+  active,
+  maxHeightPx = MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
+  horizontalInsetPx = 0,
+  marginBottomPx = 0,
+}: LegacyProps) {
+  const sources = useMemo<VoiceMediaStageSource[]>(() => {
+    if (!stream) return [];
+    const tracks = stream.getVideoTracks().filter((t) => t.readyState === "live");
+    if (tracks.length <= 1) {
+      return stream ? [{ id: "remote", stream }] : [];
+    }
+    return tracks.map((track, index) => ({
+      id: `remote:${track.id || index}`,
+      stream: new MediaStream([track]),
+    }));
+  }, [stream]);
+
+  return (
+    <MessageChatVoiceMediaStageInner
+      sources={sources}
+      active={active}
+      maxHeightPx={maxHeightPx}
+      horizontalInsetPx={horizontalInsetPx}
+      marginBottomPx={marginBottomPx}
+    />
+  );
+}
+
 export const MessageChatVoiceVideoPlane = memo(MessageChatVoiceVideoPlaneInner);
+export const MessageChatVoiceMediaStage = memo(MessageChatVoiceMediaStageInner);

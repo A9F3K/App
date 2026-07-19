@@ -1,6 +1,11 @@
 import { buildApiUrl } from "../../api/_base";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp";
 
+export type TelegramChatVoiceVideoInfo = {
+  endpoint_id: string;
+  source_groups: Array<{ semantics: string; source_ids: number[] }>;
+};
+
 export type TelegramChatVoiceParticipant = {
   user_id: number | null;
   chat_id: number | null;
@@ -10,6 +15,8 @@ export type TelegramChatVoiceParticipant = {
   is_speaking: boolean;
   is_muted: boolean;
   is_self: boolean;
+  video_info?: TelegramChatVoiceVideoInfo | null;
+  screen_sharing_video_info?: TelegramChatVoiceVideoInfo | null;
 };
 
 export type FetchTelegramChatVoiceParticipantsResult =
@@ -25,6 +32,32 @@ export type FetchTelegramChatVoiceParticipantsResult =
 
 /** Bound each poll so a slow gateway can never freeze participant updates. */
 const REQUEST_TIMEOUT_MS = 4500;
+
+function parseVideoInfo(raw: unknown): TelegramChatVoiceVideoInfo | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const item = raw as Record<string, unknown>;
+  const endpoint =
+    typeof item.endpoint_id === "string" ? item.endpoint_id.trim() : "";
+  const groups = Array.isArray(item.source_groups) ? item.source_groups : [];
+  const sourceGroups = groups
+    .map((group) => {
+      if (!group || typeof group !== "object" || Array.isArray(group)) return null;
+      const g = group as Record<string, unknown>;
+      const semantics =
+        typeof g.semantics === "string" && g.semantics.trim() ? g.semantics.trim() : "";
+      const sourceIds = Array.isArray(g.source_ids)
+        ? g.source_ids
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id !== 0)
+            .map((id) => Math.trunc(id))
+        : [];
+      if (!semantics || sourceIds.length === 0) return null;
+      return { semantics, source_ids: sourceIds };
+    })
+    .filter((group): group is { semantics: string; source_ids: number[] } => group != null);
+  if (!endpoint && sourceGroups.length === 0) return null;
+  return { endpoint_id: endpoint, source_groups: sourceGroups };
+}
 
 export async function fetchTelegramChatVoiceParticipants(
   chatId: number,
@@ -72,7 +105,7 @@ export async function fetchTelegramChatVoiceParticipants(
   }
   const participants = Array.isArray(json.participants)
     ? json.participants
-        .map((row) => {
+        .map((row): TelegramChatVoiceParticipant | null => {
           if (!row || typeof row !== "object" || Array.isArray(row)) return null;
           const item = row as Record<string, unknown>;
           const userId = Number(item.user_id);
@@ -91,7 +124,9 @@ export async function fetchTelegramChatVoiceParticipants(
             is_speaking: Boolean(item.is_speaking),
             is_muted: Boolean(item.is_muted),
             is_self: Boolean(item.is_self),
-          } satisfies TelegramChatVoiceParticipant;
+            video_info: parseVideoInfo(item.video_info),
+            screen_sharing_video_info: parseVideoInfo(item.screen_sharing_video_info),
+          };
         })
         .filter((row): row is TelegramChatVoiceParticipant => row != null)
     : [];
