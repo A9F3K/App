@@ -52,8 +52,10 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const [startedCallId, setStartedCallId] = useState<number | null>(null);
   /** After an explicit leave, do not auto-listen again until the user rejoins or opens another chat. */
   const userLeftVoiceRef = useRef(false);
-  /** Closing the sheet can click-through onto the voice strip and reopen it — ignore briefly. */
+  /** Closing the sheet can click-through onto the voice strip — block strip input briefly. */
   const ignoreVoicePopoverOpenUntilRef = useRef(0);
+  const stripBlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [stripInputBlocked, setStripInputBlocked] = useState(false);
   const groupCallId = resolveGroupCallId(chat, startedCallId);
   const showVoiceBar = liveVoiceAvailable || voiceJoined;
 
@@ -124,9 +126,22 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
 
   const closeVoicePopover = useCallback(() => {
     // Swallow the same pointer's click-through onto the strip / Join control.
-    ignoreVoicePopoverOpenUntilRef.current = Date.now() + 500;
+    ignoreVoicePopoverOpenUntilRef.current = Date.now() + 120;
     setVoicePopoverOpen(false);
+    setStripInputBlocked(true);
+    if (stripBlockTimerRef.current != null) clearTimeout(stripBlockTimerRef.current);
+    stripBlockTimerRef.current = setTimeout(() => {
+      stripBlockTimerRef.current = null;
+      setStripInputBlocked(false);
+    }, 220);
   }, []);
+
+  useEffect(
+    () => () => {
+      if (stripBlockTimerRef.current != null) clearTimeout(stripBlockTimerRef.current);
+    },
+    [],
+  );
 
   const joinVoice = useCallback(() => {
     if (!liveVoiceAvailable && groupCallId == null) return;
@@ -216,6 +231,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           joined={voiceJoined}
           visible={visible}
           popoverOpen={voicePopoverOpen}
+          stripInputBlocked={stripInputBlocked}
           onJoin={joinVoice}
           onOpenPopover={() => {
             if (!voiceJoined) {

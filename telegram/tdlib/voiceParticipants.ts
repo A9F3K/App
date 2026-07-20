@@ -820,6 +820,47 @@ function mergeParticipantMaps(
 }
 
 /**
+ * Keep live speaking / hold from the process cache when a load map replaces it.
+ * `loadGroupCallParticipants` listens only for participant updates; speaking that
+ * arrived via `updateGroupCall.recent_speakers` (or concurrent ingest into
+ * `callMembersCache.members`) must not be discarded when the bg reload commits.
+ */
+function preserveSpeakingOnRoster(
+  roster: Map<string, CollectedParticipant>,
+  priorMembers: Map<string, CollectedParticipant> | undefined,
+  speakers: Map<string, CollectedParticipant> | undefined,
+): Map<string, CollectedParticipant> {
+  if ((!priorMembers || priorMembers.size === 0) && (!speakers || speakers.size === 0)) {
+    return roster;
+  }
+  const next = new Map(roster);
+  const now = Date.now();
+  for (const [key, row] of next) {
+    const prior = priorMembers?.get(key);
+    const speaker = speakers?.get(key);
+    const speaking =
+      Boolean(row.isSpeaking) ||
+      Boolean(prior?.isSpeaking) ||
+      Boolean(speaker?.isSpeaking);
+    const lastSpokeAt = speaking
+      ? now
+      : (row.lastSpokeAt ?? prior?.lastSpokeAt ?? speaker?.lastSpokeAt);
+    if (
+      speaking === Boolean(row.isSpeaking) &&
+      lastSpokeAt === row.lastSpokeAt
+    ) {
+      continue;
+    }
+    next.set(key, {
+      ...row,
+      isSpeaking: speaking,
+      lastSpokeAt,
+    });
+  }
+  return next;
+}
+
+/**
  * Reconcile the roster off the request path. The live update listener keeps the
  * cache current between reloads; this only runs a full `loadGroupCallParticipants`
  * pass occasionally so a single poll never blocks on the multi-second load loop.
@@ -855,7 +896,16 @@ function scheduleBackgroundRosterReload(
         (prev.uniqueId === uniqueId || !prev.uniqueId) &&
         prev.members.size > loaded.size &&
         !rosterLooksComplete(loaded.size, participantCountHint, hasHiddenListeners, loadedAll);
-      const members = preferCached ? mergeParticipantMaps(prev!.members, loaded) : loaded;
+      // Prefer the load map for roster/mute/order, but keep speaking that landed
+      // on the live cache (or recent_speakers) while the load was in flight.
+      const mergedRoster = preferCached
+        ? mergeParticipantMaps(prev!.members, loaded)
+        : loaded;
+      const members = preserveSpeakingOnRoster(
+        mergedRoster,
+        prev?.members,
+        prev?.speakers,
+      );
       const nextLoadedAll = rosterLooksComplete(
         members.size,
         participantCountHint,
@@ -872,6 +922,9 @@ function scheduleBackgroundRosterReload(
           Number.isFinite(participantCountHint) && participantCountHint >= 0
             ? Math.trunc(participantCountHint)
             : (prev?.participantCountHint ?? 0),
+        // Must keep recent_speakers — SSE snapshots overlay speaking from here.
+        // Dropping it left every mic grey after the first post-join reload.
+        speakers: prev?.speakers,
       });
       bumpVoiceCallRevision(callId);
       const warmed = await warmMissingProfiles(client, members);

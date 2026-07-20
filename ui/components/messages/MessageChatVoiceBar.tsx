@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
@@ -48,6 +48,8 @@ type Props = {
   /** Chat dialog is on-screen — remote audio only plays while visible. */
   visible?: boolean;
   popoverOpen: boolean;
+  /** Briefly block strip presses after close so the X click does not reopen. */
+  stripInputBlocked?: boolean;
   onJoin: () => void;
   onOpenPopover: () => void;
   onClosePopover: () => void;
@@ -69,6 +71,7 @@ export function MessageChatVoiceBar({
   joined,
   visible = true,
   popoverOpen,
+  stripInputBlocked = false,
   onJoin,
   onOpenPopover,
   onClosePopover,
@@ -401,7 +404,18 @@ export function MessageChatVoiceBar({
       // Speaking map updates separately — never rebuild membership for a mic pulse.
       applySpeakingMap(withLocalSpeaking);
 
-      setParticipants((prev) => {
+      const commitParticipants = (updater: (prev: TelegramChatVoiceParticipant[]) => TelegramChatVoiceParticipant[]) => {
+        startTransition(() => {
+          setParticipants(updater);
+        });
+      };
+      const commitCount = (updater: (prev: number) => number) => {
+        startTransition(() => {
+          setParticipantCount(updater);
+        });
+      };
+
+      commitParticipants((prev) => {
         let next = withLocalSpeaking;
         if (joinedLocally && !next.some((row) => row.is_self)) {
           const prevSelf = prev.find((row) => row.is_self);
@@ -542,7 +556,7 @@ export function MessageChatVoiceBar({
         }
         return participantsEqual(prev, next) ? prev : next;
       });
-      setParticipantCount((prev) => {
+      commitCount((prev) => {
         // Prefer TDLib participant_count. Only fall back to listed length when
         // the server did not send a count (never inflate above Telegram).
         const hint = Math.max(0, countHint);
@@ -562,17 +576,24 @@ export function MessageChatVoiceBar({
   /** tdesktop repaints speaking glow on a slow tick — one apply per ~700ms max. */
   const STREAM_APPLY_MIN_MS = 700;
 
-  const flushPendingStreamSnap = useCallback(() => {
+  const cancelStreamRosterFlush = useCallback(() => {
     if (streamApplyTimerRef.current != null) {
       clearTimeout(streamApplyTimerRef.current);
       streamApplyTimerRef.current = null;
     }
+  }, []);
+
+  const flushPendingStreamSnap = useCallback(() => {
+    cancelStreamRosterFlush();
     lastStreamApplyAtRef.current = Date.now();
     const snapshot = pendingStreamSnapRef.current;
     pendingStreamSnapRef.current = null;
     if (!snapshot) return;
     // Speaking glow first — membership apply can wait.
     applySpeakingMap(snapshot.participants);
+    // While the sheet is closed, polls refresh the strip; skip heavy SSE roster
+    // merges that blocked reopen from painting (main thread freeze).
+    if (!popoverOpenRef.current) return;
     const live = syncVoicePresence(
       true,
       snapshot.group_call_id,
@@ -581,16 +602,14 @@ export function MessageChatVoiceBar({
       { allowClear: false },
     );
     if (!live && snapshot.participants.length === 0 && !voiceJoinedRef.current) return;
-    if (popoverOpenRef.current) {
-      logPageDisplay("messages_voice_dialog_sse_apply", {
-        chatId,
-        revision: snapshot.revision,
-        listed: snapshot.participants.length,
-        speakingCount: snapshot.participants.filter((p) => p.is_speaking).length,
-      });
-    }
+    logPageDisplay("messages_voice_dialog_sse_apply", {
+      chatId,
+      revision: snapshot.revision,
+      listed: snapshot.participants.length,
+      speakingCount: snapshot.participants.filter((p) => p.is_speaking).length,
+    });
     applyRosterRows(snapshot.participants, snapshot.participant_count);
-  }, [applyRosterRows, applySpeakingMap, chatId, syncVoicePresence]);
+  }, [applyRosterRows, applySpeakingMap, cancelStreamRosterFlush, chatId, syncVoicePresence]);
 
   const onStreamParticipants = useCallback(
     (snapshot: VoiceParticipantsStreamSnapshot) => {
@@ -603,6 +622,7 @@ export function MessageChatVoiceBar({
       // Speaking must update immediately (green mics). Membership thrash is throttled.
       applySpeakingMap(snapshot.participants);
       pendingStreamSnapRef.current = snapshot;
+      if (!popoverOpenRef.current) return;
       if (streamApplyTimerRef.current != null) return;
       const sinceLast = Date.now() - lastStreamApplyAtRef.current;
       if (sinceLast >= STREAM_APPLY_MIN_MS) {
@@ -618,13 +638,15 @@ export function MessageChatVoiceBar({
   );
 
   useEffect(() => {
+    if (popoverOpen) return;
+    cancelStreamRosterFlush();
     return () => {
-      if (streamApplyTimerRef.current != null) {
-        clearTimeout(streamApplyTimerRef.current);
-        streamApplyTimerRef.current = null;
-      }
+      cancelStreamRosterFlush();
     };
-  }, []);
+  }, [popoverOpen, cancelStreamRosterFlush]);
+
+  const [popoverMountKey, setPopoverMountKey] = useState(0);
+  const postJoinRosterLoadedRef = useRef(false);
 
   const onStreamActiveChange = useCallback((active: boolean) => {
     streamActiveRef.current = active;
@@ -920,6 +942,7 @@ export function MessageChatVoiceBar({
   useEffect(() => {
     if (!popoverOpen) return;
     if (!isTelegramMessagesConnected) return;
+    setPopoverMountKey((k) => k + 1);
     let cancelled = false;
     const openedAt =
       typeof performance !== "undefined" && typeof performance.now === "function"
@@ -940,6 +963,9 @@ export function MessageChatVoiceBar({
         }
         window.requestAnimationFrame(() => {
           window.requestAnimationFrame(() => {
+            if (!cancelled && pendingStreamSnapRef.current) {
+              flushPendingStreamSnap();
+            }
             window.setTimeout(resolve, 80);
           });
         });
@@ -993,25 +1019,42 @@ export function MessageChatVoiceBar({
       cancelled = true;
       logPageDisplay("messages_voice_dialog_close", { chatId });
     };
-  }, [popoverOpen, chatId, isTelegramMessagesConnected, groupCallId]);
+  }, [popoverOpen, chatId, isTelegramMessagesConnected, groupCallId, flushPendingStreamSnap]);
+
+  useEffect(() => {
+    if (!voiceSession.joined) {
+      postJoinRosterLoadedRef.current = false;
+    }
+  }, [voiceSession.joined]);
 
   // Once WebRTC is up, force a full TDLib roster load — pre-join loads are often
-  // self-only, which left greens with nobody to paint on.
+  // self-only, which left greens with nobody to paint on. Run at most once per join.
   useEffect(() => {
     if (!popoverOpen || !voiceSession.joined) return;
     if (!isTelegramMessagesConnected) return;
+    const listed = participantsRef.current.length;
+    const count = participantCountRef.current;
+    if (listed > 0 && count > 0 && listed >= Math.min(count, 5)) {
+      postJoinRosterLoadedRef.current = true;
+      return;
+    }
+    if (postJoinRosterLoadedRef.current) return;
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
-        const listed = participantsRef.current.length;
-        const count = participantCountRef.current;
-        if (listed > 0 && count > 0 && listed >= Math.min(count, 5)) return;
+        const listedNow = participantsRef.current.length;
+        const countNow = participantCountRef.current;
+        if (listedNow > 0 && countNow > 0 && listedNow >= Math.min(countNow, 5)) {
+          postJoinRosterLoadedRef.current = true;
+          return;
+        }
         try {
           const result = await fetchTelegramChatVoiceParticipants(chatId, null, {
             forceReload: true,
           });
           if (cancelled || !result.ok) return;
           applyRosterRowsRef.current(result.participants, result.participant_count);
+          postJoinRosterLoadedRef.current = true;
           logPageDisplay("messages_voice_dialog_postjoin_reload_ok", {
             chatId,
             listed: result.participants.length,
@@ -1039,6 +1082,7 @@ export function MessageChatVoiceBar({
   }, [onJoin, voiceSession]);
 
   const handleStripPress = useCallback(() => {
+    if (stripInputBlocked) return;
     unlockVoiceAutoplay();
     voiceSession.unlockAudio();
     if (!joined) {
@@ -1047,7 +1091,7 @@ export function MessageChatVoiceBar({
       return;
     }
     onOpenPopover();
-  }, [joined, unlockThenJoin, onOpenPopover, voiceSession]);
+  }, [joined, stripInputBlocked, unlockThenJoin, onOpenPopover, voiceSession]);
 
   const onLeave = useCallback(async () => {
     if (leaving || !joined) return;
@@ -1137,6 +1181,9 @@ export function MessageChatVoiceBar({
           borderBottomWidth: 1,
           borderBottomColor: colors.highlight,
           backgroundColor: colors.background,
+          ...(Platform.OS === "web" && stripInputBlocked
+            ? ({ pointerEvents: "none" } as const)
+            : {}),
         }}
       >
         <Pressable
@@ -1305,6 +1352,7 @@ export function MessageChatVoiceBar({
         active={Boolean(joined && voiceSession.joined && visible && !popoverOpen && showStrip)}
       />
       <MessageChatVoicePopover
+        mountKey={popoverMountKey}
         visible={popoverOpen}
         onClose={onClosePopover}
         title={title}

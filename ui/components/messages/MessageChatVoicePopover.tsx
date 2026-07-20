@@ -148,7 +148,8 @@ const DEFAULT_SHEET_WIDTH_PX = 380;
 const DEFAULT_SHEET_HEIGHT_PX = 560;
 const MIN_SHEET_WIDTH_PX = 300;
 const MIN_SHEET_HEIGHT_PX = 280;
-const SHEET_CHROME_HEIGHT_PX = 148;
+/** Header + divider + control row + vertical padding — keeps the roster from covering chips. */
+const SHEET_CHROME_HEIGHT_PX = 196;
 const VOICE_SIZE_STORAGE_KEY = "hsp.voiceChatDialog.size.v1";
 const VOICE_SPEAKING_MIC_COLOR = "#34C759";
 
@@ -160,6 +161,8 @@ type Edge = "n" | "s" | "e" | "w";
 type ResizeHandle = Edge | "ne" | "nw" | "se" | "sw";
 
 type Props = {
+  /** Bumps when the sheet reopens so the portal remounts cleanly. */
+  mountKey?: number;
   visible: boolean;
   onClose: () => void;
   title: string;
@@ -357,6 +360,7 @@ function VoiceControlChip({
   phaseOffset,
   isLightTheme,
   variant,
+  testId,
 }: {
   label: string;
   onPress?: () => void;
@@ -366,6 +370,8 @@ function VoiceControlChip({
   phaseOffset?: number;
   isLightTheme?: boolean;
   variant: "simple" | "liquid";
+  /** Stable id for capture-phase pointer handlers while React is busy. */
+  testId?: string;
 }) {
   const chipBody =
     variant === "liquid" ? (
@@ -385,11 +391,63 @@ function VoiceControlChip({
           backgroundColor: undercoverColor ?? "#323232",
           alignItems: "center",
           justifyContent: "center",
+          // Icons must not steal hits from the native <button> wrapper.
+          ...(Platform.OS === "web" ? ({ pointerEvents: "none" } as object) : {}),
         }}
       >
         {children}
       </View>
     );
+
+  if (Platform.OS === "web") {
+    // Native <button> — RN Pressable misses clicks while roster/WebRTC work
+    // stalls the main thread (same fix as window chrome close).
+    return createElement(
+      "button",
+      {
+        type: "button",
+        "aria-label": label,
+        title: label,
+        "data-voice-control": testId ?? "chip",
+        disabled: Boolean(disabled),
+        onPointerDown: (e: {
+          stopPropagation?: () => void;
+          preventDefault?: () => void;
+          button?: number;
+        }) => {
+          e.stopPropagation?.();
+          if (disabled) return;
+          if (e.button == null || e.button === 0) {
+            e.preventDefault?.();
+            onPress?.();
+          }
+        },
+        onClick: (e: { stopPropagation?: () => void; preventDefault?: () => void }) => {
+          e.stopPropagation?.();
+          e.preventDefault?.();
+        },
+        style: {
+          width: CONTROL_CHIP_PX,
+          height: CONTROL_CHIP_PX,
+          margin: 0,
+          padding: 0,
+          border: "none",
+          background: "transparent",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: disabled ? "default" : "pointer",
+          opacity: disabled ? 0.5 : 1,
+          position: "relative",
+          zIndex: 30,
+          WebkitAppearance: "none",
+          appearance: "none",
+          touchAction: "manipulation",
+        },
+      },
+      createElement("span", { style: { pointerEvents: "none", display: "flex" } }, chipBody),
+    );
+  }
 
   return (
     <Pressable
@@ -401,6 +459,7 @@ function VoiceControlChip({
       hitSlop={4}
       style={({ pressed }) => ({
         opacity: disabled ? 0.5 : pressed ? 0.75 : 1,
+        zIndex: 30,
       })}
     >
       {chipBody}
@@ -421,6 +480,14 @@ function ResizeEdgeHandle({
   }) => void;
 }) {
   const half = HIT / 2;
+  const webPointerProps =
+    Platform.OS === "web"
+      ? ({
+          onPointerDown,
+          onPointerEnter: () => onHoverChange(true),
+          onPointerLeave: () => onHoverChange(false),
+        } as object)
+      : {};
   const base: ViewStyle = {
     position: "absolute",
     zIndex: 2,
@@ -433,6 +500,39 @@ function ResizeEdgeHandle({
       : {}),
   };
 
+  // South edge: two side strips so the bottom control chips stay clickable.
+  if (handle === "s") {
+    const sideWidth = Math.max(HIT * 2, 48);
+    return (
+      <>
+        <View
+          style={[
+            base,
+            {
+              bottom: -half,
+              left: HIT,
+              width: sideWidth,
+              height: HIT,
+            },
+          ]}
+          {...webPointerProps}
+        />
+        <View
+          style={[
+            base,
+            {
+              bottom: -half,
+              right: HIT,
+              width: sideWidth,
+              height: HIT,
+            },
+          ]}
+          {...webPointerProps}
+        />
+      </>
+    );
+  }
+
   let geometry: ViewStyle;
   switch (handle) {
     case "n":
@@ -444,20 +544,22 @@ function ResizeEdgeHandle({
         height: HIT,
       };
       break;
-    case "s":
-      geometry = { bottom: -half, left: HIT, right: HIT, height: HIT };
-      break;
     case "e":
       // Start below the header row so east-edge drag does not cover close.
       geometry = {
         top: HIT + 52,
-        bottom: HIT,
+        bottom: HIT + CONTROL_CHIP_PX,
         right: -half,
         width: HIT,
       };
       break;
     case "w":
-      geometry = { top: HIT, bottom: HIT, left: -half, width: HIT };
+      geometry = {
+        top: HIT,
+        bottom: HIT + CONTROL_CHIP_PX,
+        left: -half,
+        width: HIT,
+      };
       break;
     case "ne":
       // Keep NE away from the close cluster — NW still covers the true corner.
@@ -482,22 +584,12 @@ function ResizeEdgeHandle({
       break;
   }
 
-  return (
-    <View
-      style={[base, geometry]}
-      {...(Platform.OS === "web"
-        ? ({
-            onPointerDown,
-            onPointerEnter: () => onHoverChange(true),
-            onPointerLeave: () => onHoverChange(false),
-          } as object)
-        : {})}
-    />
-  );
+  return <View style={[base, geometry]} {...webPointerProps} />;
 }
 
 /** Settings-style modal for an active chat voice call. */
 export function MessageChatVoicePopover({
+  mountKey = 0,
   visible,
   onClose,
   title,
@@ -505,7 +597,7 @@ export function MessageChatVoicePopover({
   participants,
   colors,
   micActive,
-  micJoining,
+  micJoining: _micJoining,
   onMicPress,
   cameraActive,
   onCameraPress,
@@ -562,8 +654,9 @@ export function MessageChatVoicePopover({
         closeNow("escape_key");
       }
     };
-    // Capture-phase pointerdown anywhere on a close chrome control — survives
-    // React re-render storms that can replace the button's inline handler.
+    // Capture-phase pointerdown on close chrome — survives React re-render storms.
+    // Bottom control chips use native <button> onPointerDown (not capture) so mic
+    // toggle cannot fire twice and cancel itself.
     const onPointer = (e: PointerEvent) => {
       if (e.button !== 0) return;
       const target = e.target as Element | null;
@@ -655,6 +748,11 @@ export function MessageChatVoicePopover({
     setDraggingHandle(null);
     writeStoredSize(sheetSizeRef.current);
   }, []);
+
+  useEffect(() => {
+    if (visible) return;
+    endDrag();
+  }, [visible, endDrag]);
 
   useEffect(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return;
@@ -854,14 +952,19 @@ export function MessageChatVoicePopover({
             ...borderColors,
             paddingTop: 20,
             paddingBottom: 20,
+            // Visible so edge resize hit strips outside the border still receive events.
             overflow: "visible",
             zIndex: 5,
             ...(Platform.OS === "web"
               ? ({
                   position: "relative",
                   isolation: "isolate",
+                  display: "flex",
+                  flexDirection: "column",
                 } as object)
-              : {}),
+              : {
+                  flexDirection: "column",
+                }),
           },
         ]}
         {...(Platform.OS === "web"
@@ -983,7 +1086,17 @@ export function MessageChatVoicePopover({
           marginBottomPx={16}
         />
 
-        <View style={{ paddingHorizontal: 20, flex: 1, minHeight: 0, maxHeight: listMaxHeight }}>
+        <View
+          style={{
+            paddingHorizontal: 20,
+            flex: 1,
+            minHeight: 0,
+            maxHeight: listMaxHeight,
+            zIndex: 1,
+            overflow: "hidden",
+          }}
+          pointerEvents="auto"
+        >
           <ScrollView style={{ flex: 1, maxHeight: listMaxHeight }} nestedScrollEnabled>
             {displayParticipants.length > 0 ? (
               displayParticipants.map((participant, index) => (
@@ -1013,38 +1126,54 @@ export function MessageChatVoicePopover({
             marginBottom: 16,
             marginHorizontal: DIVIDER_INSET_PX,
             backgroundColor: colors.highlight,
+            flexShrink: 0,
           }}
         />
 
         <View
+          pointerEvents="auto"
           style={{
             flexDirection: "row",
             alignItems: "center",
             justifyContent: "center",
             gap: CONTROL_CHIP_GAP_PX,
             paddingHorizontal: 20,
-            zIndex: 20,
-            ...(Platform.OS === "web" ? ({ direction: "ltr" } as object) : {}),
+            zIndex: 40,
+            flexShrink: 0,
+            ...(Platform.OS === "web"
+              ? ({ direction: "ltr", position: "relative" } as object)
+              : {}),
           }}
         >
           <View ref={moreChipRef} collapsable={false}>
             <VoiceControlChip
               key="more"
+              testId="more"
               label={t("messages.voiceChat.controls.more")}
               variant="simple"
               undercoverColor={colors.undercover}
-              onPress={openMoreMenu}
+              onPress={() => {
+                logPageDisplay("messages_voice_dialog_control_click", {
+                  action: "more",
+                });
+                openMoreMenu();
+              }}
             >
               <VoiceMoreIcon color={iconColor} size={CONTROL_ICON_PX} />
             </VoiceControlChip>
           </View>
           <VoiceControlChip
             key="video"
+            testId="camera"
             label={t("messages.voiceChat.controls.camera")}
             variant="simple"
             undercoverColor={colors.undercover}
-            onPress={onCameraPress}
-            disabled={micJoining}
+            onPress={() => {
+              logPageDisplay("messages_voice_dialog_control_click", {
+                action: "camera",
+              });
+              onCameraPress();
+            }}
           >
             <VoiceCameraIcon
               color={iconColor}
@@ -1054,13 +1183,18 @@ export function MessageChatVoicePopover({
           </VoiceControlChip>
           <VoiceControlChip
             key="mic"
+            testId="mic"
             label={t("messages.voiceChat.controls.mic")}
             variant="simple"
             undercoverColor={colors.undercover}
             isLightTheme={isLightTheme}
             phaseOffset={0.38}
-            onPress={onMicPress}
-            disabled={micJoining}
+            onPress={() => {
+              logPageDisplay("messages_voice_dialog_control_click", {
+                action: "mic",
+              });
+              onMicPress();
+            }}
           >
             <VoiceMicControlIcon
               color={iconColor}
@@ -1070,18 +1204,31 @@ export function MessageChatVoicePopover({
           </VoiceControlChip>
           <VoiceControlChip
             key="chat"
+            testId="messages"
             label={t("messages.voiceChat.controls.messages")}
             variant="simple"
             undercoverColor={colors.undercover}
+            onPress={() => {
+              logPageDisplay("messages_voice_dialog_close_click", {
+                source: "messages_chip",
+              });
+              onClose();
+            }}
           >
             <VoiceMessagesIcon color={iconColor} size={CONTROL_ICON_PX} />
           </VoiceControlChip>
           <VoiceControlChip
             key="phone"
+            testId="drop"
             label={t("messages.voiceChat.controls.drop")}
             variant="simple"
             undercoverColor={colors.undercover}
-            onPress={onDropPress}
+            onPress={() => {
+              logPageDisplay("messages_voice_dialog_control_click", {
+                action: "drop",
+              });
+              onDropPress();
+            }}
             disabled={dropLeaving}
           >
             <VoiceDropIcon color={iconColor} size={CONTROL_ICON_PX} />
@@ -1104,6 +1251,7 @@ export function MessageChatVoicePopover({
     if (!portalTarget) return null;
     return createPortal(
       <View
+        key={`voice-dialog-${mountKey}`}
         style={{
           position: "fixed",
           left: 0,

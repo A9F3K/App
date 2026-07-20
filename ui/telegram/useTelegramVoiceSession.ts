@@ -242,8 +242,23 @@ export function useTelegramVoiceSession({
     setNegotiating(false);
     setJoining(true);
     setError(null);
+    let joinWatchdog: ReturnType<typeof setTimeout> | null = null;
     try {
-      await session.ensureJoinedListenOnly();
+      const joinedOk = await Promise.race([
+        session.ensureJoinedListenOnly().then(() => true as const),
+        new Promise<false>((resolve) => {
+          joinWatchdog = setTimeout(() => resolve(false), 20_000);
+        }),
+      ]);
+      if (joinWatchdog) {
+        clearTimeout(joinWatchdog);
+        joinWatchdog = null;
+      }
+      if (!joinedOk) {
+        setError("voice_join_timeout");
+        appWarn("[voice-session-join]", "voice_join_timeout", { chatId, groupCallId });
+        return false;
+      }
       setJoined(true);
       setMediaConnected(session.isMediaConnected());
       setNegotiating(session.isNegotiating());
@@ -266,6 +281,7 @@ export function useTelegramVoiceSession({
       appWarn("[voice-session-join]", message, { chatId, groupCallId });
       return false;
     } finally {
+      if (joinWatchdog) clearTimeout(joinWatchdog);
       setJoining(false);
     }
   }, [chatId, groupCallId, visible]);
