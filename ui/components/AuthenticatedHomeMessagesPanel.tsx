@@ -38,6 +38,10 @@ import {
   sortChatRowsTierAware,
 } from "./messages/chatListVirtualWindow";
 import { MESSAGE_ROW_HEIGHT_PX, chatListRowStridePx, chatListShellTopInsetPx, homeListShellStyle } from "./messages/messageListLayout";
+import {
+  isVoiceDialogUiOpen,
+  subscribeVoiceDialogUiOpen,
+} from "./messages/voiceDialogUiGate";
 import { telegramEmojiDebug } from "./messages/telegramEmojiDebug";
 import { useTelegramMessagesChatListStream } from "./messages/useTelegramMessagesChatListStream";
 
@@ -668,14 +672,49 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       if (streamLoadTimerRef.current != null) {
         clearTimeout(streamLoadTimerRef.current);
       }
+      // While the voice dialog is open, coalesce chat-list SSE harder so
+      // setChats / avatar work cannot freeze dialog controls.
+      const debounceMs = isVoiceDialogUiOpen() ? 4_500 : 600;
       streamLoadTimerRef.current = setTimeout(() => {
         streamLoadTimerRef.current = null;
+        if (isVoiceDialogUiOpen()) {
+          // Keep pending; flush on close via subscription below.
+          logPageDisplay("messages_chats_stream_revision_deferred", {
+            revision,
+            reason: "voice_dialog_open",
+          });
+          return;
+        }
         logPageDisplay("messages_chats_stream_revision", { revision });
         void flushStreamChatLoad();
-      }, 600);
+      }, debounceMs);
     },
     [flushStreamChatLoad],
   );
+
+  // Flush any deferred chat-list revision when the voice dialog closes.
+  useEffect(() => {
+    return subscribeVoiceDialogUiOpen((open) => {
+      if (open) return;
+      const pending = streamRevisionPendingRef.current;
+      if (pending == null) return;
+      if (lastLiveRevisionRef.current != null && pending <= lastLiveRevisionRef.current) {
+        return;
+      }
+      if (streamLoadTimerRef.current != null) {
+        clearTimeout(streamLoadTimerRef.current);
+        streamLoadTimerRef.current = null;
+      }
+      logPageDisplay("messages_chats_stream_revision", {
+        revision: pending,
+        reason: "voice_dialog_closed_flush",
+      });
+      // Yield so close chrome unmounts before a heavy chat-list reload.
+      setTimeout(() => {
+        void flushStreamChatLoad();
+      }, 400);
+    });
+  }, [flushStreamChatLoad]);
 
   useTelegramMessagesChatListStream({
     enabled: authReady && isTelegramMessagesConnected,
@@ -705,6 +744,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     const runPoll = async () => {
       if (cancelled) return;
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if (isVoiceDialogUiOpen()) return;
       if (pollInFlightRef.current) return;
       pollInFlightRef.current = true;
       pollCountRef.current += 1;
@@ -717,11 +757,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
 
     const scheduleNext = () => {
       if (cancelled) return;
-      const delay = CHAT_LIST_STREAM_ENABLED
-        ? MESSAGES_POLL_STREAM_FALLBACK_MS
-        : unchangedPollStreakRef.current >= MESSAGES_POLL_SLOW_AFTER
-          ? MESSAGES_POLL_SLOW_MS
-          : MESSAGES_POLL_FAST_MS;
+      const delay = isVoiceDialogUiOpen()
+        ? 15_000
+        : CHAT_LIST_STREAM_ENABLED
+          ? MESSAGES_POLL_STREAM_FALLBACK_MS
+          : unchangedPollStreakRef.current >= MESSAGES_POLL_SLOW_AFTER
+            ? MESSAGES_POLL_SLOW_MS
+            : MESSAGES_POLL_FAST_MS;
       pollTimerRef.current = setTimeout(() => {
         void runPoll().finally(scheduleNext);
       }, delay);

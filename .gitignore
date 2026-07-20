@@ -52,6 +52,16 @@ app-example
 # local scratch / temp
 .tmp/
 
+# Windows: reserved device name (accidental `> nul` in repo root)
+/nul
+
+# local debug / test artifacts (voice dialog, deploy, session mint)
+bash.exe.stackdump
+mint-session-out.*
+*-out.txt
+debug-voice-browser-out.txt
+debug-voice-screens/
+
 # Datadog: local process export (scripts/datadog-export-processes.ps1)
 dd-processes-sample.txt
 

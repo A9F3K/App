@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
@@ -49,13 +49,13 @@ type Props = {
   /** Chat dialog is on-screen — remote audio only plays while visible. */
   visible?: boolean;
   popoverOpen: boolean;
-  /** Briefly block strip presses after close so the X click does not reopen. */
-  stripInputBlocked?: boolean;
   onJoin: () => void;
   onOpenPopover: () => void;
   onClosePopover: () => void;
   /** Called after a successful leave so the parent can show Join again. */
   onLeftVoice?: () => void;
+  /** Brief post-close window — ignore strip presses (click-through from X). */
+  suppressStripPressUntilRef?: MutableRefObject<number>;
 };
 
 /**
@@ -72,29 +72,35 @@ export function MessageChatVoiceBar({
   joined,
   visible = true,
   popoverOpen,
-  stripInputBlocked = false,
   onJoin,
   onOpenPopover,
   onClosePopover,
   onLeftVoice,
+  suppressStripPressUntilRef,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
   const { colorScheme, displayName, telegramUsername } = useTelegram();
   const { isTelegramMessagesConnected } = useTelegramMessagesConnection();
   const [leaving, setLeaving] = useState(false);
   const [participants, setParticipants] = useState<TelegramChatVoiceParticipant[]>([]);
+  /** Listed row count — always matches dialog roster / strip avatars. */
   const [participantCount, setParticipantCount] = useState(0);
+  /** TDLib total hint (may exceed loaded rows until force reload). */
+  const rosterTotalHintRef = useRef(0);
   /** Speaking glow is a side map (tdesktop parity) — never rebuilds roster order. */
   const [speakingByKey, setSpeakingByKey] = useState<Record<string, true>>({});
   /** Hide the empty strip until a poll/SSE proves real (non-self) presence. */
   const [presenceConfirmed, setPresenceConfirmed] = useState(false);
   const stripPaddingX = layout.contentSideInsetPx;
-  const totalParticipantCount = Math.max(participantCount, participants.length);
+  const totalParticipantCount = participants.length;
   const speakingByKeyRef = useRef(speakingByKey);
   speakingByKeyRef.current = speakingByKey;
   // Stable strip order — do not re-sort by speaking (that remounted avatars every pulse).
   const stackedParticipants = participants.slice(0, MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS);
-  const overflowCount = Math.max(0, totalParticipantCount - stackedParticipants.length);
+  const overflowCount = Math.max(
+    0,
+    Math.max(rosterTotalHintRef.current, participants.length) - stackedParticipants.length,
+  );
   const participantsA11yLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
@@ -106,6 +112,10 @@ export function MessageChatVoiceBar({
   voiceJoinedRef.current = Boolean(joined);
   const popoverOpenRef = useRef(false);
   popoverOpenRef.current = Boolean(popoverOpen);
+  const participantsRef = useRef(participants);
+  participantsRef.current = participants;
+  const participantCountRef = useRef(participantCount);
+  participantCountRef.current = participantCount;
 
   const syncVoicePresence = useCallback(
     (
@@ -141,6 +151,16 @@ export function MessageChatVoiceBar({
           voice_chat_group_call_id: callId ?? null,
         });
         return true;
+      }
+
+      // Call still flagged active but roster snapshot is thin — keep the strip up.
+      if (Boolean(hasActive)) {
+        setPresenceConfirmed(true);
+        patchAuthenticatedHomeSelectedChatVoice({
+          has_active_voice_chat: true,
+          voice_chat_group_call_id: callId ?? null,
+        });
+        return false;
       }
 
       // SSE thin/empty snapshots must not clear presence — that remounted the bar
@@ -391,9 +411,6 @@ export function MessageChatVoiceBar({
           ? performance.now()
           : Date.now();
       const joinedLocally = voiceJoinedRef.current;
-      // Keep server `is_self` in the preview when this account is already in the
-      // call from another client. WebRTC still waits for an explicit Join — we only
-      // overlay local mic/speaking state after that.
       const withLocalSpeaking = incoming.map((row) => {
         if (!row.is_self || !joinedLocally) return row;
         return {
@@ -405,168 +422,173 @@ export function MessageChatVoiceBar({
       // Speaking map updates separately — never rebuild membership for a mic pulse.
       applySpeakingMap(withLocalSpeaking);
 
-      const commitParticipants = (updater: (prev: TelegramChatVoiceParticipant[]) => TelegramChatVoiceParticipant[]) => {
-        startTransition(() => {
-          setParticipants(updater);
-        });
-      };
-      const commitCount = (updater: (prev: number) => number) => {
-        startTransition(() => {
-          setParticipantCount(updater);
-        });
-      };
+      const prev = participantsRef.current;
+      let next = withLocalSpeaking;
+      if (joinedLocally && !next.some((row) => row.is_self)) {
+        const prevSelf = prev.find((row) => row.is_self);
+        next = [
+          {
+            user_id: prevSelf?.user_id ?? null,
+            chat_id: prevSelf?.chat_id ?? null,
+            title: prevSelf?.title?.trim() || selfTitleRef.current || "You",
+            description: prevSelf?.description ?? "",
+            emoji_status_custom_emoji_id: prevSelf?.emoji_status_custom_emoji_id ?? null,
+            is_speaking: false,
+            is_muted: !micActiveRef.current,
+            is_self: true,
+          },
+          ...next,
+        ];
+      }
 
-      commitParticipants((prev) => {
-        let next = withLocalSpeaking;
-        if (joinedLocally && !next.some((row) => row.is_self)) {
-          const prevSelf = prev.find((row) => row.is_self);
-          next = [
-            {
-              user_id: prevSelf?.user_id ?? null,
-              chat_id: prevSelf?.chat_id ?? null,
-              title: prevSelf?.title?.trim() || selfTitleRef.current || "You",
-              description: prevSelf?.description ?? "",
-              emoji_status_custom_emoji_id: prevSelf?.emoji_status_custom_emoji_id ?? null,
-              is_speaking: false,
-              is_muted: !micActiveRef.current,
-              is_self: true,
-            },
-            ...next,
-          ];
-        }
+      const speakKey = participantSpeakKey;
+      const prevByKey = new Map(prev.map((row) => [speakKey(row), row]));
+      const nextByKey = new Map(next.map((row) => [speakKey(row), row]));
 
-        const speakKey = participantSpeakKey;
-        const prevByKey = new Map(prev.map((row) => [speakKey(row), row]));
-        const nextByKey = new Map(next.map((row) => [speakKey(row), row]));
-
-        // Thin recent-speakers snapshots (≤3) must not wipe a richer joined roster —
-        // only overlay mute/profile. Full/near-full snapshots REPLACE so leavers
-        // disappear (the old merge-grow path kept ghosts forever).
-        const hint = Math.max(0, countHint);
-        const looksLikeRecentSpeakersOnly =
-          next.length > 0 &&
-          next.length <= 3 &&
-          prev.length > next.length &&
-          (hint === 0 || hint > Math.max(next.length, 3));
-        if (looksLikeRecentSpeakersOnly) {
-          const merged = prev.map((row) => {
-            const inc = nextByKey.get(speakKey(row));
-            if (!inc) return row;
-            const nextMuted = Boolean(inc.is_muted);
-            const nextTitle = inc.title.trim() || row.title;
-            const nextDescription = inc.description || row.description;
-            const nextEmoji =
-              inc.emoji_status_custom_emoji_id ?? row.emoji_status_custom_emoji_id;
-            const nextVideo = inc.video_info ?? row.video_info ?? null;
-            const nextScreen =
-              inc.screen_sharing_video_info ?? row.screen_sharing_video_info ?? null;
-            if (
-              Boolean(row.is_muted) === nextMuted &&
-              row.title === nextTitle &&
-              row.description === nextDescription &&
-              row.emoji_status_custom_emoji_id === nextEmoji &&
-              (row.video_info?.endpoint_id ?? "") === (nextVideo?.endpoint_id ?? "") &&
-              (row.screen_sharing_video_info?.endpoint_id ?? "") ===
-                (nextScreen?.endpoint_id ?? "")
-            ) {
-              return row;
-            }
-            return {
-              ...row,
-              is_muted: nextMuted,
-              title: nextTitle,
-              description: nextDescription,
-              emoji_status_custom_emoji_id: nextEmoji,
-              video_info: nextVideo,
-              screen_sharing_video_info: nextScreen,
-            };
-          });
-          for (const inc of next) {
-            if (!prevByKey.has(speakKey(inc))) {
-              merged.push({ ...inc, is_speaking: false });
-            }
+      const hint = Math.max(0, countHint);
+      const looksLikeRecentSpeakersOnly =
+        next.length > 0 &&
+        next.length <= 3 &&
+        prev.length > next.length &&
+        (hint === 0 || hint > Math.max(next.length, 3));
+      if (looksLikeRecentSpeakersOnly) {
+        const merged = prev.map((row) => {
+          const inc = nextByKey.get(speakKey(row));
+          if (!inc) return row;
+          const nextMuted = Boolean(inc.is_muted);
+          const nextTitle = inc.title.trim() || row.title;
+          const nextDescription = inc.description || row.description;
+          const nextEmoji =
+            inc.emoji_status_custom_emoji_id ?? row.emoji_status_custom_emoji_id;
+          const nextVideo = inc.video_info ?? row.video_info ?? null;
+          const nextScreen =
+            inc.screen_sharing_video_info ?? row.screen_sharing_video_info ?? null;
+          if (
+            Boolean(row.is_muted) === nextMuted &&
+            row.title === nextTitle &&
+            row.description === nextDescription &&
+            row.emoji_status_custom_emoji_id === nextEmoji &&
+            (row.video_info?.endpoint_id ?? "") === (nextVideo?.endpoint_id ?? "") &&
+            (row.screen_sharing_video_info?.endpoint_id ?? "") ===
+              (nextScreen?.endpoint_id ?? "")
+          ) {
+            return row;
           }
-          next = merged;
-        } else {
-          next = next.map((row) => {
-            const prevMatch = prevByKey.get(speakKey(row));
-            const title = row.title.trim() || prevMatch?.title || "";
-            const description = row.description || prevMatch?.description || "";
-            const emoji =
-              row.emoji_status_custom_emoji_id ??
-              prevMatch?.emoji_status_custom_emoji_id ??
-              null;
-            const video = row.video_info ?? prevMatch?.video_info ?? null;
-            const screen =
-              row.screen_sharing_video_info ??
-              prevMatch?.screen_sharing_video_info ??
-              null;
-            if (
-              prevMatch &&
-              prevMatch.user_id === row.user_id &&
-              prevMatch.chat_id === row.chat_id &&
-              prevMatch.title === title &&
-              prevMatch.description === description &&
-              prevMatch.emoji_status_custom_emoji_id === emoji &&
-              Boolean(prevMatch.is_muted) === Boolean(row.is_muted) &&
-              Boolean(prevMatch.is_self) === Boolean(row.is_self) &&
-              (prevMatch.video_info?.endpoint_id ?? "") === (video?.endpoint_id ?? "") &&
-              (prevMatch.screen_sharing_video_info?.endpoint_id ?? "") ===
-                (screen?.endpoint_id ?? "")
-            ) {
-              return prevMatch;
-            }
-            return {
-              ...row,
-              is_speaking: false,
-              title,
-              description,
-              emoji_status_custom_emoji_id: emoji,
-              video_info: video,
-              screen_sharing_video_info: screen,
-            };
-          });
-        }
-
-        // tdesktop parity: roster order is STABLE while rows exist.
-        const prevOrder = new Map(prev.map((row, index) => [speakKey(row), index]));
-        next = [...next].sort((a, b) => {
-          const ia = prevOrder.get(speakKey(a));
-          const ib = prevOrder.get(speakKey(b));
-          if (ia != null && ib != null) return ia - ib;
-          if (ia != null) return -1;
-          if (ib != null) return 1;
-          if (a.is_self !== b.is_self) return a.is_self ? -1 : 1;
-          return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
+          return {
+            ...row,
+            is_muted: nextMuted,
+            title: nextTitle,
+            description: nextDescription,
+            emoji_status_custom_emoji_id: nextEmoji,
+            video_info: nextVideo,
+            screen_sharing_video_info: nextScreen,
+          };
         });
-        const speakingCount = Object.keys(speakingByKeyRef.current).length;
-        const applyMs = Math.round(
-          typeof performance !== "undefined" && typeof performance.now === "function"
-            ? performance.now() - applyStarted
-            : 0,
-        );
-        if (applyMs >= 32 || next.length >= 40) {
-          logPageDisplay("messages_voice_roster_apply_cost", {
-            chatId,
-            applyMs,
-            listed: next.length,
-            speakingCount,
-            popoverOpen: popoverOpenRef.current,
-            level: applyMs >= 80 ? "warn" : "info",
-          });
+        for (const inc of next) {
+          if (!prevByKey.has(speakKey(inc))) {
+            merged.push({ ...inc, is_speaking: false });
+          }
         }
-        return participantsEqual(prev, next) ? prev : next;
+        next = merged;
+      } else {
+        next = next.map((row) => {
+          const prevMatch = prevByKey.get(speakKey(row));
+          const title = row.title.trim() || prevMatch?.title || "";
+          const description = row.description || prevMatch?.description || "";
+          const emoji =
+            row.emoji_status_custom_emoji_id ??
+            prevMatch?.emoji_status_custom_emoji_id ??
+            null;
+          const video = row.video_info ?? prevMatch?.video_info ?? null;
+          const screen =
+            row.screen_sharing_video_info ??
+            prevMatch?.screen_sharing_video_info ??
+            null;
+          if (
+            prevMatch &&
+            prevMatch.user_id === row.user_id &&
+            prevMatch.chat_id === row.chat_id &&
+            prevMatch.title === title &&
+            prevMatch.description === description &&
+            prevMatch.emoji_status_custom_emoji_id === emoji &&
+            Boolean(prevMatch.is_muted) === Boolean(row.is_muted) &&
+            Boolean(prevMatch.is_self) === Boolean(row.is_self) &&
+            (prevMatch.video_info?.endpoint_id ?? "") === (video?.endpoint_id ?? "") &&
+            (prevMatch.screen_sharing_video_info?.endpoint_id ?? "") ===
+              (screen?.endpoint_id ?? "")
+          ) {
+            return prevMatch;
+          }
+          return {
+            ...row,
+            is_speaking: false,
+            title,
+            description,
+            emoji_status_custom_emoji_id: emoji,
+            video_info: video,
+            screen_sharing_video_info: screen,
+          };
+        });
+      }
+
+      // tdesktop parity: roster order is STABLE while rows exist.
+      const prevOrder = new Map(prev.map((row, index) => [speakKey(row), index]));
+      next = [...next].sort((a, b) => {
+        const ia = prevOrder.get(speakKey(a));
+        const ib = prevOrder.get(speakKey(b));
+        if (ia != null && ib != null) return ia - ib;
+        if (ia != null) return -1;
+        if (ib != null) return 1;
+        if (a.is_self !== b.is_self) return a.is_self ? -1 : 1;
+        return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
       });
-      commitCount((prev) => {
-        // Prefer TDLib participant_count. Only fall back to listed length when
-        // the server did not send a count (never inflate above Telegram).
-        const hint = Math.max(0, countHint);
-        const nextCount =
-          hint > 0
-            ? hint
-            : Math.max(withLocalSpeaking.length, joinedLocally ? 1 : 0);
-        return prev === nextCount ? prev : nextCount;
-      });
+
+      const speakingCount = Object.keys(speakingByKeyRef.current).length;
+      const applyMs = Math.round(
+        typeof performance !== "undefined" && typeof performance.now === "function"
+          ? performance.now() - applyStarted
+          : 0,
+      );
+      if (applyMs >= 32 || next.length >= 40) {
+        logPageDisplay("messages_voice_roster_apply_cost", {
+          chatId,
+          applyMs,
+          listed: next.length,
+          speakingCount,
+          popoverOpen: popoverOpenRef.current,
+          level: applyMs >= 80 ? "warn" : "info",
+        });
+      }
+
+      // UI count must match listed rows; keep TDLib hint separately for reload gating.
+      const totalHint = Math.max(hint, next.length);
+      rosterTotalHintRef.current = totalHint;
+      const nextCount = next.length;
+
+      const rosterChanged = !participantsEqual(prev, next);
+      const countChanged = participantCountRef.current !== nextCount;
+      if (rosterChanged || countChanged) {
+        logPageDisplay("messages_voice_roster_painted", {
+          chatId,
+          listed: next.length,
+          count: nextCount,
+          totalHint,
+          prevListed: prev.length,
+          popoverOpen: popoverOpenRef.current,
+          titles: next.slice(0, 4).map((row) => row.title || "?"),
+        });
+      }
+
+      // Urgent setState — startTransition deferred forever under chat-list longtasks,
+      // which left the strip/dialog empty despite successful polls.
+      if (rosterChanged) {
+        participantsRef.current = next;
+        setParticipants(next);
+      }
+      if (countChanged) {
+        participantCountRef.current = nextCount;
+        setParticipantCount(nextCount);
+      }
     },
     [applySpeakingMap, chatId, participantSpeakKey, participantsEqual],
   );
@@ -574,8 +596,10 @@ export function MessageChatVoiceBar({
   const pendingStreamSnapRef = useRef<VoiceParticipantsStreamSnapshot | null>(null);
   const streamApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStreamApplyAtRef = useRef(0);
-  /** tdesktop repaints speaking glow on a slow tick — one apply per ~700ms max. */
-  const STREAM_APPLY_MIN_MS = 700;
+  /** While the dialog is open, coalesce SSE roster merges to ≥2s. */
+  const STREAM_APPLY_OPEN_MIN_MS = 2_000;
+  /** Preview strip (dialog closed) — lighter throttle, still must show avatars. */
+  const STREAM_APPLY_STRIP_MIN_MS = 800;
 
   const cancelStreamRosterFlush = useCallback(() => {
     if (streamApplyTimerRef.current != null) {
@@ -592,9 +616,7 @@ export function MessageChatVoiceBar({
     if (!snapshot) return;
     // Speaking glow first — membership apply can wait.
     applySpeakingMap(snapshot.participants);
-    // While the sheet is closed, polls refresh the strip; skip heavy SSE roster
-    // merges that blocked reopen from painting (main thread freeze).
-    if (!popoverOpenRef.current) return;
+    const sheetOpen = popoverOpenRef.current;
     const live = syncVoicePresence(
       true,
       snapshot.group_call_id,
@@ -603,13 +625,29 @@ export function MessageChatVoiceBar({
       { allowClear: false },
     );
     if (!live && snapshot.participants.length === 0 && !voiceJoinedRef.current) return;
+
+    const applyRows = () => {
+      applyRosterRows(snapshot.participants, snapshot.participant_count);
+    };
+
+    if (!sheetOpen) {
+      // Preview strip — apply immediately (no dialog controls to block).
+      applyRows();
+      return;
+    }
+
     logPageDisplay("messages_voice_dialog_sse_apply", {
       chatId,
       revision: snapshot.revision,
       listed: snapshot.participants.length,
       speakingCount: snapshot.participants.filter((p) => p.is_speaking).length,
     });
-    applyRosterRows(snapshot.participants, snapshot.participant_count);
+    // Yield one frame so Close/controls paint before the merge runs.
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(applyRows);
+      return;
+    }
+    applyRows();
   }, [applyRosterRows, applySpeakingMap, cancelStreamRosterFlush, chatId, syncVoicePresence]);
 
   const onStreamParticipants = useCallback(
@@ -623,17 +661,19 @@ export function MessageChatVoiceBar({
       // Speaking must update immediately (green mics). Membership thrash is throttled.
       applySpeakingMap(snapshot.participants);
       pendingStreamSnapRef.current = snapshot;
-      if (!popoverOpenRef.current) return;
       if (streamApplyTimerRef.current != null) return;
+      const minMs = popoverOpenRef.current
+        ? STREAM_APPLY_OPEN_MIN_MS
+        : STREAM_APPLY_STRIP_MIN_MS;
       const sinceLast = Date.now() - lastStreamApplyAtRef.current;
-      if (sinceLast >= STREAM_APPLY_MIN_MS) {
+      if (sinceLast >= minMs) {
         flushPendingStreamSnap();
         return;
       }
       streamApplyTimerRef.current = setTimeout(() => {
         streamApplyTimerRef.current = null;
         flushPendingStreamSnap();
-      }, STREAM_APPLY_MIN_MS - sinceLast);
+      }, minMs - sinceLast);
     },
     [applySpeakingMap, flushPendingStreamSnap],
   );
@@ -641,10 +681,14 @@ export function MessageChatVoiceBar({
   useEffect(() => {
     if (popoverOpen) return;
     cancelStreamRosterFlush();
+    // Push any pending SSE snapshot onto the preview strip after close.
+    if (pendingStreamSnapRef.current) {
+      flushPendingStreamSnap();
+    }
     return () => {
       cancelStreamRosterFlush();
     };
-  }, [popoverOpen, cancelStreamRosterFlush]);
+  }, [popoverOpen, cancelStreamRosterFlush, flushPendingStreamSnap]);
 
   const [popoverMountKey, setPopoverMountKey] = useState(0);
   const postJoinRosterLoadedRef = useRef(false);
@@ -681,9 +725,22 @@ export function MessageChatVoiceBar({
           result.participant_count,
           { allowClear: true },
         );
-        if (live || voiceJoinedRef.current) {
+        // While the dialog is open and SSE is live, skip heavy poll merges —
+        // SSE owns membership; poll only confirms presence.
+        if (
+          popoverOpenRef.current &&
+          streamActiveRef.current &&
+          (live || voiceJoinedRef.current)
+        ) {
+          applySpeakingMap(result.participants);
+          return "ok";
+        }
+        // Always paint rows when TDLib returned any participants — countHint of 0
+        // used to leave the strip empty despite a real self/other roster.
+        if (result.participants.length > 0 || live || voiceJoinedRef.current) {
           applyRosterRows(result.participants, result.participant_count);
-        } else {
+        } else if (!result.has_active_voice_chat) {
+          // Keep strip roster when the call is live but TDLib returned a thin snapshot.
           setParticipants([]);
           setParticipantCount(0);
         }
@@ -705,7 +762,14 @@ export function MessageChatVoiceBar({
       });
       return "backoff";
     }
-  }, [applyRosterRows, chatId, groupCallId, isTelegramMessagesConnected, syncVoicePresence]);
+  }, [
+    applyRosterRows,
+    applySpeakingMap,
+    chatId,
+    groupCallId,
+    isTelegramMessagesConnected,
+    syncVoicePresence,
+  ]);
 
   useEffect(() => {
     // Local WebRTC mic/speaking only applies after an explicit Join on this client.
@@ -778,12 +842,12 @@ export function MessageChatVoiceBar({
       const sheetOpen = popoverOpenRef.current;
       if (!visible) return 12_000;
       // SSE owns live roster while the dialog is open — poll is a slow backup.
-      if (sheetOpen && streamActiveRef.current) return 8_000;
+      if (sheetOpen && streamActiveRef.current) return 12_000;
       if (joined) {
-        if (sheetOpen) return 2_500;
-        return 1_200;
+        if (sheetOpen) return 5_000;
+        return 2_000;
       }
-      return sheetOpen ? 3_000 : streamActiveRef.current ? 3_000 : 5_000;
+      return sheetOpen ? 5_000 : streamActiveRef.current ? 4_000 : 6_000;
     };
 
     const arm = (delayMs: number) => {
@@ -865,11 +929,6 @@ export function MessageChatVoiceBar({
     void refreshParticipantsRef.current();
   }, [voiceSession.joined]);
 
-  const participantsRef = useRef(participants);
-  participantsRef.current = participants;
-  const participantCountRef = useRef(participantCount);
-  participantCountRef.current = participantCount;
-
   // Ask the SFU for any remote camera / screencast publishers listed in the roster.
   const setRemoteVideoRequests = voiceSession.setRemoteVideoRequests;
   const voiceJoined = voiceSession.joined;
@@ -940,6 +999,25 @@ export function MessageChatVoiceBar({
   // on a single grey row while speaking updates had nobody to light up.
   const applyRosterRowsRef = useRef(applyRosterRows);
   applyRosterRowsRef.current = applyRosterRows;
+
+  const rosterIncomplete = useCallback(() => {
+    const listed = participantsRef.current.length;
+    const hint = rosterTotalHintRef.current;
+    return hint > listed;
+  }, []);
+
+  const reloadVoiceRoster = useCallback(
+    async (options?: { force?: boolean; cancelled?: () => boolean }) => {
+      const result = await fetchTelegramChatVoiceParticipants(chatId, null, {
+        forceReload: Boolean(options?.force),
+      });
+      if (options?.cancelled?.() || !result.ok) return result;
+      applyRosterRowsRef.current(result.participants, result.participant_count);
+      return result;
+    },
+    [chatId],
+  );
+
   useEffect(() => {
     if (!popoverOpen) return;
     if (!isTelegramMessagesConnected) return;
@@ -972,17 +1050,14 @@ export function MessageChatVoiceBar({
         });
       });
       if (cancelled) return;
-      // Always refresh when the dialog opens with an incomplete roster. Skipping
-      // left the sheet stuck on a single grey row while the header counted 8.
       const listed = participantsRef.current.length;
-      const count = participantCountRef.current;
-      const rosterLooksComplete =
-        listed > 0 && count > 0 && listed >= Math.min(count, 5);
+      const hint = rosterTotalHintRef.current;
+      const rosterLooksComplete = listed > 0 && hint > 0 && listed >= hint;
       if (rosterLooksComplete) {
         logPageDisplay("messages_voice_dialog_open_skip_reload", {
           chatId,
           listed,
-          count,
+          hint,
           elapsedMs: Math.round(
             (typeof performance !== "undefined" && typeof performance.now === "function"
               ? performance.now()
@@ -992,16 +1067,40 @@ export function MessageChatVoiceBar({
         return;
       }
       try {
-        const result = await fetchTelegramChatVoiceParticipants(chatId, null, {
-          // Soft reload on open — hard force waits until WebRTC is joined below.
-          forceReload: false,
-        });
-        if (cancelled || !result.ok) return;
-        applyRosterRowsRef.current(result.participants, result.participant_count);
+        const result = await reloadVoiceRoster({ cancelled: () => cancelled });
+        if (cancelled || !result?.ok) return;
+        const listedAfter = participantsRef.current.length;
+        const hintAfter = Math.max(
+          rosterTotalHintRef.current,
+          result.participant_count,
+          result.participants.length,
+        );
+        if (listedAfter < hintAfter) {
+          const forced = await reloadVoiceRoster({
+            force: true,
+            cancelled: () => cancelled,
+          });
+          if (cancelled || !forced?.ok) return;
+          logPageDisplay("messages_voice_dialog_force_reload_ok", {
+            chatId,
+            listed: forced.participants.length,
+            count: forced.participants.length,
+            hint: Math.max(forced.participant_count, forced.participants.length),
+            forced: true,
+            elapsedMs: Math.round(
+              (typeof performance !== "undefined" && typeof performance.now === "function"
+                ? performance.now()
+                : Date.now()) - openedAt,
+            ),
+          });
+          return;
+        }
         logPageDisplay("messages_voice_dialog_force_reload_ok", {
           chatId,
           listed: result.participants.length,
-          count: result.participant_count,
+          count: result.participants.length,
+          hint: hintAfter,
+          forced: false,
           elapsedMs: Math.round(
             (typeof performance !== "undefined" && typeof performance.now === "function"
               ? performance.now()
@@ -1020,7 +1119,7 @@ export function MessageChatVoiceBar({
       cancelled = true;
       logPageDisplay("messages_voice_dialog_close", { chatId });
     };
-  }, [popoverOpen, chatId, isTelegramMessagesConnected, groupCallId, flushPendingStreamSnap]);
+  }, [popoverOpen, chatId, isTelegramMessagesConnected, groupCallId, flushPendingStreamSnap, reloadVoiceRoster]);
 
   useEffect(() => {
     if (!voiceSession.joined) {
@@ -1028,14 +1127,11 @@ export function MessageChatVoiceBar({
     }
   }, [voiceSession.joined]);
 
-  // Once WebRTC is up, force a full TDLib roster load — pre-join loads are often
-  // self-only, which left greens with nobody to paint on. Run at most once per join.
+  // Once WebRTC is up, force a full TDLib roster load when hint exceeds listed rows.
   useEffect(() => {
     if (!popoverOpen || !voiceSession.joined) return;
     if (!isTelegramMessagesConnected) return;
-    const listed = participantsRef.current.length;
-    const count = participantCountRef.current;
-    if (listed > 0 && count > 0 && listed >= Math.min(count, 5)) {
+    if (!rosterIncomplete()) {
       postJoinRosterLoadedRef.current = true;
       return;
     }
@@ -1043,23 +1139,22 @@ export function MessageChatVoiceBar({
     let cancelled = false;
     const timer = setTimeout(() => {
       void (async () => {
-        const listedNow = participantsRef.current.length;
-        const countNow = participantCountRef.current;
-        if (listedNow > 0 && countNow > 0 && listedNow >= Math.min(countNow, 5)) {
+        if (!rosterIncomplete()) {
           postJoinRosterLoadedRef.current = true;
           return;
         }
         try {
-          const result = await fetchTelegramChatVoiceParticipants(chatId, null, {
-            forceReload: true,
+          const result = await reloadVoiceRoster({
+            force: true,
+            cancelled: () => cancelled,
           });
-          if (cancelled || !result.ok) return;
-          applyRosterRowsRef.current(result.participants, result.participant_count);
+          if (cancelled || !result?.ok) return;
           postJoinRosterLoadedRef.current = true;
           logPageDisplay("messages_voice_dialog_postjoin_reload_ok", {
             chatId,
             listed: result.participants.length,
-            count: result.participant_count,
+            count: result.participants.length,
+            hint: rosterTotalHintRef.current,
           });
         } catch {
           /* ignore */
@@ -1070,7 +1165,7 @@ export function MessageChatVoiceBar({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [popoverOpen, voiceSession.joined, chatId, isTelegramMessagesConnected]);
+  }, [popoverOpen, voiceSession.joined, chatId, isTelegramMessagesConnected, reloadVoiceRoster, rosterIncomplete]);
 
   // NOTE: exactly ONE effect computes remote-video requests (above). A second
   // duplicate with different endpoint fallbacks ping-ponged the renegotiation
@@ -1083,16 +1178,39 @@ export function MessageChatVoiceBar({
   }, [onJoin, voiceSession]);
 
   const handleStripPress = useCallback(() => {
-    if (stripInputBlocked) return;
+    if (
+      suppressStripPressUntilRef &&
+      Date.now() < suppressStripPressUntilRef.current
+    ) {
+      logPageDisplay("messages_voice_strip_press_swallowed", {
+        chatId,
+        reason: "post_close_guard",
+        msRemaining: suppressStripPressUntilRef.current - Date.now(),
+      });
+      return;
+    }
     unlockVoiceAutoplay();
     voiceSession.unlockAudio();
     if (!joined) {
-      // Parent joinVoice opens the participant sheet with the same gesture.
+      logPageDisplay("messages_voice_strip_press", { chatId, joined: false, action: "join" });
       unlockThenJoin();
       return;
     }
+    logPageDisplay("messages_voice_strip_press", {
+      chatId,
+      joined: true,
+      action: "open_dialog",
+      popoverOpen: popoverOpenRef.current,
+    });
     onOpenPopover();
-  }, [joined, stripInputBlocked, unlockThenJoin, onOpenPopover, voiceSession]);
+  }, [
+    chatId,
+    joined,
+    onOpenPopover,
+    suppressStripPressUntilRef,
+    unlockThenJoin,
+    voiceSession,
+  ]);
 
   const onLeave = useCallback(async () => {
     if (leaving || !joined) return;
@@ -1187,9 +1305,6 @@ export function MessageChatVoiceBar({
           borderBottomWidth: 1,
           borderBottomColor: colors.highlight,
           backgroundColor: colors.background,
-          ...(Platform.OS === "web" && stripInputBlocked
-            ? ({ pointerEvents: "none" } as const)
-            : {}),
         }}
       >
         <Pressable
@@ -1198,6 +1313,7 @@ export function MessageChatVoiceBar({
           accessibilityLabel={
             joined ? t("messages.voiceChat.open") : t("messages.voiceChat.join")
           }
+          testID="voice-strip-preview"
           style={({ pressed }) => ({
             flexDirection: "row",
             alignItems: "center",
@@ -1295,9 +1411,52 @@ export function MessageChatVoiceBar({
                 >
                   {`+${overflowCount}`}
                 </Text>
-              ) : null}
+              ) : (
+                <Text
+                  numberOfLines={1}
+                  style={{
+                    color: colors.primary,
+                    fontSize: 13,
+                    lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+                    fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                    flexShrink: 1,
+                    minWidth: 0,
+                  }}
+                >
+                  {stackedParticipants[0]?.title?.trim() ||
+                    participantsA11yLabel}
+                </Text>
+              )}
             </View>
-          ) : null}
+          ) : totalParticipantCount > 0 ? (
+            <Text
+              numberOfLines={1}
+              style={{
+                color: colors.primary,
+                fontSize: 13,
+                lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+                fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                flexShrink: 1,
+                minWidth: 0,
+              }}
+            >
+              {participantsA11yLabel}
+            </Text>
+          ) : (
+            <Text
+              numberOfLines={1}
+              style={{
+                color: colors.secondary,
+                fontSize: 13,
+                lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+                fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                flexShrink: 1,
+                minWidth: 0,
+              }}
+            >
+              {t("messages.voiceChat.participants")}
+            </Text>
+          )}
         </Pressable>
         {joined ? (
           <Pressable
@@ -1321,6 +1480,7 @@ export function MessageChatVoiceBar({
             accessibilityRole="button"
             accessibilityLabel={t("messages.voiceChat.join")}
             onPress={unlockThenJoin}
+            testID="voice-strip-join-button"
             style={({ pressed }) => ({
               marginLeft: 12,
               flexShrink: 0,

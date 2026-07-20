@@ -131,12 +131,14 @@ export async function fetchTelegramChatVoiceParticipants(
         .filter((row): row is TelegramChatVoiceParticipant => row != null)
     : [];
   const voiceCallId = normalizeTelegramGroupCallId(json.voice_chat_group_call_id);
+  const rawCount = Number.isFinite(Number(json.participant_count))
+    ? Number(json.participant_count)
+    : participants.length;
   return {
     ok: true,
     participants,
-    participant_count: Number.isFinite(Number(json.participant_count))
-      ? Number(json.participant_count)
-      : participants.length,
+    // TDLib getChat often reports participant_count=0 while still returning rows.
+    participant_count: Math.max(rawCount, participants.length),
     has_active_voice_chat: Boolean(json.has_active_voice_chat) || voiceCallId != null,
     voice_chat_group_call_id: voiceCallId,
     voice_resolve_source:

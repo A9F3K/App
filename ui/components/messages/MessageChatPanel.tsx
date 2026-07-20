@@ -7,10 +7,12 @@ import { unlockVoiceAutoplay } from "../../telegram/unlockVoiceAutoplay";
 import { startTelegramChatVoice } from "../../telegram/startTelegramChatVoice";
 import { fetchTelegramChatVoiceParticipants } from "../../telegram/fetchTelegramChatVoiceParticipants";
 import { appWarn } from "../../../shared/appLog";
+import { logPageDisplay } from "../../pageDisplayLog";
 import { MessageChatHeader } from "./MessageChatHeader";
 import { MessageChatMessageList } from "./MessageChatMessageList";
 import { MessageChatVoiceBar } from "./MessageChatVoiceBar";
 import { MessageSubtreeErrorBoundary } from "./MessageSubtreeErrorBoundary";
+import { setVoiceDialogUiOpen } from "./voiceDialogUiGate";
 import type { MessageChatRowData } from "./MessageChatRow";
 
 type Props = {
@@ -52,10 +54,10 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const [startedCallId, setStartedCallId] = useState<number | null>(null);
   /** After an explicit leave, do not auto-listen again until the user rejoins or opens another chat. */
   const userLeftVoiceRef = useRef(false);
-  /** Closing the sheet can click-through onto the voice strip — block strip input briefly. */
+  /** Closing the sheet can click-through onto the voice strip — block reopen briefly. */
   const ignoreVoicePopoverOpenUntilRef = useRef(0);
-  const stripBlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [stripInputBlocked, setStripInputBlocked] = useState(false);
+  /** Same close gesture must not re-join / re-open via the strip underneath. */
+  const suppressStripPressUntilRef = useRef(0);
   const groupCallId = resolveGroupCallId(chat, startedCallId);
   const showVoiceBar = liveVoiceAvailable || voiceJoined;
 
@@ -76,12 +78,23 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     }
   }, [liveVoiceAvailable, voiceJoined]);
 
-  // TDLib chat-list sync can miss video_chat OR keep a stale flag after the call
-  // ends. Always verify while this group is open (not only when the flag is false).
+  // Publish dialog-open to chat-list / home so SSE can defer while the sheet is up.
   useEffect(() => {
-    if (!canStart || voiceJoined || !visible) return;
+    setVoiceDialogUiOpen(voicePopoverOpen);
+    return () => {
+      setVoiceDialogUiOpen(false);
+    };
+  }, [voicePopoverOpen]);
+
+  // TDLib chat-list sync can miss video_chat OR keep a stale flag after the call
+  // ends. Probe sparingly — VoiceBar SSE/poll owns presence once the bar is live.
+  useEffect(() => {
+    if (!canStart || voiceJoined || !visible || voicePopoverOpen) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // Once we already know the call is live, back off hard — getChat every 5s
+    // was saturating the main thread alongside chat-list SSE.
+    const intervalMs = liveVoiceAvailable ? 20_000 : 8_000;
 
     const probe = async () => {
       const result = await fetchTelegramChatVoiceParticipants(chat.telegram_chat_id);
@@ -104,49 +117,68 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       });
     };
 
-    void probe();
+    // Skip the immediate probe when presence is already confirmed — strip/SSE
+    // will refresh; an extra getChat on chat open was a longtask source.
+    if (!liveVoiceAvailable) void probe();
     const schedule = () => {
       timer = setTimeout(() => {
         void probe().finally(() => {
           if (!cancelled) schedule();
         });
-      }, 5000);
+      }, intervalMs);
     };
     schedule();
     return () => {
       cancelled = true;
       if (timer != null) clearTimeout(timer);
     };
-  }, [canStart, chat.telegram_chat_id, visible, voiceJoined]);
+  }, [
+    canStart,
+    chat.telegram_chat_id,
+    liveVoiceAvailable,
+    visible,
+    voiceJoined,
+    voicePopoverOpen,
+  ]);
 
   const openVoicePopover = useCallback(() => {
-    if (Date.now() < ignoreVoicePopoverOpenUntilRef.current) return;
+    const now = Date.now();
+    if (now < ignoreVoicePopoverOpenUntilRef.current) {
+      logPageDisplay("messages_voice_dialog_open_blocked", {
+        chatId: chat.telegram_chat_id,
+        reason: "post_close_guard",
+        msRemaining: ignoreVoicePopoverOpenUntilRef.current - now,
+      });
+      return;
+    }
+    logPageDisplay("messages_voice_dialog_open_request", { chatId: chat.telegram_chat_id });
     setVoicePopoverOpen(true);
-  }, []);
+  }, [chat.telegram_chat_id]);
 
   const closeVoicePopover = useCallback(() => {
     // Swallow the same pointer's click-through onto the strip / Join control.
-    ignoreVoicePopoverOpenUntilRef.current = Date.now() + 120;
+    const until = Date.now() + 500;
+    ignoreVoicePopoverOpenUntilRef.current = until;
+    suppressStripPressUntilRef.current = until;
     setVoicePopoverOpen(false);
-    setStripInputBlocked(true);
-    if (stripBlockTimerRef.current != null) clearTimeout(stripBlockTimerRef.current);
-    stripBlockTimerRef.current = setTimeout(() => {
-      stripBlockTimerRef.current = null;
-      setStripInputBlocked(false);
-    }, 220);
   }, []);
 
-  useEffect(
-    () => () => {
-      if (stripBlockTimerRef.current != null) clearTimeout(stripBlockTimerRef.current);
-    },
-    [],
-  );
-
   const joinVoice = useCallback(() => {
-    if (!liveVoiceAvailable && groupCallId == null) return;
+    if (!liveVoiceAvailable && groupCallId == null) {
+      logPageDisplay("messages_voice_join_skipped", {
+        chatId: chat.telegram_chat_id,
+        liveVoiceAvailable,
+        groupCallId,
+      });
+      return;
+    }
     userLeftVoiceRef.current = false;
     unlockVoiceAutoplay();
+    logPageDisplay("messages_voice_join_start", {
+      chatId: chat.telegram_chat_id,
+      groupCallId,
+      liveVoiceAvailable,
+    });
     // Paint the dialog first so Close / Escape stay interactive, then start
     // WebRTC on the next frames (SDP/ICE used to freeze the sheet on open).
     openVoicePopover();
@@ -231,7 +263,6 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           joined={voiceJoined}
           visible={visible}
           popoverOpen={voicePopoverOpen}
-          stripInputBlocked={stripInputBlocked}
           onJoin={joinVoice}
           onOpenPopover={() => {
             if (!voiceJoined) {
@@ -243,6 +274,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           }}
           onClosePopover={closeVoicePopover}
           onLeftVoice={leaveVoiceUi}
+          suppressStripPressUntilRef={suppressStripPressUntilRef}
         />
       ) : null}
       <MessageSubtreeErrorBoundary resetKey={chat.telegram_chat_id}>

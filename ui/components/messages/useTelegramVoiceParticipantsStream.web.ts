@@ -85,7 +85,7 @@ function parseParticipantsPayload(raw: string): VoiceParticipantsStreamSnapshot 
     return {
       revision: Math.trunc(revision),
       participant_count: Number.isFinite(Number(data.participant_count))
-        ? Math.trunc(Number(data.participant_count))
+        ? Math.max(Math.trunc(Number(data.participant_count)), participants.length)
         : participants.length,
       participants,
       group_call_id:

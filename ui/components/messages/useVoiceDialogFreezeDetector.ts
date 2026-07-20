@@ -21,16 +21,16 @@ function postFreezeEvent(event: string, details: Record<string, unknown>) {
     headers: { "Content-Type": "application/json" },
     // Fire-and-forget — never await, never throw into the call stack
     body: JSON.stringify({ event, details, ts: Date.now() }),
-  }).catch(() => {/* ignore network errors */});
+  }).catch(() => {
+    /* ignore network errors */
+  });
 }
 
-const RAF_HEARTBEAT_INTERVAL_MS = 250;
 /** Warn when rAF gap exceeds this threshold. */
 const RAF_STALL_WARN_MS = 500;
 /** Error-level freeze (controls probably unresponsive by now). */
 const RAF_STALL_ERROR_MS = 1200;
 /** Long-task duration above which we log at warn level. */
-const LONGTASK_WARN_MS = 100;
 const LONGTASK_ERROR_MS = 400;
 
 export function useVoiceDialogFreezeDetector(enabled: boolean): void {
@@ -56,9 +56,10 @@ export function useVoiceDialogFreezeDetector(enabled: boolean): void {
               durationMs,
               startTimeMs: Math.round(entry.startTime),
               level,
-              note: level === "error"
-                ? "main thread frozen ≥400ms — controls likely unresponsive"
-                : "long task >100ms during voice dialog",
+              note:
+                level === "error"
+                  ? "main thread frozen ≥400ms — controls likely unresponsive"
+                  : "long task >100ms during voice dialog",
             };
             logPageDisplay("voice_dialog_longtask", details);
             postFreezeEvent("voice_dialog_longtask", details);
@@ -88,9 +89,10 @@ export function useVoiceDialogFreezeDetector(enabled: boolean): void {
           totalFreezeMs: Math.round(totalFreezeMs),
           freezeCount,
           level,
-          note: level === "error"
-            ? "rAF gap ≥1.2s — dialog controls blocked, compositor stalled"
-            : "rAF gap >500ms — partial freeze during voice dialog",
+          note:
+            level === "error"
+              ? "rAF gap ≥1.2s — dialog controls blocked, compositor stalled"
+              : "rAF gap >500ms — partial freeze during voice dialog",
         };
         logPageDisplay("voice_dialog_raf_stall", stallDetails);
         postFreezeEvent("voice_dialog_raf_stall", stallDetails);
@@ -123,23 +125,26 @@ export function installGlobalVoiceFreezeLogger(): (() => void) | undefined {
   ) {
     return undefined;
   }
-  let installed = false;
   try {
     const obs = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         const durationMs = Math.round(entry.duration);
         if (durationMs < 200) continue;
-    const d = {
-              durationMs,
-              startTimeMs: Math.round(entry.startTime),
-              level: durationMs >= 400 ? "error" : "warn",
-            };
-            logPageDisplay("voice_dialog_global_longtask", d);
-            postFreezeEvent("voice_dialog_global_longtask", d);
+        const d = {
+          durationMs,
+          startTimeMs: Math.round(entry.startTime),
+          level: durationMs >= 400 ? "error" : "warn",
+        };
+        logPageDisplay("voice_dialog_global_longtask", d);
+        postFreezeEvent("voice_dialog_global_longtask", d);
       }
     });
-    obs.observe({ entryTypes: ["longtask"], buffered: true });
-    installed = true;
+    // Chrome rejects `{ entryTypes, buffered: true }` — use type API for buffer.
+    try {
+      obs.observe({ type: "longtask", buffered: true });
+    } catch {
+      obs.observe({ entryTypes: ["longtask"] });
+    }
     return () => obs.disconnect();
   } catch {
     return undefined;

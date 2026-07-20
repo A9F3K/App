@@ -85,10 +85,65 @@ function htmlViewer(recent: FreezeEvent[]): Response {
   });
 }
 
-async function handler(request: Request): Promise<Response> {
-  const url = new URL(request.url);
+type NodeRes = {
+  setHeader(name: string, value: string): void;
+  status(code: number): void;
+  end(body?: string): void;
+};
 
-  if (request.method === "OPTIONS") {
+function jsonNode(res: NodeRes, body: unknown, status = 200): void {
+  res.setHeader("Content-Type", "application/json");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.status(status);
+  res.end(JSON.stringify(body));
+}
+
+async function readNodeJsonBody(request: {
+  body?: unknown;
+  on?: (event: string, cb: (chunk?: unknown) => void) => void;
+}): Promise<unknown> {
+  if (request.body != null) return request.body;
+  if (typeof request.on !== "function") return {};
+  return await new Promise((resolve) => {
+    let raw = "";
+    request.on?.("data", (chunk) => {
+      raw += String(chunk ?? "");
+    });
+    request.on?.("end", () => {
+      try {
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch {
+        resolve({});
+      }
+    });
+    request.on?.("error", () => resolve({}));
+  });
+}
+
+async function handler(
+  request: Request | { method?: string; url?: string; json?: () => Promise<unknown>; body?: unknown; on?: (event: string, cb: (chunk?: unknown) => void) => void },
+  res?: NodeRes,
+): Promise<Response | void> {
+  const rawUrl =
+    (request as { url?: string }).url ??
+    "/api/voice-debug";
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    url = new URL(rawUrl, "https://program.hyperlinks.space");
+  }
+  const method = ((request as { method?: string }).method ?? "GET").toUpperCase();
+
+  if (method === "OPTIONS") {
+    if (res) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+      res.status(204);
+      res.end();
+      return;
+    }
     return new Response(null, {
       status: 204,
       headers: {
@@ -99,11 +154,19 @@ async function handler(request: Request): Promise<Response> {
     });
   }
 
-  if (request.method === "POST") {
+  if (method === "POST") {
     let body: unknown;
     try {
-      body = await request.json();
+      if (typeof (request as Request).json === "function") {
+        body = await (request as Request).json();
+      } else {
+        body = await readNodeJsonBody(request);
+      }
     } catch {
+      if (res) {
+        jsonNode(res, { ok: false, error: "invalid_json" }, 400);
+        return;
+      }
       return jsonRes({ ok: false, error: "invalid_json" }, 400);
     }
     const b = body as Record<string, unknown>;
@@ -113,6 +176,10 @@ async function handler(request: Request): Promise<Response> {
       ts: typeof b.ts === "number" ? b.ts : Date.now(),
       receivedAt: new Date().toISOString(),
     });
+    if (res) {
+      jsonNode(res, { ok: true, total: events.length }, 200);
+      return;
+    }
     return jsonRes({ ok: true, total: events.length });
   }
 
@@ -121,9 +188,19 @@ async function handler(request: Request): Promise<Response> {
   const recent = events.slice(-n);
 
   if (url.searchParams.get("html") === "1") {
+    if (res) {
+      const html = await htmlViewer(recent).text();
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.status(200);
+      res.end(html);
+      return;
+    }
     return htmlViewer(recent);
   }
-
+  if (res) {
+    jsonNode(res, { ok: true, count: recent.length, total: events.length, events: recent }, 200);
+    return;
+  }
   return jsonRes({ ok: true, count: recent.length, total: events.length, events: recent });
 }
 

@@ -265,6 +265,10 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
 
   return (
     <View
+      {...(Platform.OS === "web"
+        ? ({ "data-voice-participant-row": title } as object)
+        : {})}
+      testID="voice-participant-row"
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -616,7 +620,7 @@ export function MessageChatVoicePopover({
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
   const chatTitle = title.trim() || t("messages.voiceChat.active");
-  const totalParticipantCount = Math.max(participantCount ?? 0, participants.length);
+  const totalParticipantCount = participants.length;
   const participantCountLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
@@ -624,7 +628,9 @@ export function MessageChatVoicePopover({
         })
       : "";
   const [moreMenuAnchor, setMoreMenuAnchor] = useState<VoiceMoreMenuAnchor | null>(null);
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(() =>
+    Platform.OS === "web" && typeof document !== "undefined" ? document.body : null,
+  );
   const moreChipRef = useRef<View | null>(null);
 
   useEffect(() => {
