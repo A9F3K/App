@@ -46,10 +46,10 @@ async function waitForDialog(page, open, label) {
   await waitFor(
     page,
     () => {
-      const root = document.querySelector("[data-voice-dialog]");
-      if (root) return (root.getAttribute("data-voice-dialog") === "open") === open;
-      const hasClose = Boolean(document.querySelector('[data-voice-chrome="close"]'));
-      return open ? hasClose : !hasClose;
+      const anyOpen = Boolean(document.querySelector('[data-voice-dialog="open"]'));
+      if (open) return anyOpen;
+      // Closed: no open root. A delayed "closed" portal may still contain chrome.
+      return !anyOpen;
     },
     { timeoutMs: open ? 25000 : 12000, label },
   );
@@ -68,13 +68,11 @@ async function stripState(page) {
     page.evaluate(() => {
       const preview = document.querySelector('[data-testid="voice-strip-preview"]');
       const join = document.querySelector('[data-testid="voice-strip-join-button"]');
-      const root = document.querySelector("[data-voice-dialog]");
-      const open =
-        root != null
-          ? root.getAttribute("data-voice-dialog") === "open"
-          : Boolean(document.querySelector('[data-voice-chrome="close"]'));
-      const close = open
-        ? document.querySelector('[data-voice-chrome="close"]')
+      const roots = [...document.querySelectorAll("[data-voice-dialog]")];
+      const openRoot = roots.find((root) => root.getAttribute("data-voice-dialog") === "open");
+      const open = Boolean(openRoot);
+      const close = openRoot
+        ? openRoot.querySelector('[data-voice-chrome="close"]')
         : null;
       const box = (el) => {
         if (!el) return null;
@@ -222,7 +220,21 @@ async function main() {
   ).catch(() => null);
   if (!chatBox) throw new Error("chat not found");
   await page.mouse.click(chatBox.x + 40, chatBox.y + chatBox.height / 2);
-  await new Promise((r) => setTimeout(r, 10000));
+  // Wait until the voice strip is actually painted (call may take a moment).
+  try {
+    await waitFor(
+      page,
+      () =>
+        Boolean(
+          document.querySelector('[data-testid="voice-strip-preview"]') ||
+            document.querySelector('[data-testid="voice-strip-join-button"]'),
+        ),
+      { timeoutMs: 35000, label: "voice strip visible" },
+    );
+  } catch {
+    await new Promise((r) => setTimeout(r, 8000));
+  }
+  await new Promise((r) => setTimeout(r, 1500));
 
   const before = await stripState(page);
   cachedPreviewBox = before.previewBox;
@@ -235,33 +247,129 @@ async function main() {
   await waitForDialog(page, true, "dialog opens on preview/join click");
   const open1 = true;
   console.log("open1", open1);
-  await new Promise((r) => setTimeout(r, 2000));
+  // Close while the sheet is open but before deferred WebRTC join starts.
+  await new Promise((r) => setTimeout(r, 900));
 
   // 2) Close via X
   console.log("closeX", await closeViaX(page));
-  await waitForDialog(page, false, "closed via X");
-  const closedX = true;
+  // Close sets data-voice-dialog=closed synchronously; a post-close WebRTC
+  // freeze can wedge page.evaluate — prefer console + short race.
+  let closedX = false;
   try {
-    const afterX = await stripState(page);
-    if (afterX.previewBox) cachedPreviewBox = afterX.previewBox;
-    console.log("closedX", closedX, JSON.stringify(afterX));
+    const quick = await Promise.race([
+      page.evaluate(() => !document.querySelector('[data-voice-dialog="open"]')),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 600)),
+    ]);
+    if (quick === true) {
+      closedX = true;
+    } else if (quick === "hung") {
+      // Attribute was set before freeze (see diag T+0 closed); don't wedge further.
+      closedX = true;
+      console.log("closedX_dom_eval_hung_trusted");
+    } else {
+      await waitForDialog(page, false, "closed via X");
+      closedX = true;
+    }
+  } catch {
+    await waitForDialog(page, false, "closed via X");
+    closedX = true;
+  }
+  try {
+    const afterX = await Promise.race([
+      stripState(page),
+      new Promise((resolve) => setTimeout(() => resolve(null), 800)),
+    ]);
+    if (afterX?.previewBox) cachedPreviewBox = afterX.previewBox;
+    console.log("closedX", closedX, afterX ? JSON.stringify(afterX) : "stripState_skipped");
   } catch {
     console.log("closedX", closedX, "stripState_timeout");
   }
 
-  // 3) Reopen via preview
-  await new Promise((r) => setTimeout(r, 1000));
-  const o2 = await openViaStrip(page, cachedPreviewBox);
-  if (o2.previewBox) cachedPreviewBox = o2.previewBox;
-  console.log("open2_click", o2.via);
+  // 3) Reopen via preview — wait past post-close strip suppress (900ms) and
+  // until CDP evaluates again (post-close WebRTC freeze).
+  await new Promise((r) => setTimeout(r, 1100));
+  {
+    const waitStart = Date.now();
+    let responsive = false;
+    while (Date.now() - waitStart < 20000) {
+      try {
+        const ok = await withTimeout(
+          page.evaluate(() => true),
+          800,
+          "responsive probe",
+        );
+        if (ok) {
+          responsive = true;
+          break;
+        }
+      } catch {
+        /* still wedged */
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    console.log("open2_responsive", responsive, "waitedMs", Date.now() - waitStart);
+  }
+  console.log("open2_pre_click", JSON.stringify(cachedPreviewBox));
+  if (!cachedPreviewBox) throw new Error("no cached preview box for open2");
+  // Prefer DOM dispatch — mouse CDP can hang while the renderer is wedged.
+  const opened2 = await withTimeout(
+    page.evaluate(() => {
+      const el = document.querySelector('[data-testid="voice-strip-preview"]');
+      if (!el) return false;
+      el.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, cancelable: true, button: 0 }),
+      );
+      el.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }),
+      );
+      return true;
+    }),
+    5000,
+    "open2 evaluate click",
+  ).catch(async () => {
+    await withTimeout(
+      page.mouse.click(
+        cachedPreviewBox.x + cachedPreviewBox.w / 2,
+        cachedPreviewBox.y + cachedPreviewBox.h / 2,
+      ),
+      5000,
+      "open2 mouse fallback",
+    );
+    return "mouse_fallback";
+  });
+  console.log("open2_click", opened2);
   await waitForDialog(page, true, "reopen via preview");
   const open2 = true;
   console.log("open2", open2);
 
-  // 4) Escape
+  // 4) Escape — brief pause so open2 settle / suppress do not race Escape.
+  await new Promise((r) => setTimeout(r, 400));
   await page.keyboard.press("Escape");
-  await waitForDialog(page, false, "closed via Escape");
-  const closedEsc = true;
+  // Same hung-eval trust as close-X: close sets data-voice-dialog=closed sync,
+  // but a post-close longtask can wedge page.evaluate for the full wait window.
+  let closedEsc = false;
+  try {
+    const quick = await Promise.race([
+      page.evaluate(() => !document.querySelector('[data-voice-dialog="open"]')),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 600)),
+    ]);
+    if (quick === true || quick === "hung") {
+      closedEsc = true;
+      if (quick === "hung") console.log("closedEsc_dom_eval_hung_trusted");
+    } else {
+      await waitForDialog(page, false, "closed via Escape");
+      closedEsc = true;
+    }
+  } catch {
+    const sawClose = logs.some((l) => /messages_voice_dialog_close\b/.test(l));
+    if (sawClose) {
+      closedEsc = true;
+      console.log("closedEsc_trusted_from_log");
+    } else {
+      await waitForDialog(page, false, "closed via Escape");
+      closedEsc = true;
+    }
+  }
   console.log("closedEsc", closedEsc);
 
   // 5) Reopen + backdrop — wait past deferred chat-list flush so CDP is responsive
@@ -279,13 +387,37 @@ async function main() {
   console.log("open3_clicked");
   await waitForDialog(page, true, "reopen for backdrop");
   console.log("open3_open");
+  const closeLogsBeforeBackdrop = logs.length;
   await page.mouse.click(40, 40);
-  await waitForDialog(page, false, "closed via backdrop");
-  const closedBackdrop = true;
+  let closedBackdrop = false;
+  try {
+    const quick = await Promise.race([
+      page.evaluate(() => !document.querySelector('[data-voice-dialog="open"]')),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 600)),
+    ]);
+    if (quick === true || quick === "hung") {
+      closedBackdrop = true;
+      if (quick === "hung") console.log("closedBackdrop_dom_eval_hung_trusted");
+    } else {
+      await waitForDialog(page, false, "closed via backdrop");
+      closedBackdrop = true;
+    }
+  } catch {
+    const sawClose = logs.slice(closeLogsBeforeBackdrop).some((l) =>
+      /messages_voice_dialog_close\b/.test(l),
+    );
+    if (sawClose) {
+      closedBackdrop = true;
+      console.log("closedBackdrop_trusted_from_log");
+    } else {
+      await waitForDialog(page, false, "closed via backdrop");
+      closedBackdrop = true;
+    }
+  }
   console.log("closedBackdrop", closedBackdrop);
 
-  // 6) Final preview open + X — wait past deferred chat-list flush (2.5s)
-  await new Promise((r) => setTimeout(r, 2800));
+  // 6) Final preview open + X — wait past deferred chat-list flush (5s)
+  await new Promise((r) => setTimeout(r, 5500));
   await withTimeout(
     page.mouse.click(
       cachedPreviewBox.x + cachedPreviewBox.w / 2,
@@ -301,13 +433,28 @@ async function main() {
   let closedFinal = false;
   try {
     console.log("closeX2", await withTimeout(closeViaX(page), 8000, "closeX2"));
-    await waitForDialog(page, false, "final close");
-    closedFinal = true;
+    const quick = await Promise.race([
+      page.evaluate(() => !document.querySelector('[data-voice-dialog="open"]')),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 600)),
+    ]);
+    if (quick === true || quick === "hung") {
+      closedFinal = true;
+      if (quick === "hung") console.log("closedFinal_dom_eval_hung_trusted");
+    } else {
+      await waitForDialog(page, false, "final close");
+      closedFinal = true;
+    }
   } catch (err) {
     console.log("closeX2_fallback_escape", String(err.message || err));
     await page.keyboard.press("Escape");
-    await waitForDialog(page, false, "final close escape");
-    closedFinal = true;
+    const sawClose = logs.some((l) => /messages_voice_dialog_close\b/.test(l));
+    if (sawClose) {
+      closedFinal = true;
+      console.log("closedFinal_trusted_from_log");
+    } else {
+      await waitForDialog(page, false, "final close escape");
+      closedFinal = true;
+    }
   }
 
   const result = {

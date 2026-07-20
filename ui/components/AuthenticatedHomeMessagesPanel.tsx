@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { buildApiUrl } from "../../api/_base";
 import { normalizeFormattedTextSegments, type FormattedTextSegment } from "../../shared/formattedTextSegments";
@@ -223,6 +223,7 @@ function chatsChanged(prev: MessageChatRowData[], next: MessageChatRowData[]): b
   for (let i = 0; i < prev.length; i++) {
     const a = prev[i];
     const b = next[i];
+    if (a === b) continue;
     if (
       a.title !== b.title ||
       a.subtitle !== b.subtitle ||
@@ -249,7 +250,9 @@ function chatsChanged(prev: MessageChatRowData[], next: MessageChatRowData[]): b
       a.last_message_sender_user_id !== b.last_message_sender_user_id ||
       Boolean(a.is_pinned) !== Boolean(b.is_pinned) ||
       a.pin_order !== b.pin_order ||
-      a.list_tier !== b.list_tier
+      a.list_tier !== b.list_tier ||
+      Boolean(a.has_active_voice_chat) !== Boolean(b.has_active_voice_chat) ||
+      a.voice_chat_group_call_id !== b.voice_chat_group_call_id
     ) {
       return true;
     }
@@ -257,21 +260,71 @@ function chatsChanged(prev: MessageChatRowData[], next: MessageChatRowData[]): b
   return false;
 }
 
+/** Reuse the previous row object when fields match — avoids 100+ row re-renders. */
+function reuseChatRowIfEqual(
+  prev: MessageChatRowData | undefined,
+  next: MessageChatRowData,
+): MessageChatRowData {
+  if (!prev || prev.telegram_chat_id !== next.telegram_chat_id) return next;
+  if (
+    prev.title === next.title &&
+    prev.subtitle === next.subtitle &&
+    subtitleSegmentsEqual(prev.subtitle_segments, next.subtitle_segments) &&
+    prev.last_message_at === next.last_message_at &&
+    prev.unread_count === next.unread_count &&
+    prev.avatar_url === next.avatar_url &&
+    prev.peer_emoji_status_custom_emoji_id === next.peer_emoji_status_custom_emoji_id &&
+    prev.peer_accent_color_light === next.peer_accent_color_light &&
+    prev.peer_accent_color_dark === next.peer_accent_color_dark &&
+    prev.chat_kind === next.chat_kind &&
+    prev.member_count === next.member_count &&
+    prev.presence_kind === next.presence_kind &&
+    prev.presence_at === next.presence_at &&
+    prev.chat_action === next.chat_action &&
+    prev.chat_action_user_id === next.chat_action_user_id &&
+    prev.chat_action_user_name === next.chat_action_user_name &&
+    prev.chat_action_expires_at === next.chat_action_expires_at &&
+    prev.last_read_outbox_message_id === next.last_read_outbox_message_id &&
+    prev.last_read_inbox_message_id === next.last_read_inbox_message_id &&
+    Boolean(prev.last_message_is_outgoing) === Boolean(next.last_message_is_outgoing) &&
+    prev.last_message_outgoing_status === next.last_message_outgoing_status &&
+    prev.last_message_telegram_id === next.last_message_telegram_id &&
+    prev.last_message_sender_user_id === next.last_message_sender_user_id &&
+    Boolean(prev.is_pinned) === Boolean(next.is_pinned) &&
+    prev.pin_order === next.pin_order &&
+    prev.list_tier === next.list_tier &&
+    Boolean(prev.has_active_voice_chat) === Boolean(next.has_active_voice_chat) &&
+    prev.voice_chat_group_call_id === next.voice_chat_group_call_id
+  ) {
+    return prev;
+  }
+  return next;
+}
+
 /** Keep stable rows when the gateway returns a truncated snapshot during resync. */
 const CHAT_LIST_OVERSIZED_THRESHOLD = 250;
 
-function applyOpenChatUnreadToRows(rows: MessageChatRowData[]): MessageChatRowData[] {
+function applyOpenChatUnreadToRows(
+  rows: MessageChatRowData[],
+  prevRows?: MessageChatRowData[],
+): MessageChatRowData[] {
+  const prevById =
+    prevRows && prevRows.length > 0
+      ? new Map(prevRows.map((row) => [row.telegram_chat_id, row]))
+      : null;
   let changed = false;
   const next = rows.map((row) => {
     const unread = resolveAuthenticatedHomeOpenChatUnread(
       row.unread_count,
       row.telegram_chat_id,
     );
-    if (unread === row.unread_count) return row;
-    changed = true;
-    return { ...row, unread_count: unread };
+    const withUnread = unread === row.unread_count ? row : { ...row, unread_count: unread };
+    const reused = reuseChatRowIfEqual(prevById?.get(withUnread.telegram_chat_id), withUnread);
+    if (reused !== row) changed = true;
+    return reused;
   });
-  return changed ? next : rows;
+  if (!changed) return prevRows && prevRows.length === rows.length ? prevRows : rows;
+  return next;
 }
 
 function mergeChatRows(
@@ -295,7 +348,7 @@ function mergeChatRows(
     prev.length >= CHAT_LIST_OVERSIZED_THRESHOLD &&
     incoming.length < prev.length * 0.25
   ) {
-    return applyOpenChatUnreadToRows(sortedIncoming);
+    return applyOpenChatUnreadToRows(sortedIncoming, prev);
   }
 
   if (incoming.length >= prev.length) {
@@ -310,21 +363,23 @@ function mergeChatRows(
       prevTopId === incomingTopId
     ) {
       const byId = new Map(sortedIncoming.map((row) => [row.telegram_chat_id, row]));
-      return applyOpenChatUnreadToRows(
-        prev.map((row) => {
-          const fresh = byId.get(row.telegram_chat_id);
-          if (!fresh) return row;
-          return {
-            ...fresh,
-            unread_count: resolveAuthenticatedHomeOpenChatUnread(
-              fresh.unread_count,
-              fresh.telegram_chat_id,
-            ),
-          };
-        }),
-      );
+      let changed = false;
+      const next = prev.map((row) => {
+        const fresh = byId.get(row.telegram_chat_id);
+        if (!fresh) return row;
+        const unread = resolveAuthenticatedHomeOpenChatUnread(
+          fresh.unread_count,
+          fresh.telegram_chat_id,
+        );
+        const merged =
+          unread === fresh.unread_count ? fresh : { ...fresh, unread_count: unread };
+        const reused = reuseChatRowIfEqual(row, merged);
+        if (reused !== row) changed = true;
+        return reused;
+      });
+      return changed ? next : prev;
     }
-    return applyOpenChatUnreadToRows(sortedIncoming);
+    return applyOpenChatUnreadToRows(sortedIncoming, prev);
   }
 
   const byId = new Map(sortedIncoming.map((row) => [row.telegram_chat_id, row]));
@@ -334,13 +389,13 @@ function mergeChatRows(
   for (const row of prev) {
     const fresh = byId.get(row.telegram_chat_id);
     if (fresh) {
-      merged.push({
-        ...fresh,
-        unread_count: resolveAuthenticatedHomeOpenChatUnread(
-          fresh.unread_count,
-          fresh.telegram_chat_id,
-        ),
-      });
+      const unread = resolveAuthenticatedHomeOpenChatUnread(
+        fresh.unread_count,
+        fresh.telegram_chat_id,
+      );
+      const withUnread =
+        unread === fresh.unread_count ? fresh : { ...fresh, unread_count: unread };
+      merged.push(reuseChatRowIfEqual(row, withUnread));
     } else if (resolveChatListTier(row) !== "unpositioned") {
       merged.push(row);
     }
@@ -560,38 +615,46 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         lastLiveRevisionRef.current = json.revision;
       }
       applyChatListSync(json.chatListSync);
-      setChats((prev) => {
-        const next = mergeChatRows(prev, rows);
-        const changed = chatsChanged(prev, next);
-        queueMicrotask(() => syncAuthenticatedHomeSelectedChat(next));
-        if (rows.length > 0) {
-          setGatewayWarming(false);
-        }
-        if (options?.silent) {
-          if (changed) {
-            logPageDisplay("messages_chats_poll_updated", {
-              count: next.length,
-              ...firstChatListLogFields(next),
-              poll: pollCountRef.current,
-              source: json.source ?? null,
-              revision: json.revision ?? null,
-              elapsedMs: Date.now() - started,
-              missingPreviewCount,
-              missingAvatarFieldCount,
-            });
-          } else if (pollCountRef.current % 10 === 0) {
-            logPageDisplay("messages_chats_poll_steady", {
-              count: next.length,
-              poll: pollCountRef.current,
-              source: json.source ?? null,
-              revision: json.revision ?? null,
-              elapsedMs: Date.now() - started,
-            });
+      const applyChats = () => {
+        setChats((prev) => {
+          const next = mergeChatRows(prev, rows);
+          const changed = chatsChanged(prev, next);
+          queueMicrotask(() => syncAuthenticatedHomeSelectedChat(next));
+          if (rows.length > 0) {
+            setGatewayWarming(false);
           }
-          return changed ? next : prev;
-        }
-        return next;
-      });
+          if (options?.silent) {
+            if (changed) {
+              logPageDisplay("messages_chats_poll_updated", {
+                count: next.length,
+                ...firstChatListLogFields(next),
+                poll: pollCountRef.current,
+                source: json.source ?? null,
+                revision: json.revision ?? null,
+                elapsedMs: Date.now() - started,
+                missingPreviewCount,
+                missingAvatarFieldCount,
+              });
+            } else if (pollCountRef.current % 10 === 0) {
+              logPageDisplay("messages_chats_poll_steady", {
+                count: next.length,
+                poll: pollCountRef.current,
+                source: json.source ?? null,
+                revision: json.revision ?? null,
+                elapsedMs: Date.now() - started,
+              });
+            }
+            return changed ? next : prev;
+          }
+          return next;
+        });
+      };
+      // While voice owns the UI, keep chat-list React work interruptible.
+      if (options?.silent && isVoiceDialogUiOpen()) {
+        startTransition(applyChats);
+      } else {
+        applyChats();
+      }
       if (!options?.silent) {
         logPageDisplay("messages_chats_loaded", {
           count: rows.length,
@@ -672,9 +735,9 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       if (streamLoadTimerRef.current != null) {
         clearTimeout(streamLoadTimerRef.current);
       }
-      // While the voice dialog is open, coalesce chat-list SSE harder so
+      // While voice dialog / joined call is active, coalesce chat-list SSE harder so
       // setChats / avatar work cannot freeze dialog controls.
-      const debounceMs = isVoiceDialogUiOpen() ? 4_500 : 600;
+      const debounceMs = isVoiceDialogUiOpen() ? 8_000 : 800;
       streamLoadTimerRef.current = setTimeout(() => {
         streamLoadTimerRef.current = null;
         if (isVoiceDialogUiOpen()) {

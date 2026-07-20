@@ -18,6 +18,7 @@ import {
 import {
   getOpenChatHistoryCacheAnchorSpec,
 } from "../../messageChatHistoryPrefetch";
+import { isVoiceDialogUiOpen } from "./voiceDialogUiGate";
 import {
   clearChatScrollPosition,
   isChatScrollNearBottom,
@@ -3389,14 +3390,13 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const scheduleOpenScrollForceReveal = useCallback(() => {
     if (chatScrollPaintReadyRef.current) return;
     if (openScrollForceRevealTimerRef.current != null) return;
-    // Media-heavy unread opens need longer than a blank bottom open — keep
-    // retrying settle until the divider can land near UNREAD_DIVIDER_TOP.
-    // Cached mid-list restores wait for around-anchor history + DOM layout.
+    // Prefer a fast reveal so cached history is visible immediately. Unread
+    // divider still gets a short settle window; never leave opacity:0 for seconds.
     const delayMs = openScrollToUnreadDividerRef.current
-      ? 1800
+      ? 700
       : pendingScrollRestoreRef.current != null
-        ? 2500
-        : 600;
+        ? 350
+        : 250;
     openScrollForceRevealTimerRef.current = setTimeout(() => {
       openScrollForceRevealTimerRef.current = null;
       if (!chatScrollPaintReadyRef.current) {
@@ -4460,6 +4460,18 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           } else if (fetchAnchor > 0) {
             scrollAnchorMessageIdRef.current = fetchAnchor;
           }
+          // Yield before replacing an already-painted window so open scroll /
+          // voice controls are not frozen by a large history merge.
+          if (messagesCountRef.current > 0) {
+            await new Promise<void>((resolve) => {
+              if (typeof requestAnimationFrame === "function") {
+                requestAnimationFrame(() => resolve());
+              } else {
+                setTimeout(resolve, 0);
+              }
+            });
+            if (cancelled) return;
+          }
           setCachedChatHistory(chat.telegram_chat_id, result, {
             previewOnly: false,
             aroundUnread:
@@ -4560,7 +4572,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         const cacheComplete =
           cacheHit && isChatHistoryCacheComplete(chat.telegram_chat_id);
         const cachedTailId =
-          cacheHit && cached!.messages.length > 0
+          (cacheHit || cachePaintable) && cached!.messages.length > 0
             ? cached!.messages[cached!.messages.length - 1]!.telegram_message_id
             : 0;
         const cacheCoversChatTail = isAtLoadedChatTail(
@@ -4583,39 +4595,46 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           return;
         }
 
+        const scheduleDeferred = (fn: () => void, timeoutMs: number) => {
+          if (typeof requestIdleCallback === "function") {
+            requestIdleCallback(() => {
+              if (!cancelled) fn();
+            }, { timeout: timeoutMs });
+            return;
+          }
+          setTimeout(() => {
+            if (!cancelled) fn();
+          }, Math.min(80, timeoutMs));
+        };
+
         const previewFresh =
           cacheHit &&
           cached!.previewOnly &&
           isChatHistoryCacheFresh(chat.telegram_chat_id, PREVIEW_FRESH_MS) &&
           isChatHistoryCacheAnchorMatch(chat.telegram_chat_id, historyAnchorSpec);
 
-        if (previewFresh) {
-          const scheduleDeferred = (fn: () => void) => {
-            if (typeof requestIdleCallback === "function") {
-              requestIdleCallback(() => {
-                if (!cancelled) fn();
-              }, { timeout: 1_500 });
-              return;
-            }
-            setTimeout(() => {
-              if (!cancelled) fn();
-            }, 80);
-          };
+        // Instant paint path: any usable cache must not block first paint on a
+        // multi-second char-budget fetch. Revalidate after idle / short delay.
+        if (previewFresh || cachePaintable || cacheHit) {
+          const paintedAlready = messagesCountRef.current > 0;
+          if (cacheHit && !paintedAlready) {
+            setLoadingInitial(true);
+          }
           scheduleDeferred(() => {
-            void runNetworkLoad();
-          });
+            void runNetworkLoad().finally(() => {
+              if (!cancelled) setLoadingInitial(false);
+            });
+          }, previewFresh ? 1_200 : cachePaintable ? 450 : 700);
           return;
-        }
-
-        if (cacheHit) {
-          setLoadingInitial(true);
         }
 
         await runNetworkLoad();
       } catch {
         /* runNetworkLoad handles errors */
       } finally {
-        if (!cancelled && cacheHit) setLoadingInitial(false);
+        if (!cancelled && cacheHit && messagesCountRef.current > 0) {
+          setLoadingInitial(false);
+        }
       }
     })();
 
@@ -4643,6 +4662,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
     const pollLatest = async () => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      // Voice dialog owns the main thread for controls — skip history catch-up.
+      if (isVoiceDialogUiOpen()) return;
       if (historyPollInFlightRef.current) return;
       const force = forceHistoryPollRef.current;
       if (force) forceHistoryPollRef.current = false;

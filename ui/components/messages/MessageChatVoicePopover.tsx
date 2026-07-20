@@ -1,5 +1,5 @@
-import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { createElement, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal, flushSync } from "react-dom";
 import {
   Modal,
   Platform,
@@ -57,7 +57,7 @@ import {
 const WINDOW_ICON_SIZE_PX = 15;
 const WINDOW_ICON_GAP_PX = 12;
 /** Reserve top-right chrome so resize hit strips cannot steal close/minimize presses. */
-const WINDOW_CONTROLS_RESERVE_PX = 120;
+const WINDOW_CONTROLS_RESERVE_PX = 168;
 
 function VoiceWindowChromeButton({
   label,
@@ -72,7 +72,8 @@ function VoiceWindowChromeButton({
   hitExtraPx?: number;
   testId?: string;
 }) {
-  const sizePx = WINDOW_ICON_SIZE_PX + hitExtraPx;
+  // Prefer a ≥44px target so Close stays hittable under resize strips / DPR.
+  const sizePx = Math.max(44, WINDOW_ICON_SIZE_PX + hitExtraPx * 2);
   if (Platform.OS === "web") {
     // Native <button> — RN Pressable often misses clicks under absolute resize
     // handles / SVG children, and closing can click-through to the voice strip.
@@ -89,16 +90,17 @@ function VoiceWindowChromeButton({
           button?: number;
         }) => {
           e.stopPropagation?.();
-          // Fire on pointerdown so a frozen main-thread click never eats the close.
+          // Do not preventDefault — that broke RN's touch bank ("touch end without
+          // start") and could drop the Close gesture under main-thread pressure.
           if (e.button == null || e.button === 0) {
-            e.preventDefault?.();
             onPress();
           }
         },
         onClick: (e: { stopPropagation?: () => void; preventDefault?: () => void }) => {
-          // pointerdown already handled — block the duplicate click.
+          // Backup if pointerdown was swallowed by an overlay / frozen frame.
           e.stopPropagation?.();
           e.preventDefault?.();
+          onPress();
         },
         style: {
           width: sizePx,
@@ -112,9 +114,11 @@ function VoiceWindowChromeButton({
           justifyContent: "center",
           cursor: "pointer",
           position: "relative",
-          zIndex: 60,
+          zIndex: 10000,
+          flexShrink: 0,
           WebkitAppearance: "none",
           appearance: "none",
+          touchAction: "manipulation",
         },
       },
       createElement("span", { style: { pointerEvents: "none", display: "flex" } }, children),
@@ -641,6 +645,33 @@ export function MessageChatVoicePopover({
   const [portalMounted, setPortalMounted] = useState(visible);
   /** Drop roster/media on hide immediately — empty shell teardown is cheap. */
   const [suspendHeavy, setSuspendHeavy] = useState(false);
+  const portalRootRef = useRef<HTMLDivElement | null>(null);
+  /** Set synchronously on Close/Escape so React re-renders cannot revive "open". */
+  const forceClosedRef = useRef(false);
+  /** Tracks last `visible` for false→true only — never clear forceClosed while still open. */
+  const wasVisibleRef = useRef(visible);
+  const [, bumpForceClosed] = useState(0);
+
+  const applyPortalOpenAttr = useCallback((node: HTMLDivElement | null, open: boolean) => {
+    if (!node) return;
+    node.setAttribute("data-voice-dialog", open ? "open" : "closed");
+    if (open) {
+      node.removeAttribute("aria-hidden");
+      node.removeAttribute("inert");
+      node.style.display = "flex";
+      node.style.visibility = "visible";
+      node.style.opacity = "1";
+      node.style.pointerEvents = "auto";
+    } else {
+      node.setAttribute("aria-hidden", "true");
+      node.setAttribute("inert", "");
+      // display:none — opacity alone still lets WebGL/LiquidGlass composite on screen.
+      node.style.display = "none";
+      node.style.visibility = "hidden";
+      node.style.opacity = "0";
+      node.style.pointerEvents = "none";
+    }
+  }, []);
 
   useEffect(() => {
     if (Platform.OS === "web" && typeof document !== "undefined") {
@@ -648,16 +679,44 @@ export function MessageChatVoicePopover({
     }
   }, []);
 
+  useLayoutEffect(() => {
+    if (Platform.OS !== "web") return;
+    const opening = visible && !wasVisibleRef.current;
+    wasVisibleRef.current = visible;
+    // Only clear force-closed on a real open transition. Clearing whenever
+    // visible===true revived the sheet: Close set forceClosed, bumpForceClosed
+    // re-rendered while parent visible was still true, layout effect cleared the
+    // flag, and the dialog snapped back open before flushSync onClose ran.
+    if (opening) {
+      forceClosedRef.current = false;
+    }
+    applyPortalOpenAttr(portalRootRef.current, visible && !forceClosedRef.current);
+  }, [visible, applyPortalOpenAttr]);
+
   useEffect(() => {
-    if (visible) {
+    if (visible && !forceClosedRef.current) {
       setSuspendHeavy(false);
       setPortalMounted(true);
       return;
     }
-    setSuspendHeavy(true);
-    const timer = setTimeout(() => setPortalMounted(false), 600);
-    return () => clearTimeout(timer);
-  }, [visible]);
+    if (visible && forceClosedRef.current) {
+      // Parent still reports open; keep DOM/heavy suppressed until visible flips.
+      applyPortalOpenAttr(portalRootRef.current, false);
+      return;
+    }
+    // Keep sheet children mounted briefly after Close — unmounting LiquidGlass /
+    // video while WebRTC createOffer runs wedged the tab for 10–20s. Hide is
+    // already display:none; tear down heavy UI after a short paint settle.
+    const heavyTimer = setTimeout(() => setSuspendHeavy(true), 320);
+    const timer = setTimeout(() => {
+      setPortalMounted(false);
+      forceClosedRef.current = false;
+    }, 900);
+    return () => {
+      clearTimeout(heavyTimer);
+      clearTimeout(timer);
+    };
+  }, [visible, applyPortalOpenAttr]);
 
   useEffect(() => {
     if (!visible) setMoreMenuAnchor(null);
@@ -667,11 +726,49 @@ export function MessageChatVoicePopover({
   // able to receive pointer events while React is busy painting the roster.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const requestClose = useCallback((source: string) => {
+    // pointerdown + click both fire on the native Close button — only act once.
+    if (forceClosedRef.current) {
+      logPageDisplay("messages_voice_dialog_close_click", {
+        source,
+        ignored: "already_closing",
+      });
+      return;
+    }
+    logPageDisplay("messages_voice_dialog_close_click", { source });
+    // Mark closed in the DOM immediately — React state from a native window
+    // listener can lag under longtasks, which left data-voice-dialog="open".
+    forceClosedRef.current = true;
+    applyPortalOpenAttr(portalRootRef.current, false);
+    // Drop sheet body on this render (ref alone would not re-render) and flush
+    // parent open=false in the same turn so layout cannot revive "open".
+    if (Platform.OS === "web") {
+      try {
+        flushSync(() => {
+          bumpForceClosed((n) => n + 1);
+          onCloseRef.current();
+        });
+      } catch {
+        bumpForceClosed((n) => n + 1);
+        onCloseRef.current();
+      }
+    } else {
+      bumpForceClosed((n) => n + 1);
+      onCloseRef.current();
+    }
+    // After the closed frame paints, drop WebGL/roster so close stays visible.
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        setSuspendHeavy(true);
+      });
+    } else {
+      setSuspendHeavy(true);
+    }
+  }, [applyPortalOpenAttr]);
   useEffect(() => {
     if (!visible || Platform.OS !== "web" || typeof window === "undefined") return;
     const closeNow = (source: string) => {
-      logPageDisplay("messages_voice_dialog_close_click", { source });
-      onCloseRef.current();
+      requestClose(source);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" || e.key === "Esc") {
@@ -680,18 +777,21 @@ export function MessageChatVoicePopover({
         closeNow("escape_key");
       }
     };
-    // Capture-phase pointerdown on close chrome — survives React re-render storms.
-    // Bottom control chips use native <button> onPointerDown (not capture) so mic
-    // toggle cannot fire twice and cancel itself.
+    // Capture-phase handlers — survive React re-render storms and RN Pressable
+    // missing clicks (backdrop used to be RN-only and dropped Close/backdrop).
     const onPointer = (e: PointerEvent) => {
       if (e.button !== 0) return;
       const target = e.target as Element | null;
       if (!target || typeof target.closest !== "function") return;
-      const closeEl = target.closest('[data-voice-chrome="close"]');
-      if (!closeEl) return;
-      e.preventDefault();
-      e.stopPropagation();
-      closeNow("chrome_x_capture");
+      if (target.closest('[data-voice-chrome="close"]')) {
+        e.stopPropagation();
+        closeNow("chrome_x_capture");
+        return;
+      }
+      if (target.closest('[data-voice-chrome="backdrop"]')) {
+        e.stopPropagation();
+        closeNow("backdrop_capture");
+      }
     };
     window.addEventListener("keydown", onKey, true);
     window.addEventListener("pointerdown", onPointer, true);
@@ -699,7 +799,7 @@ export function MessageChatVoicePopover({
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("pointerdown", onPointer, true);
     };
-  }, [visible]);
+  }, [visible, requestClose]);
 
   const maxWidth = Math.max(
     MIN_SHEET_WIDTH_PX,
@@ -953,17 +1053,44 @@ export function MessageChatVoicePopover({
         },
       ]}
     >
-      <Pressable
-        style={[appModalSheetStyles.backdropFill, { zIndex: 0 }]}
-        onPress={() => {
-          logPageDisplay("messages_voice_dialog_close_click", {
-            source: "backdrop",
-          });
-          onClose();
-        }}
-        accessibilityRole="button"
-        accessibilityLabel={t("common.back")}
-      />
+      {Platform.OS === "web"
+        ? createElement("button", {
+            type: "button",
+            "aria-label": t("common.back"),
+            "data-voice-chrome": "backdrop",
+            tabIndex: -1,
+            onPointerDown: (e: {
+              button?: number;
+              stopPropagation?: () => void;
+            }) => {
+              if (e.button != null && e.button !== 0) return;
+              e.stopPropagation?.();
+              requestClose("backdrop");
+            },
+            style: {
+              position: "absolute",
+              left: 0,
+              top: 0,
+              right: 0,
+              bottom: 0,
+              margin: 0,
+              padding: 0,
+              border: "none",
+              cursor: "pointer",
+              background: "rgba(0,0,0,0.45)",
+              zIndex: 0,
+            },
+          })
+        : (
+          <Pressable
+            style={[appModalSheetStyles.backdropFill, { zIndex: 0 }]}
+            onPress={() => {
+              requestClose("backdrop");
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={t("common.back")}
+          />
+        )}
       <View
         pointerEvents="auto"
         style={[
@@ -996,7 +1123,9 @@ export function MessageChatVoicePopover({
         ]}
         {...(Platform.OS === "web"
           ? ({
+              "data-voice-sheet": "1",
               onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
+              onPointerDown: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
             } as object)
           : {
               onStartShouldSetResponder: () => true,
@@ -1026,7 +1155,7 @@ export function MessageChatVoicePopover({
             paddingHorizontal: 20,
             marginBottom: 16,
             gap: 12,
-            zIndex: 40,
+            zIndex: 10000,
             ...(Platform.OS === "web" ? ({ position: "relative" } as object) : {}),
           }}
         >
@@ -1065,7 +1194,7 @@ export function MessageChatVoicePopover({
               alignItems: "center",
               gap: WINDOW_ICON_GAP_PX,
               flexShrink: 0,
-              zIndex: 50,
+              zIndex: 10000,
               ...(Platform.OS === "web" ? ({ position: "relative" } as object) : {}),
             }}
           >
@@ -1088,10 +1217,7 @@ export function MessageChatVoicePopover({
               hitExtraPx={8}
               testId="close"
               onPress={() => {
-                logPageDisplay("messages_voice_dialog_close_click", {
-                  source: "chrome_x",
-                });
-                onClose();
+                requestClose("chrome_x");
               }}
             >
               <VoiceWindowCrossIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
@@ -1242,10 +1368,7 @@ export function MessageChatVoicePopover({
             variant="simple"
             undercoverColor={colors.undercover}
             onPress={() => {
-              logPageDisplay("messages_voice_dialog_close_click", {
-                source: "messages_chip",
-              });
-              onClose();
+              requestClose("messages_chip");
             }}
           >
             <VoiceMessagesIcon color={iconColor} size={CONTROL_ICON_PX} />
@@ -1282,33 +1405,41 @@ export function MessageChatVoicePopover({
 
   if (Platform.OS === "web") {
     if (!portalTarget) return null;
+    const dialogOpen = visible && !forceClosedRef.current;
+    // Native div root — RN View no longer forwards data-* attrs to the DOM,
+    // which broke open/close detection and click-through guards.
     return createPortal(
-      <View
-        key={`voice-dialog-${mountKey}`}
-        style={{
-          position: "fixed",
-          left: 0,
-          top: 0,
-          right: 0,
-          bottom: 0,
-          zIndex: 9000,
-          height: windowHeight,
-          width: "100%",
-          justifyContent: "center",
-          alignItems: "center",
-          // Hide immediately on close; keep DOM mounted briefly so teardown
-          // does not block the next preview-strip open.
-          opacity: visible ? 1 : 0,
-          pointerEvents: visible ? "box-none" : "none",
-        }}
-        pointerEvents={visible ? "box-none" : "none"}
-        {...({
-          "data-voice-dialog": visible ? "open" : "closed",
-          ...(visible ? {} : { "aria-hidden": true, inert: true }),
-        } as object)}
-      >
-        {sheetBody}
-      </View>,
+      createElement(
+        "div",
+        {
+          key: `voice-dialog-${mountKey}`,
+          ref: (node: HTMLDivElement | null) => {
+            portalRootRef.current = node;
+            applyPortalOpenAttr(node, visible && !forceClosedRef.current);
+          },
+          "data-voice-dialog": dialogOpen ? "open" : "closed",
+          ...(dialogOpen ? {} : { "aria-hidden": true, inert: true }),
+          style: {
+            position: "fixed",
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 9000,
+            height: windowHeight,
+            width: "100%",
+            display: dialogOpen ? "flex" : "none",
+            justifyContent: "center",
+            alignItems: "center",
+            visibility: dialogOpen ? "visible" : "hidden",
+            opacity: dialogOpen ? 1 : 0,
+            pointerEvents: dialogOpen ? "auto" : "none",
+          },
+        },
+        // Hide via opacity/pointer-events only. Dropping sheetBody on Close while
+        // WebRTC was mid-offer froze the renderer so reopen clicks could not run.
+        suspendHeavy ? null : sheetBody,
+      ),
       portalTarget,
     );
   }

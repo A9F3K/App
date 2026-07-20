@@ -235,11 +235,29 @@ export function MessageChatVoiceBar({
           resolve();
           return;
         }
-        const delayMs = popoverOpenRef.current ? 480 : 80;
+        const delayMs = popoverOpenRef.current ? 900 : 200;
         window.requestAnimationFrame(() => {
           window.setTimeout(resolve, delayMs);
         });
       });
+      if (cancelled) {
+        inFlight = false;
+        return;
+      }
+      // Prefer idle time when the sheet is already closed so Close/reopen stay fluid.
+      if (!popoverOpenRef.current) {
+        await new Promise<void>((resolve) => {
+          if (typeof requestIdleCallback === "function") {
+            requestIdleCallback(() => resolve(), { timeout: 2_500 });
+          } else {
+            setTimeout(resolve, 400);
+          }
+        });
+        if (cancelled) {
+          inFlight = false;
+          return;
+        }
+      }
       if (cancelled) {
         inFlight = false;
         return;
@@ -606,10 +624,10 @@ export function MessageChatVoiceBar({
   const pendingStreamSnapRef = useRef<VoiceParticipantsStreamSnapshot | null>(null);
   const streamApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStreamApplyAtRef = useRef(0);
-  /** While the dialog is open, coalesce SSE roster merges to ≥2s. */
-  const STREAM_APPLY_OPEN_MIN_MS = 2_000;
+  /** While the dialog is open, coalesce SSE roster merges to ≥3s. */
+  const STREAM_APPLY_OPEN_MIN_MS = 3_000;
   /** Preview strip (dialog closed) — lighter throttle, still must show avatars. */
-  const STREAM_APPLY_STRIP_MIN_MS = 800;
+  const STREAM_APPLY_STRIP_MIN_MS = 1_200;
 
   const cancelStreamRosterFlush = useCallback(() => {
     if (streamApplyTimerRef.current != null) {
@@ -654,7 +672,9 @@ export function MessageChatVoiceBar({
     });
     // Yield one frame so Close/controls paint before the merge runs.
     if (typeof window !== "undefined") {
-      window.requestAnimationFrame(applyRows);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(applyRows);
+      });
       return;
     }
     applyRows();
@@ -875,10 +895,10 @@ export function MessageChatVoiceBar({
       // SSE owns live roster while the dialog is open — poll is a slow backup.
       if (sheetOpen && streamActiveRef.current) return 12_000;
       if (joined) {
-        if (sheetOpen) return 5_000;
-        return 2_000;
+        if (sheetOpen) return 8_000;
+        return 4_000;
       }
-      return sheetOpen ? 5_000 : streamActiveRef.current ? 4_000 : 6_000;
+      return sheetOpen ? 8_000 : streamActiveRef.current ? 6_000 : 8_000;
     };
 
     const arm = (delayMs: number) => {
@@ -1057,22 +1077,43 @@ export function MessageChatVoiceBar({
     [chatId],
   );
 
+  const flushPendingStreamSnapRef = useRef(flushPendingStreamSnap);
+  flushPendingStreamSnapRef.current = flushPendingStreamSnap;
+  const reloadVoiceRosterRef = useRef(reloadVoiceRoster);
+  reloadVoiceRosterRef.current = reloadVoiceRoster;
+  const dialogSessionOpenRef = useRef(false);
+
   useEffect(() => {
-    if (!popoverOpen) return;
+    if (!popoverOpen) {
+      if (dialogSessionOpenRef.current) {
+        dialogSessionOpenRef.current = false;
+        logPageDisplay("messages_voice_dialog_close", { chatId });
+      }
+      return;
+    }
     if (!isTelegramMessagesConnected) return;
-    setPopoverMountKey((k) => k + 1);
+
+    // Open once per sheet session — do not remount the portal when callback
+    // identities churn (that briefly dropped data-voice-dialog and froze Close).
+    const isFreshOpen = !dialogSessionOpenRef.current;
+    dialogSessionOpenRef.current = true;
+    if (isFreshOpen) {
+      setPopoverMountKey((k) => k + 1);
+      logPageDisplay("messages_voice_dialog_open", {
+        chatId,
+        groupCallId,
+      });
+      clearQueuedNetworkFetches();
+    }
+
     let cancelled = false;
     const openedAt =
       typeof performance !== "undefined" && typeof performance.now === "function"
         ? performance.now()
         : Date.now();
-    logPageDisplay("messages_voice_dialog_open", {
-      chatId,
-      groupCallId,
-    });
-    // Drop leftover avatar/media jobs so Close stays interactive while joining.
-    clearQueuedNetworkFetches();
+
     void (async () => {
+      if (!isFreshOpen) return;
       // Let the sheet paint and bind click handlers before any network work.
       await new Promise<void>((resolve) => {
         if (typeof window === "undefined") {
@@ -1082,13 +1123,13 @@ export function MessageChatVoiceBar({
         window.requestAnimationFrame(() => {
           window.requestAnimationFrame(() => {
             if (!cancelled && pendingStreamSnapRef.current) {
-              flushPendingStreamSnap();
+              flushPendingStreamSnapRef.current();
             }
             window.setTimeout(resolve, 80);
           });
         });
       });
-      if (cancelled) return;
+      if (cancelled || !popoverOpenRef.current) return;
       const listed = participantsRef.current.length;
       const hint = rosterTotalHintRef.current;
       const rosterLooksComplete = listed > 0 && hint > 0 && listed >= hint;
@@ -1106,8 +1147,10 @@ export function MessageChatVoiceBar({
         return;
       }
       try {
-        const result = await reloadVoiceRoster({ cancelled: () => cancelled });
-        if (cancelled || !result?.ok) return;
+        const result = await reloadVoiceRosterRef.current({
+          cancelled: () => cancelled || !popoverOpenRef.current,
+        });
+        if (cancelled || !popoverOpenRef.current || !result?.ok) return;
         const listedAfter = participantsRef.current.length;
         const hintAfter = Math.max(
           rosterTotalHintRef.current,
@@ -1115,11 +1158,27 @@ export function MessageChatVoiceBar({
           result.participants.length,
         );
         if (listedAfter < hintAfter) {
-          const forced = await reloadVoiceRoster({
+          // Force getChat while the sheet is open freezes Close/Escape for seconds.
+          // Prefer SSE / presence poll to fill the remainder once we have anyone painted.
+          if (streamActiveRef.current || listedAfter > 0) {
+            logPageDisplay("messages_voice_dialog_open_defer_force_reload", {
+              chatId,
+              listed: listedAfter,
+              hint: hintAfter,
+              streamActive: streamActiveRef.current,
+              elapsedMs: Math.round(
+                (typeof performance !== "undefined" && typeof performance.now === "function"
+                  ? performance.now()
+                  : Date.now()) - openedAt,
+              ),
+            });
+            return;
+          }
+          const forced = await reloadVoiceRosterRef.current({
             force: true,
-            cancelled: () => cancelled,
+            cancelled: () => cancelled || !popoverOpenRef.current,
           });
-          if (cancelled || !forced?.ok) return;
+          if (cancelled || !popoverOpenRef.current || !forced?.ok) return;
           logPageDisplay("messages_voice_dialog_force_reload_ok", {
             chatId,
             listed: forced.participants.length,
@@ -1156,9 +1215,8 @@ export function MessageChatVoiceBar({
     })();
     return () => {
       cancelled = true;
-      logPageDisplay("messages_voice_dialog_close", { chatId });
     };
-  }, [popoverOpen, chatId, isTelegramMessagesConnected, groupCallId, flushPendingStreamSnap, reloadVoiceRoster]);
+  }, [popoverOpen, chatId, isTelegramMessagesConnected, groupCallId]);
 
   useEffect(() => {
     if (!voiceSession.joined) {
@@ -1328,7 +1386,9 @@ export function MessageChatVoiceBar({
   // Freeze detector: logs longtask + rAF stalls to [page-display] while the
   // dialog is open or a WebRTC join is in progress — the freeze usually happens
   // during getUserMedia / SDP negotiation right after the user presses Join.
-  useVoiceDialogFreezeDetector(popoverOpen || voiceSession.joining);
+  // Freeze detector: only while the sheet is open — joining after Close must
+  // not keep rAF monitors attributing WebRTC work to the dialog.
+  useVoiceDialogFreezeDetector(popoverOpen);
 
   return (
     <>

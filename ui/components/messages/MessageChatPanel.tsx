@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { View } from "react-native";
+import { flushSync } from "react-dom";
+import { Platform, View } from "react-native";
 import { normalizeTelegramGroupCallId } from "../../../shared/telegramGroupCallSdp";
 import { layout, type ThemeColors } from "../../theme";
 import { patchAuthenticatedHomeSelectedChatVoice } from "../../authenticatedHomeSelectedChat";
@@ -50,6 +51,8 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const canStart = canStartVoiceChat(chat);
   const [voiceJoined, setVoiceJoined] = useState(false);
   const [voicePopoverOpen, setVoicePopoverOpen] = useState(false);
+  /** True from Join/Start until Leave — covers the deferred WebRTC arm window. */
+  const [voiceEngaged, setVoiceEngaged] = useState(false);
   const [startPending, setStartPending] = useState(false);
   const [startedCallId, setStartedCallId] = useState<number | null>(null);
   /** After an explicit leave, do not auto-listen again until the user rejoins or opens another chat. */
@@ -58,19 +61,61 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const ignoreVoicePopoverOpenUntilRef = useRef(0);
   /** Same close gesture must not re-join / re-open via the strip underneath. */
   const suppressStripPressUntilRef = useRef(0);
+  /** Pending deferred setVoiceJoined — cancel on Leave or Close-before-connect. */
+  const joinArmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const voiceJoinedRef = useRef(false);
+  voiceJoinedRef.current = voiceJoined;
   const groupCallId = resolveGroupCallId(chat, startedCallId);
   const showVoiceBar = liveVoiceAvailable || voiceJoined;
 
+  const clearJoinArmTimer = useCallback(() => {
+    if (joinArmTimerRef.current != null) {
+      clearTimeout(joinArmTimerRef.current);
+      joinArmTimerRef.current = null;
+    }
+  }, []);
+
+  const armDeferredJoin = useCallback(() => {
+    if (voiceJoinedRef.current || joinArmTimerRef.current != null) return;
+    if (typeof window === "undefined") {
+      setVoiceJoined(true);
+      return;
+    }
+    // Wait for the sheet + Close handlers to paint, then arm WebRTC only when
+    // the main thread is idle — SDP during open was swallowing Close presses.
+    const arm = () => {
+      if (voiceJoinedRef.current || joinArmTimerRef.current != null) return;
+      joinArmTimerRef.current = window.setTimeout(() => {
+        joinArmTimerRef.current = null;
+        setVoiceJoined(true);
+      }, 3_500);
+    };
+    window.requestAnimationFrame(() => {
+      const ric = (
+        window as Window & {
+          requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+        }
+      ).requestIdleCallback;
+      if (typeof ric === "function") {
+        ric(() => arm(), { timeout: 4_000 });
+      } else {
+        window.setTimeout(arm, 1_200);
+      }
+    });
+  }, []);
+
   useEffect(() => {
     userLeftVoiceRef.current = false;
+    clearJoinArmTimer();
     setVoicePopoverOpen(false);
     setStartPending(false);
     setStartedCallId(null);
+    setVoiceEngaged(false);
     // tdesktop parity: opening a chat with a live call shows the bar + roster but
     // does NOT connect audio. The user must press Join (or open the popover) to
     // hear the call. Prevents remote voice leaking in just from loading the chat.
     setVoiceJoined(false);
-  }, [chat.telegram_chat_id]);
+  }, [chat.telegram_chat_id, clearJoinArmTimer]);
 
   useEffect(() => {
     if (!liveVoiceAvailable && !voiceJoined) {
@@ -78,13 +123,21 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     }
   }, [liveVoiceAvailable, voiceJoined]);
 
-  // Publish dialog-open to chat-list / home so SSE can defer while the sheet is up.
+  // Publish dialog-open / joined / engaged voice so chat-list SSE can defer while
+  // the sheet is up or a call is arming — without wiring React context through
+  // the whole tree.
+  // IMPORTANT: do not clear the gate in this effect's cleanup — that briefly
+  // flipped open→false→open on every popover toggle and scheduled chat-list
+  // flushes that froze Close/Escape.
   useEffect(() => {
-    setVoiceDialogUiOpen(voicePopoverOpen);
+    setVoiceDialogUiOpen(voicePopoverOpen || voiceJoined || voiceEngaged);
+  }, [voicePopoverOpen, voiceJoined, voiceEngaged]);
+
+  useEffect(() => {
     return () => {
       setVoiceDialogUiOpen(false);
     };
-  }, [voicePopoverOpen]);
+  }, []);
 
   // TDLib chat-list sync can miss video_chat OR keep a stale flag after the call
   // ends. Probe sparingly — VoiceBar SSE/poll owns presence once the bar is live.
@@ -157,11 +210,31 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
 
   const closeVoicePopover = useCallback(() => {
     // Swallow the same pointer's click-through onto the strip / Join control.
-    const until = Date.now() + 500;
+    const until = Date.now() + 900;
     ignoreVoicePopoverOpenUntilRef.current = until;
     suppressStripPressUntilRef.current = until;
+    // Closing before WebRTC actually connects cancels the arm — otherwise the
+    // deferred setVoiceJoined still fires under a closed sheet and freezes Escape
+    // / reopen. Once joined, Close only hides the sheet (call stays up).
+    if (!voiceJoinedRef.current) {
+      clearJoinArmTimer();
+      setVoiceEngaged(false);
+    }
+    // Native window capture handlers are outside React's discrete event system;
+    // without flushSync the sheet can stay data-voice-dialog="open" for seconds
+    // under chat/voice longtasks (Close looked dead to Playwright).
+    if (Platform.OS === "web") {
+      try {
+        flushSync(() => {
+          setVoicePopoverOpen(false);
+        });
+        return;
+      } catch {
+        // fall through
+      }
+    }
     setVoicePopoverOpen(false);
-  }, []);
+  }, [clearJoinArmTimer]);
 
   const joinVoice = useCallback(() => {
     if (!liveVoiceAvailable && groupCallId == null) {
@@ -173,6 +246,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       return;
     }
     userLeftVoiceRef.current = false;
+    setVoiceEngaged(true);
     unlockVoiceAutoplay();
     logPageDisplay("messages_voice_join_start", {
       chatId: chat.telegram_chat_id,
@@ -180,24 +254,16 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       liveVoiceAvailable,
     });
     // Paint the dialog first so Close / Escape stay interactive, then start
-    // WebRTC on the next frames (SDP/ICE used to freeze the sheet on open).
+    // WebRTC after the sheet has had time to settle (SDP/ICE freezes Close).
     openVoicePopover();
-    if (typeof window !== "undefined") {
-      window.requestAnimationFrame(() => {
-        // Let the dialog paint + bind Escape/close before WebRTC join starts.
-        window.setTimeout(() => {
-          setVoiceJoined(true);
-        }, 400);
-      });
-    } else {
-      setVoiceJoined(true);
-    }
-  }, [groupCallId, liveVoiceAvailable, openVoicePopover]);
+    armDeferredJoin();
+  }, [armDeferredJoin, groupCallId, liveVoiceAvailable, openVoicePopover]);
 
   const startVoice = useCallback(async () => {
     if (liveVoiceAvailable || startPending || !canStart) return;
     setStartPending(true);
     userLeftVoiceRef.current = false;
+    setVoiceEngaged(true);
     unlockVoiceAutoplay();
     try {
       const result = await startTelegramChatVoice(chat.telegram_chat_id);
@@ -205,6 +271,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
         appWarn("[message-voice-start]", result.error, {
           chatId: chat.telegram_chat_id,
         });
+        setVoiceEngaged(false);
         return;
       }
       const callId = normalizeTelegramGroupCallId(result.voice_chat_group_call_id);
@@ -216,26 +283,27 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
         voice_chat_group_call_id: result.voice_chat_group_call_id,
       });
       openVoicePopover();
-      if (typeof window !== "undefined") {
-        window.requestAnimationFrame(() => {
-          window.setTimeout(() => {
-            setVoiceJoined(true);
-          }, 400);
-        });
-      } else {
-        setVoiceJoined(true);
-      }
+      armDeferredJoin();
     } finally {
       setStartPending(false);
     }
-  }, [canStart, chat.telegram_chat_id, liveVoiceAvailable, openVoicePopover, startPending]);
+  }, [
+    armDeferredJoin,
+    canStart,
+    chat.telegram_chat_id,
+    liveVoiceAvailable,
+    openVoicePopover,
+    startPending,
+  ]);
 
   const leaveVoiceUi = useCallback(() => {
     userLeftVoiceRef.current = true;
+    clearJoinArmTimer();
+    setVoiceEngaged(false);
     setVoiceJoined(false);
     closeVoicePopover();
     setStartedCallId(null);
-  }, [closeVoicePopover]);
+  }, [clearJoinArmTimer, closeVoicePopover]);
 
   return (
     <View

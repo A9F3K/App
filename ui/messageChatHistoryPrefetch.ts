@@ -22,6 +22,7 @@ import {
 } from "./components/messages/chatOpenSession";
 import { logPageDisplay } from "./pageDisplayLog";
 import { isChatListSyncInProgress } from "./components/messages/chatListSyncStatus";
+import { isVoiceDialogUiOpen } from "./components/messages/voiceDialogUiGate";
 
 /** Max visible chats we warm in the background (viewport-driven). */
 const PREFETCH_VISIBLE_MAX = 7;
@@ -210,6 +211,8 @@ function startSharedLoad(
 
 function scheduleBackgroundDrain(): void {
   if (openChatLoadingId != null || isChatListSyncInProgress()) return;
+  // Voice UI owns gateway + main thread — pause neighbor history warming.
+  if (isVoiceDialogUiOpen()) return;
   if (backgroundActive >= MAX_BACKGROUND_CONCURRENT || queued.length === 0) return;
 
   const next = queued.shift();
@@ -248,6 +251,7 @@ function enqueueBackgroundPrefetch(
   // Always queue while the open chat loads — drain resumes when it finishes.
   // Skipping enqueue here previously burned MessageChatRow's one-shot prefetch.
   if (isChatListSyncInProgress()) return;
+  if (isVoiceDialogUiOpen()) return;
 
   const freshMs = spec.previewOnly ? PREVIEW_FRESH_MS : undefined;
   if (

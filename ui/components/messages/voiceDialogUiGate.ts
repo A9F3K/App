@@ -1,6 +1,7 @@
 /**
  * Module-level gate so chat-list SSE / heavy home updates can defer while the
- * voice dialog is open — without wiring React context through the whole tree.
+ * voice dialog is open or a call is joined — without wiring React context
+ * through the whole tree.
  */
 
 let voiceDialogOpen = false;
