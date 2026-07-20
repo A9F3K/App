@@ -693,9 +693,18 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   );
 
   // Flush any deferred chat-list revision when the voice dialog closes.
+  // Must stay well after close — a 400ms flush raced Escape/X and froze the
+  // renderer so hard preview reopen / CDP clicks could not run.
+  const voiceCloseFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     return subscribeVoiceDialogUiOpen((open) => {
-      if (open) return;
+      if (open) {
+        if (voiceCloseFlushTimerRef.current != null) {
+          clearTimeout(voiceCloseFlushTimerRef.current);
+          voiceCloseFlushTimerRef.current = null;
+        }
+        return;
+      }
       const pending = streamRevisionPendingRef.current;
       if (pending == null) return;
       if (lastLiveRevisionRef.current != null && pending <= lastLiveRevisionRef.current) {
@@ -705,14 +714,22 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         clearTimeout(streamLoadTimerRef.current);
         streamLoadTimerRef.current = null;
       }
+      if (voiceCloseFlushTimerRef.current != null) {
+        clearTimeout(voiceCloseFlushTimerRef.current);
+      }
       logPageDisplay("messages_chats_stream_revision", {
         revision: pending,
-        reason: "voice_dialog_closed_flush",
+        reason: "voice_dialog_closed_flush_scheduled",
       });
-      // Yield so close chrome unmounts before a heavy chat-list reload.
-      setTimeout(() => {
+      voiceCloseFlushTimerRef.current = setTimeout(() => {
+        voiceCloseFlushTimerRef.current = null;
+        if (isVoiceDialogUiOpen()) return;
+        logPageDisplay("messages_chats_stream_revision", {
+          revision: streamRevisionPendingRef.current,
+          reason: "voice_dialog_closed_flush",
+        });
         void flushStreamChatLoad();
-      }, 400);
+      }, 5_000);
     });
   }, [flushStreamChatLoad]);
 

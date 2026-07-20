@@ -266,6 +266,8 @@ export type TelegramContextValue = {
   applyServerWalletAfterRegister: (wallet: TelegramWalletRow) => void;
   /** Outside TMA: hydrate account fields from `GET /api/auth/session` (browser OAuth / email OTP). */
   hydrateBrowserSessionFromCookie: () => Promise<boolean>;
+  /** Plain web: true after the cookie session probe finishes (even when unauthenticated). */
+  browserSessionChecked: boolean;
 };
 
 const defaultDebug: TelegramDebugInfo = {
@@ -311,6 +313,7 @@ const defaultContext: TelegramContextValue = {
   telegramBootstrapFeed: null,
   applyServerWalletAfterRegister: () => {},
   hydrateBrowserSessionFromCookie: async () => false,
+  browserSessionChecked: false,
 };
 
 const TelegramContext = createContext<TelegramContextValue>(defaultContext);
@@ -335,6 +338,7 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
   const hasRegisteredRef = useRef(false);
   const registerWithBackendRef = useRef<(initData: string) => void>(() => {});
   const browserSessionHydratedRef = useRef(false);
+  const [browserSessionChecked, setBrowserSessionChecked] = useState(false);
   const initPollCleanupRef = useRef<(() => void) | null>(null);
   /** Block SDK/bridge theme events until runTmaFlow has applied WebApp theme (avoids stale dark WebApp). */
   const tmaInitialThemeResolvedRef = useRef(false);
@@ -365,7 +369,10 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const hydrateBrowserSessionFromCookie = useCallback(async (): Promise<boolean> => {
-    if (typeof window === "undefined" || isMiniAppContext()) return false;
+    if (typeof window === "undefined" || isActuallyInTelegram()) {
+      setBrowserSessionChecked(true);
+      return false;
+    }
     try {
       const response = await fetch(buildApiUrl("/api/auth/session"), {
         method: "GET",
@@ -393,6 +400,8 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
       return true;
     } catch {
       return false;
+    } finally {
+      setBrowserSessionChecked(true);
     }
   }, []);
 
@@ -402,7 +411,7 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
       hasRegisteredRef.current = false;
     };
     const onSignedIn = () => {
-      if (isMiniAppContext()) {
+      if (isActuallyInTelegram()) {
         hasRegisteredRef.current = false;
         const initDataStr = getInitDataString();
         if (initDataStr) {
@@ -914,6 +923,7 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
           clearInterval(initInterval);
           setDebug((d) => patchTelegramDebug(d, { apiMessage: "no init data (timeout)" }));
           setStatus("dev");
+          setThemeBgReady(true);
         }
       }, WEBAPP_POLL_MS);
       return () => clearInterval(initInterval);
@@ -946,6 +956,7 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
           webAppInterval = undefined;
           setDebug((d) => patchTelegramDebug(d, { apiMessage: "no WebApp (timeout)" }));
           setStatus("dev");
+          setThemeBgReady(true);
         }
       }, WEBAPP_POLL_MS);
     }
@@ -956,26 +967,31 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Plain web only: after WebApp poll times out we set status "dev" — ensure UI is visible.
-  // Do not force themeBgReady in Mini App (would show dark before runTmaFlow applies launch theme).
+  // After TMA bootstrap gives up (dev) or fails (error), always unlock paint — e.g. Cursor /
+  // Electron with tgWebApp hash but blocked telegram-web-app.js would otherwise stay
+  // display:none forever (useTelegramTheme true, themeBgReady false).
   useEffect(() => {
-    if (status !== "dev") return;
-    if (isMiniAppContext()) return;
+    if (status !== "dev" && status !== "error") return;
     setThemeBgReady(true);
   }, [status]);
 
   // Browser OIDC / email session bootstrap (outside TMA).
   useEffect(() => {
     if (status !== "dev") return;
-    if (isMiniAppContext()) return;
+    if (isActuallyInTelegram()) {
+      setBrowserSessionChecked(true);
+      return;
+    }
     if (browserSessionHydratedRef.current) return;
     browserSessionHydratedRef.current = true;
     void hydrateBrowserSessionFromCookie();
   }, [status, hydrateBrowserSessionFromCookie]);
 
   const miniAppContext = typeof window !== "undefined" && isMiniAppContext();
-  const isInTelegram = status !== "dev" && miniAppContext;
-  const useTelegramTheme = miniAppContext;
+  const tmaBootstrapActive =
+    status !== "dev" && status !== "error" && status !== "idle";
+  const isInTelegram = tmaBootstrapActive && miniAppContext;
+  const useTelegramTheme = miniAppContext && tmaBootstrapActive;
 
   useEffect(() => {
     refreshLayoutStartup();
@@ -1006,6 +1022,7 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
     telegramBootstrapFeed,
     applyServerWalletAfterRegister,
     hydrateBrowserSessionFromCookie,
+    browserSessionChecked,
   };
 
   return (

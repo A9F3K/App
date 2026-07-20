@@ -333,9 +333,9 @@ export function MessageChatVoiceBar({
   const applySpeakingMap = useCallback(
     (rows: TelegramChatVoiceParticipant[]) => {
       // Speaking glow lives in speakingByKey so membership rows stay referentially
-      // stable (tdesktop parity). A short hold keeps brief pulses visible.
+      // stable (tdesktop parity). Hold matches server effectiveSpeaking (~2.5s).
       const now = Date.now();
-      const holdMs = 1_200;
+      const holdMs = 2_500;
       let soonestExpiry = 0;
       const next: Record<string, true> = {};
       for (const row of rows) {
@@ -348,6 +348,16 @@ export function MessageChatVoiceBar({
         const until = speakingHoldUntilRef.current.get(key) ?? 0;
         if (until > now) {
           next[key] = true;
+          if (soonestExpiry === 0 || until < soonestExpiry) soonestExpiry = until;
+        } else {
+          speakingHoldUntilRef.current.delete(key);
+        }
+      }
+      // Partial SSE snapshots (recent_speakers, thin roster) omit people who are
+      // still inside the speaking hold — never wipe them by replacing the map.
+      for (const [key, until] of speakingHoldUntilRef.current.entries()) {
+        if (until > now) {
+          if (!next[key]) next[key] = true;
           if (soonestExpiry === 0 || until < soonestExpiry) soonestExpiry = until;
         } else {
           speakingHoldUntilRef.current.delete(key);
@@ -681,11 +691,22 @@ export function MessageChatVoiceBar({
   useEffect(() => {
     if (popoverOpen) return;
     cancelStreamRosterFlush();
-    // Push any pending SSE snapshot onto the preview strip after close.
-    if (pendingStreamSnapRef.current) {
-      flushPendingStreamSnap();
+    // Do NOT flush pending SSE membership onto the strip in the same tick as
+    // close — that remounted avatars/roster and froze Escape/X reopen. Speaking
+    // map already updated live; membership can land on the next throttled tick.
+    if (!pendingStreamSnapRef.current) {
+      return () => {
+        cancelStreamRosterFlush();
+      };
     }
+    const timer = setTimeout(() => {
+      if (popoverOpenRef.current) return;
+      if (pendingStreamSnapRef.current) {
+        flushPendingStreamSnap();
+      }
+    }, 1_200);
     return () => {
+      clearTimeout(timer);
       cancelStreamRosterFlush();
     };
   }, [popoverOpen, cancelStreamRosterFlush, flushPendingStreamSnap]);
@@ -788,7 +809,17 @@ export function MessageChatVoiceBar({
     });
     if (voiceSession.localSpeaking) {
       setSpeakingByKey((prev) => (prev.self ? prev : { ...prev, self: true }));
-      speakingHoldUntilRef.current.set("self", Date.now() + 1_200);
+      speakingHoldUntilRef.current.set("self", Date.now() + 2_500);
+    } else {
+      const until = speakingHoldUntilRef.current.get("self") ?? 0;
+      if (until <= Date.now()) {
+        setSpeakingByKey((prev) => {
+          if (!prev.self) return prev;
+          const next = { ...prev };
+          delete next.self;
+          return next;
+        });
+      }
     }
   }, [joined, voiceSession.localSpeaking, voiceSession.micActive]);
 
@@ -993,6 +1024,14 @@ export function MessageChatVoiceBar({
         : { ...row, is_speaking: speaking };
     });
   }, [participantSpeakKey, participants, speakingByKey]);
+
+  const resolveParticipantSpeaking = useCallback(
+    (row: TelegramChatVoiceParticipant) => {
+      const key = participantSpeakKey(row);
+      return Boolean(speakingByKey[key] || row.is_speaking);
+    },
+    [participantSpeakKey, speakingByKey],
+  );
 
   // Opening the sheet: paint first, then load roster. Do NOT wait for WebRTC
   // `joined` — that delayed the first reload until after SDP and left the sheet
@@ -1524,6 +1563,7 @@ export function MessageChatVoiceBar({
         title={title}
         participantCount={totalParticipantCount}
         participants={displayParticipants}
+        isParticipantSpeaking={resolveParticipantSpeaking}
         colors={colors}
         micActive={voiceSession.micActive}
         micJoining={voiceSession.joining}

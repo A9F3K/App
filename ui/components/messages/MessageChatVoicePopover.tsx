@@ -169,6 +169,8 @@ type Props = {
   /** TDLib/call total when larger than the loaded `participants` list. */
   participantCount?: number;
   participants: TelegramChatVoiceParticipant[];
+  /** Merged speaking map + row flag (green mic / avatar ring). */
+  isParticipantSpeaking?: (participant: TelegramChatVoiceParticipant) => boolean;
   colors: ThemeColors;
   micActive: boolean;
   micJoining: boolean;
@@ -241,10 +243,12 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   participant,
   isLast,
   colors,
+  isSpeaking,
 }: {
   participant: TelegramChatVoiceParticipant;
   isLast: boolean;
   colors: ThemeColors;
+  isSpeaking: boolean;
 }) {
   const { colorScheme } = useTelegram();
   const title =
@@ -254,7 +258,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
     "?";
   const description = participant.description.trim();
   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
-  const speaking = Boolean(participant.is_speaking);
+  const speaking = isSpeaking;
   const textBase = {
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
     fontSize: MESSAGE_FONT_SIZE_PX,
@@ -599,6 +603,7 @@ export function MessageChatVoicePopover({
   title,
   participantCount,
   participants,
+  isParticipantSpeaking,
   colors,
   micActive,
   micJoining: _micJoining,
@@ -632,12 +637,27 @@ export function MessageChatVoicePopover({
     Platform.OS === "web" && typeof document !== "undefined" ? document.body : null,
   );
   const moreChipRef = useRef<View | null>(null);
+  /** Keep portal mounted briefly after close so roster unmount cannot freeze reopen. */
+  const [portalMounted, setPortalMounted] = useState(visible);
+  /** Drop roster/media on hide immediately — empty shell teardown is cheap. */
+  const [suspendHeavy, setSuspendHeavy] = useState(false);
 
   useEffect(() => {
     if (Platform.OS === "web" && typeof document !== "undefined") {
       setPortalTarget(document.body);
     }
   }, []);
+
+  useEffect(() => {
+    if (visible) {
+      setSuspendHeavy(false);
+      setPortalMounted(true);
+      return;
+    }
+    setSuspendHeavy(true);
+    const timer = setTimeout(() => setPortalMounted(false), 600);
+    return () => clearTimeout(timer);
+  }, [visible]);
 
   useEffect(() => {
     if (!visible) setMoreMenuAnchor(null);
@@ -895,8 +915,9 @@ export function MessageChatVoicePopover({
   const handles: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
   const displayParticipants = useMemo(
     // Preserve incoming order — do not re-sort by speaking (tdesktop parity).
-    () => participants.slice(0, 64),
-    [participants],
+    // While hiding, drop rows immediately so delayed portal unmount is cheap.
+    () => (suspendHeavy ? [] : participants.slice(0, 64)),
+    [participants, suspendHeavy],
   );
 
   const moreMenuItems = useMemo(
@@ -1079,11 +1100,12 @@ export function MessageChatVoicePopover({
         </View>
 
         <MessageChatVoiceMediaStage
-          sources={mediaSources}
+          sources={suspendHeavy ? [] : mediaSources}
           // Local previews (own screencast / camera) must not wait for the remote
           // `videoActive` join flag — sharing starts capturing immediately.
           active={Boolean(
             visible &&
+              !suspendHeavy &&
               mediaSources.length > 0 &&
               (videoActive || localScreenStream != null || localCameraStream != null),
           )}
@@ -1115,6 +1137,11 @@ export function MessageChatVoicePopover({
                   participant={participant}
                   isLast={index === displayParticipants.length - 1}
                   colors={colors}
+                  isSpeaking={
+                    isParticipantSpeaking
+                      ? isParticipantSpeaking(participant)
+                      : Boolean(participant.is_speaking)
+                  }
                 />
               ))
             ) : (
@@ -1251,7 +1278,7 @@ export function MessageChatVoicePopover({
     </View>
   );
 
-  if (!visible) return null;
+  if (!visible && !portalMounted) return null;
 
   if (Platform.OS === "web") {
     if (!portalTarget) return null;
@@ -1269,8 +1296,16 @@ export function MessageChatVoicePopover({
           width: "100%",
           justifyContent: "center",
           alignItems: "center",
+          // Hide immediately on close; keep DOM mounted briefly so teardown
+          // does not block the next preview-strip open.
+          opacity: visible ? 1 : 0,
+          pointerEvents: visible ? "box-none" : "none",
         }}
-        pointerEvents="box-none"
+        pointerEvents={visible ? "box-none" : "none"}
+        {...({
+          "data-voice-dialog": visible ? "open" : "closed",
+          ...(visible ? {} : { "aria-hidden": true, inert: true }),
+        } as object)}
       >
         {sheetBody}
       </View>,

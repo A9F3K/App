@@ -605,6 +605,7 @@ export function HomeAuthenticatedScreen() {
     error,
     debug,
     applyServerWalletAfterRegister,
+    browserSessionChecked,
   } = useTelegram();
   const pathname = useResolvedPathname();
   const { width: windowWidth } = useWindowDimensions();
@@ -723,12 +724,7 @@ export function HomeAuthenticatedScreen() {
   const hasDisplayAddress = Boolean(effectiveWalletAddress);
   const effectiveHasWallet = hasWallet || hasDisplayAddress;
   const headerDisplayName = displayName?.trim() || t("common.emDash");
-  const isBrowserSessionHydrating =
-    status === "dev" &&
-    !initData &&
-    telegramUsername == null &&
-    hasWallet == null &&
-    wallet == null;
+  const isBrowserSessionHydrating = status === "dev" && !browserSessionChecked && !initData;
   const homePhase =
     status === "idle" || status === "loading" || isBrowserSessionHydrating
       ? "telegram_loading_or_polling"
