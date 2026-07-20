@@ -11,6 +11,7 @@
  */
 
 import aiHandler from './_handlers/ai.js';
+import voiceDebugHandler from './_handlers/voice-debug.js';
 import blockchainHandler from './_handlers/blockchain.js';
 import botHandler from './_handlers/bot.js';
 import feedHandler from './_handlers/feed.js';
@@ -71,6 +72,7 @@ type ApiHandler = (
 
 const ROUTES: Record<string, ApiHandler> = {
   ping: pingHandler as ApiHandler,
+  'voice-debug': voiceDebugHandler as ApiHandler,
   bot: botHandler as ApiHandler,
   feed: feedHandler as ApiHandler,
   ai: aiHandler as ApiHandler,

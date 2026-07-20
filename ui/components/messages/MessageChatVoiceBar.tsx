@@ -27,6 +27,7 @@ import {
   useTelegramVoiceParticipantsStream,
   type VoiceParticipantsStreamSnapshot,
 } from "./useTelegramVoiceParticipantsStream";
+import { useVoiceDialogFreezeDetector } from "./useVoiceDialogFreezeDetector";
 import {
   MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
   MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
@@ -1166,6 +1167,11 @@ export function MessageChatVoiceBar({
   }, [voiceSession]);
 
   const showStrip = Boolean(joined || presenceConfirmed);
+
+  // Freeze detector: logs longtask + rAF stalls to [page-display] while the
+  // dialog is open or a WebRTC join is in progress — the freeze usually happens
+  // during getUserMedia / SDP negotiation right after the user presses Join.
+  useVoiceDialogFreezeDetector(popoverOpen || voiceSession.joining);
 
   return (
     <>

@@ -28,6 +28,7 @@ import { SettingsProvider } from "../ui/settings/SettingsContext";
 import { WelcomeEmailAuthProvider } from "../ui/welcome/WelcomeEmailAuthContext";
 import { useTmaMobileNativeBackNavigation } from "../ui/telegram/useTmaMobileNativeBackNavigation";
 import { logBuildSnapshotOnce, logPageDisplay } from "../ui/pageDisplayLog";
+import { installGlobalVoiceFreezeLogger } from "../ui/components/messages/useVoiceDialogFreezeDetector";
 import { appWarn } from "../shared/appLog";
 import { syncWebDocumentOverflowForZoom } from "../ui/browserZoom";
 import { isWelcomeLayoutRoute } from "../ui/isWelcomeLayoutRoute";
@@ -271,6 +272,10 @@ function RootContent() {
 
   useEffect(() => {
     logBuildSnapshotOnce("root_layout_mount");
+    // Install a page-lifetime longtask observer so any freeze (≥200ms) is
+    // visible in the console regardless of which component caused it.
+    const cleanup = installGlobalVoiceFreezeLogger();
+    return cleanup;
   }, []);
 
   useEffect(() => {
