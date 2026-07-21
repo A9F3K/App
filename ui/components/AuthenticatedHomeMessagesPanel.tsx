@@ -649,8 +649,9 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           return next;
         });
       };
-      // While voice owns the UI, keep chat-list React work interruptible.
-      if (options?.silent && isVoiceDialogUiOpen()) {
+      // Silent polls must stay interruptible — applying 100+ chat rows on the
+      // urgent path after voice-dialog close made the preview unclickable.
+      if (options?.silent) {
         startTransition(applyChats);
       } else {
         applyChats();
@@ -700,27 +701,43 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       lastLiveRevisionRef.current != null &&
       pendingRevision <= lastLiveRevisionRef.current
     ) {
+      streamRevisionPendingRef.current = null;
       return;
     }
     if (pollInFlightRef.current) {
-      streamLoadTimerRef.current = setTimeout(() => {
-        void flushStreamChatLoad();
-      }, 250);
+      // Coalesce — a 250ms retry stack raced the metronome and duplicated loads.
+      if (streamLoadTimerRef.current == null) {
+        streamLoadTimerRef.current = setTimeout(() => {
+          streamLoadTimerRef.current = null;
+          void flushStreamChatLoad();
+        }, 1_500);
+      }
       return;
     }
     pollInFlightRef.current = true;
+    const pendingAtStart = streamRevisionPendingRef.current;
     try {
       await loadChats({ silent: true, allowAvatarResync: false });
     } finally {
       pollInFlightRef.current = false;
       const stillPending = streamRevisionPendingRef.current;
+      // Only re-flush when a *newer* revision arrived during this fetch.
+      // The old `stillPending > lastLive` check spun every 150ms whenever SSE
+      // stayed ahead of the poll API — after voice-dialog close that froze the
+      // chat preview so clicks never landed.
       if (
         stillPending != null &&
-        (lastLiveRevisionRef.current == null || stillPending > lastLiveRevisionRef.current)
+        pendingAtStart != null &&
+        stillPending > pendingAtStart
       ) {
-        streamLoadTimerRef.current = setTimeout(() => {
-          void flushStreamChatLoad();
-        }, 150);
+        if (streamLoadTimerRef.current == null) {
+          streamLoadTimerRef.current = setTimeout(() => {
+            streamLoadTimerRef.current = null;
+            void flushStreamChatLoad();
+          }, 2_500);
+        }
+      } else {
+        streamRevisionPendingRef.current = null;
       }
     }
   }, [loadChats]);
@@ -756,8 +773,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   );
 
   // Flush any deferred chat-list revision when the voice dialog closes.
-  // Must stay well after close — a 400ms flush raced Escape/X and froze the
-  // renderer so hard preview reopen / CDP clicks could not run.
+  // Keep this delayed so Close paints first, but only one load — a tight
+  // revision-retry loop after close froze the chat preview (unclickable).
   const voiceCloseFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     return subscribeVoiceDialogUiOpen((open) => {
@@ -771,6 +788,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       const pending = streamRevisionPendingRef.current;
       if (pending == null) return;
       if (lastLiveRevisionRef.current != null && pending <= lastLiveRevisionRef.current) {
+        streamRevisionPendingRef.current = null;
         return;
       }
       if (streamLoadTimerRef.current != null) {
@@ -792,7 +810,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           reason: "voice_dialog_closed_flush",
         });
         void flushStreamChatLoad();
-      }, 5_000);
+      }, 2_500);
     });
   }, [flushStreamChatLoad]);
 

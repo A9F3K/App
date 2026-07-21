@@ -710,11 +710,11 @@ export function MessageChatVoicePopover({
     // Keep sheet children mounted briefly after Close — unmounting LiquidGlass /
     // video while WebRTC createOffer runs wedged the tab for 10–20s. Hide is
     // already display:none; tear down heavy UI after a short paint settle.
-    const heavyTimer = setTimeout(() => setSuspendHeavy(true), 320);
+    const heavyTimer = setTimeout(() => setSuspendHeavy(true), 120);
     const timer = setTimeout(() => {
       setPortalMounted(false);
       forceClosedRef.current = false;
-    }, 900);
+    }, 480);
     return () => {
       clearTimeout(heavyTimer);
       clearTimeout(timer);
