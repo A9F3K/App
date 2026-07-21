@@ -87,12 +87,14 @@ export function MessageChatVoiceBar({
   const [participantCount, setParticipantCount] = useState(0);
   /** TDLib total hint (may exceed loaded rows until force reload). */
   const rosterTotalHintRef = useRef(0);
+  const [rosterCountHint, setRosterCountHint] = useState(0);
+  const rosterCountHintStateRef = useRef(0);
   /** Speaking glow is a side map (tdesktop parity) — never rebuilds roster order. */
   const [speakingByKey, setSpeakingByKey] = useState<Record<string, true>>({});
   /** Hide the empty strip until a poll/SSE proves real (non-self) presence. */
   const [presenceConfirmed, setPresenceConfirmed] = useState(false);
   const stripPaddingX = layout.contentSideInsetPx;
-  const totalParticipantCount = participants.length;
+  const totalParticipantCount = Math.max(rosterCountHint, participants.length);
   const speakingByKeyRef = useRef(speakingByKey);
   speakingByKeyRef.current = speakingByKey;
   // Stable strip order — do not re-sort by speaking (that remounted avatars every pulse).
@@ -433,7 +435,11 @@ export function MessageChatVoiceBar({
   );
 
   const applyRosterRows = useCallback(
-    (incoming: TelegramChatVoiceParticipant[], countHint: number) => {
+    (
+      incoming: TelegramChatVoiceParticipant[],
+      countHint: number,
+      options?: { preferMerge?: boolean },
+    ) => {
       const applyStarted =
         typeof performance !== "undefined" && typeof performance.now === "function"
           ? performance.now()
@@ -474,11 +480,14 @@ export function MessageChatVoiceBar({
       const nextByKey = new Map(next.map((row) => [speakKey(row), row]));
 
       const hint = Math.max(0, countHint);
+      // SSE / soft polls often send a recent-speakers subset while participant_count
+      // is still 4–5. Never replace a fuller roster with that subset.
       const looksLikeRecentSpeakersOnly =
         next.length > 0 &&
-        next.length <= 3 &&
-        prev.length > next.length &&
-        (hint === 0 || hint > Math.max(next.length, 3));
+        (hint === 0 || hint > next.length) &&
+        (options?.preferMerge ||
+          (next.length <= 3 && prev.length > next.length) ||
+          (hint > next.length && prev.length >= next.length && prev.length > 0));
       if (looksLikeRecentSpeakersOnly) {
         const merged = prev.map((row) => {
           const inc = nextByKey.get(speakKey(row));
@@ -588,13 +597,14 @@ export function MessageChatVoiceBar({
         });
       }
 
-      // UI count must match listed rows; keep TDLib hint separately for reload gating.
+      // UI listed count matches painted rows; keep TDLib hint for labels / reload.
       const totalHint = Math.max(hint, next.length);
       rosterTotalHintRef.current = totalHint;
       const nextCount = next.length;
 
       const rosterChanged = !participantsEqual(prev, next);
       const countChanged = participantCountRef.current !== nextCount;
+      const hintChanged = rosterCountHintStateRef.current !== totalHint;
       if (rosterChanged || countChanged) {
         logPageDisplay("messages_voice_roster_painted", {
           chatId,
@@ -616,6 +626,10 @@ export function MessageChatVoiceBar({
       if (countChanged) {
         participantCountRef.current = nextCount;
         setParticipantCount(nextCount);
+      }
+      if (hintChanged) {
+        rosterCountHintStateRef.current = totalHint;
+        setRosterCountHint(totalHint);
       }
     },
     [applySpeakingMap, chatId, participantSpeakKey, participantsEqual],
@@ -655,7 +669,11 @@ export function MessageChatVoiceBar({
     if (!live && snapshot.participants.length === 0 && !voiceJoinedRef.current) return;
 
     const applyRows = () => {
-      applyRosterRows(snapshot.participants, snapshot.participant_count);
+      // SSE payloads are often recent-speakers-only; merge so we never drop a
+      // fuller roster that force-reload already painted.
+      applyRosterRows(snapshot.participants, snapshot.participant_count, {
+        preferMerge: true,
+      });
     };
 
     if (!sheetOpen) {
@@ -779,7 +797,9 @@ export function MessageChatVoiceBar({
         // Always paint rows when TDLib returned any participants — countHint of 0
         // used to leave the strip empty despite a real self/other roster.
         if (result.participants.length > 0 || live || voiceJoinedRef.current) {
-          applyRosterRows(result.participants, result.participant_count);
+          applyRosterRows(result.participants, result.participant_count, {
+            preferMerge: result.participant_count > result.participants.length,
+          });
         } else if (!result.has_active_voice_chat) {
           // Keep strip roster when the call is live but TDLib returned a thin snapshot.
           setParticipants([]);
@@ -1158,20 +1178,42 @@ export function MessageChatVoiceBar({
           result.participants.length,
         );
         if (listedAfter < hintAfter) {
-          // Force getChat while the sheet is open freezes Close/Escape for seconds.
-          // Prefer SSE / presence poll to fill the remainder once we have anyone painted.
-          if (streamActiveRef.current || listedAfter > 0) {
-            logPageDisplay("messages_voice_dialog_open_defer_force_reload", {
+          // TDLib rejects loadGroupCallParticipants until we are joined — a
+          // pre-join force reload only returns recent_speakers (~1 row) and used
+          // to mark the roster "done". Wait until joined, then force-load.
+          if (!voiceJoinedRef.current) {
+            logPageDisplay("messages_voice_dialog_open_wait_join_for_roster", {
               chatId,
               listed: listedAfter,
               hint: hintAfter,
-              streamActive: streamActiveRef.current,
               elapsedMs: Math.round(
                 (typeof performance !== "undefined" && typeof performance.now === "function"
                   ? performance.now()
                   : Date.now()) - openedAt,
               ),
             });
+            return;
+          }
+          logPageDisplay("messages_voice_dialog_open_schedule_force_reload", {
+            chatId,
+            listed: listedAfter,
+            hint: hintAfter,
+            streamActive: streamActiveRef.current,
+            elapsedMs: Math.round(
+              (typeof performance !== "undefined" && typeof performance.now === "function"
+                ? performance.now()
+                : Date.now()) - openedAt,
+            ),
+          });
+          await new Promise<void>((resolve) => {
+            if (typeof window === "undefined") {
+              resolve();
+              return;
+            }
+            window.setTimeout(resolve, 800);
+          });
+          if (cancelled || !popoverOpenRef.current) return;
+          if (participantsRef.current.length >= rosterTotalHintRef.current) {
             return;
           }
           const forced = await reloadVoiceRosterRef.current({
@@ -1224,7 +1266,8 @@ export function MessageChatVoiceBar({
     }
   }, [voiceSession.joined]);
 
-  // Once WebRTC is up, force a full TDLib roster load when hint exceeds listed rows.
+  // After Join, TDLib allows loadGroupCallParticipants. Soft polls before join
+  // only return recent_speakers — keep forcing until listed catches the hint.
   useEffect(() => {
     if (!popoverOpen || !voiceSession.joined) return;
     if (!isTelegramMessagesConnected) return;
@@ -1232,39 +1275,71 @@ export function MessageChatVoiceBar({
       postJoinRosterLoadedRef.current = true;
       return;
     }
-    if (postJoinRosterLoadedRef.current) return;
     let cancelled = false;
-    const timer = setTimeout(() => {
+    let attempts = 0;
+    const maxAttempts = 6;
+
+    const run = () => {
+      if (cancelled || !popoverOpenRef.current) return;
+      if (!rosterIncomplete()) {
+        postJoinRosterLoadedRef.current = true;
+        return;
+      }
+      if (attempts >= maxAttempts) {
+        logPageDisplay("messages_voice_dialog_postjoin_reload_give_up", {
+          chatId,
+          listed: participantsRef.current.length,
+          hint: rosterTotalHintRef.current,
+          attempts,
+          level: "warn",
+        });
+        return;
+      }
+      attempts += 1;
       void (async () => {
-        if (!rosterIncomplete()) {
-          postJoinRosterLoadedRef.current = true;
-          return;
-        }
         try {
           const result = await reloadVoiceRoster({
             force: true,
-            cancelled: () => cancelled,
+            cancelled: () => cancelled || !popoverOpenRef.current,
           });
           if (cancelled || !result?.ok) return;
-          postJoinRosterLoadedRef.current = true;
+          const listed = participantsRef.current.length;
+          const hint = rosterTotalHintRef.current;
           logPageDisplay("messages_voice_dialog_postjoin_reload_ok", {
             chatId,
-            listed: result.participants.length,
-            count: result.participants.length,
-            hint: rosterTotalHintRef.current,
+            listed,
+            count: listed,
+            hint,
+            attempt: attempts,
           });
+          if (listed >= hint && hint > 0) {
+            postJoinRosterLoadedRef.current = true;
+            return;
+          }
+          // Background TDLib load may still be filling cache — retry.
+          if (!cancelled && popoverOpenRef.current) {
+            window.setTimeout(run, 1_800);
+          }
         } catch {
-          /* ignore */
+          if (!cancelled && popoverOpenRef.current) {
+            window.setTimeout(run, 2_000);
+          }
         }
       })();
-    }, 600);
+    };
+
+    const timer = setTimeout(run, 700);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
   }, [popoverOpen, voiceSession.joined, chatId, isTelegramMessagesConnected, reloadVoiceRoster, rosterIncomplete]);
 
-  // NOTE: exactly ONE effect computes remote-video requests (above). A second
+  useEffect(() => {
+    if (!popoverOpen || !voiceSession.joined) {
+      postJoinRosterLoadedRef.current = false;
+    }
+  }, [popoverOpen, voiceSession.joined]);  // NOTE: exactly ONE effect computes remote-video requests (above). A second
   // duplicate with different endpoint fallbacks ping-ponged the renegotiation
   // key and spun full SDP offer/answer cycles in a loop (CPU overload).
 
@@ -1355,6 +1430,10 @@ export function MessageChatVoiceBar({
 
   const onMicPress = useCallback(() => {
     if (!joined) {
+      // If the popover is already open, a join arm-timer is already pending —
+      // do not fire a second join (which would re-open the dialog / call onJoin
+      // again and generate a spurious messages_voice_join_start log).
+      if (popoverOpenRef.current) return;
       unlockThenJoin();
       return;
     }
@@ -1363,6 +1442,7 @@ export function MessageChatVoiceBar({
 
   const onCameraPress = useCallback(() => {
     if (!joined) {
+      if (popoverOpenRef.current) return;
       unlockThenJoin();
       return;
     }
@@ -1371,6 +1451,7 @@ export function MessageChatVoiceBar({
 
   const onStartScreenShare = useCallback(() => {
     if (!joined) {
+      if (popoverOpenRef.current) return;
       unlockThenJoin();
       return;
     }
