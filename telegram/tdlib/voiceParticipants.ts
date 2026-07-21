@@ -964,6 +964,28 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Poll TDLib until join propagates — client force-reload often races joinVideoChat. */
+async function waitUntilGroupCallJoinedForLoad(
+  client: Client,
+  callId: number,
+  maxWaitMs = 12_000,
+): Promise<boolean> {
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    try {
+      const groupCall = (await client.invoke({
+        _: "getGroupCall",
+        group_call_id: callId,
+      })) as GroupCallSnapshot;
+      if (groupCall.is_joined || groupCall.need_rejoin) return true;
+    } catch {
+      /* retry */
+    }
+    await sleep(250);
+  }
+  return false;
+}
+
 /** Resolve profiles for members with no usable cached title. Returns count warmed. */
 async function warmMissingProfiles(
   client: Client,
@@ -1257,7 +1279,74 @@ export async function fetchChatVoiceParticipants(
       (cached.uniqueId === uniqueId || !cached.uniqueId) &&
       cached.members.size > 0;
 
-    if (cacheUsable) {
+    // Explicit force after join: await the load so the HTTP response carries the
+    // full roster. Scheduling-only left clients stuck on recent_speakers (listed=1
+    // while participant_count was 4+) until a later SSE race — often never.
+    if (options?.forceReload) {
+      const joinedForLoad =
+        isJoined || (await waitUntilGroupCallJoinedForLoad(client, callId));
+      if (joinedForLoad) {
+      try {
+        let { members: loaded, loadedAll, loadFailed } = await loadJoinedParticipants(
+          client,
+          callId,
+        );
+        // First pass can race joinVideoChat — retry once before giving up.
+        if (loadFailed || loaded.size === 0) {
+          await sleep(400);
+          const retry = await loadJoinedParticipants(client, callId);
+          loaded = retry.members;
+          loadedAll = retry.loadedAll;
+          loadFailed = retry.loadFailed;
+        }
+        if (!loadFailed && loaded.size > 0) {
+          const prev = callMembersCache.get(callId);
+          const members = preserveSpeakingOnRoster(loaded, prev?.members, speakers);
+          const nextLoadedAll = rosterLooksComplete(
+            members.size,
+            participantCountHint,
+            hasHiddenListeners,
+            loadedAll,
+          );
+          callMembersCache.set(callId, {
+            uniqueId,
+            members,
+            loadedAt: Date.now(),
+            loadedAll: nextLoadedAll,
+            revision: prev?.revision ?? 0,
+            participantCountHint:
+              Number.isFinite(participantCountHint) && participantCountHint >= 0
+                ? Math.trunc(participantCountHint)
+                : (prev?.participantCountHint ?? 0),
+            speakers: prev?.speakers ?? speakers,
+          });
+          bumpVoiceCallRevision(callId);
+          collected = applySpeakingOverlay(members, speakers);
+          void warmMissingProfiles(client, members).then((warmed) => {
+            if (warmed > 0) bumpVoiceCallRevision(callId);
+          });
+        } else if (cacheUsable) {
+          collected = applySpeakingOverlay(cached!.members, speakers);
+        }
+      } catch (err) {
+        logGateway("voice_participants_force_reload_failed", {
+          groupCallId: callId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        if (cacheUsable) {
+          collected = applySpeakingOverlay(cached!.members, speakers);
+        }
+      }
+      } else {
+        logGateway("voice_participants_force_reload_not_joined", {
+          groupCallId: callId,
+          participantCount: participantCountHint,
+        });
+        if (cacheUsable) {
+          collected = applySpeakingOverlay(cached!.members, speakers);
+        }
+      }
+    } else if (cacheUsable) {
       collected = applySpeakingOverlay(cached!.members, speakers);
       // Pinning self alone used to hide recent_speakers (empty order filtered
       // out once any ordered row existed). Union stubs while the roster is thin.
@@ -1279,7 +1368,6 @@ export async function fetchChatVoiceParticipants(
       // before join, so the 20s throttle would otherwise leave listed=1 forever.
       const forceAfterJoin = isJoined && countAheadOfRoster;
       if (
-        options?.forceReload ||
         forceAfterJoin ||
         cached!.uniqueId !== uniqueId ||
         countAheadOfRoster ||
@@ -1293,7 +1381,7 @@ export async function fetchChatVoiceParticipants(
           uniqueId,
           participantCountHint,
           hasHiddenListeners,
-          { force: Boolean(options?.forceReload) || forceAfterJoin },
+          { force: forceAfterJoin },
         );
       }
     } else {

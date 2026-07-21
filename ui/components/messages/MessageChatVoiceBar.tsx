@@ -237,7 +237,7 @@ export function MessageChatVoiceBar({
           resolve();
           return;
         }
-        const delayMs = popoverOpenRef.current ? 900 : 200;
+        const delayMs = popoverOpenRef.current ? 1_400 : 200;
         window.requestAnimationFrame(() => {
           window.setTimeout(resolve, delayMs);
         });
@@ -246,19 +246,20 @@ export function MessageChatVoiceBar({
         inFlight = false;
         return;
       }
-      // Prefer idle time when the sheet is already closed so Close/reopen stay fluid.
-      if (!popoverOpenRef.current) {
-        await new Promise<void>((resolve) => {
-          if (typeof requestIdleCallback === "function") {
-            requestIdleCallback(() => resolve(), { timeout: 2_500 });
-          } else {
-            setTimeout(resolve, 400);
-          }
-        });
-        if (cancelled) {
-          inFlight = false;
-          return;
+      // Prefer idle time so Close/reopen stay fluid — also while the sheet is open
+      // (SDP during open was the main dialog freeze).
+      await new Promise<void>((resolve) => {
+        if (typeof requestIdleCallback === "function") {
+          requestIdleCallback(() => resolve(), {
+            timeout: popoverOpenRef.current ? 3_000 : 2_500,
+          });
+        } else {
+          setTimeout(resolve, popoverOpenRef.current ? 600 : 400);
         }
+      });
+      if (cancelled) {
+        inFlight = false;
+        return;
       }
       if (cancelled) {
         inFlight = false;
@@ -638,8 +639,10 @@ export function MessageChatVoiceBar({
   const pendingStreamSnapRef = useRef<VoiceParticipantsStreamSnapshot | null>(null);
   const streamApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastStreamApplyAtRef = useRef(0);
-  /** While the dialog is open, coalesce SSE roster merges to ≥3s. */
+  /** While the dialog is open, coalesce SSE roster merges to ≥3s (complete roster). */
   const STREAM_APPLY_OPEN_MIN_MS = 3_000;
+  /** Thin roster while dialog open — apply membership quickly so rows appear. */
+  const STREAM_APPLY_OPEN_THIN_MS = 400;
   /** Preview strip (dialog closed) — lighter throttle, still must show avatars. */
   const STREAM_APPLY_STRIP_MIN_MS = 1_200;
 
@@ -710,8 +713,13 @@ export function MessageChatVoiceBar({
       applySpeakingMap(snapshot.participants);
       pendingStreamSnapRef.current = snapshot;
       if (streamApplyTimerRef.current != null) return;
+      const listed = participantsRef.current.length;
+      const hint = rosterTotalHintRef.current;
+      const rosterThin = hint > listed;
       const minMs = popoverOpenRef.current
-        ? STREAM_APPLY_OPEN_MIN_MS
+        ? rosterThin
+          ? STREAM_APPLY_OPEN_THIN_MS
+          : STREAM_APPLY_OPEN_MIN_MS
         : STREAM_APPLY_STRIP_MIN_MS;
       const sinceLast = Date.now() - lastStreamApplyAtRef.current;
       if (sinceLast >= minMs) {
@@ -785,13 +793,28 @@ export function MessageChatVoiceBar({
           { allowClear: true },
         );
         // While the dialog is open and SSE is live, skip heavy poll merges —
-        // SSE owns membership; poll only confirms presence.
+        // SSE owns membership; poll only confirms presence. Exception: if the
+        // poll returned a fuller roster than we painted (SSE stuck on
+        // recent_speakers), apply it — otherwise listed stays at 1 forever.
         if (
           popoverOpenRef.current &&
           streamActiveRef.current &&
           (live || voiceJoinedRef.current)
         ) {
-          applySpeakingMap(result.participants);
+          const listed = participantsRef.current.length;
+          const incoming = result.participants.length;
+          const hint = Math.max(
+            rosterTotalHintRef.current,
+            result.participant_count,
+            incoming,
+          );
+          if (incoming > listed || (hint > listed && incoming >= listed && incoming > 0)) {
+            applyRosterRows(result.participants, result.participant_count, {
+              preferMerge: true,
+            });
+          } else {
+            applySpeakingMap(result.participants);
+          }
           return "ok";
         }
         // Always paint rows when TDLib returned any participants — countHint of 0
@@ -1268,8 +1291,11 @@ export function MessageChatVoiceBar({
 
   // After Join, TDLib allows loadGroupCallParticipants. Soft polls before join
   // only return recent_speakers — keep forcing until listed catches the hint.
+  // Gate on panel `joined` (arm fired) OR voiceSession.joined: WebRTC may still
+  // be negotiating while TDLib is already is_joined after joinVideoChat.
   useEffect(() => {
-    if (!popoverOpen || !voiceSession.joined) return;
+    if (!popoverOpen) return;
+    if (!joined && !voiceSession.joined) return;
     if (!isTelegramMessagesConnected) return;
     if (!rosterIncomplete()) {
       postJoinRosterLoadedRef.current = true;
@@ -1277,7 +1303,14 @@ export function MessageChatVoiceBar({
     }
     let cancelled = false;
     let attempts = 0;
-    const maxAttempts = 6;
+    const maxAttempts = 8;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const armRetry = (ms: number) => {
+      if (cancelled || !popoverOpenRef.current) return;
+      if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(run, ms);
+    };
 
     const run = () => {
       if (cancelled || !popoverOpenRef.current) return;
@@ -1296,13 +1329,33 @@ export function MessageChatVoiceBar({
         return;
       }
       attempts += 1;
+      logPageDisplay("messages_voice_dialog_postjoin_reload_start", {
+        chatId,
+        listed: participantsRef.current.length,
+        hint: rosterTotalHintRef.current,
+        attempt: attempts,
+        webrtcJoined: voiceSession.joined,
+        panelJoined: joined,
+      });
       void (async () => {
         try {
           const result = await reloadVoiceRoster({
             force: true,
             cancelled: () => cancelled || !popoverOpenRef.current,
           });
-          if (cancelled || !result?.ok) return;
+          if (cancelled) return;
+          // Timeout / network used to return ok:false and silently stop retries —
+          // that left listed=1 while totalHint=8 forever.
+          if (!result?.ok) {
+            logPageDisplay("messages_voice_dialog_postjoin_reload_fail", {
+              chatId,
+              error: result && "error" in result ? result.error : "unknown",
+              attempt: attempts,
+              level: "warn",
+            });
+            armRetry(2_000);
+            return;
+          }
           const listed = participantsRef.current.length;
           const hint = rosterTotalHintRef.current;
           logPageDisplay("messages_voice_dialog_postjoin_reload_ok", {
@@ -1311,29 +1364,42 @@ export function MessageChatVoiceBar({
             count: listed,
             hint,
             attempt: attempts,
+            fetched: result.participants.length,
           });
           if (listed >= hint && hint > 0) {
             postJoinRosterLoadedRef.current = true;
             return;
           }
           // Background TDLib load may still be filling cache — retry.
-          if (!cancelled && popoverOpenRef.current) {
-            window.setTimeout(run, 1_800);
-          }
-        } catch {
-          if (!cancelled && popoverOpenRef.current) {
-            window.setTimeout(run, 2_000);
-          }
+          armRetry(1_500);
+        } catch (err) {
+          logPageDisplay("messages_voice_dialog_postjoin_reload_fail", {
+            chatId,
+            error: err instanceof Error ? err.message : String(err),
+            attempt: attempts,
+            level: "warn",
+          });
+          armRetry(2_000);
         }
       })();
     };
 
-    const timer = setTimeout(run, 700);
+    // Wait for joinVideoChat to land on TDLib before the first force load.
+    const timer = setTimeout(run, voiceSession.joined ? 400 : 1_200);
     return () => {
       cancelled = true;
       clearTimeout(timer);
+      if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [popoverOpen, voiceSession.joined, chatId, isTelegramMessagesConnected, reloadVoiceRoster, rosterIncomplete]);
+  }, [
+    popoverOpen,
+    joined,
+    voiceSession.joined,
+    chatId,
+    isTelegramMessagesConnected,
+    reloadVoiceRoster,
+    rosterIncomplete,
+  ]);
 
   useEffect(() => {
     if (!popoverOpen || !voiceSession.joined) {

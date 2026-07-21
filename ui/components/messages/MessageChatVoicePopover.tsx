@@ -629,7 +629,10 @@ export function MessageChatVoicePopover({
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
   const chatTitle = title.trim() || t("messages.voiceChat.active");
-  const totalParticipantCount = participants.length;
+  const totalParticipantCount = Math.max(
+    typeof participantCount === "number" ? participantCount : 0,
+    participants.length,
+  );
   const participantCountLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {

@@ -58,12 +58,19 @@ function createSilentVideoTrack(): MediaStreamTrack {
 /**
  * Local audio for listen-only joins — no mic permission / user gesture.
  * Real mic is swapped in later via setMicEnabled().
+ * Reuse one AudioContext — creating a new one per join was a multi-hundred-ms
+ * main-thread stall that stacked with createOffer during dialog open.
  */
+let sharedSilentAudioCtx: AudioContext | null = null;
+
 function createSilentAudioTrack(): MediaStreamTrack {
   if (typeof AudioContext === "undefined") {
     throw new Error("silent_audio_unavailable");
   }
-  const ctx = new AudioContext();
+  if (!sharedSilentAudioCtx || sharedSilentAudioCtx.state === "closed") {
+    sharedSilentAudioCtx = new AudioContext();
+  }
+  const ctx = sharedSilentAudioCtx;
   const oscillator = ctx.createOscillator();
   const gain = ctx.createGain();
   gain.gain.value = 0;
@@ -74,10 +81,8 @@ function createSilentAudioTrack(): MediaStreamTrack {
   const track = dest.stream.getAudioTracks()[0];
   if (!track) {
     oscillator.stop();
-    void ctx.close().catch(() => undefined);
     throw new Error("silent_audio_track_failed");
   }
-  // Keep ctx alive for the track lifetime; stop() closes it.
   const stopTrack = track.stop.bind(track);
   track.stop = () => {
     try {
@@ -85,7 +90,7 @@ function createSilentAudioTrack(): MediaStreamTrack {
     } catch {
       // already stopped
     }
-    void ctx.close().catch(() => undefined);
+    // Do not close sharedSilentAudioCtx — reused across joins.
     stopTrack();
   };
   // Keep enabled so the transceiver stays live and the SFU can deliver remote audio.
@@ -1532,6 +1537,17 @@ export class TelegramGroupCallWebSession {
         this.scheduleJoinLostIfStillBroken(connection, `pc_${state}`);
       }
     };
+
+    // Yield so dialog Close / Escape handlers can run before SDP blocks the main thread.
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        window.setTimeout(resolve, 0);
+      });
+    });
 
     const offer = await connection.createOffer({
       offerToReceiveAudio: true,

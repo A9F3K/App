@@ -32,6 +32,8 @@ export type FetchTelegramChatVoiceParticipantsResult =
 
 /** Bound each poll so a slow gateway can never freeze participant updates. */
 const REQUEST_TIMEOUT_MS = 4500;
+/** Force reload awaits TDLib loadGroupCallParticipants — needs a longer budget. */
+const FORCE_RELOAD_TIMEOUT_MS = 20_000;
 
 function parseVideoInfo(raw: unknown): TelegramChatVoiceVideoInfo | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -78,7 +80,8 @@ export async function fetchTelegramChatVoiceParticipants(
   // Hard timeout so a slow/hung server response never stalls the caller's poll
   // loop (the next tick is only scheduled once this resolves).
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutMs = options?.forceReload ? FORCE_RELOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let response: Response;
   try {
     response = await fetch(
