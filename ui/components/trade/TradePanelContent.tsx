@@ -1,7 +1,12 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Pressable, Text, View, type LayoutChangeEvent } from "react-native";
 import { Image } from "expo-image";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
+import {
+  MessageChatVoiceMoreMenu,
+  type VoiceMoreMenuAnchor,
+  type VoiceMoreMenuItem,
+} from "../messages/MessageChatVoiceMoreMenu";
 import { TradeCollectionColumn } from "./TradeCollectionColumn";
 import { TradeFeedRow } from "./TradeFeedRow";
 import { tradeApIcon, tradeFeedItemImages } from "../../trade/tradeAssets";
@@ -19,13 +24,33 @@ const PAGINATION_DOT_GAP_PX = 11;
 const TABS_AFTER_DOTS_GAP_PX = 33;
 const TABS_TO_FILTERS_GAP_PX = 19;
 const COLLECTION_AUTO_SLIDE_MS = 5000;
+const MENU_BELOW_CHIP_GAP_PX = 6;
 
 type TradeFeedTab = "trending" | "cap" | "reach";
+type TradeFilterMenuKind = "period" | "chain";
+
+type TradePeriodKey = "24h" | "1w" | "1m" | "3m" | "6m" | "1y" | "all";
+type TradeChainKey = "ton" | "eth";
 
 const TRADE_FEED_TABS: { key: TradeFeedTab; label: string }[] = [
   { key: "trending", label: "Trending" },
   { key: "cap", label: "Cap" },
   { key: "reach", label: "Reach" },
+];
+
+const TRADE_PERIOD_OPTIONS: { key: TradePeriodKey; label: string }[] = [
+  { key: "24h", label: "24h" },
+  { key: "1w", label: "1w" },
+  { key: "1m", label: "1m" },
+  { key: "3m", label: "3m" },
+  { key: "6m", label: "6m" },
+  { key: "1y", label: "1y" },
+  { key: "all", label: "All" },
+];
+
+const TRADE_CHAIN_OPTIONS: { key: TradeChainKey; label: string }[] = [
+  { key: "ton", label: "TON" },
+  { key: "eth", label: "ETH" },
 ];
 
 function TradePaginationDots({
@@ -71,15 +96,34 @@ function TradePaginationDots({
   );
 }
 
-function TradeFilterChip({ label }: { label: string }) {
+function TradeFilterChip({
+  label,
+  onPress,
+  chipRef,
+}: {
+  label: string;
+  onPress: () => void;
+  chipRef: RefObject<View | null>;
+}) {
   const colors = useColors();
   return (
-    <View style={{ flexDirection: "row", alignItems: "center" }}>
-      <Text style={[typographyRect15, { fontSize: 15, lineHeight: 21, color: colors.primary }]}>
-        {label}
-      </Text>
-      <View style={{ width: FILTER_ICON_GAP_PX }} />
-      <Image source={tradeApIcon} style={{ width: 11, height: 11 }} contentFit="contain" />
+    <View ref={chipRef} collapsable={false}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        onPress={onPress}
+        style={({ pressed }) => ({
+          flexDirection: "row",
+          alignItems: "center",
+          opacity: pressed ? 0.7 : 1,
+        })}
+      >
+        <Text style={[typographyRect15, { fontSize: 15, lineHeight: 21, color: colors.primary }]}>
+          {label}
+        </Text>
+        <View style={{ width: FILTER_ICON_GAP_PX }} />
+        <Image source={tradeApIcon} style={{ width: 11, height: 11 }} contentFit="contain" />
+      </Pressable>
     </View>
   );
 }
@@ -102,6 +146,69 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
   const [activeSlideIndex, setActiveSlideIndex] = useState(0);
   const [autoSlidePausedByUser, setAutoSlidePausedByUser] = useState(false);
   const [activeFeedTab, setActiveFeedTab] = useState<TradeFeedTab>("trending");
+  const [period, setPeriod] = useState<TradePeriodKey>("24h");
+  const [chain, setChain] = useState<TradeChainKey | null>(null);
+  const [openMenu, setOpenMenu] = useState<TradeFilterMenuKind | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<VoiceMoreMenuAnchor | null>(null);
+  const periodChipRef = useRef<View | null>(null);
+  const chainChipRef = useRef<View | null>(null);
+
+  const periodLabel =
+    TRADE_PERIOD_OPTIONS.find((option) => option.key === period)?.label ?? "24h";
+  const chainLabel =
+    TRADE_CHAIN_OPTIONS.find((option) => option.key === chain)?.label ?? "Any chain";
+
+  const closeFilterMenu = useCallback(() => {
+    setOpenMenu(null);
+    setMenuAnchor(null);
+  }, []);
+
+  const openFilterMenu = useCallback(
+    (kind: TradeFilterMenuKind, chip: View | null) => {
+      const node = chip as unknown as {
+        measureInWindow?: (
+          cb: (x: number, y: number, width: number, height: number) => void,
+        ) => void;
+      } | null;
+      const show = (anchor: VoiceMoreMenuAnchor) => {
+        setMenuAnchor(anchor);
+        setOpenMenu(kind);
+      };
+      if (node && typeof node.measureInWindow === "function") {
+        node.measureInWindow((x, y, _width, height) => {
+          show({
+            x: Math.round(x),
+            y: Math.round(y + height + MENU_BELOW_CHIP_GAP_PX),
+          });
+        });
+        return;
+      }
+      show({ x: contentInset, y: 120 });
+    },
+    [contentInset],
+  );
+
+  const periodMenuItems = useMemo((): VoiceMoreMenuItem[] => {
+    return TRADE_PERIOD_OPTIONS.map((option) => ({
+      key: option.key,
+      label: option.label,
+      onPress: () => {
+        setPeriod(option.key);
+        closeFilterMenu();
+      },
+    }));
+  }, [closeFilterMenu]);
+
+  const chainMenuItems = useMemo((): VoiceMoreMenuItem[] => {
+    return TRADE_CHAIN_OPTIONS.map((option) => ({
+      key: option.key,
+      label: option.label,
+      onPress: () => {
+        setChain(option.key);
+        closeFilterMenu();
+      },
+    }));
+  }, [closeFilterMenu]);
 
   const onSelectSlide = useCallback((index: number) => {
     setAutoSlidePausedByUser(true);
@@ -112,7 +219,8 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
   useEffect(() => {
     if (isActive) return;
     setAutoSlidePausedByUser(false);
-  }, [isActive]);
+    closeFilterMenu();
+  }, [closeFilterMenu, isActive]);
 
   const collectionAutoSlideRunning = isActive && !autoSlidePausedByUser;
 
@@ -237,9 +345,17 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
 
         <View style={{ height: TABS_TO_FILTERS_GAP_PX }} />
         <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <TradeFilterChip label="24h" />
+          <TradeFilterChip
+            label={periodLabel}
+            chipRef={periodChipRef}
+            onPress={() => openFilterMenu("period", periodChipRef.current)}
+          />
           <View style={{ width: FILTER_ROW_GAP_PX }} />
-          <TradeFilterChip label="Any chain" />
+          <TradeFilterChip
+            label={chainLabel}
+            chipRef={chainChipRef}
+            onPress={() => openFilterMenu("chain", chainChipRef.current)}
+          />
         </View>
 
         <View style={{ height: SECTION_GAP_PX }} />
@@ -260,7 +376,14 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
         ))}
         <View style={{ height: SECTION_GAP_PX }} />
       </HspScrollColumn>
+
+      <MessageChatVoiceMoreMenu
+        visible={openMenu != null}
+        anchor={menuAnchor}
+        colors={colors}
+        items={openMenu === "chain" ? chainMenuItems : periodMenuItems}
+        onClose={closeFilterMenu}
+      />
     </View>
   );
 }
-
