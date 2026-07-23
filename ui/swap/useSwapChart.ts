@@ -13,6 +13,7 @@ import {
 } from "./fetchSwapChart";
 import { loadSwapChartSeriesCached, peekSwapChartSeriesCache } from "./swapChartSeriesCache";
 import { swapChartLog, swapChartWarn } from "./swapChartDebug";
+import { isVoiceDialogUiOpen } from "../components/messages/voiceDialogUiGate";
 
 export function useSwapChart(
   initialInterval: SwapIntervalKey = "m",
@@ -112,15 +113,28 @@ export function useSwapChart(
 
   useEffect(() => {
     if (options?.deferInitialLoad) {
+      let retryId: ReturnType<typeof setTimeout> | null = null;
       const runLoad = () => {
+        // Chart parse of 300+ points mid voice-dialog open freezes Close
+        // (logs: swap_chart_parse_done overlapping voice_dialog_longtask).
+        if (isVoiceDialogUiOpen()) {
+          retryId = setTimeout(runLoad, 2_500);
+          return;
+        }
         void loadChart(false);
       };
       if (typeof requestIdleCallback === "function") {
         const idleId = requestIdleCallback(runLoad, { timeout: 2500 });
-        return () => cancelIdleCallback(idleId);
+        return () => {
+          cancelIdleCallback(idleId);
+          if (retryId != null) clearTimeout(retryId);
+        };
       }
       const timeoutId = setTimeout(runLoad, 1500);
-      return () => clearTimeout(timeoutId);
+      return () => {
+        clearTimeout(timeoutId);
+        if (retryId != null) clearTimeout(retryId);
+      };
     }
     void loadChart(false);
   }, [loadChart, options?.deferInitialLoad]);

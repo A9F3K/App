@@ -38,6 +38,11 @@ export function clearQueuedNetworkFetches(): void {
   normalWaiters.length = 0;
 }
 
+/** Drop only normal-priority jobs — keep high/critical for voice roster avatars. */
+export function clearQueuedNormalNetworkFetches(): void {
+  normalWaiters.length = 0;
+}
+
 /** Limit parallel browser fetches; critical > high > normal. */
 export function runQueuedNetworkFetch<T>(
   fn: () => Promise<T>,

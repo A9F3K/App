@@ -13,7 +13,7 @@ import { MessageChatHeader } from "./MessageChatHeader";
 import { MessageChatMessageList } from "./MessageChatMessageList";
 import { MessageChatVoiceBar } from "./MessageChatVoiceBar";
 import { MessageSubtreeErrorBoundary } from "./MessageSubtreeErrorBoundary";
-import { setVoiceDialogUiOpen } from "./voiceDialogUiGate";
+import { isVoiceDialogUiOpen, setVoiceDialogUiOpen } from "./voiceDialogUiGate";
 import type { MessageChatRowData } from "./MessageChatRow";
 
 type Props = {
@@ -61,6 +61,8 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const ignoreVoicePopoverOpenUntilRef = useRef(0);
   /** Same close gesture must not re-join / re-open via the strip underneath. */
   const suppressStripPressUntilRef = useRef(0);
+  /** Bumps on every open request so the popover can clear a stuck forceClosed latch. */
+  const [voiceOpenSeq, setVoiceOpenSeq] = useState(0);
   /** Pending deferred setVoiceJoined — cancel on Leave or Close-before-connect. */
   const joinArmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceJoinedRef = useRef(false);
@@ -76,33 +78,15 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   }, []);
 
   const armDeferredJoin = useCallback(() => {
-    if (voiceJoinedRef.current || joinArmTimerRef.current != null) return;
-    if (typeof window === "undefined") {
-      setVoiceJoined(true);
-      return;
-    }
-    // Wait for the sheet + Close handlers to paint, then arm WebRTC only when
-    // the main thread is idle — SDP during open was swallowing Close presses.
-    const arm = () => {
-      if (voiceJoinedRef.current || joinArmTimerRef.current != null) return;
-      joinArmTimerRef.current = window.setTimeout(() => {
-        joinArmTimerRef.current = null;
-        setVoiceJoined(true);
-      }, 3_500);
-    };
-    window.requestAnimationFrame(() => {
-      const ric = (
-        window as Window & {
-          requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-        }
-      ).requestIdleCallback;
-      if (typeof ric === "function") {
-        ric(() => arm(), { timeout: 4_000 });
-      } else {
-        window.setTimeout(arm, 1_200);
-      }
-    });
-  }, []);
+    if (voiceJoinedRef.current) return;
+    // Arm Join immediately so VoiceBar skips soft participant HTTP while
+    // joinVideoChat runs. SDP still waits one frame inside VoiceBar — the old
+    // 350ms panel delay left voiceJoined=false long enough for a soft reload
+    // (open_defer_force after ~1.5s) that starved the gateway mid-join.
+    clearJoinArmTimer();
+    voiceJoinedRef.current = true;
+    setVoiceJoined(true);
+  }, [clearJoinArmTimer]);
 
   useEffect(() => {
     userLeftVoiceRef.current = false;
@@ -129,9 +113,21 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   // IMPORTANT: do not clear the gate in this effect's cleanup — that briefly
   // flipped open→false→open on every popover toggle and scheduled chat-list
   // flushes that froze Close/Escape.
+  const voicePopoverOpenRef = useRef(voicePopoverOpen);
+  voicePopoverOpenRef.current = voicePopoverOpen;
+  const voiceEngagedRef = useRef(voiceEngaged);
+  voiceEngagedRef.current = voiceEngaged;
+  const publishVoiceUiGate = useCallback(() => {
+    setVoiceDialogUiOpen(
+      voicePopoverOpenRef.current ||
+        voiceJoinedRef.current ||
+        voiceEngagedRef.current,
+    );
+  }, []);
+
   useEffect(() => {
-    setVoiceDialogUiOpen(voicePopoverOpen || voiceJoined || voiceEngaged);
-  }, [voicePopoverOpen, voiceJoined, voiceEngaged]);
+    publishVoiceUiGate();
+  }, [voicePopoverOpen, voiceJoined, voiceEngaged, publishVoiceUiGate]);
 
   useEffect(() => {
     return () => {
@@ -143,15 +139,18 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   // ends. Probe sparingly — VoiceBar SSE/poll owns presence once the bar is live.
   useEffect(() => {
     if (!canStart || voiceJoined || !visible || voicePopoverOpen) return;
+    // Already know the call is live — strip/SSE refresh presence. getChat every
+    // 20s stacked with chat-list polls (20–33s) and starved voice WebRTC
+    // (logs: message-voice-detect get_chat loop + chats_poll elapsedMs=32973).
+    if (liveVoiceAvailable) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    // Once we already know the call is live, back off hard — getChat every 5s
-    // was saturating the main thread alongside chat-list SSE.
-    const intervalMs = liveVoiceAvailable ? 20_000 : 8_000;
+    const intervalMs = 12_000;
 
     const probe = async () => {
+      if (isVoiceDialogUiOpen()) return;
       const result = await fetchTelegramChatVoiceParticipants(chat.telegram_chat_id);
-      if (cancelled || !result.ok) return;
+      if (cancelled || !result.ok || isVoiceDialogUiOpen()) return;
       const nonSelf = result.participants.filter((row) => !row.is_self);
       const hasSelf = result.participants.some((row) => row.is_self);
       // Self-only is live when this account is already in the call elsewhere.
@@ -170,9 +169,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       });
     };
 
-    // Skip the immediate probe when presence is already confirmed — strip/SSE
-    // will refresh; an extra getChat on chat open was a longtask source.
-    if (!liveVoiceAvailable) void probe();
+    void probe();
     const schedule = () => {
       timer = setTimeout(() => {
         void probe().finally(() => {
@@ -204,37 +201,56 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       });
       return;
     }
-    logPageDisplay("messages_voice_dialog_open_request", { chatId: chat.telegram_chat_id });
-    setVoicePopoverOpen(true);
+    logPageDisplay("messages_voice_dialog_open_request", {
+      chatId: chat.telegram_chat_id,
+    });
+    // Publish gate before React paints so in-flight chat-list startTransitions
+    // see isVoiceDialogUiOpen() and defer (logs: chats_poll_updated mid-dialog).
+    setVoiceDialogUiOpen(true);
+    // Always bump seq so MessageChatVoicePopover clears forceClosed even when
+    // React state was already `true` (close mid-join left the portal latched).
+    setVoiceOpenSeq((n) => n + 1);
+    setVoicePopoverOpen((wasOpen) => {
+      if (wasOpen) {
+        // Bounce false→true so the popover sees a real open edge.
+        if (typeof window !== "undefined") {
+          window.requestAnimationFrame(() => {
+            setVoicePopoverOpen(true);
+          });
+          return false;
+        }
+      }
+      return true;
+    });
   }, [chat.telegram_chat_id]);
 
   const closeVoicePopover = useCallback(() => {
     // Swallow the same pointer's click-through onto the strip / Join control.
-    const until = Date.now() + 900;
+    // Keep this short — a 900ms guard made "close then reopen" feel broken.
+    const until = Date.now() + 350;
     ignoreVoicePopoverOpenUntilRef.current = until;
     suppressStripPressUntilRef.current = until;
-    // Closing before WebRTC actually connects cancels the arm — otherwise the
-    // deferred setVoiceJoined still fires under a closed sheet and freezes Escape
-    // / reopen. Once joined, Close only hides the sheet (call stays up).
-    if (!voiceJoinedRef.current) {
-      clearJoinArmTimer();
-      setVoiceEngaged(false);
-    }
+    // Hide-only: do NOT cancel the deferred Join arm. Closing before the arm
+    // fired used to clearJoinArmTimer + setVoiceEngaged(false), so TDLib never
+    // joined and the dialog stayed on listed=1 while totalHint was 4–6.
     // Native window capture handlers are outside React's discrete event system;
     // without flushSync the sheet can stay data-voice-dialog="open" for seconds
     // under chat/voice longtasks (Close looked dead to Playwright).
+    const applyClose = () => {
+      setVoicePopoverOpen(false);
+      // Keep gate up while still joined/engaged so chat-list stays deferred.
+      setVoiceDialogUiOpen(voiceJoinedRef.current || voiceEngagedRef.current);
+    };
     if (Platform.OS === "web") {
       try {
-        flushSync(() => {
-          setVoicePopoverOpen(false);
-        });
+        flushSync(applyClose);
         return;
       } catch {
         // fall through
       }
     }
-    setVoicePopoverOpen(false);
-  }, [clearJoinArmTimer]);
+    applyClose();
+  }, []);
 
   const joinVoice = useCallback(() => {
     if (!liveVoiceAvailable && groupCallId == null) {
@@ -247,23 +263,33 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     }
     userLeftVoiceRef.current = false;
     setVoiceEngaged(true);
+    voiceEngagedRef.current = true;
+    // Sync gate before any await/paint so deferred chat-list work cannot land.
+    setVoiceDialogUiOpen(true);
     unlockVoiceAutoplay();
     logPageDisplay("messages_voice_join_start", {
       chatId: chat.telegram_chat_id,
       groupCallId,
       liveVoiceAvailable,
     });
-    // Paint the dialog first so Close / Escape stay interactive, then start
-    // WebRTC after the sheet has had time to settle (SDP/ICE freezes Close).
+    // Paint the dialog + kick roster HTTP first. Arming WebRTC in the same tick
+    // as open left Close dead (setLocal/RemoteDescription main-thread wedge).
+    // ~900ms gives the sheet + Close a chance to commit before SDP work.
     openVoicePopover();
-    armDeferredJoin();
-  }, [armDeferredJoin, groupCallId, liveVoiceAvailable, openVoicePopover]);
+    clearJoinArmTimer();
+    joinArmTimerRef.current = setTimeout(() => {
+      joinArmTimerRef.current = null;
+      armDeferredJoin();
+    }, 900);
+  }, [armDeferredJoin, clearJoinArmTimer, groupCallId, liveVoiceAvailable, openVoicePopover]);
 
   const startVoice = useCallback(async () => {
     if (liveVoiceAvailable || startPending || !canStart) return;
     setStartPending(true);
     userLeftVoiceRef.current = false;
     setVoiceEngaged(true);
+    voiceEngagedRef.current = true;
+    setVoiceDialogUiOpen(true);
     unlockVoiceAutoplay();
     try {
       const result = await startTelegramChatVoice(chat.telegram_chat_id);
@@ -272,6 +298,8 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           chatId: chat.telegram_chat_id,
         });
         setVoiceEngaged(false);
+        voiceEngagedRef.current = false;
+        setVoiceDialogUiOpen(false);
         return;
       }
       const callId = normalizeTelegramGroupCallId(result.voice_chat_group_call_id);
@@ -283,7 +311,11 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
         voice_chat_group_call_id: result.voice_chat_group_call_id,
       });
       openVoicePopover();
-      armDeferredJoin();
+      clearJoinArmTimer();
+      joinArmTimerRef.current = setTimeout(() => {
+        joinArmTimerRef.current = null;
+        armDeferredJoin();
+      }, 900);
     } finally {
       setStartPending(false);
     }
@@ -291,6 +323,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     armDeferredJoin,
     canStart,
     chat.telegram_chat_id,
+    clearJoinArmTimer,
     liveVoiceAvailable,
     openVoicePopover,
     startPending,
@@ -300,9 +333,12 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     userLeftVoiceRef.current = true;
     clearJoinArmTimer();
     setVoiceEngaged(false);
+    voiceEngagedRef.current = false;
     setVoiceJoined(false);
+    voiceJoinedRef.current = false;
     closeVoicePopover();
     setStartedCallId(null);
+    setVoiceDialogUiOpen(false);
   }, [clearJoinArmTimer, closeVoicePopover]);
 
   return (
@@ -331,6 +367,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           joined={voiceJoined}
           visible={visible}
           popoverOpen={voicePopoverOpen}
+          openSeq={voiceOpenSeq}
           onJoin={joinVoice}
           onOpenPopover={() => {
             if (!voiceJoined) {

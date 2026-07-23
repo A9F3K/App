@@ -26,6 +26,7 @@ import { useElementVisible } from "./useElementVisible";
 import { MessageChatOutgoingChecks } from "./MessageChatOutgoingChecks";
 import { type MessageOutgoingStatus } from "./messageChatHistoryTypes";
 import { resolveChatListOutgoingPreview } from "./resolveChatListOutgoingPreview";
+import { MessageChatTypeIcon } from "./MessageChatTypeIcon";
 import {
   MESSAGE_AVATAR_PX,
   MESSAGE_ICON_TEXT_GAP_PX,
@@ -36,9 +37,14 @@ import {
   MESSAGE_FONT_SIZE_PX,
   formatMessageUnreadCountLabel,
 } from "./messageListLayout";
-import { MESSAGE_CHAT_CHECKMARK_SIZE_PX } from "./messageChatLayout";
+import {
+  MESSAGE_CHAT_CHECKMARK_SIZE_PX,
+  MESSAGE_CHAT_READ_CHECK_COLOR,
+} from "./messageChatLayout";
 
 const LIST_ROW_CHECKMARK_SIZE_PX = Math.max(11, MESSAGE_CHAT_CHECKMARK_SIZE_PX - 2);
+/** Gap between type glyph and title — keep tight like emoji status spacing. */
+const LIST_TYPE_ICON_GAP_PX = 4;
 
 export type MessageChatActionKind =
   | "typing"
@@ -87,6 +93,8 @@ export type MessageChatRowData = {
   /** Active Telegram voice/video chat on this chat. */
   has_active_voice_chat?: boolean;
   voice_chat_group_call_id?: number | null;
+  /** Private peer is a Telegram bot (userTypeBot). */
+  peer_is_bot?: boolean;
   /** Message ids recently deleted — open chat should drop them immediately. */
   pending_deleted_message_ids?: number[] | null;
 };
@@ -155,6 +163,12 @@ export function MessageChatRow({
   const showAvatarImage = !!iconUrl;
   const isProxyAvatar = Boolean(iconUrl?.includes("/api/telegram-messages-avatar"));
   const avatarFetchEnabled = !isProxyAvatar || avatarLoadEnabled;
+  const hasActiveVoice = Boolean(item.has_active_voice_chat);
+  const peerIsBot =
+    Boolean(item.peer_is_bot) ||
+    (item.chat_kind === "private" &&
+      Boolean(item.peer_username?.toLowerCase().endsWith("bot")));
+  const previewIsVoice = hasActiveVoice && !isMessageChatActionLive(item);
 
   useEffect(() => {
     if (avatarLogOnceRef.current || !avatarLoadEnabled) return;
@@ -216,6 +230,7 @@ export function MessageChatRow({
           height: MESSAGE_AVATAR_PX,
           alignItems: "center",
           justifyContent: "center",
+          overflow: "visible",
         }}
       >
         <MessageChatAvatarSlot
@@ -226,6 +241,8 @@ export function MessageChatRow({
           scheme={colorScheme}
           loadEnabled={avatarFetchEnabled}
           fetchPriority={isActive ? "high" : "normal"}
+          borderColor={hasActiveVoice ? MESSAGE_CHAT_READ_CHECK_COLOR : undefined}
+          activeVoiceRing={hasActiveVoice}
           onLoad={() => {
             logPageDisplay("messages_avatar_load_ok", {
               ...chatLogFields({
@@ -257,20 +274,47 @@ export function MessageChatRow({
           }}
         >
           <View style={{ flex: 1, minWidth: 0 }}>
-            <SpecialTelegramUserName
-              name={title}
-              telegramUserId={item.peer_user_id ?? null}
-              telegramChatId={item.telegram_chat_id}
-              emojiStatusCustomEmojiId={item.peer_emoji_status_custom_emoji_id ?? null}
-              emojiStatusPriority={true}
-              inlineEmojiFetchEnabled={rowInView || Boolean(isActive)}
-              inlineEmojiFetchPriority={rowInView || Boolean(isActive)}
-              inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
-              textStyle={{
-                ...textBase,
-                color: colors.primary,
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                minWidth: 0,
               }}
-            />
+            >
+              <View
+                style={{
+                  width: MESSAGE_LIST_INLINE_EMOJI_SIZE_PX,
+                  height: MESSAGE_LIST_INLINE_EMOJI_SIZE_PX,
+                  marginRight: LIST_TYPE_ICON_GAP_PX,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <MessageChatTypeIcon
+                  chatKind={item.chat_kind}
+                  peerIsBot={peerIsBot}
+                  color={colors.secondary}
+                  size={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
+                />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <SpecialTelegramUserName
+                  name={title}
+                  telegramUserId={item.peer_user_id ?? null}
+                  telegramChatId={item.telegram_chat_id}
+                  emojiStatusCustomEmojiId={item.peer_emoji_status_custom_emoji_id ?? null}
+                  emojiStatusPriority={true}
+                  inlineEmojiFetchEnabled={rowInView || Boolean(isActive)}
+                  inlineEmojiFetchPriority={rowInView || Boolean(isActive)}
+                  inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
+                  textStyle={{
+                    ...textBase,
+                    color: colors.primary,
+                  }}
+                />
+              </View>
+            </View>
           </View>
           {showTimeMeta || showListOutgoingChecks ? (
             <View
@@ -328,7 +372,7 @@ export function MessageChatRow({
               chatId={item.telegram_chat_id}
               style={{
                 ...textBase,
-                color: colors.secondary,
+                color: previewIsVoice ? colors.accent : colors.secondary,
               }}
             />
           </View>

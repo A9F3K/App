@@ -121,10 +121,13 @@ export function formatMessageChatSubheaderLabel(chat: MessageChatRowData, locale
   return presence;
 }
 
-/** Chat list preview line: typing/recording overrides last message snippet. */
+/** Chat list preview line: live voice / typing overrides last message snippet. */
 export function formatMessageChatListSubtitle(chat: MessageChatRowData, locale: AppLocale): string {
   if (isChatActionLive(chat)) {
     return formatChatActionLabel(chat, locale);
+  }
+  if (chat.has_active_voice_chat) {
+    return formatAppString(locale, "messages.voiceChat.active");
   }
   return chat.subtitle.trim();
 }
@@ -137,7 +140,7 @@ export function formatMessageChatListPreview(
   const subtitle = formatMessageChatListSubtitle(chat, locale);
   const baseSegments = resolveMessageDisplaySegments(subtitle, chat.subtitle_segments);
 
-  if (isChatActionLive(chat) || !subtitle.trim()) {
+  if (isChatActionLive(chat) || chat.has_active_voice_chat || !subtitle.trim()) {
     return { text: subtitle, textSegments: baseSegments };
   }
 

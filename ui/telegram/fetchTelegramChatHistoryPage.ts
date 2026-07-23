@@ -12,6 +12,7 @@ import {
   resolveHistoryMessageIsOutgoing,
 } from "../components/messages/messageChatHistoryTypes";
 import { MESSAGE_CHAT_HISTORY_PAGE_SIZE } from "../components/messages/messageChatLayout";
+import { isVoiceDialogUiOpen } from "../components/messages/voiceDialogUiGate";
 import { warmupTelegramChatSession } from "./warmupTelegramChatSession";
 
 export type ChatHistoryPageResult = {
@@ -164,6 +165,7 @@ export async function fetchTelegramChatHistoryPage(
   aroundMessageId?: number | null,
   olderAbove?: number | null,
   newerBelow?: number | null,
+  options?: { background?: boolean },
 ): Promise<ChatHistoryPageResult> {
   const params = new URLSearchParams({
     chat_id: String(chatId),
@@ -234,6 +236,20 @@ export async function fetchTelegramChatHistoryPage(
       selfUserId: null,
     };
   }
+  // Neighbor history JSON can be huge — normalizing mid-Join freezes WebRTC/Close.
+  if (options?.background && isVoiceDialogUiOpen()) {
+    return {
+      messages: [],
+      chatKind: null,
+      error: "voice_dialog_open",
+      hasMoreOlder: false,
+      nextBeforeMessageId: null,
+      lastReadOutboxMessageId: null,
+      lastReadInboxMessageId: null,
+      memberCount: null,
+      selfUserId: null,
+    };
+  }
   const rows: MessageChatHistoryItem[] = [];
   const selfUserRaw = Number(json.self_user_id);
   const selfUserId =
@@ -281,6 +297,7 @@ export async function loadTelegramChatHistoryFirstPage(
     aroundMessageId?: number | null;
     olderAbove?: number | null;
     newerBelow?: number | null;
+    background?: boolean;
   },
 ): Promise<ChatHistoryPageResult> {
   const warmup = options?.warmup !== false;
@@ -288,6 +305,7 @@ export async function loadTelegramChatHistoryFirstPage(
   const aroundMessageId = options?.aroundMessageId ?? null;
   const olderAbove = options?.olderAbove ?? null;
   const newerBelow = options?.newerBelow ?? null;
+  const background = options?.background === true;
   const limit =
     typeof options?.limit === "number" &&
     Number.isFinite(options.limit) &&
@@ -305,6 +323,7 @@ export async function loadTelegramChatHistoryFirstPage(
     aroundMessageId,
     olderAbove,
     newerBelow,
+    { background },
   ] as const;
   let result = await fetchTelegramChatHistoryPage(...fetchArgs);
   if (

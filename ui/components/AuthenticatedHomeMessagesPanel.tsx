@@ -178,6 +178,7 @@ function normalizeChat(raw: unknown): MessageChatRowData | null {
         : null,
     has_active_voice_chat: Boolean(row.has_active_voice_chat),
     voice_chat_group_call_id: normalizeTelegramGroupCallId(row.voice_chat_group_call_id),
+    peer_is_bot: Boolean(row.peer_is_bot),
     pending_deleted_message_ids: (() => {
       if (!Array.isArray(row.pending_deleted_message_ids)) return null;
       const ids = row.pending_deleted_message_ids
@@ -252,7 +253,8 @@ function chatsChanged(prev: MessageChatRowData[], next: MessageChatRowData[]): b
       a.pin_order !== b.pin_order ||
       a.list_tier !== b.list_tier ||
       Boolean(a.has_active_voice_chat) !== Boolean(b.has_active_voice_chat) ||
-      a.voice_chat_group_call_id !== b.voice_chat_group_call_id
+      a.voice_chat_group_call_id !== b.voice_chat_group_call_id ||
+      Boolean(a.peer_is_bot) !== Boolean(b.peer_is_bot)
     ) {
       return true;
     }
@@ -294,7 +296,8 @@ function reuseChatRowIfEqual(
     prev.pin_order === next.pin_order &&
     prev.list_tier === next.list_tier &&
     Boolean(prev.has_active_voice_chat) === Boolean(next.has_active_voice_chat) &&
-    prev.voice_chat_group_call_id === next.voice_chat_group_call_id
+    prev.voice_chat_group_call_id === next.voice_chat_group_call_id &&
+    Boolean(prev.peer_is_bot) === Boolean(next.peer_is_bot)
   ) {
     return prev;
   }
@@ -433,11 +436,19 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const [chatListSync, setChatListSync] = useState<ChatListSyncStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [gatewayWarming, setGatewayWarming] = useState(false);
+  /**
+   * True until the first chat-list fetch finishes. Without this, silent mount
+   * load + gatewayWarming=false on the first frame flashes "No chats yet".
+   */
+  const [listBootstrapPending, setListBootstrapPending] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const selectedChat = useAuthenticatedHomeSelectedChat();
   const selectedChatId = selectedChat?.telegram_chat_id ?? null;
   const selectedChatRef = useRef(selectedChat);
   selectedChatRef.current = selectedChat;
+  /** Keep applyChats urgent while the list is still empty (hard-reload first paint). */
+  const chatsCountRef = useRef(0);
+  chatsCountRef.current = chats.length;
 
   useEffect(() => {
     if (selectedChatId == null || selectedChat == null) return;
@@ -456,10 +467,33 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const pollCountRef = useRef(0);
   const lastLiveRevisionRef = useRef<number | null>(null);
   const pollInFlightRef = useRef(false);
+  /** True while any loadChats fetch+normalize is running (mount, SSE, metronome). */
+  const chatListFetchBusyRef = useRef(false);
+  const chatListFetchQueuedRef = useRef<{
+    allowAvatarResync?: boolean;
+    silent?: boolean;
+    forceFull?: boolean;
+  } | null>(null);
   const unchangedPollStreakRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatListAtBottomRef = useRef(false);
   const loadMoreTierRef = useRef<"positioned" | "unpositioned">("positioned");
+  /** Chat-list rows fetched while the voice dialog was open — apply on close. */
+  const deferredVoiceChatListRef = useRef<{
+    rows: MessageChatRowData[];
+    json: {
+      source?: string | null;
+      revision?: number | null;
+    };
+    started: number;
+    missingPreviewCount: number;
+    missingAvatarFieldCount: number;
+    silent: boolean;
+  } | null>(null);
+  /** Silent poll skipped entirely while voice dialog open — refetch on close. */
+  const deferredSilentChatLoadRef = useRef(false);
+  /** Bumped when the voice sheet opens so in-flight startTransition applies abort. */
+  const chatListApplyEpochRef = useRef(0);
   const [chatListScrollTick, setChatListScrollTick] = useState(0);
   const chatListScrollRafRef = useRef<number | null>(null);
   const chatListVirtualStickyRef = useRef({ startIndex: 0, endIndex: 0 });
@@ -534,7 +568,10 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         await refreshStatus();
         return false;
       }
-      if (json.ok && (json.chatCount ?? 0) > 0) {
+      // Do not clear warming while the list is still empty — resync often
+      // finishes before startTransition applies the first chat rows, which
+      // briefly showed "No chats yet." and raced a heavy sync apply.
+      if (json.ok && (json.chatCount ?? 0) > 0 && chatsCountRef.current > 0) {
         setGatewayWarming(false);
       }
       return response.ok && json.ok !== false;
@@ -554,6 +591,43 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       setChats([]);
       setError(null);
       setLoading(false);
+      setListBootstrapPending(false);
+      setGatewayWarming(false);
+      return;
+    }
+    // Coalesce overlapping callers (mount + SSE + metronome). Without this,
+    // 3–4×170-row normalize/apply stacks freeze the shell and voice Close.
+    if (chatListFetchBusyRef.current) {
+      const prev = chatListFetchQueuedRef.current;
+      chatListFetchQueuedRef.current = {
+        allowAvatarResync: Boolean(prev?.allowAvatarResync || options?.allowAvatarResync),
+        forceFull: Boolean(prev?.forceFull || options?.forceFull),
+        // Non-silent wins so the visible first paint is never dropped.
+        silent: prev != null
+          ? prev.silent === true && options?.silent === true
+          : options?.silent === true,
+      };
+      return;
+    }
+    chatListFetchBusyRef.current = true;
+    // Do not even fetch/parse 100+ chat rows while the voice sheet is open —
+    // JSON + normalize on the main thread stacked with avatar remounts.
+    if (options?.silent && isVoiceDialogUiOpen()) {
+      deferredSilentChatLoadRef.current = true;
+      chatListFetchBusyRef.current = false;
+      logPageDisplay("messages_chats_poll_skip_fetch_voice_dialog", {
+        forceFull: Boolean(options?.forceFull),
+      });
+      const skippedQueued = chatListFetchQueuedRef.current;
+      if (skippedQueued) {
+        chatListFetchQueuedRef.current = null;
+        if (skippedQueued.silent === true) {
+          // Stay deferred — re-entering silent loads while open loops forever.
+          deferredSilentChatLoadRef.current = true;
+        } else {
+          void loadChatsRef.current(skippedQueued);
+        }
+      }
       return;
     }
     if (!options?.silent) {
@@ -615,8 +689,99 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         lastLiveRevisionRef.current = json.revision;
       }
       applyChatListSync(json.chatListSync);
+      // Drop ALL in-flight chat-list paints while the voice sheet is open —
+      // including forceFull. forceFull used to bypass this gate and land
+      // messages_chats_poll_updated + avatar remounts mid-dialog (535ms freeze).
+      if (isVoiceDialogUiOpen()) {
+        deferredVoiceChatListRef.current = {
+          rows,
+          json: {
+            source: json.source ?? null,
+            revision: typeof json.revision === "number" ? json.revision : null,
+          },
+          started,
+          missingPreviewCount,
+          missingAvatarFieldCount,
+          silent: Boolean(options?.silent),
+        };
+        logPageDisplay("messages_chats_poll_deferred_voice_dialog", {
+          count: rows.length,
+          poll: pollCountRef.current,
+          revision: json.revision ?? null,
+          elapsedMs: Date.now() - started,
+          forceFull: Boolean(options?.forceFull),
+          silent: Boolean(options?.silent),
+        });
+        return;
+      }
+      const applyEpoch = chatListApplyEpochRef.current;
+      const stashDeferredVoiceRows = (reason: string) => {
+        deferredVoiceChatListRef.current = {
+          rows,
+          json: {
+            source: json.source ?? null,
+            revision: typeof json.revision === "number" ? json.revision : null,
+          },
+          started,
+          missingPreviewCount,
+          missingAvatarFieldCount,
+          silent: Boolean(options?.silent),
+        };
+        logPageDisplay("messages_chats_poll_deferred_voice_dialog", {
+          count: rows.length,
+          poll: pollCountRef.current,
+          revision: json.revision ?? null,
+          elapsedMs: Date.now() - started,
+          reason,
+          forceFull: Boolean(options?.forceFull),
+        });
+      };
       const applyChats = () => {
+        // Re-check inside startTransition — the gate above can pass before Join,
+        // then this callback runs after the sheet opens and freezes Close.
+        if (
+          applyEpoch !== chatListApplyEpochRef.current ||
+          isVoiceDialogUiOpen()
+        ) {
+          stashDeferredVoiceRows(
+            applyEpoch !== chatListApplyEpochRef.current
+              ? "apply_epoch_bumped"
+              : "start_transition_after_open",
+          );
+          return;
+        }
+        deferredVoiceChatListRef.current = null;
         setChats((prev) => {
+          // Critical: React may run this updater after Join even when applyChats
+          // checked the gate earlier (logs: chats_poll_updated mid-dialog →
+          // avatar storm → UI dead after one green mic).
+          if (
+            applyEpoch !== chatListApplyEpochRef.current ||
+            isVoiceDialogUiOpen()
+          ) {
+            deferredVoiceChatListRef.current = {
+              rows,
+              json: {
+                source: json.source ?? null,
+                revision: typeof json.revision === "number" ? json.revision : null,
+              },
+              started,
+              missingPreviewCount,
+              missingAvatarFieldCount,
+              silent: Boolean(options?.silent),
+            };
+            queueMicrotask(() => {
+              logPageDisplay("messages_chats_poll_deferred_voice_dialog", {
+                count: rows.length,
+                poll: pollCountRef.current,
+                revision: json.revision ?? null,
+                elapsedMs: Date.now() - started,
+                reason: "set_chats_updater_after_open",
+                forceFull: Boolean(options?.forceFull),
+              });
+            });
+            return prev;
+          }
           const next = mergeChatRows(prev, rows);
           const changed = chatsChanged(prev, next);
           queueMicrotask(() => syncAuthenticatedHomeSelectedChat(next));
@@ -649,9 +814,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           return next;
         });
       };
-      // Silent polls must stay interruptible — applying 100+ chat rows on the
-      // urgent path after voice-dialog close made the preview unclickable.
-      if (options?.silent) {
+      // First paint must stay urgent — startTransition deferred the empty→rows
+      // apply for seconds behind history/voice work (long "No chats yet" / spinner).
+      // Large silent refreshes stay interruptible once the list already has rows.
+      if (chatsCountRef.current === 0) {
+        applyChats();
+      } else if (rows.length >= 24 || Boolean(options?.silent)) {
         startTransition(applyChats);
       } else {
         applyChats();
@@ -684,6 +852,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       }
     } finally {
       if (!options?.silent) setLoading(false);
+      setListBootstrapPending(false);
+      chatListFetchBusyRef.current = false;
+      const queued = chatListFetchQueuedRef.current;
+      if (queued) {
+        chatListFetchQueuedRef.current = null;
+        void loadChatsRef.current(queued);
+      }
     }
   }, [applyChatListSync, isAuthenticated, isTelegramMessagesConnected]);
 
@@ -752,9 +927,9 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       if (streamLoadTimerRef.current != null) {
         clearTimeout(streamLoadTimerRef.current);
       }
-      // While voice dialog / joined call is active, coalesce chat-list SSE harder so
-      // setChats / avatar work cannot freeze dialog controls.
-      const debounceMs = isVoiceDialogUiOpen() ? 8_000 : 800;
+      // Busy chats emit revisions faster than a 170-row apply can finish.
+      // 800ms still stacked overlapping paints; 2.5s coalesces without feeling stale.
+      const debounceMs = isVoiceDialogUiOpen() ? 12_000 : 2_500;
       streamLoadTimerRef.current = setTimeout(() => {
         streamLoadTimerRef.current = null;
         if (isVoiceDialogUiOpen()) {
@@ -779,15 +954,29 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   useEffect(() => {
     return subscribeVoiceDialogUiOpen((open) => {
       if (open) {
+        chatListApplyEpochRef.current += 1;
         if (voiceCloseFlushTimerRef.current != null) {
           clearTimeout(voiceCloseFlushTimerRef.current);
           voiceCloseFlushTimerRef.current = null;
         }
+        // Stop a pending SSE→loadChats timer from firing mid-open longtask.
+        if (streamLoadTimerRef.current != null) {
+          clearTimeout(streamLoadTimerRef.current);
+          streamLoadTimerRef.current = null;
+        }
         return;
       }
       const pending = streamRevisionPendingRef.current;
-      if (pending == null) return;
-      if (lastLiveRevisionRef.current != null && pending <= lastLiveRevisionRef.current) {
+      const deferredRows = deferredVoiceChatListRef.current;
+      const needsSilentReload = deferredSilentChatLoadRef.current;
+      if (pending == null && deferredRows == null && !needsSilentReload) return;
+      if (
+        pending != null &&
+        lastLiveRevisionRef.current != null &&
+        pending <= lastLiveRevisionRef.current &&
+        deferredRows == null &&
+        !needsSilentReload
+      ) {
         streamRevisionPendingRef.current = null;
         return;
       }
@@ -801,10 +990,47 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       logPageDisplay("messages_chats_stream_revision", {
         revision: pending,
         reason: "voice_dialog_closed_flush_scheduled",
+        hasDeferredRows: deferredRows != null,
+        needsSilentReload,
       });
       voiceCloseFlushTimerRef.current = setTimeout(() => {
         voiceCloseFlushTimerRef.current = null;
         if (isVoiceDialogUiOpen()) return;
+        const stash = deferredVoiceChatListRef.current;
+        if (stash != null) {
+          deferredVoiceChatListRef.current = null;
+          startTransition(() => {
+            if (isVoiceDialogUiOpen()) {
+              deferredVoiceChatListRef.current = stash;
+              return;
+            }
+            setChats((prev) => {
+              const next = mergeChatRows(prev, stash.rows);
+              const changed = chatsChanged(prev, next);
+              queueMicrotask(() => syncAuthenticatedHomeSelectedChat(next));
+              if (stash.rows.length > 0) setGatewayWarming(false);
+              if (changed) {
+                logPageDisplay("messages_chats_poll_updated", {
+                  count: next.length,
+                  ...firstChatListLogFields(next),
+                  poll: pollCountRef.current,
+                  source: stash.json.source ?? null,
+                  revision: stash.json.revision ?? null,
+                  elapsedMs: Date.now() - stash.started,
+                  missingPreviewCount: stash.missingPreviewCount,
+                  missingAvatarFieldCount: stash.missingAvatarFieldCount,
+                  reason: "voice_dialog_closed_deferred_rows",
+                });
+              }
+              return changed ? next : prev;
+            });
+          });
+        }
+        if (deferredSilentChatLoadRef.current) {
+          deferredSilentChatLoadRef.current = false;
+          void loadChatsRef.current({ silent: true, forceFull: true });
+        }
+        if (streamRevisionPendingRef.current == null) return;
         logPageDisplay("messages_chats_stream_revision", {
           revision: streamRevisionPendingRef.current,
           reason: "voice_dialog_closed_flush",
@@ -826,11 +1052,25 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     pollCountRef.current = 0;
     if (isTelegramMessagesConnected) {
       setGatewayWarming(true);
+      setListBootstrapPending(true);
+    } else {
+      setListBootstrapPending(false);
+      setGatewayWarming(false);
     }
     void (async () => {
-      await loadChats({ silent: true });
-      await triggerGatewayResync("initial_mount");
-      await loadChats({ silent: true });
+      // Paint the first chat list as soon as TDLib has rows. Do NOT await gateway
+      // resync first — that blocked the list for 3–4s behind history/voice work
+      // and left "No chats yet" / spinner up too long (logs: resync 3717ms then
+      // first chats_poll_updated).
+      await loadChats({ silent: true, forceFull: true });
+      void (async () => {
+        await triggerGatewayResync("initial_mount");
+        if (isVoiceDialogUiOpen()) {
+          deferredSilentChatLoadRef.current = true;
+          return;
+        }
+        await loadChats({ silent: true, forceFull: true });
+      })();
     })();
   }, [authReady, isTelegramMessagesConnected, loadChats, triggerGatewayResync]);
 
@@ -1037,6 +1277,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     }
     chatListPruneTimerRef.current = setTimeout(() => {
       chatListPruneTimerRef.current = null;
+      if (isVoiceDialogUiOpen()) return;
       const window = chatListVirtualWindowRef.current;
       if (!window?.enabled) return;
       setChats((prev) => {
@@ -1093,7 +1334,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   // tdesktop: keep neighbors warm so the next switch paints from cache.
   useEffect(() => {
     if (!isTelegramMessagesConnected || visibleChats.length === 0) return;
-    prefetchVisibleChatNeighbors(visibleChats, selectedChatId, { radius: 2 });
+    if (isVoiceDialogUiOpen()) return;
+    // Live voice on the open chat already runs SSE/soft-poll + WebRTC — neighbor
+    // history storms competed for the main thread (logs: prefetch_ok mid-freeze).
+    const selected = visibleChats.find((row) => row.telegram_chat_id === selectedChatId);
+    if (selected?.has_active_voice_chat) return;
+    prefetchVisibleChatNeighbors(visibleChats, selectedChatId, { radius: 1 });
     // visibleChats identity changes every render; key on ids + selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- visibleChatIdsKey
   }, [isTelegramMessagesConnected, selectedChatId, visibleChatIdsKey]);
@@ -1109,13 +1355,20 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   useEffect(() => {
     const inProgress = chatListSync?.inProgress === true;
     if (prevChatListSyncRef.current && !inProgress) {
-      void loadChatsRef.current({ silent: true, forceFull: true });
+      if (isVoiceDialogUiOpen()) {
+        logPageDisplay("messages_chats_force_full_deferred_voice_dialog", {
+          reason: "chat_list_sync_idle",
+        });
+      } else {
+        void loadChatsRef.current({ silent: true, forceFull: true });
+      }
     }
     prevChatListSyncRef.current = inProgress;
   }, [chatListSync?.inProgress]);
 
   useEffect(() => {
     if (!chatListAtBottomRef.current) return;
+    if (isVoiceDialogUiOpen()) return;
     if (mayHaveMoreOnServer) {
       void requestLoadMoreChats(needsPositionedPage ? "positioned" : "unpositioned");
     }
@@ -1123,6 +1376,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
 
   const handleChatListNearBottom = useCallback(() => {
     chatListAtBottomRef.current = true;
+    if (isVoiceDialogUiOpen()) return;
     void loadChatsRef.current({
       silent: true,
       forceFull: cachedChatCount > chats.length,
@@ -1219,7 +1473,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     );
   }
 
-  if ((loading || gatewayWarming) && chats.length === 0) {
+  if ((loading || gatewayWarming || listBootstrapPending) && chats.length === 0) {
     return (
       <View style={[listShellStyle, { paddingVertical: 24, alignItems: "center" }]}>
         <ActivityIndicator size="small" color={colors.primary} />

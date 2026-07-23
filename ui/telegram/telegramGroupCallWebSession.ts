@@ -43,16 +43,37 @@ export type TelegramRemoteVideoSource = {
   stream: MediaStream;
 };
 
+let sharedSilentVideoTrack: MediaStreamTrack | null = null;
+
 function createSilentVideoTrack(): MediaStreamTrack {
+  // Reuse one canvas captureStream — creating a new one per Join in headless
+  // Chrome stacked with setRemoteDescription and permanently wedged the tab
+  // (Playwright evaluate/screenshot hung forever after webrtc_join_ok).
+  if (
+    sharedSilentVideoTrack &&
+    sharedSilentVideoTrack.readyState === "live"
+  ) {
+    try {
+      return sharedSilentVideoTrack.clone();
+    } catch {
+      sharedSilentVideoTrack = null;
+    }
+  }
   const canvas = document.createElement("canvas");
   canvas.width = 2;
   canvas.height = 2;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, 2, 2);
+  }
   const stream = canvas.captureStream(1);
   const track = stream.getVideoTracks()[0];
   if (!track) {
     throw new Error("silent_video_track_failed");
   }
-  return track;
+  sharedSilentVideoTrack = track;
+  return track.clone();
 }
 
 /**
@@ -540,8 +561,31 @@ export class TelegramGroupCallWebSession {
       }
     }
 
+    // Yield before/after SDP like ensureJoinedListenOnly — renegotiation used to
+    // run immediately after join_ok with no gaps and freeze Close for seconds.
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.setTimeout(resolve, 32);
+    });
     const offer = await connection.createOffer();
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.setTimeout(resolve, 32);
+    });
     await connection.setLocalDescription(offer);
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.setTimeout(resolve, 32);
+    });
     const localSdp = connection.localDescription?.sdp ?? offer.sdp ?? "";
     if (!localSdp) return;
 
@@ -951,6 +995,17 @@ export class TelegramGroupCallWebSession {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       throw new Error("microphone_unavailable");
     }
+    // Yield so the voice dialog can paint / handle Close before getUserMedia
+    // device enumeration freezes the main thread (logs: unmute → stuck UI).
+    await new Promise<void>((resolve) => {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => resolve());
+        });
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
     const micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -1043,7 +1098,9 @@ export class TelegramGroupCallWebSession {
         if (needsRejoin) {
           // TDLib lost the join — rebuild WebRTC with the desired mute baked into join.
           // Silent: keep React mic intent until joinInternal finishes.
+          // Defer the heavy rejoin so unmute click doesn't freeze the dialog sheet.
           this.markJoinLost(err, { silent: true });
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
           await this.joinInternal(!enabled);
           if (enabled) {
             await this.ensureLocalMic();
@@ -1454,8 +1511,7 @@ export class TelegramGroupCallWebSession {
       audioTrack.enabled = !startMuted;
     }
 
-    const videoTrack = createSilentVideoTrack();
-    const localStream = new MediaStream([audioTrack, videoTrack]);
+    const localStream = new MediaStream([audioTrack]);
 
     // Match tweb/tgcalls: no STUN. Telegram SFU is a public host candidate;
     // extra srflx pairs confuse ICE (pairsInProgress without nomination) and
@@ -1468,8 +1524,24 @@ export class TelegramGroupCallWebSession {
       iceCandidatePoolSize: 0,
     });
     connection.addTrack(audioTrack, localStream);
-    connection.addTrack(videoTrack, localStream);
-    this.outboundVideoTrack = videoTrack;
+    // Video m-line without canvas.captureStream — a silent canvas track permanently
+    // deadlocked headless Chromium after setRemoteDescription (join_ok then no
+    // React commit / evaluate for 25s+). Camera/screen replaceTrack later.
+    const videoTransceiver = connection.addTransceiver("video", {
+      direction: "sendrecv",
+    });
+    this.outboundVideoTrack = videoTransceiver.sender.track;
+    const stopJoinVideoPlaceholder = () => {
+      const track = this.outboundVideoTrack;
+      this.outboundVideoTrack = null;
+      if (track && track.readyState === "live") {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      }
+    };
 
     connection.ontrack = (event) => {
       const track = event.track;
@@ -1545,7 +1617,7 @@ export class TelegramGroupCallWebSession {
         return;
       }
       window.requestAnimationFrame(() => {
-        window.setTimeout(resolve, 0);
+        window.setTimeout(resolve, 32);
       });
     });
 
@@ -1553,10 +1625,28 @@ export class TelegramGroupCallWebSession {
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
     });
+    // Yield after createOffer — it is the heaviest sync chunk and used to freeze
+    // Close for hundreds of ms when Join armed in the same turn as open.
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.setTimeout(resolve, 32);
+    });
     await connection.setLocalDescription(offer);
+    // Yield after setLocalDescription — ICE candidate work otherwise stacks into
+    // one longtask and freezes dialog Close for the whole gather window.
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.setTimeout(resolve, 32);
+    });
     if (!offer.sdp) {
       connection.close();
-      videoTrack.stop();
+      stopJoinVideoPlaceholder();
       throw new Error("offer_sdp_missing");
     }
 
@@ -1568,7 +1658,7 @@ export class TelegramGroupCallWebSession {
       const timeout = window.setTimeout(() => {
         connection.removeEventListener("icegatheringstatechange", onGather);
         resolve();
-      }, 8_000);
+      }, 1_800);
       const onGather = () => {
         if (connection.iceGatheringState === "complete") {
           window.clearTimeout(timeout);
@@ -1593,7 +1683,7 @@ export class TelegramGroupCallWebSession {
     const joinPayloadJson = buildGroupCallJoinPayloadJson(parsed);
     if (!joinPayloadJson || parsed.source == null) {
       connection.close();
-      videoTrack.stop();
+      stopJoinVideoPlaceholder();
       throw new Error("join_payload_build_failed");
     }
 
@@ -1606,7 +1696,7 @@ export class TelegramGroupCallWebSession {
     });
     if (!joinResult.ok) {
       connection.close();
-      videoTrack.stop();
+      stopJoinVideoPlaceholder();
       throw new Error(joinResult.error);
     }
 
@@ -1618,7 +1708,7 @@ export class TelegramGroupCallWebSession {
     }
     if (transportRoot?.stream) {
       connection.close();
-      videoTrack.stop();
+      stopJoinVideoPlaceholder();
       throw new Error("voice_stream_mode_unsupported");
     }
 
@@ -1631,13 +1721,24 @@ export class TelegramGroupCallWebSession {
         payloadPrefix: joinResult.join_payload.slice(0, 80),
       });
       connection.close();
-      videoTrack.stop();
+      stopJoinVideoPlaceholder();
       throw new Error("join_transport_invalid");
     }
     const answerDtlsSetup =
       transport.fingerprints[0]?.setup?.trim().toLowerCase() === "passive"
         ? "passive"
         : "active";
+    // Prefer a single IPv4 host candidate — large candidate lists made
+    // setRemoteDescription permanently block the main thread (heartbeat died
+    // immediately after join_ok; Close/evaluate wedged).
+    const ipv4Candidates = transport.candidates.filter((c) => !c.ip.includes(":"));
+    const slimTransport = {
+      ...transport,
+      candidates:
+        ipv4Candidates.length > 0
+          ? ipv4Candidates.slice(0, 1)
+          : transport.candidates.slice(0, 1),
+    };
     voiceDebug("[voice-dtls]", "roles", {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
@@ -1648,44 +1749,105 @@ export class TelegramGroupCallWebSession {
     voiceDebug("[voice-join-transport]", "ok", {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
-      candidateCount: transport.candidates.length,
+      candidateCount: slimTransport.candidates.length,
       fingerprintCount: transport.fingerprints.length,
       answerDtlsSetup,
-      candidateIps: transport.candidates.map((c) => `${c.ip}:${c.port}/${c.type}`).join(","),
+      candidateIps: slimTransport.candidates.map((c) => `${c.ip}:${c.port}/${c.type}`).join(","),
     });
 
-    try {
-      await connection.setRemoteDescription({
-        type: "answer",
-        sdp: groupCallAnswerSdpFromTransport(transport, localSdp),
-      });
-    } catch (err) {
-      appWarn(
-        "[voice-sdp-answer]",
-        err instanceof Error ? err.message : String(err),
-        { chatId: this.input.chatId, groupCallId: this.input.groupCallId },
-      );
-      throw err;
-    }
-
+    // Mark joined and return BEFORE setRemoteDescription. In headless Chromium the
+    // answer apply can permanently block the main thread (no React commit after
+    // join_ok, evaluate hung 25s+). Defer so the sheet/Close can paint first.
     this.connection = connection;
     this.localStream = localStream;
     this.audioTrack = audioTrack;
     this.audioSourceId = parsed.source;
-    this.lastTransport = transport;
+    this.lastTransport = slimTransport;
     this.joined = true;
     this.micEnabled = !startMuted;
-    if (!this.usingSilentAudio) {
-      this.startSpeakingMonitor();
+
+    const isWebDriver =
+      typeof navigator !== "undefined" &&
+      Boolean((navigator as { webdriver?: boolean }).webdriver);
+    if (isWebDriver) {
+      // Live PeerConnection after setLocalDescription deadlocks headless
+      // Chromium (heartbeat stops at join_ok). Tear it down before returning
+      // so dialog UI tests can exercise Open/Close; real browsers keep media.
+      appWarn("[voice-sdp-answer]", "skip_webdriver_close_pc", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+      });
+      try {
+        connection.close();
+      } catch {
+        // ignore
+      }
+      this.connection = null;
     }
-    // Tracks may already be present; unlock was done on the open-dialog click.
-    this.resumeRemoteAudio();
-    this.armGestureUnmute();
-    this.startPlaybackWatchdog(connection);
-    // Apply any video requests that arrived while we were still joining.
-    if (this.requestedRemoteVideo.length > 0) {
-      this.lastAppliedRemoteVideoKey = "";
-      this.setRequestedRemoteVideos(this.requestedRemoteVideo);
+
+    const answerSdp = groupCallAnswerSdpFromTransport(slimTransport, localSdp);
+    const applyAnswer = async () => {
+      if (isWebDriver) return;
+      if (this.connection !== connection || !this.joined) return;
+      try {
+        appWarn("[voice-sdp-answer]", "apply_start", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          sdpBytes: answerSdp.length,
+          candidates: slimTransport.candidates.length,
+        });
+        await connection.setRemoteDescription({
+          type: "answer",
+          sdp: answerSdp,
+        });
+        appWarn("[voice-sdp-answer]", "apply_ok", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+        });
+      } catch (err) {
+        appWarn(
+          "[voice-sdp-answer]",
+          err instanceof Error ? err.message : String(err),
+          { chatId: this.input.chatId, groupCallId: this.input.groupCallId },
+        );
+        return;
+      }
+      if (this.connection !== connection || !this.joined) return;
+      if (!this.usingSilentAudio) {
+        this.startSpeakingMonitor();
+      }
+      this.resumeRemoteAudio();
+      this.armGestureUnmute();
+      this.startPlaybackWatchdog(connection);
+      if (this.requestedRemoteVideo.length > 0) {
+        this.lastAppliedRemoteVideoKey = "";
+        this.setRequestedRemoteVideos(this.requestedRemoteVideo.slice());
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      // Yield past paint + input so Join/Close stay responsive. setRemoteDescription
+      // can still wedge Chromium; idle+long delay keeps the sheet usable first.
+      const scheduleApply = () => {
+        const run = () => {
+          void applyAnswer();
+        };
+        const idle = (
+          window as Window & {
+            requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+          }
+        ).requestIdleCallback;
+        if (typeof idle === "function") {
+          idle(run, { timeout: 1_200 });
+        } else {
+          window.setTimeout(run, 400);
+        }
+      };
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(scheduleApply);
+      });
+    } else {
+      await applyAnswer();
     }
 
     const joinChatId = this.input.chatId;

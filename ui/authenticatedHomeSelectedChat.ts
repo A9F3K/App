@@ -109,6 +109,7 @@ function readStoredChat(): MessageChatRowData | null {
         is_pinned: Boolean(row.is_pinned),
         has_active_voice_chat: Boolean(row.has_active_voice_chat),
         voice_chat_group_call_id: normalizeTelegramGroupCallId(row.voice_chat_group_call_id),
+        peer_is_bot: Boolean(row.peer_is_bot),
         pending_deleted_message_ids: Array.isArray(row.pending_deleted_message_ids)
           ? row.pending_deleted_message_ids
               .map((id) => Number(id))

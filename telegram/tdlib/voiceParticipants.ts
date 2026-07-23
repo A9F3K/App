@@ -249,12 +249,51 @@ type CollectedParticipant = {
   screenInfo?: VoiceParticipantVideoInfo | null;
 };
 
-/** tdesktop keeps speaking painted ~1.5s past the last level; hold similar. */
-const SPEAKING_HOLD_MS = 2_500;
+/** tdesktop keeps speaking painted ~1s past the last level; keep hold short so
+ * green mics clear when people stop (2.5s looked "stuck after load"). */
+const SPEAKING_HOLD_MS = 900;
 
 function effectiveSpeaking(row: CollectedParticipant, now: number): boolean {
   if (row.isSpeaking) return true;
   return row.lastSpokeAt != null && now - row.lastSpokeAt < SPEAKING_HOLD_MS;
+}
+
+function ratchetParticipantCountHint(
+  cached: CallParticipantsCache,
+  nextHint: number,
+): void {
+  if (!Number.isFinite(nextHint) || nextHint < 0) return;
+  const hint = Math.trunc(nextHint);
+  // Soft getGroupCall often under-counts (1) before join. Never shrink the
+  // high-water mark until a finished load confirms a smaller size — otherwise
+  // recent_speakers stubs are filtered out (logs: listed=1 totalHint=1).
+  if (!cached.loadedAll) {
+    cached.participantCountHint = Math.max(cached.participantCountHint, hint);
+    return;
+  }
+  if (hint >= cached.members.size) {
+    cached.participantCountHint = Math.max(cached.participantCountHint, hint);
+    return;
+  }
+  cached.participantCountHint = hint;
+}
+
+/** Sync profile peek — never blocks the request path on getUser. */
+function peekParticipantProfile(
+  userId: number | null,
+  chatId: number | null,
+): {
+  title: string;
+  description: string;
+  emoji_status_custom_emoji_id: string | null;
+} {
+  const key = participantKey(userId, chatId);
+  const cached = key ? profileCache.get(key) : undefined;
+  return {
+    title: cached?.title ?? "",
+    description: cached?.description ?? "",
+    emoji_status_custom_emoji_id: cached?.emoji_status_custom_emoji_id ?? null,
+  };
 }
 
 function normalizeVideoInfo(
@@ -390,6 +429,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
   const order = typeof participant.order === "string" ? participant.order : "";
   let speakingBecameTrue = false;
   let speakingBecameFalse = false;
+  let mediaBecameLive = false;
   if (!order) {
     // Empty order means left per TDLib. Muted self can also get empty order while
     // still joined — keep pinned self. Everyone else must drop immediately or the
@@ -417,6 +457,8 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       participant.is_speaking ?? (participant as { isSpeaking?: boolean }).isSpeaking,
     );
     const prev = cached.members.get(key);
+    const videoInfo = normalizeVideoInfo(participant.video_info);
+    const screenInfo = normalizeVideoInfo(participant.screen_sharing_video_info);
     // Roster/order-sync updates often carry is_speaking=false while the person is
     // mid-sentence (speaking arrived via recent_speakers). Keep a short hold so
     // green mics don't get wiped by every unrelated participant update.
@@ -426,6 +468,15 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       isSpeaking || (lastSpokeAt != null && now - lastSpokeAt < SPEAKING_HOLD_MS);
     speakingBecameTrue = effNext && !effPrev;
     speakingBecameFalse = effPrev && !effNext;
+    const nextVideo = videoInfo ?? prev?.videoInfo ?? null;
+    const nextScreen = screenInfo ?? prev?.screenInfo ?? null;
+    // Immediate SSE only when a camera/screencast endpoint newly appears — clears
+    // must not flush every mute/order sync (that flooded renegotiation).
+    mediaBecameLive =
+      (Boolean(nextVideo?.endpoint_id) &&
+        (nextVideo?.endpoint_id ?? "") !== (prev?.videoInfo?.endpoint_id ?? "")) ||
+      (Boolean(nextScreen?.endpoint_id) &&
+        (nextScreen?.endpoint_id ?? "") !== (prev?.screenInfo?.endpoint_id ?? ""));
     cached.members.set(key, {
       userId,
       chatId,
@@ -438,15 +489,16 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
           ? Boolean(participant.is_muted_for_all_users)
           : (prev?.isMuted ?? true),
       order,
-      videoInfo: normalizeVideoInfo(participant.video_info),
-      screenInfo: normalizeVideoInfo(participant.screen_sharing_video_info),
+      videoInfo: nextVideo,
+      screenInfo: nextScreen,
     });
   }
-  // Only speaking START flushes immediately (green must light fast). Stops and
-  // roster churn ride the debounce — immediate stop-flushes flooded SSE several
-  // times per second during active calls and froze the client.
+  // Speaking START and new camera/screencast endpoints flush immediately so the
+  // dialog can renegotiate for presentation video without waiting on debounce.
   void speakingBecameFalse;
-  bumpVoiceCallRevision(callId, { immediate: speakingBecameTrue });
+  bumpVoiceCallRevision(callId, {
+    immediate: speakingBecameTrue || mediaBecameLive,
+  });
 }
 
 /**
@@ -464,7 +516,6 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
   const callId = Number(groupCall.id);
   if (!Number.isFinite(callId) || callId <= 0) return;
 
-  const speakers = speakersFromGroupCall(groupCall);
   const cached = ensureCallCache(callId, {
     uniqueId: String(groupCall.unique_id ?? ""),
     loadedAll: Boolean(groupCall.loaded_all_participants),
@@ -472,9 +523,11 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
   if (groupCall.unique_id != null) {
     cached.uniqueId = String(groupCall.unique_id);
   }
+  const speakers = speakersFromGroupCall(groupCall, cached.speakers);
   const countHint = Number(groupCall.participant_count);
   if (Number.isFinite(countHint) && countHint >= 0) {
-    cached.participantCountHint = Math.trunc(countHint);
+    const nextHint = Math.trunc(countHint);
+    ratchetParticipantCountHint(cached, nextHint);
   }
 
   let changed = false;
@@ -488,16 +541,27 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
       // recent_speakers is not a join roster — never insert ghosts here.
       continue;
     }
-    // Authoritative when the speaker is listed: honor is_speaking true/false.
     const isSpeaking = Boolean(speaker.isSpeaking);
-    if (prev.isSpeaking === isSpeaking) continue;
-    if (isSpeaking && !prev.isSpeaking) speakingBecameTrue = true;
-    if (!isSpeaking && prev.isSpeaking) speakingBecameFalse = true;
+    // recent_speakers flaps false while people are mid-sentence. Promote true;
+    // on false only drop the live flag and let lastSpokeAt hold expire — never
+    // refresh lastSpokeAt to `now` (that pinned speakingCount forever / to 0).
+    if (isSpeaking) {
+      if (!prev.isSpeaking) speakingBecameTrue = true;
+      cached.members.set(key, {
+        ...prev,
+        isSpeaking: true,
+        lastSpokeAt: now,
+      });
+      changed = true;
+      continue;
+    }
+    if (!prev.isSpeaking) continue;
+    speakingBecameFalse = true;
     cached.members.set(key, {
       ...prev,
-      isSpeaking,
-      lastSpokeAt: isSpeaking ? now : prev.lastSpokeAt,
-      // Mute stays independent — tdesktop shows green ring + muted mic separately.
+      isSpeaking: false,
+      // Keep the prior pulse time so effectiveSpeaking holds ~SPEAKING_HOLD_MS.
+      lastSpokeAt: prev.lastSpokeAt ?? now,
     });
     changed = true;
   }
@@ -510,17 +574,25 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
   let speakersChanged = (prevSpeakers?.size ?? 0) !== speakers.size;
   for (const [key, speaker] of speakers) {
     const prev = prevSpeakers?.get(key);
-    if (!prev || Boolean(prev.isSpeaking) !== Boolean(speaker.isSpeaking)) {
+    const prevEff = prev != null && effectiveSpeaking(prev, now);
+    const nextEff = effectiveSpeaking(speaker, now);
+    if (!prev || prevEff !== nextEff || Boolean(prev.isSpeaking) !== Boolean(speaker.isSpeaking)) {
       speakersChanged = true;
       // Immediate flush only for a speaker who newly STARTED — updateGroupCall
       // fires several times a second and flushing every flap froze the client.
-      if (speaker.isSpeaking) speakingBecameTrue = true;
+      if (nextEff && !prevEff) speakingBecameTrue = true;
     }
   }
   cached.speakers = speakers;
 
   if (!changed && !speakersChanged) return;
   void speakingBecameFalse;
+  if (speakingBecameTrue) {
+    logGateway("voice_participants_speaking_pulse", {
+      groupCallId: callId,
+      revision: (callMembersCache.get(callId)?.revision ?? 0) + 1,
+    });
+  }
   bumpVoiceCallRevision(callId, { immediate: speakingBecameTrue });
 }
 
@@ -724,9 +796,13 @@ async function resolveSelfUserId(client: Client): Promise<number | null> {
   return null;
 }
 
-function speakersFromGroupCall(groupCall: GroupCallSnapshot): Map<string, CollectedParticipant> {
+function speakersFromGroupCall(
+  groupCall: GroupCallSnapshot,
+  prevSpeakers?: Map<string, CollectedParticipant>,
+): Map<string, CollectedParticipant> {
   const map = new Map<string, CollectedParticipant>();
   const speakers = Array.isArray(groupCall.recent_speakers) ? groupCall.recent_speakers : [];
+  const now = Date.now();
   for (const speaker of speakers) {
     const { userId, chatId } = parseSender(speaker.participant_id);
     const key = participantKey(userId, chatId);
@@ -734,11 +810,18 @@ function speakersFromGroupCall(groupCall: GroupCallSnapshot): Map<string, Collec
     const isSpeaking = Boolean(
       speaker.is_speaking ?? (speaker as { isSpeaking?: boolean }).isSpeaking,
     );
+    const prev = prevSpeakers?.get(key);
+    // Only pulse lastSpokeAt when TDLib says speaking — inventing `now` for every
+    // recent_speakers row (is_speaking=false) painted the whole roster green for
+    // SPEAKING_HOLD_MS after every soft poll / join load.
+    const lastSpokeAt = isSpeaking ? now : prev?.lastSpokeAt;
     map.set(key, {
       userId,
       chatId,
       isSpeaking,
-      lastSpokeAt: isSpeaking ? Date.now() : undefined,
+      // Preserve hold across flaps — rebuilding with lastSpokeAt:undefined made
+      // every SSE snapshot report speakingCount=0 a tick after someone spoke.
+      lastSpokeAt,
       // recent_speakers omit mute — default muted (most members are listeners);
       // a live participant update corrects this. Unmuted-by-default painted every
       // stub with an open mic, unlike Telegram Desktop.
@@ -757,14 +840,19 @@ function applySpeakingOverlay(
   const now = Date.now();
   for (const [key, row] of members) {
     const speaker = speakers.get(key);
-    const speaking = Boolean(row.isSpeaking) || Boolean(speaker?.isSpeaking);
+    // Live flags only — hold rides lastSpokeAt via effectiveSpeaking().
+    const liveSpeaking = Boolean(row.isSpeaking) || Boolean(speaker?.isSpeaking);
     next.set(key, {
       ...row,
       // OR live updateGroupCallParticipant with getGroupCall.recent_speakers.
       // Preferring only recent_speakers wiped true flags when the snapshot lagged
       // a live speaking update (mic icons never turned green).
-      isSpeaking: speaking,
-      lastSpokeAt: speaking ? now : row.lastSpokeAt,
+      isSpeaking: liveSpeaking,
+      // Only pulse lastSpokeAt while TDLib still reports speaking. Refreshing
+      // `now` whenever a prior hold was active forever-extended green mics.
+      lastSpokeAt: liveSpeaking
+        ? now
+        : (row.lastSpokeAt ?? speaker?.lastSpokeAt),
       // Mute is independent from speaking (tdesktop parity).
       order: row.order || speaker?.order || "",
     });
@@ -838,22 +926,22 @@ function preserveSpeakingOnRoster(
   for (const [key, row] of next) {
     const prior = priorMembers?.get(key);
     const speaker = speakers?.get(key);
-    const speaking =
-      Boolean(row.isSpeaking) ||
-      Boolean(prior?.isSpeaking) ||
-      Boolean(speaker?.isSpeaking);
-    const lastSpokeAt = speaking
+    // Do NOT OR prior.isSpeaking into the permanent flag — that pinned green
+    // mics after every force-reload (load says false, prior still true).
+    const liveSpeaking =
+      Boolean(row.isSpeaking) || Boolean(speaker?.isSpeaking);
+    const lastSpokeAt = liveSpeaking
       ? now
       : (row.lastSpokeAt ?? prior?.lastSpokeAt ?? speaker?.lastSpokeAt);
     if (
-      speaking === Boolean(row.isSpeaking) &&
+      liveSpeaking === Boolean(row.isSpeaking) &&
       lastSpokeAt === row.lastSpokeAt
     ) {
       continue;
     }
     next.set(key, {
       ...row,
-      isSpeaking: speaking,
+      isSpeaking: liveSpeaking,
       lastSpokeAt,
     });
   }
@@ -927,8 +1015,11 @@ function scheduleBackgroundRosterReload(
         speakers: prev?.speakers,
       });
       bumpVoiceCallRevision(callId);
-      const warmed = await warmMissingProfiles(client, members);
-      if (warmed > 0) bumpVoiceCallRevision(callId);
+      // Background title warm — do not block the TDLib event loop on the
+      // reload critical path (speaking updates starve during sequential getUser).
+      void warmMissingProfiles(client, members).then((warmed) => {
+        if (warmed > 0) bumpVoiceCallRevision(callId);
+      });
     } catch (err) {
       logGateway("voice_participants_bg_reload_failed", {
         groupCallId: callId,
@@ -968,7 +1059,7 @@ function sleep(ms: number): Promise<void> {
 async function waitUntilGroupCallJoinedForLoad(
   client: Client,
   callId: number,
-  maxWaitMs = 12_000,
+  maxWaitMs = 2_500,
 ): Promise<boolean> {
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
@@ -981,7 +1072,7 @@ async function waitUntilGroupCallJoinedForLoad(
     } catch {
       /* retry */
     }
-    await sleep(250);
+    await sleep(200);
   }
   return false;
 }
@@ -991,18 +1082,33 @@ async function warmMissingProfiles(
   client: Client,
   members: Map<string, CollectedParticipant>,
 ): Promise<number> {
-  const pending: Array<{ userId: number | null; chatId: number | null }> = [];
+  const pending: Array<{ key: string; userId: number | null; chatId: number | null }> =
+    [];
   for (const [key, row] of members) {
     const cached = profileCache.get(key);
     if (cached?.title) continue;
-    pending.push({ userId: row.userId, chatId: row.chatId });
+    pending.push({ key, userId: row.userId, chatId: row.chatId });
   }
   if (pending.length === 0) return 0;
   let warmed = 0;
   // Sequential with a cap — a parallel getUser stampede stalls TDLib.
-  for (const { userId, chatId } of pending.slice(0, 25)) {
+  for (const { key, userId, chatId } of pending.slice(0, 25)) {
     try {
-      const profile = await resolveParticipantProfile(client, userId, chatId);
+      // Bypass resolveParticipantProfile cache — empty titles from a join race
+      // must not block a second getUser a few hundred ms later.
+      let profile = await loadParticipantProfile(client, userId, chatId, {
+        includeBio: false,
+      });
+      if (!profile.title && userId != null) {
+        await sleep(200);
+        profile = await loadParticipantProfile(client, userId, chatId, {
+          includeBio: false,
+        });
+      }
+      const at = profile.title
+        ? Date.now()
+        : Date.now() - PROFILE_TTL_MS + EMPTY_PROFILE_RETRY_MS;
+      profileCache.set(key, { ...profile, at });
       if (profile.title) warmed += 1;
     } catch {
       /* keep warming the rest */
@@ -1094,6 +1200,8 @@ async function loadJoinedParticipants(
     }
     const prev = map.get(key);
     const isSpeaking = Boolean(participant.is_speaking);
+    const videoInfo = normalizeVideoInfo(participant.video_info);
+    const screenInfo = normalizeVideoInfo(participant.screen_sharing_video_info);
     map.set(key, {
       userId,
       chatId,
@@ -1101,8 +1209,8 @@ async function loadJoinedParticipants(
       lastSpokeAt: isSpeaking ? Date.now() : prev?.lastSpokeAt,
       isMuted: Boolean(participant.is_muted_for_all_users),
       order,
-      videoInfo: normalizeVideoInfo(participant.video_info),
-      screenInfo: normalizeVideoInfo(participant.screen_sharing_video_info),
+      videoInfo: videoInfo ?? prev?.videoInfo ?? null,
+      screenInfo: screenInfo ?? prev?.screenInfo ?? null,
     });
   };
 
@@ -1248,7 +1356,6 @@ export async function fetchChatVoiceParticipants(
     };
   }
 
-  const speakers = speakersFromGroupCall(groupCall);
   const uniqueId = String(groupCall.unique_id ?? "");
   const isJoined = Boolean(groupCall.is_joined || groupCall.need_rejoin);
 
@@ -1259,7 +1366,10 @@ export async function fetchChatVoiceParticipants(
   // snapshot reads only the cache — without this, speaking learned via polling
   // never reached the stream and green mics stayed grey while the dialog was
   // open (SSE snapshots with is_speaking=false overrode poll data).
+  // speakersFromGroupCall runs inside ingest so lastSpokeAt hold is preserved.
   ingestGroupCallUpdate({ _: "updateGroupCall", group_call: groupCall });
+  const speakers =
+    callMembersCache.get(callId)?.speakers ?? speakersFromGroupCall(groupCall);
 
   // TDLib only allows loadGroupCallParticipants after join. Until then we serve
   // cache + recent_speakers; after join we force a background load.
@@ -1282,11 +1392,38 @@ export async function fetchChatVoiceParticipants(
     // Explicit force after join: await the load so the HTTP response carries the
     // full roster. Scheduling-only left clients stuck on recent_speakers (listed=1
     // while participant_count was 4+) until a later SSE race — often never.
+    // If not joined yet, do NOT block TDLib for seconds — return soft roster and
+    // let the client retry after webrtcJoined (pre-join waits starved joinVideoChat).
     if (options?.forceReload) {
-      const joinedForLoad =
-        isJoined || (await waitUntilGroupCallJoinedForLoad(client, callId));
+      const joinedForLoad = isJoined
+        ? true
+        : await waitUntilGroupCallJoinedForLoad(client, callId);
       if (joinedForLoad) {
       try {
+        // Join already schedules scheduleVoiceRosterReloadAfterJoin — wait for
+        // that in-flight load instead of starting a second loadGroupCallParticipants
+        // pass (double quiet-load starved TDLib and timed out soft polls).
+        let reusedJoinReload = false;
+        if (bgReloadInFlight.has(callId)) {
+          const waitDeadline = Date.now() + 8_000;
+          while (bgReloadInFlight.has(callId) && Date.now() < waitDeadline) {
+            await sleep(150);
+          }
+          const after = callMembersCache.get(callId);
+          if (after && after.members.size > 1) {
+            collected = applySpeakingOverlay(
+              after.members,
+              after.speakers ?? speakers,
+            );
+            reusedJoinReload = true;
+            logGateway("voice_participants_force_reuse_join_reload", {
+              groupCallId: callId,
+              listed: after.members.size,
+              loadedAll: after.loadedAll,
+            });
+          }
+        }
+        if (!reusedJoinReload) {
         let { members: loaded, loadedAll, loadFailed } = await loadJoinedParticipants(
           client,
           callId,
@@ -1314,10 +1451,13 @@ export async function fetchChatVoiceParticipants(
             loadedAt: Date.now(),
             loadedAll: nextLoadedAll,
             revision: prev?.revision ?? 0,
-            participantCountHint:
+            participantCountHint: Math.max(
+              prev?.participantCountHint ?? 0,
               Number.isFinite(participantCountHint) && participantCountHint >= 0
                 ? Math.trunc(participantCountHint)
-                : (prev?.participantCountHint ?? 0),
+                : 0,
+              members.size,
+            ),
             speakers: prev?.speakers ?? speakers,
           });
           bumpVoiceCallRevision(callId);
@@ -1327,6 +1467,7 @@ export async function fetchChatVoiceParticipants(
           });
         } else if (cacheUsable) {
           collected = applySpeakingOverlay(cached!.members, speakers);
+        }
         }
       } catch (err) {
         logGateway("voice_participants_force_reload_failed", {
@@ -1352,8 +1493,9 @@ export async function fetchChatVoiceParticipants(
       // out once any ordered row existed). Union stubs while the roster is thin.
       if (
         !cached!.loadedAll &&
-        Number.isFinite(participantCountHint) &&
-        participantCountHint > collected.size
+        (speakers.size > 0 ||
+          (Number.isFinite(participantCountHint) &&
+            participantCountHint > collected.size))
       ) {
         collected = mergeSpeakerStubsForDisplay(collected, speakers);
       }
@@ -1451,44 +1593,42 @@ export async function fetchChatVoiceParticipants(
   chatToGroupCallId.set(Math.trunc(chatId), callId);
   {
     const cached = ensureCallCache(callId, { uniqueId });
-    if (Number.isFinite(participantCountHint) && participantCountHint >= 0) {
-      cached.participantCountHint = Math.trunc(participantCountHint);
-    }
+    ratchetParticipantCountHint(cached, participantCountHint);
   }
 
-  // Only people with a TDLib participant order are actually in the call.
-  // Empty-order rows are leave leftovers (or recent_speakers stubs). Keep stubs
-  // while the roster is thinner than participant_count so the UI is not stuck
-  // at "1" (self) when others are still only known via recent_speakers.
+  // tdesktop: until loaded_all_participants, show everyone we know — ordered
+  // members plus recent_speakers stubs. Filtering stubs when TDLib under-counts
+  // participant_count left the dialog on a solo self row (listed=1 hint=1).
   const rosterLoadedAll = Boolean(callMembersCache.get(callId)?.loadedAll);
+  const hintForDisplay = Math.max(
+    callMembersCache.get(callId)?.participantCountHint ?? 0,
+    Number.isFinite(participantCountHint) ? Math.trunc(participantCountHint) : 0,
+    collected.size,
+  );
+  if (!rosterLoadedAll && speakers.size > 0) {
+    collected = mergeSpeakerStubsForDisplay(collected, speakers);
+  }
   const orderedRows = [...collected.values()].filter((row) => {
     if (row.order) return true;
     if (isJoined && selfUserId != null && row.userId === selfUserId) return true;
-    return false;
+    // Keep speaker stubs visible until the full join load finishes.
+    return !rosterLoadedAll;
   });
-  const needSpeakerFallback =
-    !rosterLoadedAll &&
-    Number.isFinite(participantCountHint) &&
-    participantCountHint > orderedRows.length;
-  const displayRows = needSpeakerFallback
-    ? [...collected.values()]
-    : orderedRows.length > 0 || rosterLoadedAll
+  const displayRows =
+    orderedRows.length > 0 || rosterLoadedAll
       ? orderedRows
       : [...collected.values()];
-  const profiles = await Promise.all(
-    displayRows.map((row) => resolveParticipantProfile(client, row.userId, row.chatId)),
-  );
-
-  const nowMs = Date.now();
-  const participants: VoiceParticipantRow[] = displayRows.map((row, index) => {
-    const profile = profiles[index]!;
+  // Never await getUser on the HTTP path — that serialized behind history/chat
+  // loads and timed out soft polls (message-voice-participants timeout).
+  const participants: VoiceParticipantRow[] = displayRows.map((row) => {
+    const profile = peekParticipantProfile(row.userId, row.chatId);
     return {
       user_id: row.userId,
       chat_id: row.chatId,
       title: profile.title,
       description: profile.description,
       emoji_status_custom_emoji_id: profile.emoji_status_custom_emoji_id,
-      is_speaking: effectiveSpeaking(row, nowMs),
+      is_speaking: effectiveSpeaking(row, Date.now()),
       is_muted: row.isMuted,
       is_self: selfUserId != null && row.userId === selfUserId,
       order: row.order || "",
@@ -1499,20 +1639,36 @@ export async function fetchChatVoiceParticipants(
 
   participants.sort(compareVoiceParticipantRows);
 
-  // Telegram Desktop uses getGroupCall.participant_count as the authoritative
-  // total (includes hidden listeners). Do not inflate it with our listed length.
+  void warmMissingProfiles(
+    client,
+    new Map(
+      displayRows
+        .map((row) => {
+          const key = participantKey(row.userId, row.chatId);
+          return key ? ([key, row] as const) : null;
+        })
+        .filter((entry): entry is readonly [string, CollectedParticipant] => entry != null),
+    ),
+  ).then((warmed) => {
+    if (warmed > 0) bumpVoiceCallRevision(callId);
+  });
+
+  // Prefer high-water hint over a soft under-count so the UI header matches
+  // Telegram Desktop ("N participants") before the full load lands.
   const participantCount = Number(groupCall.participant_count);
   const listedCount = participants.length;
-  const resolvedCount =
+  const tdlibCount =
     Number.isFinite(participantCount) && participantCount >= 0
       ? Math.trunc(participantCount)
-      : listedCount;
+      : 0;
+  const resolvedCount = Math.max(tdlibCount, hintForDisplay, listedCount);
   logGateway("voice_participants_resolved", {
     chatId,
     groupCallId: callId,
     listed: listedCount,
     participantCount: resolvedCount,
-    tdlibCount: Number.isFinite(participantCount) ? Math.trunc(participantCount) : null,
+    tdlibCount: tdlibCount > 0 ? tdlibCount : null,
+    hint: hintForDisplay,
     isJoined,
     hasHiddenListeners: Boolean(groupCall.has_hidden_listeners),
     usedCache: callMembersCache.has(callId),
@@ -1571,21 +1727,21 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
   let collected = cached.members;
   if (cached.speakers && cached.speakers.size > 0) {
     collected = applySpeakingOverlay(cached.members, cached.speakers);
-    if (
-      !cached.loadedAll &&
-      cached.participantCountHint > collected.size
-    ) {
+    // tdesktop: until loaded_all, always union recent_speakers stubs — do not
+    // gate on hintGap (soft under-count used to skip the merge → listed=1).
+    if (!cached.loadedAll) {
       collected = mergeSpeakerStubsForDisplay(collected, cached.speakers);
     }
   }
   const orderedRows = [...collected.values()].filter((row) => {
     if (row.order) return true;
     if (selfUserId != null && row.userId === selfUserId) return true;
-    return false;
+    return !cached.loadedAll;
   });
-  const needSpeakerFallback =
-    !cached.loadedAll && cached.participantCountHint > orderedRows.length;
-  const displayRows = needSpeakerFallback ? [...collected.values()] : orderedRows;
+  const displayRows =
+    orderedRows.length > 0 || cached.loadedAll
+      ? orderedRows
+      : [...collected.values()];
   const participants: VoiceParticipantRow[] = displayRows
     .map((row) => {
       const key = participantKey(row.userId, row.chatId);
@@ -1605,7 +1761,7 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
       };
     });
   participants.sort(compareVoiceParticipantRows);
-  const hint = cached.participantCountHint;
+  const hint = Math.max(cached.participantCountHint, participants.length);
   return {
     revision: cached.revision,
     participant_count: hint > 0 ? hint : participants.length,

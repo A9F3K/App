@@ -10,6 +10,7 @@ import {
 } from "./messageMediaBlobCache";
 import { resolvePreviewMediaUrl } from "./MessageChatMediaContent";
 import { MESSAGE_CHAT_EDGE_PREFETCH_SCREENS } from "./messageChatLayout";
+import { isVoiceDialogUiOpen } from "./voiceDialogUiGate";
 
 /** Cap concurrent full-photo warmups per display-window tick (tdesktop nearby band). */
 const DISPLAY_FULL_PREFETCH_MAX = 8;
@@ -39,6 +40,7 @@ export function prefetchDisplayChatMedia(
     contentActive?: boolean;
   },
 ): void {
+  if (isVoiceDialogUiOpen()) return;
   if (!Number.isFinite(chatId) || messages.length === 0) return;
   if (options?.contentActive === false) return;
 

@@ -23,19 +23,30 @@ export async function joinTelegramChatVoice(input: {
   if (!Number.isFinite(audioSourceId) || audioSourceId === 0) {
     return { ok: false, error: "invalid_audio_source" };
   }
-  const response = await fetch(buildApiUrl("/api/telegram-messages-voice-join"), {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: input.chatId,
-      ...(callId != null ? { group_call_id: callId } : {}),
-      audio_source_id: audioSourceId,
-      payload: input.payload,
-      is_muted: input.isMuted,
-      is_my_video_enabled: false,
-    }),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl("/api/telegram-messages-voice-join"), {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        chat_id: input.chatId,
+        ...(callId != null ? { group_call_id: callId } : {}),
+        audio_source_id: audioSourceId,
+        payload: input.payload,
+        is_muted: input.isMuted,
+        is_my_video_enabled: false,
+      }),
+    });
+  } catch (err) {
+    const aborted = err instanceof DOMException && err.name === "AbortError";
+    return { ok: false, error: aborted ? "join_timeout" : "network_error" };
+  } finally {
+    clearTimeout(timer);
+  }
   const json = (await response.json().catch(() => ({}))) as {
     ok?: boolean;
     error?: string;

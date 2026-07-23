@@ -22,6 +22,37 @@ export type GatewayConnectSnapshot = {
   } | null;
 };
 
+type GatewayVoiceVideoInfo = {
+  endpoint_id: string;
+  source_groups: Array<{ semantics: string; source_ids: number[] }>;
+};
+
+function parseGatewayVoiceVideoInfo(raw: unknown): GatewayVoiceVideoInfo | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const item = raw as Record<string, unknown>;
+  const endpoint =
+    typeof item.endpoint_id === "string" ? item.endpoint_id.trim() : "";
+  const groups = Array.isArray(item.source_groups) ? item.source_groups : [];
+  const sourceGroups = groups
+    .map((group) => {
+      if (!group || typeof group !== "object" || Array.isArray(group)) return null;
+      const g = group as Record<string, unknown>;
+      const semantics =
+        typeof g.semantics === "string" && g.semantics.trim() ? g.semantics.trim() : "";
+      const sourceIds = Array.isArray(g.source_ids)
+        ? g.source_ids
+            .map((id) => Number(id))
+            .filter((id) => Number.isFinite(id) && id !== 0)
+            .map((id) => Math.trunc(id))
+        : [];
+      if (!semantics || sourceIds.length === 0) return null;
+      return { semantics, source_ids: sourceIds };
+    })
+    .filter((group): group is { semantics: string; source_ids: number[] } => group != null);
+  if (!endpoint && sourceGroups.length === 0) return null;
+  return { endpoint_id: endpoint, source_groups: sourceGroups };
+}
+
 async function gatewayFetch(
   path: string,
   init?: RequestInit,
@@ -1047,6 +1078,14 @@ export async function gatewayFetchChatVoiceParticipants(
     is_speaking: boolean;
     is_muted: boolean;
     is_self: boolean;
+    video_info: {
+      endpoint_id: string;
+      source_groups: Array<{ semantics: string; source_ids: number[] }>;
+    } | null;
+    screen_sharing_video_info: {
+      endpoint_id: string;
+      source_groups: Array<{ semantics: string; source_ids: number[] }>;
+    } | null;
   }>;
   has_active_voice_chat: boolean;
   voice_chat_group_call_id: number | null;
@@ -1077,6 +1116,8 @@ export async function gatewayFetchChatVoiceParticipants(
         is_speaking?: unknown;
         is_muted?: unknown;
         is_self?: unknown;
+        video_info?: unknown;
+        screen_sharing_video_info?: unknown;
       }>).map((row) => {
         const userId = Number(row.user_id);
         const senderChatId = Number(row.chat_id);
@@ -1098,6 +1139,12 @@ export async function gatewayFetchChatVoiceParticipants(
           is_speaking: isSpeaking,
           is_muted: Boolean(row.is_muted),
           is_self: Boolean(row.is_self),
+          // Must forward camera / screencast endpoints — dropping them left the
+          // voice dialog unable to renegotiate for remote presentation video.
+          video_info: parseGatewayVoiceVideoInfo(row.video_info),
+          screen_sharing_video_info: parseGatewayVoiceVideoInfo(
+            row.screen_sharing_video_info,
+          ),
         };
       })
     : [];

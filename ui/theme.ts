@@ -8,7 +8,7 @@ import {
 import { isWelcomeLayoutRoute } from "./isWelcomeLayoutRoute";
 
 export const dark = {
-  background: "#111111",
+  background: "#010101",
   primary: "#FFFFFF",
   /** Muted text + icons (content, not chrome). */
   secondary: "#A1A1A1",
@@ -20,7 +20,7 @@ export const dark = {
 } as const;
 
 export const light = {
-  background: "#FAFAFA",
+  background: "#F1F1F1",
   primary: "#000000",
   secondary: "#717171",
   /** Borders + divider strokes (chrome). */

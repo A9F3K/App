@@ -8,6 +8,7 @@ export type TdUserProfileCache = {
   emoji_status_custom_emoji_id: string | null;
   accent_color_light: string | null;
   accent_color_dark: string | null;
+  is_bot: boolean;
 };
 
 const FALLBACK_PROFILE: TdUserProfileCache = {
@@ -15,6 +16,7 @@ const FALLBACK_PROFILE: TdUserProfileCache = {
   emoji_status_custom_emoji_id: null,
   accent_color_light: null,
   accent_color_dark: null,
+  is_bot: false,
 };
 
 export function userDisplayNameFromTdUser(user: Record<string, unknown>): string {
@@ -37,6 +39,17 @@ export function userDisplayNameFromTdUser(user: Record<string, unknown>): string
   });
 }
 
+export function isBotFromTdUser(user: unknown): boolean {
+  if (!user || typeof user !== "object") return false;
+  const row = user as Record<string, unknown>;
+  const type = row.type;
+  if (type && typeof type === "object") {
+    const typeId = (type as { _?: string })._;
+    if (typeId === "userTypeBot") return true;
+  }
+  return row.type === "bot" || row.is_bot === true;
+}
+
 export function userProfileFromTdUser(user: unknown): TdUserProfileCache {
   if (!user || typeof user !== "object") return FALLBACK_PROFILE;
   const row = user as Record<string, unknown>;
@@ -46,6 +59,7 @@ export function userProfileFromTdUser(user: unknown): TdUserProfileCache {
     emoji_status_custom_emoji_id: emojiStatusCustomIdFromUser(row),
     accent_color_light: accents.light,
     accent_color_dark: accents.dark,
+    is_bot: isBotFromTdUser(row),
   };
 }
 

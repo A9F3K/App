@@ -14,6 +14,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { Stack } from "expo-router";
+import { DefaultTheme } from "@react-navigation/native";
 import * as Updates from "expo-updates";
 import { AuthProvider, useAuth } from "../auth/AuthContext";
 import { TelegramProvider, useTelegram } from "../ui/components/Telegram";
@@ -32,7 +33,7 @@ import { installGlobalVoiceFreezeLogger } from "../ui/components/messages/useVoi
 import { appWarn } from "../shared/appLog";
 import { syncWebDocumentOverflowForZoom } from "../ui/browserZoom";
 import { isWelcomeLayoutRoute } from "../ui/isWelcomeLayoutRoute";
-import { authenticatedHomeBottomBarDock, layout, useColors } from "../ui/theme";
+import { authenticatedHomeBottomBarDock, dark, layout, useColors } from "../ui/theme";
 import { useResolvedPathname } from "../ui/useResolvedPathname";
 import {
   useEffect,
@@ -45,6 +46,15 @@ import {
 import { Analytics } from "@vercel/analytics/react";
 
 applyPlatformTextDefaults();
+
+// ExpoRoot's NavigationContainer defaults to DefaultTheme (background #f2f2f2). That
+// paints a full-viewport grey card on hard-reload before route chrome mounts.
+DefaultTheme.dark = true;
+DefaultTheme.colors.background = dark.background;
+DefaultTheme.colors.card = dark.background;
+DefaultTheme.colors.text = dark.primary;
+DefaultTheme.colors.border = dark.highlight;
+DefaultTheme.colors.primary = dark.primary;
 
 void SplashScreen.preventAutoHideAsync();
 
@@ -272,8 +282,8 @@ function RootContent() {
 
   useEffect(() => {
     logBuildSnapshotOnce("root_layout_mount");
-    // Install a page-lifetime longtask observer so any freeze (≥200ms) is
-    // visible in the console regardless of which component caused it.
+    // Opt-in longtask logger (`window.__HSP_VOICE_DEBUG__=true`) — always-on
+    // observe+POST was stacking with hard-reload chat paint.
     const cleanup = installGlobalVoiceFreezeLogger();
     return cleanup;
   }, []);
@@ -366,13 +376,19 @@ function RootContent() {
           <Stack
             screenOptions={{
               headerShown: false,
-              contentStyle: { flex: 1, minHeight: 0 },
+              // Avoid RN default card #f2f2f2 flash on hard-reload before route paints.
+              contentStyle: { flex: 1, minHeight: 0, backgroundColor },
             }}
           />
         </View>
       ) : (
         <View style={styles.main}>
-          <Stack screenOptions={{ headerShown: false, contentStyle: { flex: 1, minHeight: 0 } }} />
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { flex: 1, minHeight: 0, backgroundColor },
+            }}
+          />
         </View>
       )}
       {

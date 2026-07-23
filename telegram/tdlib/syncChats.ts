@@ -704,6 +704,7 @@ async function resolvePeerProfile(
   username: string | null;
   accentColorLight: string | null;
   accentColorDark: string | null;
+  isBot: boolean;
 }> {
   const peerUserId = peerUserIdFromChat(chat);
   if (peerUserId == null) {
@@ -713,6 +714,7 @@ async function resolvePeerProfile(
       username: null,
       accentColorLight: null,
       accentColorDark: null,
+      isBot: false,
     };
   }
   try {
@@ -721,6 +723,7 @@ async function resolvePeerProfile(
       emoji_status?: unknown;
       username?: string;
       usernames?: { active_usernames?: string[]; editable_username?: string };
+      type?: unknown;
     };
     const profile = userProfileFromTdUser(user);
     return {
@@ -729,6 +732,7 @@ async function resolvePeerProfile(
       username: usernameFromTdUser(user),
       accentColorLight: profile.accent_color_light,
       accentColorDark: profile.accent_color_dark,
+      isBot: profile.is_bot,
     };
   } catch {
     return {
@@ -737,6 +741,7 @@ async function resolvePeerProfile(
       username: null,
       accentColorLight: null,
       accentColorDark: null,
+      isBot: false,
     };
   }
 }
@@ -957,6 +962,7 @@ async function buildLiveRowsForChats(
       ),
       peer_accent_color_light: profile?.accentColorLight ?? null,
       peer_accent_color_dark: profile?.accentColorDark ?? null,
+      peer_is_bot: profile?.isBot ?? false,
       presence_kind: profile?.presence?.kind ?? null,
       presence_at: profile?.presence?.at ?? null,
       chat_action: null,

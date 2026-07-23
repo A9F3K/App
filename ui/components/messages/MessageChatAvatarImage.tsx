@@ -3,6 +3,7 @@ import { Image } from "expo-image";
 import type { ImageStyle, StyleProp } from "react-native";
 import { Platform, StyleSheet } from "react-native";
 import { runQueuedNetworkFetch, type NetworkFetchPriority } from "./networkFetchQueue";
+import { isVoiceDialogUiOpen, subscribeVoiceDialogUiOpen } from "./voiceDialogUiGate";
 
 function needsAuthenticatedFetch(uri: string): boolean {
   return uri.includes("/api/telegram-messages-avatar");
@@ -91,8 +92,11 @@ export function prefetchMessageChatAvatar(
   options?: { priority?: NetworkFetchPriority },
 ): void {
   if (!uri || isMessageChatAvatarBlobCached(uri) || isMessageChatAvatarFetchFailed(uri)) return;
+  const priority = options?.priority ?? "normal";
+  // Chat-list avatar storms mid-voice-dialog froze Close after the first green mic.
+  if (isVoiceDialogUiOpen() && priority === "normal") return;
   void runQueuedNetworkFetch(() => fetchAvatarBlob(uri), {
-    priority: options?.priority ?? "normal",
+    priority,
   }).catch(() => {
     /* row onError handles visible failures */
   });
@@ -127,6 +131,11 @@ export function MessageChatAvatarImage({
     getAvatarCacheRevision,
     getAvatarCacheRevision,
   );
+  const voiceDialogOpen = useSyncExternalStore(
+    subscribeVoiceDialogUiOpen,
+    isVoiceDialogUiOpen,
+    () => false,
+  );
   const [displayUri, setDisplayUri] = useState<string | null>(() => readCachedDisplayUri(uri));
   const onLoadRef = useRef(onLoad);
   const onErrorRef = useRef(onError);
@@ -146,6 +155,9 @@ export function MessageChatAvatarImage({
   useEffect(() => {
     if (!loadEnabled) return;
     if (isMessageChatAvatarFetchFailed(uri)) return;
+    // Pause list/history avatar HTTP while the voice sheet is open. Voice roster
+    // uses high/critical and stays allowed.
+    if (isVoiceDialogUiOpen() && fetchPriority === "normal") return;
 
     const cached = readCachedDisplayUri(uri);
     if (cached) {
@@ -156,6 +168,8 @@ export function MessageChatAvatarImage({
     let cancelled = false;
 
     void runQueuedNetworkFetch(async () => {
+      if (cancelled) return;
+      if (isVoiceDialogUiOpen() && fetchPriority === "normal") return;
       const next = await fetchAvatarBlob(uri);
       if (!cancelled) {
         if (next) setDisplayUri(next);
@@ -168,7 +182,8 @@ export function MessageChatAvatarImage({
     };
     // Intentionally omit cacheRevision — a successful sibling fetch must not
     // re-queue every other avatar's network effect (that froze the voice dialog).
-  }, [uri, loadEnabled, fetchPriority]);
+    // voiceDialogOpen: resume normal fetches after the sheet closes.
+  }, [uri, loadEnabled, fetchPriority, voiceDialogOpen]);
 
   if (!displayUri) return null;
 

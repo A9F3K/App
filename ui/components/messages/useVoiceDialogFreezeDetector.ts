@@ -2,25 +2,31 @@
  * Detects and logs main-thread freeze events during voice dialog sessions.
  *
  * Uses two complementary techniques:
- *  1. PerformanceObserver(longtask) — catches any task >50ms on the main thread.
- *  2. rAF heartbeat — catches cases where the browser simply stops calling rAF
- *     (GPU/compositor stall, renderer suspension), which longtask misses.
+ *  1. PerformanceObserver(longtask) — catches heavy main-thread blocks.
+ *  2. rAF heartbeat — catches compositor stalls longtask misses.
  *
- * All events are logged to [page-display] so they appear in the browser console
- * alongside the existing voice roster / SSE logs.
+ * IMPORTANT: do not POST/log every Chrome longtask (≥50ms). That feedback loop
+ * (console + /api/voice-debug) was freezing the voice dialog worse than the
+ * original work.
  */
 
 import { useEffect, useRef } from "react";
 import { Platform } from "react-native";
 import { logPageDisplay } from "../../pageDisplayLog";
+import { isVoiceDialogUiOpen } from "./voiceDialogUiGate";
+
+let lastPostAt = 0;
+const POST_MIN_INTERVAL_MS = 2_000;
 
 function postFreezeEvent(event: string, details: Record<string, unknown>) {
   if (typeof fetch === "undefined") return;
+  const now = Date.now();
+  if (now - lastPostAt < POST_MIN_INTERVAL_MS) return;
+  lastPostAt = now;
   fetch("/api/voice-debug", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // Fire-and-forget — never await, never throw into the call stack
-    body: JSON.stringify({ event, details, ts: Date.now() }),
+    body: JSON.stringify({ event, details, ts: now }),
   }).catch(() => {
     /* ignore network errors */
   });
@@ -30,8 +36,11 @@ function postFreezeEvent(event: string, details: Record<string, unknown>) {
 const RAF_STALL_WARN_MS = 500;
 /** Error-level freeze (controls probably unresponsive by now). */
 const RAF_STALL_ERROR_MS = 1200;
-/** Long-task duration above which we log at warn level. */
+/** Ignore routine Chrome longtasks; only surface real freezes. */
+const LONGTASK_LOG_MS = 200;
 const LONGTASK_ERROR_MS = 400;
+/** Cap console spam while SDP/ICE churns. */
+const LONGTASK_LOG_MIN_INTERVAL_MS = 750;
 
 export function useVoiceDialogFreezeDetector(enabled: boolean): void {
   const enabledRef = useRef(enabled);
@@ -40,8 +49,8 @@ export function useVoiceDialogFreezeDetector(enabled: boolean): void {
   useEffect(() => {
     if (!enabled || Platform.OS !== "web" || typeof window === "undefined") return;
 
-    // ── 1. PerformanceObserver: longtask ────────────────────────────────────
     let observer: PerformanceObserver | null = null;
+    let lastLogAt = 0;
     if (
       typeof PerformanceObserver !== "undefined" &&
       PerformanceObserver.supportedEntryTypes?.includes("longtask")
@@ -51,6 +60,12 @@ export function useVoiceDialogFreezeDetector(enabled: boolean): void {
           if (!enabledRef.current) return;
           for (const entry of list.getEntries()) {
             const durationMs = Math.round(entry.duration);
+            if (durationMs < LONGTASK_LOG_MS) continue;
+            const now = performance.now();
+            if (now - lastLogAt < LONGTASK_LOG_MIN_INTERVAL_MS && durationMs < LONGTASK_ERROR_MS) {
+              continue;
+            }
+            lastLogAt = now;
             const level = durationMs >= LONGTASK_ERROR_MS ? "error" : "warn";
             const details = {
               durationMs,
@@ -59,10 +74,14 @@ export function useVoiceDialogFreezeDetector(enabled: boolean): void {
               note:
                 level === "error"
                   ? "main thread frozen ≥400ms — controls likely unresponsive"
-                  : "long task >100ms during voice dialog",
+                  : "long task ≥200ms during voice dialog",
             };
             logPageDisplay("voice_dialog_longtask", details);
-            postFreezeEvent("voice_dialog_longtask", details);
+            // Console only while sheet is open — POSTing /api/voice-debug during
+            // Join was part of the freeze feedback loop.
+            if (level === "error" && !isVoiceDialogUiOpen()) {
+              postFreezeEvent("voice_dialog_longtask", details);
+            }
           }
         });
         observer.observe({ entryTypes: ["longtask"] });
@@ -71,7 +90,6 @@ export function useVoiceDialogFreezeDetector(enabled: boolean): void {
       }
     }
 
-    // ── 2. rAF heartbeat ────────────────────────────────────────────────────
     let rafId = 0;
     let lastRaf = performance.now();
     let totalFreezeMs = 0;
@@ -95,7 +113,9 @@ export function useVoiceDialogFreezeDetector(enabled: boolean): void {
               : "rAF gap >500ms — partial freeze during voice dialog",
         };
         logPageDisplay("voice_dialog_raf_stall", stallDetails);
-        postFreezeEvent("voice_dialog_raf_stall", stallDetails);
+        if (level === "error" && !isVoiceDialogUiOpen()) {
+          postFreezeEvent("voice_dialog_raf_stall", stallDetails);
+        }
       }
       lastRaf = now;
       rafId = requestAnimationFrame(tick);
@@ -111,10 +131,9 @@ export function useVoiceDialogFreezeDetector(enabled: boolean): void {
 }
 
 /**
- * Install a one-time global freeze logger that runs for the lifetime of the
- * page (independent of component mount) and logs any longtask ≥200ms
- * with a "voice_dialog_global_longtask" prefix so you can see it even if the
- * component unmounts due to the freeze.
+ * Global freeze logger for the page lifetime.
+ * Opt-in only (`window.__HSP_VOICE_DEBUG__`) — always-on logging/POSTs were
+ * stacking with chat-list paint and making hard-reload feel frozen.
  */
 export function installGlobalVoiceFreezeLogger(): (() => void) | undefined {
   if (
@@ -125,23 +144,30 @@ export function installGlobalVoiceFreezeLogger(): (() => void) | undefined {
   ) {
     return undefined;
   }
+  const debug =
+    Boolean((window as { __HSP_VOICE_DEBUG__?: boolean }).__HSP_VOICE_DEBUG__);
+  if (!debug) {
+    return undefined;
+  }
   try {
+    let lastLogAt = 0;
     const obs = new PerformanceObserver((list) => {
       for (const entry of list.getEntries()) {
         const durationMs = Math.round(entry.duration);
-        if (durationMs < 200) continue;
+        if (durationMs < 800) continue;
+        const now = performance.now();
+        if (now - lastLogAt < 2_000 && durationMs < 1_200) continue;
+        lastLogAt = now;
         const d = {
           durationMs,
           startTimeMs: Math.round(entry.startTime),
-          level: durationMs >= 400 ? "error" : "warn",
+          level: durationMs >= 1_200 ? "error" : "warn",
         };
         logPageDisplay("voice_dialog_global_longtask", d);
-        postFreezeEvent("voice_dialog_global_longtask", d);
       }
     });
-    // Chrome rejects `{ entryTypes, buffered: true }` — use type API for buffer.
     try {
-      obs.observe({ type: "longtask", buffered: true });
+      obs.observe({ type: "longtask", buffered: false });
     } catch {
       obs.observe({ entryTypes: ["longtask"] });
     }

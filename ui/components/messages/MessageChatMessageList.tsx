@@ -18,7 +18,7 @@ import {
 import {
   getOpenChatHistoryCacheAnchorSpec,
 } from "../../messageChatHistoryPrefetch";
-import { isVoiceDialogUiOpen } from "./voiceDialogUiGate";
+import { isVoiceDialogUiOpen, subscribeVoiceDialogUiOpen } from "./voiceDialogUiGate";
 import {
   clearChatScrollPosition,
   isChatScrollNearBottom,
@@ -637,6 +637,43 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   useEffect(() => {
     hasMoreOlderRef.current = hasMoreOlder;
   }, [hasMoreOlder]);
+
+  // Voice sheet opened while older history was mid-flight — release prepend locks
+  // so the completion path cannot remount rows under the dialog.
+  useEffect(() => {
+    return subscribeVoiceDialogUiOpen((open) => {
+      if (!open) return;
+      if (
+        !loadingOlderRef.current &&
+        !olderPrependInProgressRef.current &&
+        olderLoadLockedAnchorIdRef.current <= 0
+      ) {
+        return;
+      }
+      pendingItemAnchorRef.current = null;
+      loadOlderStartScrollYRef.current = null;
+      scrollTopBeforeUpdateRef.current = null;
+      setPrependAnchorRestorePendingSynced(false);
+      programmaticScrollRef.current = false;
+      isReplacingHistoryRef.current = false;
+      releaseOlderLoadViewportLock();
+      endPrependPhase(chatScrollStateRef.current, scrollControllerRef.current);
+      logPageDisplay("messages_history_voice_open_abort_prepend", {
+        ...chatLogFields({
+          chatId: chat.telegram_chat_id,
+          peerUserId: chat.peer_user_id,
+          title: chat.title,
+        }),
+        loadingOlder: loadingOlderRef.current,
+      });
+    });
+  }, [
+    chat.peer_user_id,
+    chat.telegram_chat_id,
+    chat.title,
+    releaseOlderLoadViewportLock,
+    setPrependAnchorRestorePendingSynced,
+  ]);
 
   useEffect(() => {
     messagesCountRef.current = messages.length;
@@ -2069,6 +2106,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const expandDisplaySliceTowardOlder = useCallback((
     _options?: { chainLoadOlderWhenAtTop?: boolean },
   ) => {
+    // Voice dialog owns the main thread — display expands remount dozens of
+    // message rows and freeze Close / green-mic updates (logs: display_expand
+    // interleaved with voice_dialog_longtask ≥400ms).
+    if (isVoiceDialogUiOpen()) return false;
     if (pendingItemAnchorRef.current) return false;
     if (activePrependRestoreRef.current) return false;
     if (loadingOlderRef.current) return false;
@@ -2155,6 +2196,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   /** Expand the count-based display window toward already-loaded newer rows (no API fetch). */
   const expandDisplaySliceTowardNewer = useCallback(() => {
+    if (isVoiceDialogUiOpen()) return false;
     if (pendingItemAnchorRef.current) return false;
     if (prependAnchorRestorePendingRef.current) return false;
     // Never slide toward newer while an older API prepend is in flight — that
@@ -2728,6 +2770,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   const applyCachedHistoryPage = useCallback(
     (cached: NonNullable<ReturnType<typeof getCachedChatHistory>>, options?: { replace?: boolean }) => {
+      // In-flight cache absorbs during Join remount the message list under the
+      // sheet (same freeze class as prepend_merge_applied).
+      if (isVoiceDialogUiOpen() && messagesCountRef.current > 0) {
+        return;
+      }
       if (
         messagesCountRef.current > 0 &&
         (loadingOlderRef.current ||
@@ -3115,6 +3162,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   const syncScrollBelowUnread = useCallback(
     (metrics: HspScrollMetrics) => {
+      // Voice sheet owns the main thread — unread marking remounts FAB/history
+      // work and freezes Close after Join (logs: unread_sync ×N mid-dialog).
+      if (isVoiceDialogUiOpen()) return;
       if (!chatScrollPaintReadyRef.current) return;
       if (initialScrollInProgressRef.current) return;
       if (metrics.contentH <= 0 || metrics.layoutH <= 0) return;
@@ -3180,10 +3230,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   );
 
   const scheduleSyncScrollBelowUnread = useCallback(() => {
+    if (isVoiceDialogUiOpen()) return;
     if (unreadSyncScheduledRef.current) return;
     unreadSyncScheduledRef.current = true;
     requestAnimationFrame(() => {
       unreadSyncScheduledRef.current = false;
+      if (isVoiceDialogUiOpen()) return;
       const metrics = scrollControllerRef.current?.getMetrics();
       if (metrics && metrics.contentH > 0 && metrics.layoutH > 0) {
         syncScrollBelowUnreadRef.current(metrics);
@@ -4932,6 +4984,18 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   ]);
 
   const loadOlderMessages = useCallback(async (options?: { expandArmed?: boolean; beforeMessageId?: number }) => {
+    if (isVoiceDialogUiOpen()) {
+      logPageDisplay("messages_history_load_older_skipped", {
+        ...chatLogFields({
+          chatId: chat.telegram_chat_id,
+          peerUserId: chat.peer_user_id,
+          title: chat.title,
+        }),
+        reason: "voice_dialog_open",
+        expandArmed: options?.expandArmed === true,
+      });
+      return;
+    }
     const expandArmed = options?.expandArmed === true;
     // TDLib from_message_id must be the minimum id in the buffer — not messages[0],
     // which is sorted by sent_at and can sit above older ids that share a second.
@@ -5165,6 +5229,26 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           pageCursor,
           MESSAGE_CHAT_PAGINATION_CHAR_RANGE,
         );
+        // Join opened while this page was in flight — apply would freeze the
+        // sheet (logs: prepend_merge_applied + unread_sync under voice dialog).
+        if (isVoiceDialogUiOpen()) {
+          if (result && !result.error && result.messages.length > 0) {
+            mergeCachedChatHistoryTail(chat.telegram_chat_id, result);
+          }
+          clearOlderLoadCaptureWithoutRestore({
+            reason: "voice_dialog_open",
+          });
+          logPageDisplay("messages_history_load_older_deferred_voice_dialog", {
+            ...chatLogFields({
+              chatId: chat.telegram_chat_id,
+              peerUserId: chat.peer_user_id,
+              title: chat.title,
+            }),
+            beforeMessageId: pageCursor,
+            fetchedCount: result?.messages?.length ?? 0,
+          });
+          return;
+        }
         if (result.error) {
           logPageDisplay("messages_history_load_older_error", {
             ...chatLogFields({
@@ -5270,6 +5354,23 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             : next.length - prev.length;
 
         if (addedCount > 0) {
+          if (isVoiceDialogUiOpen()) {
+            mergeCachedChatHistoryTail(chat.telegram_chat_id, result);
+            clearOlderLoadCaptureWithoutRestore({
+              reason: "voice_dialog_open_before_paint",
+            });
+            logPageDisplay("messages_history_load_older_deferred_voice_dialog", {
+              ...chatLogFields({
+                chatId: chat.telegram_chat_id,
+                peerUserId: chat.peer_user_id,
+                title: chat.title,
+              }),
+              beforeMessageId: pageCursor,
+              fetchedCount: result.messages.length,
+              reason: "before_set_messages",
+            });
+            return;
+          }
           // Shift the display window before paint so the same visual rows stay
           // (tdesktop item-anchor — no scrollTop compensation).
           const nextWindow = afterOlderPrepend(
@@ -5477,6 +5578,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   ]);
 
   const loadNewerMessages = useCallback(async () => {
+    if (isVoiceDialogUiOpen()) {
+      logPageDisplay("messages_history_load_newer_skipped", {
+        ...chatLogFields({
+          chatId: chat.telegram_chat_id,
+          peerUserId: chat.peer_user_id,
+          title: chat.title,
+        }),
+        reason: "voice_dialog_open",
+      });
+      return;
+    }
     const sinceMessageId = lastTailMessageIdRef.current;
     const chatTail = chatTailMessageIdRef.current ?? chat.last_message_telegram_id;
     if (
@@ -5509,6 +5621,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         sinceMessageId,
         MESSAGE_CHAT_PAGINATION_CHAR_RANGE,
       );
+
+      if (isVoiceDialogUiOpen()) {
+        if (!result.error && result.messages.length > 0) {
+          mergeCachedChatHistoryTail(chat.telegram_chat_id, result);
+        }
+        logPageDisplay("messages_history_load_newer_deferred_voice_dialog", {
+          ...chatLogFields({
+            chatId: chat.telegram_chat_id,
+            peerUserId: chat.peer_user_id,
+            title: chat.title,
+          }),
+          sinceMessageId,
+          fetchedCount: result.messages.length,
+        });
+        return;
+      }
 
       if (result.error) {
         loadNewerRetryAfterRef.current =
@@ -5722,6 +5850,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   /** Expand display toward older rows, or API-load when already at loaded head. */
   const runOlderEdgeAction = useCallback(() => {
+    if (isVoiceDialogUiOpen()) return;
     if (pendingItemAnchorRef.current) return;
     if (!chatScrollPaintReadyRef.current || loadingInitial) return;
     // One prepend at a time — stacking expand+API mid-keep races the viewport.
@@ -5843,6 +5972,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   /** Expand display toward newer rows, or API-load when display already at loaded tail. */
   const runNewerEdgeAction = useCallback(() => {
+    if (isVoiceDialogUiOpen()) return;
     if (pendingItemAnchorRef.current) return;
     if (!chatScrollPaintReadyRef.current || loadingInitial) return;
 
@@ -5946,6 +6076,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
    * not prepend tall rows above the unread viewport (DOM height lag → jump).
    */
   const scheduleMidHistoryEdgePrefetch = useCallback(() => {
+    if (isVoiceDialogUiOpen()) return;
     if (midHistoryEdgePrefetchArmedRef.current) return;
     if (!chatScrollPaintReadyRef.current || initialScrollInProgressRef.current) return;
     if (loadingInitial || loadingOlderRef.current || loadingNewerRef.current) return;
@@ -5977,6 +6108,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       mode: "widen_display_newer_only",
     });
     requestAnimationFrame(() => {
+      if (isVoiceDialogUiOpen()) return;
       if (
         loadingOlderRef.current ||
         olderPrependInProgressRef.current ||

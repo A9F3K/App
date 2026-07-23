@@ -167,6 +167,11 @@ type ResizeHandle = Edge | "ne" | "nw" | "se" | "sw";
 type Props = {
   /** Bumps when the sheet reopens so the portal remounts cleanly. */
   mountKey?: number;
+  /**
+   * Increments on every open request from the parent. Clears a stuck
+   * forceClosed latch when Close mid-join left React `visible` true in the DOM.
+   */
+  openSeq?: number;
   visible: boolean;
   onClose: () => void;
   title: string;
@@ -602,6 +607,7 @@ function ResizeEdgeHandle({
 /** Settings-style modal for an active chat voice call. */
 export function MessageChatVoicePopover({
   mountKey = 0,
+  openSeq = 0,
   visible,
   onClose,
   title,
@@ -696,6 +702,38 @@ export function MessageChatVoicePopover({
     applyPortalOpenAttr(portalRootRef.current, visible && !forceClosedRef.current);
   }, [visible, applyPortalOpenAttr]);
 
+  // Parent bumps openSeq on every open request. That recovers when Close left
+  // forceClosed latched and React `visible` never got a clean false→true edge
+  // (close mid-join / reopen while portal still thought it was open).
+  const lastAppliedOpenSeqRef = useRef(0);
+  const pendingOpenSeqRef = useRef(0);
+  useLayoutEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (openSeq > pendingOpenSeqRef.current) {
+      pendingOpenSeqRef.current = openSeq;
+      forceClosedRef.current = false;
+    }
+    if (pendingOpenSeqRef.current <= lastAppliedOpenSeqRef.current) return;
+    if (!visible) {
+      logPageDisplay("messages_voice_dialog_open_seq", {
+        openSeq: pendingOpenSeqRef.current,
+        visible: false,
+        note: "cleared forceClosed; waiting for visible",
+      });
+      return;
+    }
+    lastAppliedOpenSeqRef.current = pendingOpenSeqRef.current;
+    setSuspendHeavy(false);
+    setPortalMounted(true);
+    applyPortalOpenAttr(portalRootRef.current, true);
+    bumpForceClosed((n) => n + 1);
+    logPageDisplay("messages_voice_dialog_open_seq", {
+      openSeq: pendingOpenSeqRef.current,
+      visible: true,
+      note: "cleared forceClosed latch for reopen",
+    });
+  }, [openSeq, visible, applyPortalOpenAttr]);
+
   useEffect(() => {
     if (visible && !forceClosedRef.current) {
       setSuspendHeavy(false);
@@ -703,7 +741,8 @@ export function MessageChatVoicePopover({
       return;
     }
     if (visible && forceClosedRef.current) {
-      // Parent still reports open; keep DOM/heavy suppressed until visible flips.
+      // Parent still reports open; keep DOM/heavy suppressed until visible flips
+      // or openSeq clears the latch above.
       applyPortalOpenAttr(portalRootRef.current, false);
       return;
     }
@@ -990,13 +1029,10 @@ export function MessageChatVoicePopover({
 
   const mediaSources = useMemo((): VoiceMediaStageSource[] => {
     const rows: VoiceMediaStageSource[] = [];
-    if (localScreenStream) {
-      rows.push({ id: "local-screen", stream: localScreenStream });
-    }
-    if (localCameraStream) {
-      rows.push({ id: "local-camera", stream: localCameraStream });
-    }
-    if (rows.length === 0 && remoteVideoStream) {
+    // Remote presentation first (tdesktop docks screencast above local previews).
+    // Previously remote was skipped whenever any local camera/screen was active,
+    // so an active participant screencast never appeared in the dialog.
+    if (remoteVideoStream) {
       const tracks = remoteVideoStream
         .getVideoTracks()
         .filter((track) => track.readyState === "live");
@@ -1010,6 +1046,12 @@ export function MessageChatVoicePopover({
           });
         }
       }
+    }
+    if (localScreenStream) {
+      rows.push({ id: "local-screen", stream: localScreenStream });
+    }
+    if (localCameraStream) {
+      rows.push({ id: "local-camera", stream: localCameraStream });
     }
     return rows;
   }, [localCameraStream, localScreenStream, remoteVideoStream]);

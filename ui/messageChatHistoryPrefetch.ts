@@ -22,7 +22,10 @@ import {
 } from "./components/messages/chatOpenSession";
 import { logPageDisplay } from "./pageDisplayLog";
 import { isChatListSyncInProgress } from "./components/messages/chatListSyncStatus";
-import { isVoiceDialogUiOpen } from "./components/messages/voiceDialogUiGate";
+import {
+  isVoiceDialogUiOpen,
+  subscribeVoiceDialogUiOpen,
+} from "./components/messages/voiceDialogUiGate";
 
 /** Max visible chats we warm in the background (viewport-driven). */
 const PREFETCH_VISIBLE_MAX = 7;
@@ -38,6 +41,8 @@ type LoadSpec = {
   aroundMessageId?: number | null;
   olderAbove?: number | null;
   newerBelow?: number | null;
+  /** Neighbor/list warming — discarded if the voice dialog opens mid-flight. */
+  background?: boolean;
 };
 
 const sharedLoads = new Map<number, Promise<ChatHistoryPageResult>>();
@@ -48,6 +53,8 @@ const queued: Array<{
   spec: LoadSpec;
 }> = [];
 let backgroundActive = 0;
+/** Bumped when the voice sheet opens so in-flight neighbor loads drop their paint. */
+let historyPrefetchEpoch = 0;
 /** While set, background list prefetch is paused so the open chat wins gateway time. */
 let openChatLoadingId: number | null = null;
 
@@ -115,6 +122,32 @@ async function runHistoryLoad(
   spec: LoadSpec,
 ): Promise<ChatHistoryPageResult> {
   const started = Date.now();
+  const epochAtStart = historyPrefetchEpoch;
+  // Skip starting neighbor loads once the voice sheet is open — an in-flight
+  // 80-row normalize mid-Join freezes createOffer / Close.
+  if (
+    spec.background &&
+    (historyPrefetchEpoch !== epochAtStart || isVoiceDialogUiOpen())
+  ) {
+    logPageDisplay("messages_history_prefetch_dropped_voice_dialog", {
+      chatId,
+      count: 0,
+      elapsedMs: Date.now() - started,
+      previewOnly: spec.previewOnly,
+      note: "skipped_before_fetch",
+    });
+    return {
+      messages: [],
+      chatKind: null,
+      error: "voice_dialog_open",
+      hasMoreOlder: false,
+      nextBeforeMessageId: null,
+      lastReadOutboxMessageId: null,
+      lastReadInboxMessageId: null,
+      memberCount: null,
+      selfUserId: null,
+    };
+  }
   const result = await loadTelegramChatHistoryFirstPage(chatId, peerUserId, {
     warmup: spec.warmup,
     limit: spec.limit,
@@ -122,7 +155,32 @@ async function runHistoryLoad(
     aroundMessageId: spec.aroundMessageId ?? null,
     olderAbove: spec.olderAbove ?? null,
     newerBelow: spec.newerBelow ?? null,
+    background: spec.background === true,
   });
+  // Neighbor prefetches that finish during Join used to parse + cache-notify on
+  // the main thread beside createOffer (logs: history_prefetch_ok mid-dialog).
+  if (
+    spec.background &&
+    (historyPrefetchEpoch !== epochAtStart || isVoiceDialogUiOpen())
+  ) {
+    logPageDisplay("messages_history_prefetch_dropped_voice_dialog", {
+      chatId,
+      count: result.messages.length,
+      elapsedMs: Date.now() - started,
+      previewOnly: spec.previewOnly,
+    });
+    return {
+      messages: [],
+      chatKind: null,
+      error: "voice_dialog_open",
+      hasMoreOlder: false,
+      nextBeforeMessageId: null,
+      lastReadOutboxMessageId: null,
+      lastReadInboxMessageId: null,
+      memberCount: null,
+      selfUserId: null,
+    };
+  }
   if (!result.error && result.messages.length > 0) {
     setCachedChatHistory(chatId, result, {
       previewOnly: spec.previewOnly,
@@ -276,7 +334,7 @@ function enqueueBackgroundPrefetch(
   const entry = {
     chatId,
     peerUserId: Number.isFinite(Number(peerUserId)) ? Number(peerUserId) : null,
-    spec,
+    spec: { ...spec, background: true },
   };
   if (options?.front) {
     queued.unshift(entry);
@@ -429,4 +487,22 @@ export function prefetchChatHistoryForList(
 export function hasPrefetchedChatHistory(chatId: number): boolean {
   const cached = getCachedChatHistory(chatId);
   return cached != null && cached.messages.length > 0 && !cached.error;
+}
+
+/** Drop queued neighbor history work when the voice sheet opens. */
+export function clearQueuedHistoryPrefetchForVoiceDialog(): void {
+  historyPrefetchEpoch += 1;
+  if (queued.length > 0) {
+    logPageDisplay("messages_history_prefetch_queue_cleared_voice_dialog", {
+      dropped: queued.length,
+      inFlight: inFlightBackground.size,
+    });
+    queued.length = 0;
+  }
+}
+
+if (typeof window !== "undefined") {
+  subscribeVoiceDialogUiOpen((open) => {
+    if (open) clearQueuedHistoryPrefetchForVoiceDialog();
+  });
 }

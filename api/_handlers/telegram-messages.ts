@@ -201,6 +201,7 @@ function mapLiveChats(live: { chats: Record<string, unknown>[]; revision: number
       typeof row.peer_accent_color_dark === "string" && row.peer_accent_color_dark.trim()
         ? row.peer_accent_color_dark.trim()
         : null,
+    peer_is_bot: Boolean(row.peer_is_bot),
     presence_kind: row.presence_kind ?? null,
     presence_at: row.presence_at ?? null,
     chat_action: row.chat_action ?? null,

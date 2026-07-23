@@ -64,7 +64,7 @@ function parseVideoInfo(raw: unknown): TelegramChatVoiceVideoInfo | null {
 export async function fetchTelegramChatVoiceParticipants(
   chatId: number,
   groupCallId?: number | null,
-  options?: { forceReload?: boolean },
+  options?: { forceReload?: boolean; signal?: AbortSignal },
 ): Promise<FetchTelegramChatVoiceParticipantsResult> {
   if (!Number.isFinite(chatId) || chatId === 0) {
     return { ok: false, error: "chat_id_required" };
@@ -82,6 +82,14 @@ export async function fetchTelegramChatVoiceParticipants(
   const controller = new AbortController();
   const timeoutMs = options?.forceReload ? FORCE_RELOAD_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternalAbort = () => controller.abort();
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      clearTimeout(timer);
+      return { ok: false, error: "aborted" };
+    }
+    options.signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
   let response: Response;
   try {
     response = await fetch(
@@ -90,9 +98,14 @@ export async function fetchTelegramChatVoiceParticipants(
     );
   } catch (err) {
     const aborted = err instanceof DOMException && err.name === "AbortError";
-    return { ok: false, error: aborted ? "timeout" : "network_error" };
+    const external = Boolean(options?.signal?.aborted);
+    return {
+      ok: false,
+      error: aborted ? (external ? "aborted" : "timeout") : "network_error",
+    };
   } finally {
     clearTimeout(timer);
+    options?.signal?.removeEventListener("abort", onExternalAbort);
   }
   const json = (await response.json().catch(() => ({}))) as {
     ok?: boolean;
