@@ -112,12 +112,11 @@ export function buildGroupCallJoinPayloadJson(parsed: ParsedGroupCallOfferSdp): 
     !parsed.pwd ||
     !parsed.hash ||
     !parsed.fingerprint ||
-    parsed.source == null ||
-    !parsed.sourceGroup?.length
+    parsed.source == null
   ) {
     return null;
   }
-  return JSON.stringify({
+  const payload: Record<string, unknown> = {
     ufrag: parsed.ufrag,
     pwd: parsed.pwd,
     fingerprints: [
@@ -130,13 +129,18 @@ export function buildGroupCallJoinPayloadJson(parsed: ParsedGroupCallOfferSdp): 
       },
     ],
     ssrc: parsed.source,
-    "ssrc-groups": [
+  };
+  // FID is present when the offer includes a video m-line. Listen-only audio
+  // offers may omit it — TDLib still accepts the join for receive audio.
+  if (parsed.sourceGroup && parsed.sourceGroup.length > 0) {
+    payload["ssrc-groups"] = [
       {
         semantics: "FID",
         sources: parsed.sourceGroup,
       },
-    ],
-  });
+    ];
+  }
+  return JSON.stringify(payload);
 }
 
 /** DTLS setup for the remote answer SDP (we create the offer in-browser). */
@@ -285,6 +289,7 @@ class SdpBuilder {
     transport: TelegramGroupCallTransport,
     dtlsSetup: "active" | "passive" = "active",
     mids: [string, string] = ["0", "1"],
+    opts?: { minimalVideo?: boolean },
   ): void {
     this.add("m=audio 9 UDP/TLS/RTP/SAVPF 111 126");
     this.add("c=IN IP4 0.0.0.0");
@@ -298,6 +303,20 @@ class SdpBuilder {
     this.add("a=fmtp:111 minptime=10;useinbandfec=1;usedtx=1");
     this.add("a=rtcp-fb:111 transport-cc");
     this.add("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level");
+
+    // Full video codec lists made Chromium setRemoteDescription wedge the tab
+    // after join_ok (console died before apply_ok). Listen joins park video.
+    if (opts?.minimalVideo) {
+      this.add("m=video 9 UDP/TLS/RTP/SAVPF 100");
+      this.add("c=IN IP4 0.0.0.0");
+      this.add("a=rtcp:9 IN IP4 0.0.0.0");
+      this.add("a=rtcp-mux");
+      this.add(`a=mid:${mids[1]}`);
+      this.add("a=inactive");
+      this.addTransport(transport, dtlsSetup, { includeCandidates: false });
+      this.add("a=rtpmap:100 VP8/90000");
+      return;
+    }
 
     this.add("m=video 9 UDP/TLS/RTP/SAVPF 100 101 102 103");
     this.add("c=IN IP4 0.0.0.0");
@@ -362,9 +381,12 @@ class SdpBuilder {
     dtlsSetup: "active" | "passive",
     mids: string[],
     remoteVideoSections: TelegramGroupCallRemoteVideoSection[],
+    opts?: { minimalVideo?: boolean },
   ): void {
     this.addHeader(sessionId, mids);
-    this.addSsrcEntry(transport, dtlsSetup, [mids[0] ?? "0", mids[1] ?? "1"]);
+    this.addSsrcEntry(transport, dtlsSetup, [mids[0] ?? "0", mids[1] ?? "1"], {
+      minimalVideo: Boolean(opts?.minimalVideo) && remoteVideoSections.length === 0,
+    });
     for (let i = 0; i < remoteVideoSections.length; i += 1) {
       const mid = mids[2 + i] ?? String(2 + i);
       this.addRemoteVideoSection(transport, dtlsSetup, mid, remoteVideoSections[i] ?? null);
@@ -385,6 +407,7 @@ export function groupCallAnswerSdpFromTransport(
   transport: TelegramGroupCallTransport,
   offerSdp?: string,
   remoteVideoSections: TelegramGroupCallRemoteVideoSection[] = [],
+  opts?: { minimalVideo?: boolean },
 ): string {
   const sdp = new SdpBuilder();
   // Browser offered actpass/passive → answer must be active so SFU drives DTLS.
@@ -402,6 +425,8 @@ export function groupCallAnswerSdpFromTransport(
     offerMids.length >= 2
       ? offerMids
       : ["0", "1", ...sections.map((_, i) => String(2 + i))];
-  sdp.addConference(Date.now(), transport, dtlsSetup, mids, sections);
+  sdp.addConference(Date.now(), transport, dtlsSetup, mids, sections, {
+    minimalVideo: Boolean(opts?.minimalVideo),
+  });
   return sdp.finalize();
 }

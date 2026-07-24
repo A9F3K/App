@@ -1552,11 +1552,11 @@ export class TelegramGroupCallWebSession {
       iceCandidatePoolSize: 0,
     });
     connection.addTrack(audioTrack, localStream);
-    // Video m-line without canvas.captureStream — a silent canvas track permanently
-    // deadlocked headless Chromium after setRemoteDescription (join_ok then no
-    // React commit / evaluate for 25s+). Camera/screen replaceTrack later.
+    // Park video inactive on listen join. A live sendrecv video m-line made the
+    // SFU answer huge and Chromium setRemoteDescription wedged the tab after
+    // join_ok (no apply_start ever flushed). Camera/screen renegotiate later.
     const videoTransceiver = connection.addTransceiver("video", {
-      direction: "sendrecv",
+      direction: startMuted ? "inactive" : "sendrecv",
     });
     this.outboundVideoTrack = videoTransceiver.sender.track;
     const stopJoinVideoPlaceholder = () => {
@@ -1651,7 +1651,9 @@ export class TelegramGroupCallWebSession {
 
     const offer = await connection.createOffer({
       offerToReceiveAudio: true,
-      offerToReceiveVideo: true,
+      // Listen-only: do not ask for remote video in the first offer — keeps the
+      // answer tiny so setRemoteDescription cannot wedge the main thread.
+      offerToReceiveVideo: !startMuted,
     });
     // Yield after createOffer — it is the heaviest sync chunk and used to freeze
     // Close for hundreds of ms when Join armed in the same turn as open.
@@ -1683,10 +1685,13 @@ export class TelegramGroupCallWebSession {
         resolve();
         return;
       }
+      // Listen joins only need a host candidate for the SFU — long gather windows
+      // stacked under createOffer and made Join feel frozen before join_ok.
+      const gatherBudgetMs = startMuted ? 600 : 1_800;
       const timeout = window.setTimeout(() => {
         connection.removeEventListener("icegatheringstatechange", onGather);
         resolve();
-      }, 1_800);
+      }, gatherBudgetMs);
       const onGather = () => {
         if (connection.iceGatheringState === "complete") {
           window.clearTimeout(timeout);
@@ -1809,10 +1814,21 @@ export class TelegramGroupCallWebSession {
       this.connection = null;
     }
 
-    const answerSdp = groupCallAnswerSdpFromTransport(slimTransport, localSdp);
+    const answerSdp = groupCallAnswerSdpFromTransport(slimTransport, localSdp, [], {
+      minimalVideo: startMuted,
+    });
     const applyAnswer = async () => {
       if (isWebDriver) return;
-      if (this.connection !== connection || !this.joined) return;
+      if (this.connection !== connection || !this.joined) {
+        logPageDisplay("messages_voice_sdp_answer_skip_stale", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          hasConnection: this.connection === connection,
+          joined: this.joined,
+          level: "warn",
+        });
+        return;
+      }
       // Skip only when no open sheet. Checking for any "closed" node was wrong:
       // the portal stays mounted with data-voice-dialog="closed" after Close, and
       // remounts can briefly leave a closed sibling while the live sheet is open —
@@ -1835,6 +1851,7 @@ export class TelegramGroupCallWebSession {
           groupCallId: this.input.groupCallId,
           sdpBytes: answerSdp.length,
           candidates: slimTransport.candidates.length,
+          minimalVideo: startMuted,
           level: "info",
         });
         // Yield once more immediately before the sync Chromium wedge.
@@ -1878,19 +1895,19 @@ export class TelegramGroupCallWebSession {
       }
     };
 
-    if (typeof window !== "undefined") {
-      // Panel (~900ms) + VoiceBar settle already ran before createOffer. An extra
-      // 2.5s here left audio silent after join_ok and still wedged the tab when
-      // apply finally ran. Short double-rAF + timeout is enough for Close.
-      const scheduleApply = () => {
-        window.setTimeout(() => {
-          void applyAnswer();
-        }, 350);
-      };
-      window.requestAnimationFrame(() => {
-        window.requestAnimationFrame(scheduleApply);
-      });
-    } else {
+    // Apply the answer BEFORE returning to React. Deferring past join_ok left the
+    // timer unable to run when the main thread was already wedged, and logs died
+    // at session_joined_commit with no apply_start. Minimal listen SDP keeps this
+    // short enough that Close stays usable.
+    logPageDisplay("messages_voice_sdp_answer_scheduled", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      sdpBytes: answerSdp.length,
+      candidates: slimTransport.candidates.length,
+      minimalVideo: startMuted,
+      level: "info",
+    });
+    if (!isWebDriver) {
       await applyAnswer();
     }
 

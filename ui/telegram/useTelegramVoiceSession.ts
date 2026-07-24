@@ -263,7 +263,8 @@ export function useTelegramVoiceSession({
       setMediaConnected(session.isMediaConnected());
       setNegotiating(session.isNegotiating());
       session.setRemoteAudioEnabled(Boolean(visible));
-      if (visible) session.resumeRemoteAudio();
+      // Playback is started inside SDP apply_ok — calling resume here raced the
+      // answer apply and stacked main-thread work after join_ok.
       // Mic stays OFF by default after join. Do NOT call setMicEnabled(false) here —
       // that used to force getUserMedia via the silent-audio branch and freeze the
       // dialog on open. Join already negotiated is_muted=true with the SFU.
