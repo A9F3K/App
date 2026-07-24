@@ -1755,9 +1755,10 @@ export class TelegramGroupCallWebSession {
       candidateIps: slimTransport.candidates.map((c) => `${c.ip}:${c.port}/${c.type}`).join(","),
     });
 
-    // Mark joined and return BEFORE setRemoteDescription. In headless Chromium the
-    // answer apply can permanently block the main thread (no React commit after
-    // join_ok, evaluate hung 25s+). Defer so the sheet/Close can paint first.
+    // Mark joined and return BEFORE setRemoteDescription. In Chromium the answer
+    // apply can block the main thread for hundreds of ms–seconds (logs: join_ok
+    // then UI dead with no further page-display lines). Defer far past paint so
+    // Close stays usable; skip entirely if the sheet closed meanwhile.
     this.connection = connection;
     this.localStream = localStream;
     this.audioTrack = audioTrack;
@@ -1789,6 +1790,17 @@ export class TelegramGroupCallWebSession {
     const applyAnswer = async () => {
       if (isWebDriver) return;
       if (this.connection !== connection || !this.joined) return;
+      // Sheet closed during the settle window — do not freeze Close/leave.
+      if (
+        typeof document !== "undefined" &&
+        document.querySelector('[data-voice-dialog="closed"]')
+      ) {
+        appWarn("[voice-sdp-answer]", "skip_sheet_closed", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+        });
+        return;
+      }
       try {
         appWarn("[voice-sdp-answer]", "apply_start", {
           chatId: this.input.chatId,
@@ -1796,6 +1808,11 @@ export class TelegramGroupCallWebSession {
           sdpBytes: answerSdp.length,
           candidates: slimTransport.candidates.length,
         });
+        // Yield once more immediately before the sync Chromium wedge.
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, 0);
+        });
+        if (this.connection !== connection || !this.joined) return;
         await connection.setRemoteDescription({
           type: "answer",
           sdp: answerSdp,
@@ -1826,22 +1843,14 @@ export class TelegramGroupCallWebSession {
     };
 
     if (typeof window !== "undefined") {
-      // Yield past paint + input so Join/Close stay responsive. setRemoteDescription
-      // can still wedge Chromium; idle+long delay keeps the sheet usable first.
+      // 2.5s+ after join_ok: user can Close; React can commit; createOffer
+      // longtasks from open are finished. Idle-only (1.2s) still overlapped
+      // join_ok and wedged the tab in production logs.
       const scheduleApply = () => {
         const run = () => {
           void applyAnswer();
         };
-        const idle = (
-          window as Window & {
-            requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
-          }
-        ).requestIdleCallback;
-        if (typeof idle === "function") {
-          idle(run, { timeout: 1_200 });
-        } else {
-          window.setTimeout(run, 400);
-        }
+        window.setTimeout(run, 2_500);
       };
       window.requestAnimationFrame(() => {
         window.requestAnimationFrame(scheduleApply);

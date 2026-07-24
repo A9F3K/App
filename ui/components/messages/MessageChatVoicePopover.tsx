@@ -253,11 +253,14 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   isLast,
   colors,
   isSpeaking,
+  liteName,
 }: {
   participant: TelegramChatVoiceParticipant;
   isLast: boolean;
   colors: ThemeColors;
   isSpeaking: boolean;
+  /** Skip emoji-status WebGL/fetch on first paint (open longtask). */
+  liteName?: boolean;
 }) {
   const { colorScheme } = useTelegram();
   const title =
@@ -315,23 +318,36 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
       </View>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />
       <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>
-        <SpecialTelegramUserName
-          name={title}
-          telegramUserId={participant.user_id}
-          telegramChatId={participant.chat_id}
-          emojiStatusCustomEmojiId={participant.emoji_status_custom_emoji_id}
-          emojiStatusPriority={false}
-          // Lottie/TGS fetch+animate per row stalls the main thread in a long call.
-          inlineEmojiFetchEnabled={false}
-          inlineEmojiFetchPriority={false}
-          inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
-          textAlign="left"
-          numberOfLines={1}
-          textStyle={{
-            ...textBase,
-            color: colors.primary,
-          }}
-        />
+        {liteName ? (
+          <Text
+            numberOfLines={1}
+            ellipsizeMode="tail"
+            style={{
+              ...textBase,
+              color: colors.primary,
+            }}
+          >
+            {title}
+          </Text>
+        ) : (
+          <SpecialTelegramUserName
+            name={title}
+            telegramUserId={participant.user_id}
+            telegramChatId={participant.chat_id}
+            emojiStatusCustomEmojiId={participant.emoji_status_custom_emoji_id}
+            emojiStatusPriority={false}
+            // Lottie/TGS fetch+animate per row stalls the main thread in a long call.
+            inlineEmojiFetchEnabled={false}
+            inlineEmojiFetchPriority={false}
+            inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
+            textAlign="left"
+            numberOfLines={1}
+            textStyle={{
+              ...textBase,
+              color: colors.primary,
+            }}
+          />
+        )}
         {description ? (
           <Text
             numberOfLines={1}
@@ -773,8 +789,8 @@ export function MessageChatVoicePopover({
       return;
     }
     let cancelled = false;
-    // Paint chrome + Close first; roster avatars/emoji status caused open
-    // longtasks (voice_dialog_longtask ≥400ms) before controls could bind.
+    // Paint chrome + Close first; roster + emoji-status badges caused open
+    // longtasks (507–643ms in live browser) before controls could bind.
     const arm = () => {
       if (typeof window === "undefined") {
         if (!cancelled) setRosterPaintReady(true);
@@ -783,7 +799,7 @@ export function MessageChatVoicePopover({
       window.requestAnimationFrame(() => {
         window.setTimeout(() => {
           if (!cancelled) setRosterPaintReady(true);
-        }, 48);
+        }, 280);
       });
     };
     arm();
@@ -1350,6 +1366,7 @@ export function MessageChatVoicePopover({
                       ? isParticipantSpeaking(participant)
                       : Boolean(participant.is_speaking)
                   }
+                  liteName
                 />
               ))
             ) : (

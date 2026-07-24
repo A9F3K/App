@@ -291,8 +291,8 @@ export function MessageChatVoiceBar({
       softPollAbortRef.current?.abort();
       unlockVoiceAutoplay();
       unlockAudioRef.current();
-      // Give the sheet ~2 frames + settle so roster HTTP and Close bind before
-      // SDP. A 50ms delay still raced setLocalDescription against first paint.
+      // Give the sheet ~2 frames + settle so Close binds and roster paints
+      // before createOffer. 280ms still overlapped open longtasks in prod.
       await new Promise<void>((resolve) => {
         if (typeof window === "undefined") {
           resolve();
@@ -300,7 +300,7 @@ export function MessageChatVoiceBar({
         }
         window.requestAnimationFrame(() => {
           window.requestAnimationFrame(() => {
-            window.setTimeout(resolve, 280);
+            window.setTimeout(resolve, 1_200);
           });
         });
       });
@@ -339,19 +339,10 @@ export function MessageChatVoiceBar({
           level: ok ? "info" : "warn",
         },
       );
-      // Kick roster reload even if this effect's cleanup sets `cancelled` (deps
-      // churn after join_ok used to drop the kick → listed=1 forever). Only bail
-      // if the user left or switched chats.
-      if (ok && typeof window !== "undefined") {
-        const kickChatId = chatId;
-        window.setTimeout(() => {
-          if (chatIdRef.current !== kickChatId) return;
-          if (!voiceJoinedRef.current && !voiceSessionJoinedRef.current) return;
-          kickPostJoinForceReloadRef.current?.("webrtc_join_ok");
-        }, 500);
-      } else if (!ok && typeof window !== "undefined") {
-        // Join API / SDP may have partially succeeded — kick roster on every
-        // failed attempt, not only after the 3rd give-up.
+      // Do NOT kick force-reload on join_ok — multi-person soft roster is enough
+      // and the kick used to stack loadGroupCallParticipants with setRemoteDescription.
+      if (!ok && typeof window !== "undefined") {
+        // Join API / SDP may have partially succeeded — kick roster on fail only.
         const kickChatId = chatId;
         window.setTimeout(() => {
           if (chatIdRef.current !== kickChatId) return;
@@ -1269,7 +1260,7 @@ export function MessageChatVoiceBar({
           endpoints: requests.map((r) => r.endpointId).slice(0, 4),
         });
       }
-    }, 600);
+    }, 4_000);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
