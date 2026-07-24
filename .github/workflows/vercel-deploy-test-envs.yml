@@ -21,7 +21,10 @@ jobs:
         run: npm ci
 
       - name: Build web assets
-        run: npm run build:vercel
+        # Skip migrate/stamp DB — CI has no DATABASE_URL; stamp falls back to 0.
+        run: npx tsx scripts/vercel-export-web.ts
+        env:
+          SKIP_DB_MIGRATE: "1"
 
       - name: Deploy to Vercel
         run: npx vercel@latest deploy --prebuilt --prod --yes --token "$VERCEL_TOKEN"
