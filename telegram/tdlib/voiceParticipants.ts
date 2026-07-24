@@ -251,7 +251,7 @@ type CollectedParticipant = {
 
 /** tdesktop keeps speaking painted ~1s past the last level; keep hold short so
  * green mics clear when people stop (2.5s looked "stuck after load"). */
-const SPEAKING_HOLD_MS = 900;
+const SPEAKING_HOLD_MS = 2_400;
 
 function effectiveSpeaking(row: CollectedParticipant, now: number): boolean {
   if (row.isSpeaking) return true;
@@ -1768,20 +1768,26 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
   const selfUserId = cachedSelfUserId;
   const nowMs = Date.now();
   // Mirror the poll path: overlay recent_speakers onto the live roster, and
-  // while the roster is thinner than participant_count, union speaker stubs so
-  // the stream never regresses the dialog to a self-only grey list.
+  // union speaker stubs whenever the painted map is thin — chat-preview strip
+  // relies on these faces when loadGroupCallParticipants is not allowed yet.
   let collected = cached.members;
   if (cached.speakers && cached.speakers.size > 0) {
     collected = applySpeakingOverlay(cached.members, cached.speakers);
-    // tdesktop: until loaded_all, always union recent_speakers stubs — do not
-    // gate on hintGap (soft under-count used to skip the merge → listed=1).
-    if (!cached.loadedAll) {
+    const hintGap =
+      cached.participantCountHint > collected.size ||
+      cached.members.size === 0 ||
+      !cached.loadedAll;
+    if (hintGap) {
       collected = mergeSpeakerStubsForDisplay(collected, cached.speakers);
     }
   }
   const orderedRows = [...collected.values()].filter((row) => {
     if (row.order) return true;
     if (selfUserId != null && row.userId === selfUserId) return true;
+    const key = participantKey(row.userId, row.chatId);
+    // Keep recent_speakers stubs visible after loadedAll — otherwise SSE drops
+    // every face without an order string and the strip paints empty.
+    if (key != null && cached.speakers?.has(key)) return true;
     return !cached.loadedAll;
   });
   const displayRows =

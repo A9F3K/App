@@ -147,23 +147,25 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const intervalMs = 12_000;
 
+    const probeChatId = chat.telegram_chat_id;
     const probe = async () => {
       if (isVoiceDialogUiOpen()) return;
-      const result = await fetchTelegramChatVoiceParticipants(chat.telegram_chat_id);
+      const result = await fetchTelegramChatVoiceParticipants(probeChatId);
       if (cancelled || !result.ok || isVoiceDialogUiOpen()) return;
+      if (chat.telegram_chat_id !== probeChatId) return;
       const nonSelf = result.participants.filter((row) => !row.is_self);
       const hasSelf = result.participants.some((row) => row.is_self);
       // Self-only is live when this account is already in the call elsewhere.
       const live =
         Boolean(result.has_active_voice_chat) &&
         (result.participant_count > 0 || nonSelf.length > 0 || hasSelf);
-      patchAuthenticatedHomeSelectedChatVoice({
+      patchAuthenticatedHomeSelectedChatVoice(probeChatId, {
         has_active_voice_chat: live,
         voice_chat_group_call_id: live ? result.voice_chat_group_call_id : null,
       });
       if (!live) return;
       appWarn("[message-voice-detect]", result.voice_resolve_source, {
-        chatId: chat.telegram_chat_id,
+        chatId: probeChatId,
         groupCallId: result.voice_chat_group_call_id,
         participantCount: result.participant_count,
       });
@@ -291,6 +293,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
 
   const startVoice = useCallback(async () => {
     if (liveVoiceAvailable || startPending || !canStart) return;
+    const startChatId = chat.telegram_chat_id;
     setStartPending(true);
     userLeftVoiceRef.current = false;
     setVoiceEngaged(true);
@@ -298,10 +301,10 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     setVoiceDialogUiOpen(true);
     unlockVoiceAutoplay();
     try {
-      const result = await startTelegramChatVoice(chat.telegram_chat_id);
+      const result = await startTelegramChatVoice(startChatId);
       if (!result.ok) {
         appWarn("[message-voice-start]", result.error, {
-          chatId: chat.telegram_chat_id,
+          chatId: startChatId,
         });
         setVoiceEngaged(false);
         voiceEngagedRef.current = false;
@@ -312,7 +315,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       if (callId != null) {
         setStartedCallId(callId);
       }
-      patchAuthenticatedHomeSelectedChatVoice({
+      patchAuthenticatedHomeSelectedChatVoice(startChatId, {
         has_active_voice_chat: result.has_active_voice_chat,
         voice_chat_group_call_id: result.voice_chat_group_call_id,
       });

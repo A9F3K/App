@@ -316,12 +316,17 @@ export function useAuthenticatedHomeHistoryLoadTarget(): AuthenticatedHomeHistor
 }
 
 /** Patch voice-chat fields on the currently open chat (e.g. after leave). */
-export function patchAuthenticatedHomeSelectedChatVoice(meta: {
-  has_active_voice_chat: boolean;
-  voice_chat_group_call_id: number | null;
-}): void {
+export function patchAuthenticatedHomeSelectedChatVoice(
+  chatId: number,
+  meta: {
+    has_active_voice_chat: boolean;
+    voice_chat_group_call_id: number | null;
+  },
+): void {
   hydrateFromStorageIfNeeded();
-  if (selectedChat == null) return;
+  // In-flight polls/SSE from the previous chat must not rewrite the newly
+  // selected chat's call id (logs: stream_connect groupCallId=10 then 6 then 10).
+  if (selectedChat?.telegram_chat_id !== chatId) return;
   if (
     selectedChat.has_active_voice_chat === meta.has_active_voice_chat &&
     selectedChat.voice_chat_group_call_id === meta.voice_chat_group_call_id

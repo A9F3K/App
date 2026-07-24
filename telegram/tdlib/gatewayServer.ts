@@ -860,6 +860,9 @@ export function startTdlibGatewayServer(): http.Server {
           } catch {
             /* fall back to client preferred / cache map */
           }
+          // Open SSE immediately — awaiting soft-warm here blocked `ready` for
+          // seconds (client never saw stream_ready) while 4s soft polls stacked
+          // and froze the voice strip. Warm in background; revision bumps push.
           serveVoiceParticipantsStream(
             req,
             res,
@@ -868,6 +871,14 @@ export function startTdlibGatewayServer(): http.Server {
             resolvedCallId,
             sinceRevision != null && Number.isFinite(sinceRevision) ? sinceRevision : null,
           );
+          void getChatVoiceParticipantsForUser(
+            telegramUsername,
+            Math.trunc(chatId),
+            resolvedCallId,
+            { forceReload: false },
+          ).catch(() => {
+            /* stream still useful for later revisions */
+          });
           return;
         }
 

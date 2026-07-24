@@ -651,15 +651,9 @@ export function MessageChatVoicePopover({
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
   const chatTitle = title.trim() || t("messages.voiceChat.active");
-  // Painted non-self rows only — never fall back to TDLib participant_count
-  // (hidden listeners inflate the label to 8+ while the roster shows 1–2).
-  const paintedOthers = participants.filter((row) => !row.is_self);
-  const totalParticipantCount =
-    paintedOthers.length > 0
-      ? paintedOthers.length
-      : participants.length > 0
-        ? participants.length
-        : 0;
+  // Painted rows only (incl. self) — never fall back to TDLib participant_count
+  // (hidden listeners inflate the label while the roster shows fewer faces).
+  const totalParticipantCount = participants.length;
   const participantCountLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {

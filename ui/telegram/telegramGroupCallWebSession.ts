@@ -4,9 +4,11 @@ import {
   groupCallAnswerSdpFromTransport,
   parseGroupCallJoinTransport,
   parseGroupCallOfferSdp,
+  type TelegramGroupCallCandidate,
   type TelegramGroupCallRemoteVideoSection,
   type TelegramGroupCallTransport,
 } from "../../shared/telegramGroupCallSdp";
+import { logPageDisplay } from "../pageDisplayLog";
 import { joinTelegramChatVoice } from "./joinTelegramChatVoice";
 import { setTelegramChatVoiceMicMuted } from "./setTelegramChatVoiceMicMuted";
 import { setTelegramChatVoiceSpeaking } from "./setTelegramChatVoiceSpeaking";
@@ -20,6 +22,32 @@ const VOICE_DEBUG =
 function voiceDebug(tag: string, event: string, details?: Record<string, unknown>): void {
   if (!VOICE_DEBUG) return;
   appWarn(tag, event, details);
+}
+
+/**
+ * Cap answer candidates so setRemoteDescription stays cheap, but do not take only
+ * the first IPv4 — that often missed Telegram's reachable host and left join_ok
+ * with permanent silence.
+ */
+function pickJoinAnswerCandidates(
+  candidates: TelegramGroupCallCandidate[],
+): TelegramGroupCallCandidate[] {
+  const ipv4 = candidates.filter((c) => !String(c.ip).includes(":"));
+  const pool = ipv4.length > 0 ? ipv4 : candidates;
+  const typeRank = (t: string) => {
+    const typ = String(t || "").toLowerCase();
+    if (typ === "host") return 0;
+    if (typ === "srflx") return 1;
+    if (typ === "relay") return 2;
+    return 3;
+  };
+  return [...pool]
+    .sort((a, b) => {
+      const byType = typeRank(a.type) - typeRank(b.type);
+      if (byType !== 0) return byType;
+      return Number(b.priority) - Number(a.priority);
+    })
+    .slice(0, 3);
 }
 
 type SessionInput = {
@@ -1728,16 +1756,11 @@ export class TelegramGroupCallWebSession {
       transport.fingerprints[0]?.setup?.trim().toLowerCase() === "passive"
         ? "passive"
         : "active";
-    // Prefer a single IPv4 host candidate — large candidate lists made
-    // setRemoteDescription permanently block the main thread (heartbeat died
-    // immediately after join_ok; Close/evaluate wedged).
-    const ipv4Candidates = transport.candidates.filter((c) => !c.ip.includes(":"));
+    // Cap candidates — huge lists froze setRemoteDescription; a single first
+    // IPv4 often missed the reachable Telegram host (join_ok, permanent silence).
     const slimTransport = {
       ...transport,
-      candidates:
-        ipv4Candidates.length > 0
-          ? ipv4Candidates.slice(0, 1)
-          : transport.candidates.slice(0, 1),
+      candidates: pickJoinAnswerCandidates(transport.candidates),
     };
     voiceDebug("[voice-dtls]", "roles", {
       chatId: this.input.chatId,
@@ -1757,8 +1780,8 @@ export class TelegramGroupCallWebSession {
 
     // Mark joined and return BEFORE setRemoteDescription. In Chromium the answer
     // apply can block the main thread for hundreds of ms–seconds (logs: join_ok
-    // then UI dead with no further page-display lines). Defer far past paint so
-    // Close stays usable; skip entirely if the sheet closed meanwhile.
+    // then UI dead with no further page-display lines). Defer briefly past paint
+    // so Close stays usable; skip entirely if the sheet closed meanwhile.
     this.connection = connection;
     this.localStream = localStream;
     this.audioTrack = audioTrack;
@@ -1790,23 +1813,29 @@ export class TelegramGroupCallWebSession {
     const applyAnswer = async () => {
       if (isWebDriver) return;
       if (this.connection !== connection || !this.joined) return;
-      // Sheet closed during the settle window — do not freeze Close/leave.
-      if (
-        typeof document !== "undefined" &&
-        document.querySelector('[data-voice-dialog="closed"]')
-      ) {
-        appWarn("[voice-sdp-answer]", "skip_sheet_closed", {
+      // Skip only when no open sheet. Checking for any "closed" node was wrong:
+      // the portal stays mounted with data-voice-dialog="closed" after Close, and
+      // remounts can briefly leave a closed sibling while the live sheet is open —
+      // that skipped setRemoteDescription forever (join_ok, no audio).
+      const sheetOpen =
+        typeof document === "undefined" ||
+        Boolean(document.querySelector('[data-voice-dialog="open"]'));
+      if (!sheetOpen) {
+        logPageDisplay("messages_voice_sdp_answer_skip_sheet_closed", {
           chatId: this.input.chatId,
           groupCallId: this.input.groupCallId,
+          level: "warn",
         });
+        this.markJoinLost("sdp_skipped_sheet_closed");
         return;
       }
       try {
-        appWarn("[voice-sdp-answer]", "apply_start", {
+        logPageDisplay("messages_voice_sdp_answer_apply_start", {
           chatId: this.input.chatId,
           groupCallId: this.input.groupCallId,
           sdpBytes: answerSdp.length,
           candidates: slimTransport.candidates.length,
+          level: "info",
         });
         // Yield once more immediately before the sync Chromium wedge.
         await new Promise<void>((resolve) => {
@@ -1817,11 +1846,18 @@ export class TelegramGroupCallWebSession {
           type: "answer",
           sdp: answerSdp,
         });
-        appWarn("[voice-sdp-answer]", "apply_ok", {
+        logPageDisplay("messages_voice_sdp_answer_apply_ok", {
           chatId: this.input.chatId,
           groupCallId: this.input.groupCallId,
+          level: "info",
         });
       } catch (err) {
+        logPageDisplay("messages_voice_sdp_answer_apply_fail", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          error: err instanceof Error ? err.message : String(err),
+          level: "warn",
+        });
         appWarn(
           "[voice-sdp-answer]",
           err instanceof Error ? err.message : String(err),
@@ -1843,14 +1879,13 @@ export class TelegramGroupCallWebSession {
     };
 
     if (typeof window !== "undefined") {
-      // 2.5s+ after join_ok: user can Close; React can commit; createOffer
-      // longtasks from open are finished. Idle-only (1.2s) still overlapped
-      // join_ok and wedged the tab in production logs.
+      // Panel (~900ms) + VoiceBar settle already ran before createOffer. An extra
+      // 2.5s here left audio silent after join_ok and still wedged the tab when
+      // apply finally ran. Short double-rAF + timeout is enough for Close.
       const scheduleApply = () => {
-        const run = () => {
+        window.setTimeout(() => {
           void applyAnswer();
-        };
-        window.setTimeout(run, 2_500);
+        }, 350);
       };
       window.requestAnimationFrame(() => {
         window.requestAnimationFrame(scheduleApply);

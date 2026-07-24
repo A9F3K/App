@@ -99,11 +99,11 @@ export function MessageChatVoiceBar({
   const stripPaddingX = layout.contentSideInsetPx;
   const speakingByKeyRef = useRef(speakingByKey);
   speakingByKeyRef.current = speakingByKey;
-  // Preview = other people only (Telegram strip never leads with your own name).
+  // Preview faces = other people only (never lead with self).
   const previewParticipants = participants.filter((row) => !row.is_self);
-  // NEVER use TDLib participant_count / rosterCountHint for UI — it includes
-  // hidden listeners and recent-speaker inflated totals (logs: listed=1 hint=8).
-  const totalParticipantCount = previewParticipants.length;
+  // Count label = everyone currently painted (incl. self when joined / other-client).
+  // Never use TDLib participant_count / rosterCountHint — hidden listeners inflate it.
+  const totalParticipantCount = participants.length;
   const stackedParticipants = previewParticipants.slice(
     0,
     MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
@@ -129,12 +129,15 @@ export function MessageChatVoiceBar({
 
   const syncVoicePresence = useCallback(
     (
+      forChatId: number,
       hasActive: boolean,
       callId: number | null | undefined,
       rows: TelegramChatVoiceParticipant[],
       countHint: number,
       options?: { allowClear?: boolean },
     ) => {
+      // Drop late callbacks after the user switched chats.
+      if (chatIdRef.current !== forChatId) return false;
       const nonSelf = rows.filter((row) => !row.is_self);
       // Account already in the call from another Telegram client still counts as
       // live presence — otherwise a solo self join hides the preview strip.
@@ -146,7 +149,7 @@ export function MessageChatVoiceBar({
       if (voiceJoinedRef.current) {
         setPresenceConfirmed(true);
         if (live) {
-          patchAuthenticatedHomeSelectedChatVoice({
+          patchAuthenticatedHomeSelectedChatVoice(forChatId, {
             has_active_voice_chat: true,
             voice_chat_group_call_id: callId ?? null,
           });
@@ -156,7 +159,7 @@ export function MessageChatVoiceBar({
 
       if (live) {
         setPresenceConfirmed(true);
-        patchAuthenticatedHomeSelectedChatVoice({
+        patchAuthenticatedHomeSelectedChatVoice(forChatId, {
           has_active_voice_chat: true,
           voice_chat_group_call_id: callId ?? null,
         });
@@ -166,7 +169,7 @@ export function MessageChatVoiceBar({
       // Call still flagged active but roster snapshot is thin — keep the strip up.
       if (Boolean(hasActive)) {
         setPresenceConfirmed(true);
-        patchAuthenticatedHomeSelectedChatVoice({
+        patchAuthenticatedHomeSelectedChatVoice(forChatId, {
           has_active_voice_chat: true,
           voice_chat_group_call_id: callId ?? null,
         });
@@ -178,7 +181,7 @@ export function MessageChatVoiceBar({
       if (!options?.allowClear) return false;
 
       setPresenceConfirmed(false);
-      patchAuthenticatedHomeSelectedChatVoice({
+      patchAuthenticatedHomeSelectedChatVoice(forChatId, {
         has_active_voice_chat: false,
         voice_chat_group_call_id: null,
       });
@@ -291,8 +294,9 @@ export function MessageChatVoiceBar({
       softPollAbortRef.current?.abort();
       unlockVoiceAutoplay();
       unlockAudioRef.current();
-      // Give the sheet ~2 frames + settle so Close binds and roster paints
-      // before createOffer. 280ms still overlapped open longtasks in prod.
+      // Panel already waited ~900ms before arming voiceJoined. One more short
+      // settle is enough for Close to bind — a second 1.2s delay stacked with
+      // the post-join_ok SDP defer and left audio silent for seconds.
       await new Promise<void>((resolve) => {
         if (typeof window === "undefined") {
           resolve();
@@ -300,7 +304,7 @@ export function MessageChatVoiceBar({
         }
         window.requestAnimationFrame(() => {
           window.requestAnimationFrame(() => {
-            window.setTimeout(resolve, 1_200);
+            window.setTimeout(resolve, 280);
           });
         });
       });
@@ -389,6 +393,7 @@ export function MessageChatVoiceBar({
     setParticipants([]);
     setParticipantCount(0);
     setPresenceConfirmed(false);
+    softPollAbortRef.current?.abort();
     speakingHoldUntilRef.current.clear();
     if (speakingHoldTimerRef.current) {
       clearTimeout(speakingHoldTimerRef.current);
@@ -448,6 +453,11 @@ export function MessageChatVoiceBar({
   const speakingRafRef = useRef<number | null>(null);
   const speakingListedRef = useRef(0);
 
+  useEffect(() => {
+    streamRevisionRef.current = 0;
+    streamActiveRef.current = false;
+  }, [chatId]);
+
   const participantSpeakKey = useCallback((row: TelegramChatVoiceParticipant): string => {
     if (row.is_self) return "self";
     if (row.user_id != null && row.user_id > 0) return `u:${row.user_id}`;
@@ -460,7 +470,7 @@ export function MessageChatVoiceBar({
       // Speaking glow lives in speakingByKey so membership rows stay referentially
       // stable (tdesktop / Telegram Web parity). Keep hold short so mics clear.
       const now = Date.now();
-      const holdMs = 900;
+      const holdMs = 2_400;
       let soonestExpiry = 0;
       const next: Record<string, true> = {};
       for (const row of rows) {
@@ -598,18 +608,18 @@ export function MessageChatVoiceBar({
       const nextByKey = new Map(next.map((row) => [speakKey(row), row]));
 
       const hint = Math.max(0, countHint);
-      // Never wipe a painted roster with an empty soft/force payload — that left
-      // the open dialog with zero rows while the strip still claimed a count.
+      // Never wipe a painted roster with an empty soft/SSE payload. Empty SSE
+      // `ready` (cache miss, participant_count=0) used to clear recent_speakers
+      // the soft poll just painted — strip showed 0 faces while the call had 3.
+      // Call-end clears via setParticipants([]) on has_active_voice_chat=false.
       if (withLocalSpeaking.length === 0 && prev.length > 0) {
-        if (hint > 0 || joinedLocally) {
-          const totalHint = Math.max(rosterTotalHintRef.current, hint, prev.length);
-          rosterTotalHintRef.current = totalHint;
-          if (rosterCountHintStateRef.current !== totalHint) {
-            rosterCountHintStateRef.current = totalHint;
-            setRosterCountHint(totalHint);
-          }
-          return;
+        const totalHint = Math.max(rosterTotalHintRef.current, hint, prev.length);
+        rosterTotalHintRef.current = totalHint;
+        if (rosterCountHintStateRef.current !== totalHint) {
+          rosterCountHintStateRef.current = totalHint;
+          setRosterCountHint(totalHint);
         }
+        return;
       }
       // SSE / soft polls often send a recent-speakers subset while participant_count
       // is still 4–5. Never replace a fuller roster with that subset. When the
@@ -777,6 +787,17 @@ export function MessageChatVoiceBar({
   const lastStreamApplyAtRef = useRef(0);
   /** Bumps when a newer SSE snap supersedes a deferred double-rAF apply. */
   const streamApplyGenerationRef = useRef(0);
+
+  useEffect(() => {
+    pendingStreamSnapRef.current = null;
+    if (streamApplyTimerRef.current != null) {
+      clearTimeout(streamApplyTimerRef.current);
+      streamApplyTimerRef.current = null;
+    }
+    streamApplyGenerationRef.current += 1;
+    lastStreamApplyAtRef.current = 0;
+  }, [chatId]);
+
   /** While the dialog is open, coalesce SSE roster merges to ≥3s (complete roster). */
   const STREAM_APPLY_OPEN_MIN_MS = 3_000;
   /** Thin roster while dialog open — apply membership quickly so rows appear. */
@@ -801,6 +822,7 @@ export function MessageChatVoiceBar({
     applySpeakingMap(snapshot.participants);
     const sheetOpen = popoverOpenRef.current;
     const live = syncVoicePresence(
+      chatId,
       true,
       snapshot.group_call_id,
       snapshot.participants,
@@ -944,11 +966,9 @@ export function MessageChatVoiceBar({
 
   const refreshParticipants = useCallback(async (): Promise<"ok" | "retry_soon" | "backoff"> => {
     if (!isTelegramMessagesConnected) return "backoff";
-    // Soft HTTP polls contend with joinVideoChat on TDLib. While the sheet is
-    // open, SSE + post-webrtc force-reload own the roster. While Join is armed
-    // but WebRTC is not up yet, skip entirely — after join give-up, allow soft
-    // polls again so we are not stuck on listed=1 forever.
-    if (popoverOpenRef.current) return "ok";
+    // Soft HTTP polls contend with joinVideoChat on TDLib. While Join is armed
+    // but WebRTC is not up yet, skip entirely. After webrtc_join_ok, allow soft
+    // polls even with the sheet open so speaking/roster recover if SSE stalls.
     if (
       voiceJoinedRef.current &&
       !voiceSessionJoinedRef.current &&
@@ -956,15 +976,21 @@ export function MessageChatVoiceBar({
     ) {
       return "ok";
     }
+    if (popoverOpenRef.current && !voiceSessionJoinedRef.current) {
+      return "ok";
+    }
     softPollAbortRef.current?.abort();
     const abort = new AbortController();
     softPollAbortRef.current = abort;
+    const pollChatId = chatId;
     try {
-      const result = await fetchTelegramChatVoiceParticipants(chatId, null, {
+      const result = await fetchTelegramChatVoiceParticipants(pollChatId, null, {
         signal: abort.signal,
       });
+      if (chatIdRef.current !== pollChatId) return "ok";
       if (result.ok) {
         const live = syncVoicePresence(
+          pollChatId,
           result.has_active_voice_chat,
           result.voice_chat_group_call_id,
           result.participants,
@@ -1091,9 +1117,18 @@ export function MessageChatVoiceBar({
     const nextBaseMs = () => {
       const sheetOpen = popoverOpenRef.current;
       if (!visible) return 30_000;
+      // Only treat a truly empty roster as "fill me" — only-self still paints a
+      // count and used to keep a 4s soft-poll forever (2–5s each), freezing UI.
+      const stripEmpty = participantsRef.current.length === 0;
+      if (!sheetOpen && stripEmpty) return 8_000;
       // SSE owns live roster — soft HTTP is only a slow safety net. Aggressive
       // 6–8s polls (often 3–6s each) stacked with chat-list paint and froze UI.
-      if (streamActiveRef.current) return sheetOpen ? 20_000 : 30_000;
+      // While joined + sheet open, keep a tighter net so speaking/roster recover
+      // if SSE stalls during SDP (logs: join_ok then speakingCount frozen).
+      if (streamActiveRef.current) {
+        if (sheetOpen && voiceJoinedRef.current) return 8_000;
+        return sheetOpen ? 20_000 : 30_000;
+      }
       if (joined) return sheetOpen ? 12_000 : 20_000;
       return sheetOpen ? 12_000 : 25_000;
     };
@@ -1109,18 +1144,22 @@ export function MessageChatVoiceBar({
       if (cancelled) return;
       const sheetOpen = popoverOpenRef.current;
       const baseMs = nextBaseMs();
-      // Soft polls starve joinVideoChat — skip while sheet open or Join in flight.
-      if (
-        sheetOpen ||
-        (voiceJoinedRef.current &&
-          !voiceSessionJoinedRef.current &&
-          joinAttemptsRef.current < 3)
-      ) {
+      // Soft polls starve joinVideoChat — skip while Join is in flight. After
+      // webrtc_join_ok, allow a slow safety net so speaking recovers if SSE
+      // stalls during setRemoteDescription (logs: join_ok then frozen mics).
+      const joiningInFlight =
+        voiceJoinedRef.current &&
+        !voiceSessionJoinedRef.current &&
+        joinAttemptsRef.current < 3;
+      if (joiningInFlight || (sheetOpen && !voiceSessionJoinedRef.current)) {
         arm(baseMs);
         return;
       }
-      // SSE already connected — skip redundant HTTP while the sheet is closed.
-      if (!sheetOpen && streamActiveRef.current) {
+      // SSE only replays the gateway cache. Soft getGroupCall warms recent_speakers
+      // into that cache; without it the strip stays empty after an empty `ready`.
+      // Once any row is painted (including only-self), stop hammering — background
+      // soft-warm + SSE revisions fill other faces.
+      if (!sheetOpen && streamActiveRef.current && participantsRef.current.length > 0) {
         arm(baseMs);
         return;
       }
@@ -1303,14 +1342,28 @@ export function MessageChatVoiceBar({
 
   const reloadVoiceRoster = useCallback(
     async (options?: { force?: boolean; cancelled?: () => boolean }) => {
-      const result = await fetchTelegramChatVoiceParticipants(chatId, null, {
+      const requestChatId = chatId;
+      const result = await fetchTelegramChatVoiceParticipants(requestChatId, null, {
         forceReload: Boolean(options?.force),
       });
+      if (chatIdRef.current !== requestChatId) {
+        return { ok: false as const, error: "chat_switched" };
+      }
       if (options?.cancelled?.() || !result.ok) return result;
       applyRosterRowsRef.current(result.participants, result.participant_count);
+      if (result.ok) {
+        syncVoicePresence(
+          requestChatId,
+          result.has_active_voice_chat,
+          result.voice_chat_group_call_id,
+          result.participants,
+          result.participant_count,
+          { allowClear: Boolean(options?.force) },
+        );
+      }
       return result;
     },
-    [chatId],
+    [chatId, syncVoicePresence],
   );
 
   const markPostJoinRosterComplete = useCallback(
@@ -1722,8 +1775,9 @@ export function MessageChatVoiceBar({
           level: "warn",
         });
       }
-      // Settle SDP / ICE before the force roster HTTP — overlapping them is
-      // the freeze window in user logs (join_ok → postjoin_reload_start).
+      // Settle SDP / ICE briefly before force roster HTTP — overlapping them
+      // froze the UI (join_ok → postjoin_reload_start). SDP answer now applies
+      // ~350ms after join_ok; waiting 2.5s here only delayed roster with no gain.
       if (voiceSessionJoinedRef.current) {
         const now =
           typeof performance !== "undefined" && typeof performance.now === "function"
@@ -1731,8 +1785,8 @@ export function MessageChatVoiceBar({
             : Date.now();
         if (webrtcJoinedSeenAt <= 0) webrtcJoinedSeenAt = now;
         const settleMs = now - webrtcJoinedSeenAt;
-        if (settleMs < 2_500) {
-          armRetry(Math.max(120, 2_500 - settleMs));
+        if (settleMs < 800) {
+          armRetry(Math.max(120, 800 - settleMs));
           return;
         }
       }
@@ -1892,7 +1946,7 @@ export function MessageChatVoiceBar({
         onLeftVoice?.();
         const live = Boolean(result.has_active_voice_chat);
         setPresenceConfirmed(live);
-        patchAuthenticatedHomeSelectedChatVoice({
+        patchAuthenticatedHomeSelectedChatVoice(chatId, {
           has_active_voice_chat: live,
           voice_chat_group_call_id: live ? result.voice_chat_group_call_id : null,
         });
@@ -1914,7 +1968,7 @@ export function MessageChatVoiceBar({
         onLeftVoice?.();
         const live = Boolean(result.has_active_voice_chat);
         setPresenceConfirmed(live);
-        patchAuthenticatedHomeSelectedChatVoice({
+        patchAuthenticatedHomeSelectedChatVoice(chatId, {
           has_active_voice_chat: live,
           voice_chat_group_call_id: live ? result.voice_chat_group_call_id : null,
         });
@@ -2089,28 +2143,26 @@ export function MessageChatVoiceBar({
                 >
                   {`+${overflowCount}`}
                 </Text>
-              ) : (
-                <Text
-                  numberOfLines={1}
-                  style={{
-                    color: colors.primary,
-                    fontSize: 13,
-                    lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
-                    fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-                    flexShrink: 1,
-                    minWidth: 0,
-                  }}
-                >
-                  {stackedParticipants[0]?.title?.trim() ||
-                    participantsA11yLabel}
-                </Text>
-              )}
+              ) : null}
+              <Text
+                numberOfLines={1}
+                style={{
+                  color: colors.primary,
+                  fontSize: 13,
+                  lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+                  fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                  flexShrink: 1,
+                  minWidth: 0,
+                }}
+              >
+                {participantsA11yLabel}
+              </Text>
             </View>
-          ) : totalParticipantCount > 0 ? (
+          ) : (
             <Text
               numberOfLines={1}
               style={{
-                color: colors.primary,
+                color: totalParticipantCount > 0 ? colors.primary : colors.secondary,
                 fontSize: 13,
                 lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
                 fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
@@ -2119,20 +2171,6 @@ export function MessageChatVoiceBar({
               }}
             >
               {participantsA11yLabel}
-            </Text>
-          ) : (
-            <Text
-              numberOfLines={1}
-              style={{
-                color: colors.secondary,
-                fontSize: 13,
-                lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
-                fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-                flexShrink: 1,
-                minWidth: 0,
-              }}
-            >
-              {t("messages.voiceChat.participants")}
             </Text>
           )}
         </Pressable>
