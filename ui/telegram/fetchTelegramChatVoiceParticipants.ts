@@ -27,13 +27,15 @@ export type FetchTelegramChatVoiceParticipantsResult =
       has_active_voice_chat: boolean;
       voice_chat_group_call_id: number | null;
       voice_resolve_source: string;
+      loaded_all_participants: boolean;
+      has_hidden_listeners: boolean;
     }
   | { ok: false; error: string };
 
 /** Bound each poll so a slow gateway can never freeze participant updates. */
 const REQUEST_TIMEOUT_MS = 4500;
 /** Force reload awaits TDLib loadGroupCallParticipants — needs a longer budget. */
-const FORCE_RELOAD_TIMEOUT_MS = 20_000;
+const FORCE_RELOAD_TIMEOUT_MS = 12_000;
 
 function parseVideoInfo(raw: unknown): TelegramChatVoiceVideoInfo | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -115,6 +117,8 @@ export async function fetchTelegramChatVoiceParticipants(
     has_active_voice_chat?: boolean;
     voice_chat_group_call_id?: unknown;
     voice_resolve_source?: string;
+    loaded_all_participants?: boolean;
+    has_hidden_listeners?: boolean;
   };
   if (!response.ok || !json.ok) {
     return { ok: false, error: json.error ?? "participants_failed" };
@@ -159,5 +163,7 @@ export async function fetchTelegramChatVoiceParticipants(
     voice_chat_group_call_id: voiceCallId,
     voice_resolve_source:
       typeof json.voice_resolve_source === "string" ? json.voice_resolve_source : "none",
+    loaded_all_participants: Boolean(json.loaded_all_participants),
+    has_hidden_listeners: Boolean(json.has_hidden_listeners),
   };
 }

@@ -635,10 +635,15 @@ export function MessageChatVoicePopover({
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
   const chatTitle = title.trim() || t("messages.voiceChat.active");
-  const totalParticipantCount = Math.max(
-    typeof participantCount === "number" ? participantCount : 0,
-    participants.length,
-  );
+  // Painted non-self rows only — never fall back to TDLib participant_count
+  // (hidden listeners inflate the label to 8+ while the roster shows 1–2).
+  const paintedOthers = participants.filter((row) => !row.is_self);
+  const totalParticipantCount =
+    paintedOthers.length > 0
+      ? paintedOthers.length
+      : participants.length > 0
+        ? participants.length
+        : 0;
   const participantCountLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
@@ -654,6 +659,8 @@ export function MessageChatVoicePopover({
   const [portalMounted, setPortalMounted] = useState(visible);
   /** Drop roster/media on hide immediately — empty shell teardown is cheap. */
   const [suspendHeavy, setSuspendHeavy] = useState(false);
+  /** First open frame: chrome only — roster rows/emoji caused 400ms+ open longtasks. */
+  const [rosterPaintReady, setRosterPaintReady] = useState(false);
   const portalRootRef = useRef<HTMLDivElement | null>(null);
   /** Set synchronously on Close/Escape so React re-renders cannot revive "open". */
   const forceClosedRef = useRef(false);
@@ -759,6 +766,31 @@ export function MessageChatVoicePopover({
       clearTimeout(timer);
     };
   }, [visible, applyPortalOpenAttr]);
+
+  useEffect(() => {
+    if (!visible || forceClosedRef.current) {
+      setRosterPaintReady(false);
+      return;
+    }
+    let cancelled = false;
+    // Paint chrome + Close first; roster avatars/emoji status caused open
+    // longtasks (voice_dialog_longtask ≥400ms) before controls could bind.
+    const arm = () => {
+      if (typeof window === "undefined") {
+        if (!cancelled) setRosterPaintReady(true);
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        window.setTimeout(() => {
+          if (!cancelled) setRosterPaintReady(true);
+        }, 48);
+      });
+    };
+    arm();
+    return () => {
+      cancelled = true;
+    };
+  }, [visible, openSeq]);
 
   useEffect(() => {
     if (!visible) setMoreMenuAnchor(null);
@@ -1060,9 +1092,14 @@ export function MessageChatVoicePopover({
   const handles: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
   const displayParticipants = useMemo(
     // Preserve incoming order — do not re-sort by speaking (tdesktop parity).
-    // While hiding, drop rows immediately so delayed portal unmount is cheap.
-    () => (suspendHeavy ? [] : participants.slice(0, 64)),
-    [participants, suspendHeavy],
+    // Never clear rows while the sheet is open — suspendHeavy racing reopen
+    // left the dialog with only the count label and no participant rows.
+    // Defer first paint of rows until chrome is interactive (open longtask fix).
+    () =>
+      !rosterPaintReady || (suspendHeavy && !visible)
+        ? []
+        : participants.slice(0, 256),
+    [participants, suspendHeavy, visible, rosterPaintReady],
   );
 
   const moreMenuItems = useMemo(
@@ -1481,9 +1518,10 @@ export function MessageChatVoicePopover({
             pointerEvents: dialogOpen ? "auto" : "none",
           },
         },
-        // Hide via opacity/pointer-events only. Dropping sheetBody on Close while
-        // WebRTC was mid-offer froze the renderer so reopen clicks could not run.
-        suspendHeavy ? null : sheetBody,
+        // Hide via opacity/pointer-events only. Never drop sheetBody while the
+        // dialog is open — suspendHeavy racing a reopen painted an empty sheet
+        // ("participants" label only, no rows) and felt like a UI freeze.
+        dialogOpen || !suspendHeavy ? sheetBody : null,
       ),
       portalTarget,
     );

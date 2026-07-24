@@ -610,19 +610,19 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       return;
     }
     chatListFetchBusyRef.current = true;
-    // Do not even fetch/parse 100+ chat rows while the voice sheet is open —
-    // JSON + normalize on the main thread stacked with avatar remounts.
-    if (options?.silent && isVoiceDialogUiOpen()) {
+    // Telegram Web: while the call sheet is open, do not fetch/parse the chat
+    // list on the UI thread at all (not only silent polls).
+    if (isVoiceDialogUiOpen()) {
       deferredSilentChatLoadRef.current = true;
       chatListFetchBusyRef.current = false;
       logPageDisplay("messages_chats_poll_skip_fetch_voice_dialog", {
         forceFull: Boolean(options?.forceFull),
+        silent: Boolean(options?.silent),
       });
       const skippedQueued = chatListFetchQueuedRef.current;
       if (skippedQueued) {
         chatListFetchQueuedRef.current = null;
-        if (skippedQueued.silent === true) {
-          // Stay deferred — re-entering silent loads while open loops forever.
+        if (skippedQueued.silent === true || isVoiceDialogUiOpen()) {
           deferredSilentChatLoadRef.current = true;
         } else {
           void loadChatsRef.current(skippedQueued);
@@ -648,6 +648,18 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     const started = Date.now();
     try {
       const response = await fetch(url, { method: "GET", credentials: "include" });
+      // Sheet may have opened while the request was in flight — skip JSON parse
+      // of ~260 chats (main-thread longtask) and apply on close instead.
+      if (isVoiceDialogUiOpen()) {
+        deferredSilentChatLoadRef.current = true;
+        logPageDisplay("messages_chats_poll_skip_parse_voice_dialog", {
+          forceFull: Boolean(options?.forceFull),
+          silent: Boolean(options?.silent),
+          elapsedMs: Date.now() - started,
+          status: response.status,
+        });
+        return;
+      }
       const json = (await response.json().catch(() => ({}))) as {
         ok?: boolean;
         unchanged?: boolean;
@@ -659,6 +671,16 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       };
       if (!response.ok || !json.ok) {
         throw new Error(json.error || `HTTP_${response.status}`);
+      }
+      if (isVoiceDialogUiOpen()) {
+        deferredSilentChatLoadRef.current = true;
+        logPageDisplay("messages_chats_poll_skip_apply_voice_dialog", {
+          forceFull: Boolean(options?.forceFull),
+          silent: Boolean(options?.silent),
+          elapsedMs: Date.now() - started,
+          revision: typeof json.revision === "number" ? json.revision : null,
+        });
+        return;
       }
       if (json.unchanged) {
         if (typeof json.revision === "number") {

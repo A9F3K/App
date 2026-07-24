@@ -97,15 +97,18 @@ export function MessageChatVoiceBar({
   /** Hide the empty strip until a poll/SSE proves real (non-self) presence. */
   const [presenceConfirmed, setPresenceConfirmed] = useState(false);
   const stripPaddingX = layout.contentSideInsetPx;
-  const totalParticipantCount = Math.max(rosterCountHint, participants.length);
   const speakingByKeyRef = useRef(speakingByKey);
   speakingByKeyRef.current = speakingByKey;
-  // Stable strip order — do not re-sort by speaking (that remounted avatars every pulse).
-  const stackedParticipants = participants.slice(0, MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS);
-  const overflowCount = Math.max(
+  // Preview = other people only (Telegram strip never leads with your own name).
+  const previewParticipants = participants.filter((row) => !row.is_self);
+  // NEVER use TDLib participant_count / rosterCountHint for UI — it includes
+  // hidden listeners and recent-speaker inflated totals (logs: listed=1 hint=8).
+  const totalParticipantCount = previewParticipants.length;
+  const stackedParticipants = previewParticipants.slice(
     0,
-    Math.max(rosterTotalHintRef.current, participants.length) - stackedParticipants.length,
+    MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
   );
+  const overflowCount = Math.max(0, previewParticipants.length - stackedParticipants.length);
   const participantsA11yLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
@@ -220,6 +223,38 @@ export function MessageChatVoiceBar({
       : "") ||
     "";
 
+  const onLeftVoiceRef = useRef(onLeftVoice);
+  onLeftVoiceRef.current = onLeftVoice;
+  const leaveVoiceRef = useRef(voiceSession.leaveVoice);
+  leaveVoiceRef.current = voiceSession.leaveVoice;
+
+  // Closing the sheet before WebRTC connects must cancel Join — otherwise SDP
+  // finishes after close (logs: close_click → webrtc_join_ok) and the page stays
+  // engaged/gated with no dialog (feels stuck).
+  useEffect(() => {
+    if (popoverOpen) return;
+    if (!joined) return;
+    if (voiceSessionJoinedRef.current) return;
+    let cancelled = false;
+    void (async () => {
+      logPageDisplay("messages_voice_dialog_close_cancel_join", {
+        chatId,
+        joining: voiceSessionJoiningRef.current,
+        negotiating: voiceSessionNegotiatingRef.current,
+      });
+      softPollAbortRef.current?.abort();
+      try {
+        await leaveVoiceRef.current();
+      } catch {
+        /* best-effort */
+      }
+      if (!cancelled) onLeftVoiceRef.current?.();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [popoverOpen, joined, chatId]);
+
   // Join only after the user presses Join — never auto-join on chat preview open.
   // Cap retries so a flaky ICE path cannot re-offer SDP forever and freeze the UI.
   //
@@ -273,6 +308,16 @@ export function MessageChatVoiceBar({
         inFlight = false;
         return;
       }
+      // User closed the sheet during the settle delay — do not start SDP.
+      if (!popoverOpenRef.current) {
+        inFlight = false;
+        logPageDisplay("messages_voice_webrtc_join_aborted_sheet_closed", {
+          chatId,
+          groupCallId,
+        });
+        onLeftVoiceRef.current?.();
+        return;
+      }
       // Count only real joinListen calls — cancelled settle delays must not
       // exhaust the 3-attempt budget.
       joinAttemptsRef.current += 1;
@@ -303,10 +348,32 @@ export function MessageChatVoiceBar({
           if (chatIdRef.current !== kickChatId) return;
           if (!voiceJoinedRef.current && !voiceSessionJoinedRef.current) return;
           kickPostJoinForceReloadRef.current?.("webrtc_join_ok");
-        }, 120);
+        }, 500);
+      } else if (!ok && typeof window !== "undefined") {
+        // Join API / SDP may have partially succeeded — kick roster on every
+        // failed attempt, not only after the 3rd give-up.
+        const kickChatId = chatId;
+        window.setTimeout(() => {
+          if (chatIdRef.current !== kickChatId) return;
+          if (!voiceJoinedRef.current) return;
+          kickPostJoinForceReloadRef.current?.(
+            `webrtc_join_fail_kick_${joinAttemptsRef.current}`,
+          );
+        }, 400);
       }
       if (cancelled || ok || voiceSessionJoinedRef.current) return;
       const attempt = joinAttemptsRef.current;
+      if (attempt >= 3) {
+        const kickChatId = chatId;
+        if (typeof window !== "undefined") {
+          window.setTimeout(() => {
+            if (chatIdRef.current !== kickChatId) return;
+            if (!voiceJoinedRef.current) return;
+            kickPostJoinForceReloadRef.current?.("webrtc_join_give_up");
+          }, 200);
+        }
+        return;
+      }
       const delayMs = Math.min(2000 * 2 ** Math.min(attempt - 1, 2), 12_000);
       logPageDisplay("messages_voice_webrtc_join_retry", {
         chatId,
@@ -346,6 +413,11 @@ export function MessageChatVoiceBar({
         clearTimeout(speakingHoldTimerRef.current);
         speakingHoldTimerRef.current = null;
       }
+      if (speakingRafRef.current != null && typeof window !== "undefined") {
+        window.cancelAnimationFrame?.(speakingRafRef.current);
+        speakingRafRef.current = null;
+      }
+      pendingSpeakingMapRef.current = null;
     };
   }, []);
 
@@ -380,6 +452,10 @@ export function MessageChatVoiceBar({
   /** Hold only matters for poll fallback — SSE speaking updates are already live. */
   const speakingHoldUntilRef = useRef(new Map<string, number>());
   const speakingHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Coalesce speaking setState to one rAF — Telegram Web toggles CSS, not React storms. */
+  const pendingSpeakingMapRef = useRef<Record<string, true> | null>(null);
+  const speakingRafRef = useRef<number | null>(null);
+  const speakingListedRef = useRef(0);
 
   const participantSpeakKey = useCallback((row: TelegramChatVoiceParticipant): string => {
     if (row.is_self) return "self";
@@ -391,7 +467,7 @@ export function MessageChatVoiceBar({
   const applySpeakingMap = useCallback(
     (rows: TelegramChatVoiceParticipant[]) => {
       // Speaking glow lives in speakingByKey so membership rows stay referentially
-      // stable (tdesktop parity). Keep hold short so mics clear when speech stops.
+      // stable (tdesktop / Telegram Web parity). Keep hold short so mics clear.
       const now = Date.now();
       const holdMs = 900;
       let soonestExpiry = 0;
@@ -444,29 +520,42 @@ export function MessageChatVoiceBar({
           });
         }, soonestExpiry - now + 16);
       }
-      setSpeakingByKey((prev) => {
-        const prevKeys = Object.keys(prev);
-        const nextKeys = Object.keys(next);
-        if (prevKeys.length === nextKeys.length) {
-          let same = true;
-          for (const key of nextKeys) {
-            if (!prev[key]) {
-              same = false;
-              break;
+      speakingListedRef.current = rows.length;
+      pendingSpeakingMapRef.current = next;
+      if (speakingRafRef.current != null) return;
+      const schedule =
+        typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+          ? window.requestAnimationFrame.bind(window)
+          : (cb: FrameRequestCallback) => setTimeout(() => cb(Date.now()), 16) as unknown as number;
+      speakingRafRef.current = schedule(() => {
+        speakingRafRef.current = null;
+        const pending = pendingSpeakingMapRef.current;
+        pendingSpeakingMapRef.current = null;
+        if (!pending) return;
+        setSpeakingByKey((prev) => {
+          const prevKeys = Object.keys(prev);
+          const nextKeys = Object.keys(pending);
+          if (prevKeys.length === nextKeys.length) {
+            let same = true;
+            for (const key of nextKeys) {
+              if (!prev[key]) {
+                same = false;
+                break;
+              }
             }
+            if (same) return prev;
           }
-          if (same) return prev;
-        }
-        if (nextKeys.length > 0) {
-          logPageDisplay("messages_voice_roster_speaking_applied", {
-            chatId,
-            speakingCount: nextKeys.length,
-            listed: rows.length,
-            applyMs: 0,
-            popoverOpen: popoverOpenRef.current,
-          });
-        }
-        return next;
+          if (nextKeys.length > 0) {
+            logPageDisplay("messages_voice_roster_speaking_applied", {
+              chatId,
+              speakingCount: nextKeys.length,
+              listed: speakingListedRef.current,
+              applyMs: 0,
+              popoverOpen: popoverOpenRef.current,
+            });
+          }
+          return pending;
+        });
       });
     },
     [chatId, participantSpeakKey],
@@ -518,6 +607,19 @@ export function MessageChatVoiceBar({
       const nextByKey = new Map(next.map((row) => [speakKey(row), row]));
 
       const hint = Math.max(0, countHint);
+      // Never wipe a painted roster with an empty soft/force payload — that left
+      // the open dialog with zero rows while the strip still claimed a count.
+      if (withLocalSpeaking.length === 0 && prev.length > 0) {
+        if (hint > 0 || joinedLocally) {
+          const totalHint = Math.max(rosterTotalHintRef.current, hint, prev.length);
+          rosterTotalHintRef.current = totalHint;
+          if (rosterCountHintStateRef.current !== totalHint) {
+            rosterCountHintStateRef.current = totalHint;
+            setRosterCountHint(totalHint);
+          }
+          return;
+        }
+      }
       // SSE / soft polls often send a recent-speakers subset while participant_count
       // is still 4–5. Never replace a fuller roster with that subset. When the
       // payload grows the roster, take it as membership (merge path starting from
@@ -853,9 +955,16 @@ export function MessageChatVoiceBar({
     if (!isTelegramMessagesConnected) return "backoff";
     // Soft HTTP polls contend with joinVideoChat on TDLib. While the sheet is
     // open, SSE + post-webrtc force-reload own the roster. While Join is armed
-    // but WebRTC is not up yet, skip entirely.
+    // but WebRTC is not up yet, skip entirely — after join give-up, allow soft
+    // polls again so we are not stuck on listed=1 forever.
     if (popoverOpenRef.current) return "ok";
-    if (voiceJoinedRef.current && !voiceSessionJoinedRef.current) return "ok";
+    if (
+      voiceJoinedRef.current &&
+      !voiceSessionJoinedRef.current &&
+      joinAttemptsRef.current < 3
+    ) {
+      return "ok";
+    }
     softPollAbortRef.current?.abort();
     const abort = new AbortController();
     softPollAbortRef.current = abort;
@@ -1010,7 +1119,12 @@ export function MessageChatVoiceBar({
       const sheetOpen = popoverOpenRef.current;
       const baseMs = nextBaseMs();
       // Soft polls starve joinVideoChat — skip while sheet open or Join in flight.
-      if (sheetOpen || (voiceJoinedRef.current && !voiceSessionJoinedRef.current)) {
+      if (
+        sheetOpen ||
+        (voiceJoinedRef.current &&
+          !voiceSessionJoinedRef.current &&
+          joinAttemptsRef.current < 3)
+      ) {
         arm(baseMs);
         return;
       }
@@ -1188,11 +1302,11 @@ export function MessageChatVoiceBar({
 
   const rosterIncomplete = useCallback(() => {
     const listed = participantsRef.current.length;
-    const hint = rosterTotalHintRef.current;
-    // tdesktop: until join load finishes, a solo/stub roster is incomplete.
+    // Only a solo/stub roster needs a post-join force load. A multi-person
+    // soft roster (e.g. listed=4 hint=5) is already paint-worthy — forcing
+    // loadGroupCallParticipants in the same window as webrtc_join_ok freezes
+    // the UI thread. Hidden listeners make listed === hint unreachable.
     if (listed <= 1 && !postJoinRosterLoadedRef.current) return true;
-    // Keep forcing while listed trails the high-water hint (not half-hint).
-    if (hint > 0 && listed < hint && !postJoinRosterLoadedRef.current) return true;
     return false;
   }, []);
 
@@ -1208,14 +1322,35 @@ export function MessageChatVoiceBar({
     [chatId],
   );
 
-  const markPostJoinRosterComplete = useCallback((listed: number, hint: number) => {
-    // TDLib often reports participant_count=1 until loadGroupCallParticipants
-    // finishes — never treat a solo row as a finished join roster.
-    if (listed <= 1) return false;
-    if (hint > 0 && listed < hint) return false;
-    postJoinRosterLoadedRef.current = true;
-    return true;
-  }, []);
+  const markPostJoinRosterComplete = useCallback(
+    (
+      listed: number,
+      hint: number,
+      meta?: { loadedAll?: boolean; hasHiddenListeners?: boolean },
+    ) => {
+      // Telegram Web/Desktop: complete from loaded_all / hidden-listeners, never
+      // from listed === participant_count (muted listeners are omitted).
+      if (listed <= 0) return false;
+      if (meta?.loadedAll) {
+        postJoinRosterLoadedRef.current = true;
+        return true;
+      }
+      if (meta?.hasHiddenListeners && listed >= 1) {
+        postJoinRosterLoadedRef.current = true;
+        return true;
+      }
+      // Multi-person soft roster is complete enough; SSE fills the rest.
+      if (listed >= 2) {
+        postJoinRosterLoadedRef.current = true;
+        return true;
+      }
+      // Solo stub before any joined load — keep waiting for one force pass.
+      if (listed <= 1 && !meta?.loadedAll && !meta?.hasHiddenListeners) return false;
+      postJoinRosterLoadedRef.current = true;
+      return true;
+    },
+    [],
+  );
 
   const kickPostJoinForceReload = useCallback(
     (source: string) => {
@@ -1287,9 +1422,14 @@ export function MessageChatVoiceBar({
             hint,
             attempt: 0,
             fetched: result.participants.length,
+            loadedAll: result.loaded_all_participants,
+            hasHidden: result.has_hidden_listeners,
             source,
           });
-          markPostJoinRosterComplete(listed, hint);
+          markPostJoinRosterComplete(listed, hint, {
+            loadedAll: result.loaded_all_participants,
+            hasHiddenListeners: result.has_hidden_listeners,
+          });
         })
         .finally(() => {
           postJoinForceInFlightRef.current = false;
@@ -1305,8 +1445,9 @@ export function MessageChatVoiceBar({
   );
   kickPostJoinForceReloadRef.current = kickPostJoinForceReload;
 
-  // Immediate force roster once WebRTC reports joined — the wait-loop below
-  // polls every 120ms, but joining can finish between ticks and leave listed=1.
+  // Log join commit only — do NOT kick a second force-reload here. Dual kicks
+  // (this effect + the wait-loop below) stacked TDLib loads with SDP and froze
+  // Close. Telegram Web learns roster from the update stream after one load.
   useEffect(() => {
     if (!joined || !voiceSession.joined) return;
     logPageDisplay("messages_voice_session_joined_commit", {
@@ -1315,16 +1456,7 @@ export function MessageChatVoiceBar({
       hint: rosterTotalHintRef.current,
       popoverOpen: popoverOpenRef.current,
     });
-    if (!isTelegramMessagesConnected) return;
-    // Kick in this turn — a 50ms timer was often cleared by dep churn before fire.
-    kickPostJoinForceReload("webrtc_joined_effect");
-  }, [
-    joined,
-    voiceSession.joined,
-    chatId,
-    isTelegramMessagesConnected,
-    kickPostJoinForceReload,
-  ]);
+  }, [joined, voiceSession.joined, chatId]);
 
   const flushPendingStreamSnapRef = useRef(flushPendingStreamSnap);
   flushPendingStreamSnapRef.current = flushPendingStreamSnap;
@@ -1389,30 +1521,34 @@ export function MessageChatVoiceBar({
         });
       });
       if (cancelled || !popoverOpenRef.current) return;
-      // During Join, skip soft HTTP reload — it contends with joinVideoChat.
-      // SSE + post-webrtc force-reload own the roster.
-      // Also skip while WebRTC join is in flight (joining/negotiating) even if
-      // panel `joined` flipped a frame late.
-      if (
-        (voiceJoinedRef.current && !voiceSessionJoinedRef.current) ||
-        voiceSessionJoiningRef.current ||
-        voiceSessionNegotiatingRef.current
-      ) {
+      // During an in-flight WebRTC join, skip soft HTTP reload — it contends with
+      // joinVideoChat. Do NOT keep skipping after join has failed/exhausted
+      // (panelJoined && !webrtcJoined forever → listed=1 stuck, logs:
+      // open_skip_reload_joining with webrtcJoining=false).
+      const joinInFlight =
+        voiceSessionJoiningRef.current || voiceSessionNegotiatingRef.current;
+      const joinStillPending =
+        voiceJoinedRef.current &&
+        !voiceSessionJoinedRef.current &&
+        joinAttemptsRef.current < 3 &&
+        (joinInFlight || joinAttemptsRef.current === 0);
+      if (joinInFlight || joinStillPending) {
         logPageDisplay("messages_voice_dialog_open_skip_reload_joining", {
           chatId,
           listed: participantsRef.current.length,
           hint: rosterTotalHintRef.current,
           panelJoined: voiceJoinedRef.current,
+          webrtcJoined: voiceSessionJoinedRef.current,
           webrtcJoining: voiceSessionJoiningRef.current,
           webrtcNegotiating: voiceSessionNegotiatingRef.current,
+          joinAttempts: joinAttemptsRef.current,
         });
         return;
       }
       const listed = participantsRef.current.length;
       const hint = rosterTotalHintRef.current;
-      // A solo stub (listed=hint=1) is not a finished roster — force-reload after join.
-      const rosterLooksComplete =
-        listed > 1 && hint > 0 && listed >= hint;
+      // Multi-person soft roster is enough — don't soft-reload into Join/SDP.
+      const rosterLooksComplete = listed > 1;
       if (rosterLooksComplete) {
         logPageDisplay("messages_voice_dialog_open_skip_reload", {
           chatId,
@@ -1496,7 +1632,9 @@ export function MessageChatVoiceBar({
   }, [popoverOpen, chatId, isTelegramMessagesConnected, groupCallId]);
 
   // After Join, TDLib allows loadGroupCallParticipants. Soft polls before join
-  // only return recent_speakers — keep forcing until listed catches the hint.
+  // only return recent_speakers — force ONLY while the roster is still a solo
+  // stub. Never chase listed === hint (hidden listeners make that unreachable
+  // and the force GET mid-SDP freezes the tab).
   //
   // Depend only on panel `joined`, NOT voiceSession.joined. Flipping webrtcJoined
   // used to remount this effect: cleanup cancelled the wait loop, then an 800ms
@@ -1507,6 +1645,9 @@ export function MessageChatVoiceBar({
       postJoinRosterLoadedRef.current = false;
       return;
     }
+    // Do not force-reload after Close — joined can lag while leave cancels SDP
+    // (logs: close → postjoin_wait_webrtc → stuck feel).
+    if (!popoverOpen) return;
     if (!isTelegramMessagesConnected) return;
     if (!rosterIncomplete()) {
       markPostJoinRosterComplete(
@@ -1514,15 +1655,25 @@ export function MessageChatVoiceBar({
         rosterTotalHintRef.current,
       );
       if (postJoinRosterLoadedRef.current) {
+        logPageDisplay("messages_voice_dialog_postjoin_reload_skip", {
+          chatId,
+          listed: participantsRef.current.length,
+          hint: rosterTotalHintRef.current,
+          reason: "multi_person_roster_no_force",
+          source: "joined_effect",
+        });
         return;
       }
     }
     let cancelled = false;
     let attempts = 0;
-    const maxAttempts = 10;
+    // Telegram Web: one load after join, then update stream — not N force GETs.
+    const maxAttempts = 2;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let inFlight = false;
     let loggedWaitWebrtc = false;
+    let lastForceListed = -1;
+    let webrtcJoinedSeenAt = 0;
 
     const armRetry = (ms: number) => {
       if (cancelled) return;
@@ -1544,12 +1695,18 @@ export function MessageChatVoiceBar({
           attempts,
           level: "warn",
         });
+        // Stop hammering TDLib even if listed < hint (hidden listeners).
+        postJoinRosterLoadedRef.current = true;
         return;
       }
-      // Never force-reload until WebRTC/TDLib join finishes. Pre-join force hits
-      // waitUntilGroupCallJoinedForLoad and starves joinVideoChat — UI stuck,
-      // listed=1, speakingCount=0.
-      if (!voiceSessionJoinedRef.current) {
+      // Prefer waiting for WebRTC join before force-reload (pre-join force can
+      // starve joinVideoChat). Once join attempts are exhausted, force anyway —
+      // TDLib may already be joined after a client-side SDP/join timeout.
+      const joinGiveUp =
+        joinAttemptsRef.current >= 3 &&
+        !voiceSessionJoiningRef.current &&
+        !voiceSessionNegotiatingRef.current;
+      if (!voiceSessionJoinedRef.current && !joinGiveUp) {
         if (!loggedWaitWebrtc) {
           loggedWaitWebrtc = true;
           logPageDisplay("messages_voice_dialog_postjoin_wait_webrtc", {
@@ -1557,12 +1714,36 @@ export function MessageChatVoiceBar({
             listed: participantsRef.current.length,
             hint: rosterTotalHintRef.current,
             panelJoined: joined,
+            joinAttempts: joinAttemptsRef.current,
             level: "info",
           });
         }
         // Poll faster so we catch webrtc_join_ok without a long listed=1 stall.
         armRetry(120);
         return;
+      }
+      if (!voiceSessionJoinedRef.current && joinGiveUp && !loggedWaitWebrtc) {
+        logPageDisplay("messages_voice_dialog_postjoin_force_after_join_give_up", {
+          chatId,
+          listed: participantsRef.current.length,
+          hint: rosterTotalHintRef.current,
+          joinAttempts: joinAttemptsRef.current,
+          level: "warn",
+        });
+      }
+      // Settle SDP / ICE before the force roster HTTP — overlapping them is
+      // the freeze window in user logs (join_ok → postjoin_reload_start).
+      if (voiceSessionJoinedRef.current) {
+        const now =
+          typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now();
+        if (webrtcJoinedSeenAt <= 0) webrtcJoinedSeenAt = now;
+        const settleMs = now - webrtcJoinedSeenAt;
+        if (settleMs < 2_500) {
+          armRetry(Math.max(120, 2_500 - settleMs));
+          return;
+        }
       }
       if (postJoinForceInFlightRef.current) {
         armRetry(400);
@@ -1606,11 +1787,32 @@ export function MessageChatVoiceBar({
             hint,
             attempt: attempts,
             fetched: result.participants.length,
+            loadedAll: result.loaded_all_participants,
+            hasHidden: result.has_hidden_listeners,
           });
-          if (markPostJoinRosterComplete(listed, hint)) {
+          if (
+            markPostJoinRosterComplete(listed, hint, {
+              loadedAll: result.loaded_all_participants,
+              hasHiddenListeners: result.has_hidden_listeners,
+            })
+          ) {
             return;
           }
-          armRetry(1_500);
+          // No growth after a joined force — accept the visible roster (even
+          // listed=1). Hint often includes hidden listeners Telegram never lists.
+          if (listed >= 1 && listed === lastForceListed) {
+            postJoinRosterLoadedRef.current = true;
+            logPageDisplay("messages_voice_dialog_postjoin_reload_accept_visible", {
+              chatId,
+              listed,
+              hint,
+              attempt: attempts,
+              level: "info",
+            });
+            return;
+          }
+          lastForceListed = listed;
+          armRetry(2_500);
         } catch (err) {
           logPageDisplay("messages_voice_dialog_postjoin_reload_fail", {
             chatId,
@@ -1627,7 +1829,7 @@ export function MessageChatVoiceBar({
     };
 
     // Paint sheet first; the wait loop polls voiceSessionJoinedRef so webrtc
-    // join mid-flight kicks force reload on the next 400ms tick (no remount).
+    // join mid-flight kicks force reload on the next tick (no remount).
     const timer = setTimeout(run, 250);
     return () => {
       cancelled = true;
@@ -1636,6 +1838,7 @@ export function MessageChatVoiceBar({
     };
   }, [
     joined,
+    popoverOpen,
     chatId,
     isTelegramMessagesConnected,
     markPostJoinRosterComplete,
@@ -1873,7 +2076,7 @@ export function MessageChatVoiceBar({
                       <MessageChatAvatarSlot
                         iconUrl={avatarUrl}
                         initials={extractChatAvatarInitials(participantTitle)}
-                        sizePx={speaking ? avatarPx - 4 : avatarPx}
+                        sizePx={avatarPx}
                         colors={colors}
                         scheme={colorScheme}
                         fetchPriority="high"

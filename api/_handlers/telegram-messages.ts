@@ -1883,6 +1883,8 @@ export async function telegramMessagesVoiceParticipantsHandler(
       has_active_voice_chat: result.has_active_voice_chat,
       voice_chat_group_call_id: result.voice_chat_group_call_id,
       voice_resolve_source: result.voice_resolve_source,
+      loaded_all_participants: Boolean(result.loaded_all_participants),
+      has_hidden_listeners: Boolean(result.has_hidden_listeners),
     },
     200,
   );

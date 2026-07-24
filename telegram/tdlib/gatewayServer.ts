@@ -822,6 +822,12 @@ export function startTdlibGatewayServer(): http.Server {
             has_active_voice_chat: result.has_active_voice_chat,
             voice_chat_group_call_id: result.voice_chat_group_call_id,
             voice_resolve_source: result.voice_resolve_source,
+            loaded_all_participants: Boolean(
+              (result as { loaded_all_participants?: boolean }).loaded_all_participants,
+            ),
+            has_hidden_listeners: Boolean(
+              (result as { has_hidden_listeners?: boolean }).has_hidden_listeners,
+            ),
             video_chat: (result as { video_chat?: unknown }).video_chat ?? null,
             error: result.error,
           });

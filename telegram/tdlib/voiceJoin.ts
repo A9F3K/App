@@ -135,6 +135,11 @@ export async function joinChatVoiceForUser(
     if (!joinState.isJoined && !joinState.needRejoin) {
       logGateway("voice_join_not_confirmed", { chatId, groupCallId: callId });
       // Still return the payload — WebRTC may work; presence/roster need a later rejoin.
+      // Schedule a delayed force load anyway: joinVideoChat often succeeds before
+      // getGroupCall.is_joined flips, and without this the UI stays on recent_speakers.
+      setTimeout(() => {
+        scheduleVoiceRosterReloadAfterJoin(client, callId);
+      }, 1_200);
     } else {
       // TDLib only allows loadGroupCallParticipants after join.
       scheduleVoiceRosterReloadAfterJoin(client, callId);

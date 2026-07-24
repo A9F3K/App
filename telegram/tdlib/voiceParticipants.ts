@@ -518,7 +518,10 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
 
   const cached = ensureCallCache(callId, {
     uniqueId: String(groupCall.unique_id ?? ""),
-    loadedAll: Boolean(groupCall.loaded_all_participants),
+    // Never seed loadedAll from soft getGroupCall — TDLib often reports
+    // loaded_all_participants=true before any loadGroupCallParticipants pass,
+    // which then filters recent_speakers stubs and sticks the UI at listed=1.
+    loadedAll: false,
   });
   if (groupCall.unique_id != null) {
     cached.uniqueId = String(groupCall.unique_id);
@@ -1006,10 +1009,15 @@ function scheduleBackgroundRosterReload(
         loadedAt: Date.now(),
         loadedAll: nextLoadedAll,
         revision: prev?.revision ?? 0,
-        participantCountHint:
+        // Never shrink the high-water hint on a thin force/bg load — soft
+        // getGroupCall under-count (1) used to wipe a larger prior hint.
+        participantCountHint: Math.max(
+          prev?.participantCountHint ?? 0,
           Number.isFinite(participantCountHint) && participantCountHint >= 0
             ? Math.trunc(participantCountHint)
-            : (prev?.participantCountHint ?? 0),
+            : 0,
+          members.size,
+        ),
         // Must keep recent_speakers — SSE snapshots overlay speaking from here.
         // Dropping it left every mic grey after the first post-join reload.
         speakers: prev?.speakers,
@@ -1041,11 +1049,16 @@ export function scheduleVoiceRosterReloadAfterJoin(
 ): void {
   if (!Number.isFinite(callId) || callId <= 0) return;
   const cached = callMembersCache.get(callId);
+  const hint = Math.max(
+    cached?.participantCountHint ?? 0,
+    cached?.members.size ?? 0,
+    cached?.speakers?.size ?? 0,
+  );
   scheduleBackgroundRosterReload(
     client,
     callId,
     cached?.uniqueId ?? "",
-    cached?.participantCountHint ?? 0,
+    hint,
     false,
     { force: true },
   );
@@ -1059,7 +1072,7 @@ function sleep(ms: number): Promise<void> {
 async function waitUntilGroupCallJoinedForLoad(
   client: Client,
   callId: number,
-  maxWaitMs = 2_500,
+  maxWaitMs = 4_000,
 ): Promise<boolean> {
   const deadline = Date.now() + maxWaitMs;
   while (Date.now() < deadline) {
@@ -1261,6 +1274,9 @@ async function loadJoinedParticipants(
 
       noGrowthStreak = map.size > sizeBefore ? 0 : noGrowthStreak + 1;
       if (hasHidden && map.size > 0 && noGrowthStreak >= 2) {
+        // Telegram Web stops on loaded_all / noGrowth with hidden listeners —
+        // listed will never equal participant_count. Accept any non-empty visible
+        // map after two quiet chunks (including solo self).
         sawLoadedAll = true;
         break;
       }
@@ -1311,6 +1327,8 @@ export async function fetchChatVoiceParticipants(
   has_active_voice_chat: boolean;
   voice_chat_group_call_id: number | null;
   voice_resolve_source: string;
+  loaded_all_participants: boolean;
+  has_hidden_listeners: boolean;
   video_chat?: unknown;
 }> {
   const resolved = await resolveBoundGroupCallId(client, chatId, groupCallId);
@@ -1324,6 +1342,8 @@ export async function fetchChatVoiceParticipants(
       has_active_voice_chat: false,
       voice_chat_group_call_id: null,
       voice_resolve_source: resolved.source,
+      loaded_all_participants: false,
+      has_hidden_listeners: false,
       video_chat: resolved.videoChatRaw,
     };
   }
@@ -1352,6 +1372,8 @@ export async function fetchChatVoiceParticipants(
       has_active_voice_chat: false,
       voice_chat_group_call_id: null,
       voice_resolve_source: resolved.source,
+      loaded_all_participants: false,
+      has_hidden_listeners: false,
       video_chat: resolved.videoChatRaw,
     };
   }
@@ -1405,7 +1427,7 @@ export async function fetchChatVoiceParticipants(
         // pass (double quiet-load starved TDLib and timed out soft polls).
         let reusedJoinReload = false;
         if (bgReloadInFlight.has(callId)) {
-          const waitDeadline = Date.now() + 8_000;
+          const waitDeadline = Date.now() + 3_000;
           while (bgReloadInFlight.has(callId) && Date.now() < waitDeadline) {
             await sleep(150);
           }
@@ -1428,13 +1450,31 @@ export async function fetchChatVoiceParticipants(
           client,
           callId,
         );
-        // First pass can race joinVideoChat — retry once before giving up.
-        if (loadFailed || loaded.size === 0) {
+        // First pass can race joinVideoChat — one short retry only.
+        // Extra passes stacked with WebRTC and froze the browser UI thread.
+        for (let pass = 0; pass < 1; pass += 1) {
+          const completeEnough =
+            !loadFailed &&
+            loaded.size > 0 &&
+            (loadedAll ||
+              rosterLooksComplete(
+                loaded.size,
+                participantCountHint,
+                hasHiddenListeners,
+                loadedAll,
+              ));
+          if (completeEnough) break;
           await sleep(400);
           const retry = await loadJoinedParticipants(client, callId);
-          loaded = retry.members;
-          loadedAll = retry.loadedAll;
-          loadFailed = retry.loadFailed;
+          if (retry.members.size >= loaded.size) {
+            loaded = retry.members;
+            loadedAll = retry.loadedAll;
+            loadFailed = retry.loadFailed;
+          } else if (!retry.loadFailed && retry.members.size > 0) {
+            loaded = mergeParticipantMaps(loaded, retry.members);
+            loadedAll = retry.loadedAll || loadedAll;
+            loadFailed = false;
+          }
         }
         if (!loadFailed && loaded.size > 0) {
           const prev = callMembersCache.get(callId);
@@ -1596,23 +1636,24 @@ export async function fetchChatVoiceParticipants(
     ratchetParticipantCountHint(cached, participantCountHint);
   }
 
-  // tdesktop: until loaded_all_participants, show everyone we know — ordered
-  // members plus recent_speakers stubs. Filtering stubs when TDLib under-counts
-  // participant_count left the dialog on a solo self row (listed=1 hint=1).
+  // Always union recent_speakers into the painted roster — they are live people
+  // even after loaded_all (which can arrive with a thin self-only map when
+  // has_hidden_listeners trips early). Filtering stubs left dialog rows empty.
   const rosterLoadedAll = Boolean(callMembersCache.get(callId)?.loadedAll);
   const hintForDisplay = Math.max(
     callMembersCache.get(callId)?.participantCountHint ?? 0,
     Number.isFinite(participantCountHint) ? Math.trunc(participantCountHint) : 0,
     collected.size,
   );
-  if (!rosterLoadedAll && speakers.size > 0) {
+  if (speakers.size > 0) {
     collected = mergeSpeakerStubsForDisplay(collected, speakers);
   }
   const orderedRows = [...collected.values()].filter((row) => {
     if (row.order) return true;
     if (isJoined && selfUserId != null && row.userId === selfUserId) return true;
-    // Keep speaker stubs visible until the full join load finishes.
-    return !rosterLoadedAll;
+    const key = participantKey(row.userId, row.chatId);
+    // Keep speaker stubs visible — never drop them once loaded_all flips early.
+    return !rosterLoadedAll || (key != null && speakers.has(key));
   });
   const displayRows =
     orderedRows.length > 0 || rosterLoadedAll
@@ -1675,6 +1716,7 @@ export async function fetchChatVoiceParticipants(
     resolveSource: resolved.source,
   });
 
+  const cachedAfter = callMembersCache.get(callId);
   return {
     ok: true,
     error: null,
@@ -1683,6 +1725,10 @@ export async function fetchChatVoiceParticipants(
     has_active_voice_chat: true,
     voice_chat_group_call_id: callId,
     voice_resolve_source: resolved.source,
+    // Client must stop force-reload when the visible roster is done — listed
+    // will never equal participant_count while has_hidden_listeners is set.
+    loaded_all_participants: Boolean(cachedAfter?.loadedAll),
+    has_hidden_listeners: hasHiddenListeners,
     video_chat: resolved.videoChatRaw,
   };
 }

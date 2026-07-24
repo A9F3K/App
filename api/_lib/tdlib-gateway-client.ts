@@ -1090,6 +1090,8 @@ export async function gatewayFetchChatVoiceParticipants(
   has_active_voice_chat: boolean;
   voice_chat_group_call_id: number | null;
   voice_resolve_source: string;
+  loaded_all_participants: boolean;
+  has_hidden_listeners: boolean;
 }> {
   const callId = normalizeTelegramGroupCallId(groupCallId);
   const params = new URLSearchParams({
@@ -1153,6 +1155,8 @@ export async function gatewayFetchChatVoiceParticipants(
   const hasActive = Boolean(json.has_active_voice_chat) || voiceCallId != null;
   const resolveSource =
     typeof json.voice_resolve_source === "string" ? json.voice_resolve_source : "none";
+  const loadedAllParticipants = Boolean(json.loaded_all_participants);
+  const hasHiddenListeners = Boolean(json.has_hidden_listeners);
   if (!response.ok || !json.ok) {
     return {
       ok: false,
@@ -1162,6 +1166,8 @@ export async function gatewayFetchChatVoiceParticipants(
       has_active_voice_chat: false,
       voice_chat_group_call_id: null,
       voice_resolve_source: "none",
+      loaded_all_participants: false,
+      has_hidden_listeners: false,
     };
   }
   return {
@@ -1175,6 +1181,8 @@ export async function gatewayFetchChatVoiceParticipants(
     has_active_voice_chat: hasActive,
     voice_chat_group_call_id: voiceCallId,
     voice_resolve_source: resolveSource,
+    loaded_all_participants: loadedAllParticipants,
+    has_hidden_listeners: hasHiddenListeners,
   };
 }
 

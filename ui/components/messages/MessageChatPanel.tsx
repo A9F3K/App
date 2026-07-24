@@ -230,16 +230,22 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     const until = Date.now() + 350;
     ignoreVoicePopoverOpenUntilRef.current = until;
     suppressStripPressUntilRef.current = until;
-    // Hide-only: do NOT cancel the deferred Join arm. Closing before the arm
-    // fired used to clearJoinArmTimer + setVoiceEngaged(false), so TDLib never
-    // joined and the dialog stayed on listed=1 while totalHint was 4–6.
     // Native window capture handlers are outside React's discrete event system;
     // without flushSync the sheet can stay data-voice-dialog="open" for seconds
     // under chat/voice longtasks (Close looked dead to Playwright).
     const applyClose = () => {
       setVoicePopoverOpen(false);
-      // Keep gate up while still joined/engaged so chat-list stays deferred.
-      setVoiceDialogUiOpen(voiceJoinedRef.current || voiceEngagedRef.current);
+      // Close before audio is up: cancel deferred Join so SDP cannot continue
+      // after the sheet is gone (logs: close → webrtc_join_ok → stuck gate).
+      if (!voiceJoinedRef.current) {
+        clearJoinArmTimer();
+        setVoiceEngaged(false);
+        voiceEngagedRef.current = false;
+        setVoiceDialogUiOpen(false);
+        return;
+      }
+      // Already joined — minimize; keep gate so chat-list stays deferred.
+      setVoiceDialogUiOpen(true);
     };
     if (Platform.OS === "web") {
       try {
@@ -250,7 +256,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       }
     }
     applyClose();
-  }, []);
+  }, [clearJoinArmTimer]);
 
   const joinVoice = useCallback(() => {
     if (!liveVoiceAvailable && groupCallId == null) {
