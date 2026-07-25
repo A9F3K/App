@@ -304,15 +304,16 @@ class SdpBuilder {
     this.add("a=rtcp-fb:111 transport-cc");
     this.add("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level");
 
-    // Full video codec lists made Chromium setRemoteDescription wedge the tab
-    // after join_ok (console died before apply_ok). Listen joins park video.
+    // Slim VP8-only video keeps setRemoteDescription cheap. telegram-tt's SFU
+    // answer uses recvonly for the main video mid (not inactive) — inactive
+    // mismatched a black placeholder track and starved remote audio demux.
     if (opts?.minimalVideo) {
       this.add("m=video 9 UDP/TLS/RTP/SAVPF 100");
       this.add("c=IN IP4 0.0.0.0");
       this.add("a=rtcp:9 IN IP4 0.0.0.0");
       this.add("a=rtcp-mux");
       this.add(`a=mid:${mids[1]}`);
-      this.add("a=inactive");
+      this.add("a=recvonly");
       this.addTransport(transport, dtlsSetup, { includeCandidates: false });
       this.add("a=rtpmap:100 VP8/90000");
       return;

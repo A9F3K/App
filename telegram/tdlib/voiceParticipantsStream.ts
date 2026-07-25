@@ -26,9 +26,9 @@ export function serveVoiceParticipantsStream(
   groupCallId: number | null,
   sinceRevision: number | null,
 ): void {
-  const callId =
-    resolveCachedGroupCallIdForChat(chatId, groupCallId) ??
-    (groupCallId != null && groupCallId > 0 ? groupCallId : null);
+  // Only stream a call id verified by a live participants fetch. Client-preferred
+  // ids are often stale after a call ends or when switching chats.
+  const callId = resolveCachedGroupCallIdForChat(chatId, groupCallId);
 
   res.statusCode = 200;
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");

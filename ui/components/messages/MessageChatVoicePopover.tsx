@@ -265,6 +265,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   const { colorScheme } = useTelegram();
   const title =
     participant.title.trim() ||
+    (participant.is_self ? "You" : "") ||
     (participant.user_id != null ? `User ${participant.user_id}` : "") ||
     (participant.chat_id != null ? `Chat ${Math.abs(participant.chat_id)}` : "") ||
     "?";
@@ -687,7 +688,9 @@ export function MessageChatVoicePopover({
       node.style.display = "flex";
       node.style.visibility = "visible";
       node.style.opacity = "1";
-      node.style.pointerEvents = "auto";
+      // Hits come from backdrop/sheet children (pointer-events: auto), not the root.
+      node.style.pointerEvents = "none";
+      node.style.cursor = "default";
     } else {
       node.setAttribute("aria-hidden", "true");
       node.setAttribute("inert", "");
@@ -696,6 +699,7 @@ export function MessageChatVoicePopover({
       node.style.visibility = "hidden";
       node.style.opacity = "0";
       node.style.pointerEvents = "none";
+      node.style.cursor = "default";
     }
   }, []);
 
@@ -1168,7 +1172,11 @@ export function MessageChatVoicePopover({
               margin: 0,
               padding: 0,
               border: "none",
-              cursor: "pointer",
+              // Dimmer is dismissible but must not paint the whole site as a link.
+              // cursor:pointer here made every non-clickable chat pixel look active
+              // while Join longtasks froze Close.
+              cursor: "default",
+              pointerEvents: "auto",
               background: "rgba(0,0,0,0.45)",
               zIndex: 0,
             },
@@ -1526,7 +1534,11 @@ export function MessageChatVoicePopover({
             alignItems: "center",
             visibility: dialogOpen ? "visible" : "hidden",
             opacity: dialogOpen ? 1 : 0,
-            pointerEvents: dialogOpen ? "auto" : "none",
+            // Root stays none so only backdrop/sheet children capture hits.
+            // A full-viewport pointer-events:auto + cursor:pointer backdrop made
+            // the entire website look clickable while Join froze the sheet.
+            pointerEvents: "none",
+            cursor: "default",
           },
         },
         // Hide via opacity/pointer-events only. Never drop sheetBody while the

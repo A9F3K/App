@@ -38,6 +38,8 @@ export type TelegramVoiceSession = {
   localCameraStream: MediaStream | null;
   localScreenStream: MediaStream | null;
   unlockAudio: () => void;
+  /** Start getUserMedia during the Join click (before SDP). */
+  prefetchMic: () => void;
   /** Resolves true when the WebRTC join succeeded (or was already joined). */
   joinListen: () => Promise<boolean>;
   toggleMic: () => Promise<void>;
@@ -263,18 +265,46 @@ export function useTelegramVoiceSession({
       setMediaConnected(session.isMediaConnected());
       setNegotiating(session.isNegotiating());
       session.setRemoteAudioEnabled(Boolean(visible));
-      // Playback is started inside SDP apply_ok — calling resume here raced the
-      // answer apply and stacked main-thread work after join_ok.
-      // Mic stays OFF by default after join. Do NOT call setMicEnabled(false) here —
-      // that used to force getUserMedia via the silent-audio branch and freeze the
-      // dialog on open. Join already negotiated is_muted=true with the SFU.
-      if (micActiveRef.current) {
-        await session.setMicEnabled(true);
-        setMicActive(true);
-      } else {
-        setMicActive(false);
-        micActiveRef.current = false;
+      // Kick playback again after join_ok — apply_ok already started sinks; this
+      // catches late ontrack and reuses the Join-gesture AudioContext (tweb wires
+      // WebAudio on track without waiting for another click).
+      if (visible) {
+        session.resumeRemoteAudio();
       }
+      // Mic ON by default after join (Telegram Desktop parity). Defer getUserMedia
+      // / track swap so the dialog paints and Close stays responsive — prefetch
+      // from the Join click usually already finished by now.
+      micActiveRef.current = true;
+      setMicActive(true);
+      void (async () => {
+        await new Promise<void>((resolve) => {
+          if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => setTimeout(resolve, 160));
+            });
+          } else {
+            setTimeout(resolve, 200);
+          }
+        });
+        const live = sessionRef.current;
+        if (!live || !live.isJoined || !micActiveRef.current) return;
+        try {
+          await live.setMicEnabled(true);
+          const enabled = live.isMicEnabled;
+          micActiveRef.current = enabled;
+          setMicActive(enabled);
+          if (!enabled) setLocalSpeaking(false);
+        } catch (err) {
+          micActiveRef.current = false;
+          setMicActive(false);
+          setLocalSpeaking(false);
+          appWarn(
+            "[voice-session-mic-default]",
+            err instanceof Error ? err.message : String(err),
+            { chatId, groupCallId },
+          );
+        }
+      })();
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "voice_join_failed";
@@ -289,6 +319,10 @@ export function useTelegramVoiceSession({
 
   const unlockAudio = useCallback(() => {
     sessionRef.current?.unlockRemoteAudio();
+  }, []);
+
+  const prefetchMic = useCallback(() => {
+    sessionRef.current?.prefetchLocalMic();
   }, []);
 
   const toggleMic = useCallback(async () => {
@@ -420,6 +454,7 @@ export function useTelegramVoiceSession({
     localCameraStream,
     localScreenStream,
     unlockAudio,
+    prefetchMic,
     joinListen,
     toggleMic,
     toggleCamera,

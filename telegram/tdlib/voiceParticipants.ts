@@ -54,14 +54,12 @@ const HISTORY_VOICE_PROBE_MIN_INTERVAL_MS = 15_000;
 function groupCallLooksLive(groupCall: GroupCallSnapshot | null | undefined): boolean {
   if (!groupCall || typeof groupCall !== "object") return false;
   if (groupCall.is_active === false) return false;
-  const participantCount = Number(groupCall.participant_count) || 0;
-  return (
-    groupCall.is_active === true ||
-    Boolean(groupCall.is_joined) ||
-    Boolean(groupCall.need_rejoin) ||
-    Boolean(groupCall.has_hidden_listeners) ||
-    participantCount > 0
-  );
+  // Require an explicit live signal. participant_count / has_hidden_listeners alone
+  // stay non-zero on ended calls in TDLib's cache and painted a voice strip on
+  // chats with no active call (logs: Brainrot stream_connect groupCallId=6).
+  if (groupCall.is_active === true) return true;
+  if (groupCall.is_joined || groupCall.need_rejoin) return true;
+  return false;
 }
 
 /**
@@ -106,6 +104,23 @@ export async function resolveBoundGroupCallId(
           voice,
         };
       }
+      // Chat still advertises this call id, but getGroupCall says it is dead.
+      // Do NOT fall through to preferred/history — that resurrected ended calls
+      // (false voice preview on chats with no live call).
+      chatToGroupCallId.delete(Math.trunc(chatId));
+      logGateway("voice_call_id_inactive_on_chat", {
+        chatId,
+        groupCallId: fromChat,
+        isActive: groupCall.is_active === true,
+        isJoined: Boolean(groupCall.is_joined),
+        participantCount: Number(groupCall.participant_count) || 0,
+      });
+      return {
+        callId: 0,
+        source: "none",
+        videoChatRaw: video.raw,
+        voice: { has_active_voice_chat: false, voice_chat_group_call_id: null },
+      };
     } catch {
       /* treat as inactive and continue */
     }
@@ -118,7 +133,9 @@ export async function resolveBoundGroupCallId(
         _: "getGroupCall",
         group_call_id: preferred,
       })) as GroupCallSnapshot;
-      if (groupCallLooksLive(groupCall)) {
+      // Preferred ids from the client are often stale after switching chats —
+      // only trust an explicitly active call, not joined leftovers.
+      if (groupCall.is_active === true) {
         return {
           callId: preferred,
           source: "preferred",
@@ -176,12 +193,14 @@ export async function resolveBoundGroupCallId(
               _: "getGroupCall",
               group_call_id: startedId,
             })) as GroupCallSnapshot;
-            if (groupCallLooksLive(groupCall)) {
+            // History recovery must see is_active — stale started messages otherwise
+            // reopen the strip long after the call ended.
+            if (groupCall.is_active === true) {
               logGateway("voice_call_id_recovered_from_history", {
                 chatId,
                 groupCallId: startedId,
                 participantCount: Number(groupCall.participant_count) || 0,
-                isActive: groupCall.is_active === true,
+                isActive: true,
               });
               return {
                 callId: startedId,
@@ -1659,8 +1678,30 @@ export async function fetchChatVoiceParticipants(
     orderedRows.length > 0 || rosterLoadedAll
       ? orderedRows
       : [...collected.values()];
-  // Never await getUser on the HTTP path — that serialized behind history/chat
-  // loads and timed out soft polls (message-voice-participants timeout).
+  // Soft polls must stay fast — await a short warm only for small painted sets so
+  // the HTTP body is not all empty titles ("?"). Force reload awaits a full warm.
+  // One warm promise only — racing a second getUser stampede freezes TDLib.
+  const profileMembers = new Map(
+    displayRows
+      .map((row) => {
+        const key = participantKey(row.userId, row.chatId);
+        return key ? ([key, row] as const) : null;
+      })
+      .filter((entry): entry is readonly [string, CollectedParticipant] => entry != null),
+  );
+  const forceReload = Boolean(options?.forceReload);
+  const warmPromise =
+    profileMembers.size > 0
+      ? warmMissingProfiles(client, profileMembers)
+      : Promise.resolve(0);
+  if (profileMembers.size > 0) {
+    if (forceReload) {
+      await warmPromise;
+    } else if (profileMembers.size <= 8) {
+      await Promise.race([warmPromise, sleep(900)]);
+    }
+  }
+
   const participants: VoiceParticipantRow[] = displayRows.map((row) => {
     const profile = peekParticipantProfile(row.userId, row.chatId);
     return {
@@ -1680,17 +1721,7 @@ export async function fetchChatVoiceParticipants(
 
   participants.sort(compareVoiceParticipantRows);
 
-  void warmMissingProfiles(
-    client,
-    new Map(
-      displayRows
-        .map((row) => {
-          const key = participantKey(row.userId, row.chatId);
-          return key ? ([key, row] as const) : null;
-        })
-        .filter((entry): entry is readonly [string, CollectedParticipant] => entry != null),
-    ),
-  ).then((warmed) => {
+  void warmPromise.then((warmed) => {
     if (warmed > 0) bumpVoiceCallRevision(callId);
   });
 
@@ -1739,11 +1770,11 @@ export function resolveCachedGroupCallIdForChat(
   preferredGroupCallId?: number | null,
 ): number | null {
   const mapped = chatToGroupCallId.get(Math.trunc(chatId));
-  // Prefer the chat→call map from a successful participants fetch over a stale
-  // client preferred id (historically `1` from boolean coercion).
+  // Only return ids verified by a participants fetch that saw a live getGroupCall.
+  // Falling back to the client's preferred id resurrected ended calls on chat
+  // switch (SSE painted Brainrot with a stale groupCallId=6 roster).
   if (mapped != null && mapped > 0) return mapped;
-  const preferred = normalizeTelegramGroupCallId(preferredGroupCallId);
-  if (preferred != null) return preferred;
+  void preferredGroupCallId;
   return null;
 }
 

@@ -101,14 +101,21 @@ export function MessageChatVoiceBar({
   speakingByKeyRef.current = speakingByKey;
   // Preview faces = other people only (never lead with self).
   const previewParticipants = participants.filter((row) => !row.is_self);
-  // Count label = everyone currently painted (incl. self when joined / other-client).
-  // Never use TDLib participant_count / rosterCountHint — hidden listeners inflate it.
-  const totalParticipantCount = participants.length;
+  // Before join, soft polls only return recent_speakers (~2–3) while TDLib's
+  // participant_count is the real strip headline (Telegram Desktop parity).
+  // After join, prefer the painted roster so hidden listeners don't inflate "+N".
+  const totalParticipantCount = joined
+    ? participants.length
+    : Math.max(participants.length, rosterCountHint);
   const stackedParticipants = previewParticipants.slice(
     0,
     MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
   );
-  const overflowCount = Math.max(0, previewParticipants.length - stackedParticipants.length);
+  const overflowCount = Math.max(
+    0,
+    (joined ? previewParticipants.length : Math.max(previewParticipants.length, rosterCountHint)) -
+      stackedParticipants.length,
+  );
   const participantsA11yLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
@@ -392,6 +399,9 @@ export function MessageChatVoiceBar({
   useEffect(() => {
     setParticipants([]);
     setParticipantCount(0);
+    setRosterCountHint(0);
+    rosterTotalHintRef.current = 0;
+    rosterCountHintStateRef.current = 0;
     setPresenceConfirmed(false);
     softPollAbortRef.current?.abort();
     speakingHoldUntilRef.current.clear();
@@ -473,8 +483,20 @@ export function MessageChatVoiceBar({
       const holdMs = 2_400;
       let soonestExpiry = 0;
       const next: Record<string, true> = {};
+      const joinedLocally = voiceJoinedRef.current;
       for (const row of rows) {
         const key = participantSpeakKey(row);
+        // Local self: only RMS + live mic. TDLib often marks self speaking on join
+        // while the mic is still muted — that painted a green ring incorrectly.
+        if (key === "self" && joinedLocally) {
+          if (micActiveRef.current && localSpeakingRef.current) {
+            speakingHoldUntilRef.current.set(key, now + holdMs);
+            next[key] = true;
+          } else {
+            speakingHoldUntilRef.current.delete(key);
+          }
+          continue;
+        }
         if (row.is_speaking) {
           speakingHoldUntilRef.current.set(key, now + holdMs);
           next[key] = true;
@@ -577,7 +599,8 @@ export function MessageChatVoiceBar({
         if (!row.is_self || !joinedLocally) return row;
         return {
           ...row,
-          is_speaking: localSpeakingRef.current ? true : row.is_speaking,
+          // Never trust server speaking for the local row — join pulses green mic.
+          is_speaking: Boolean(micActiveRef.current && localSpeakingRef.current),
           is_muted: !micActiveRef.current,
         };
       });
@@ -891,11 +914,42 @@ export function MessageChatVoiceBar({
       const listed = participantsRef.current.length;
       const hint = Math.max(rosterTotalHintRef.current, snapshot.participant_count);
       const expandsRoster = snapshot.participants.length > listed;
-      const rosterThin = hint > listed || expandsRoster;
-      // Expanding roster: apply now so rows appear for green mics.
-      if (expandsRoster) {
+      const fillsTitles =
+        snapshot.participants.some((row) => Boolean(row.title.trim())) &&
+        participantsRef.current.some((row) => !row.title.trim() && !row.is_self);
+      const rosterThin = hint > listed || expandsRoster || fillsTitles;
+      // Expanding the painted roster mid-SDP (listed 3→7 during join_attempt) caused
+      // voice_dialog_longtask / stuck UI. Keep speaking live; defer membership until
+      // WebRTC is up (or Join was never armed).
+      const joinBusy =
+        voiceSessionJoiningRef.current ||
+        voiceSessionNegotiatingRef.current ||
+        (voiceJoinedRef.current &&
+          !voiceSessionJoinedRef.current &&
+          joinAttemptsRef.current < 3);
+      if ((expandsRoster || fillsTitles) && !joinBusy) {
         cancelStreamRosterFlush();
         flushPendingStreamSnap();
+        return;
+      }
+      if ((expandsRoster || fillsTitles) && joinBusy) {
+        if (streamApplyTimerRef.current != null) return;
+        streamApplyTimerRef.current = setTimeout(() => {
+          streamApplyTimerRef.current = null;
+          if (
+            voiceSessionJoiningRef.current ||
+            voiceSessionNegotiatingRef.current ||
+            (voiceJoinedRef.current && !voiceSessionJoinedRef.current)
+          ) {
+            // Still busy — check again shortly after join_ok.
+            streamApplyTimerRef.current = setTimeout(() => {
+              streamApplyTimerRef.current = null;
+              flushPendingStreamSnap();
+            }, 400);
+            return;
+          }
+          flushPendingStreamSnap();
+        }, STREAM_APPLY_OPEN_THIN_MS);
         return;
       }
       if (streamApplyTimerRef.current != null) return;
@@ -997,16 +1051,23 @@ export function MessageChatVoiceBar({
           result.participant_count,
           { allowClear: true },
         );
+        // Dead / missing call — always drop the strip, even if a stale SSE painted
+        // rows before the soft poll finished (false preview on chats with no call).
+        if (!result.has_active_voice_chat && !voiceJoinedRef.current) {
+          setParticipants([]);
+          setParticipantCount(0);
+          rosterTotalHintRef.current = 0;
+          rosterCountHintStateRef.current = 0;
+          setRosterCountHint(0);
+          setPresenceConfirmed(false);
+          return "ok";
+        }
         // Always paint rows when TDLib returned any participants — countHint of 0
         // used to leave the strip empty despite a real self/other roster.
         if (result.participants.length > 0 || live || voiceJoinedRef.current) {
           applyRosterRows(result.participants, result.participant_count, {
             preferMerge: result.participant_count > result.participants.length,
           });
-        } else if (!result.has_active_voice_chat) {
-          // Keep strip roster when the call is live but TDLib returned a thin snapshot.
-          setParticipants([]);
-          setParticipantCount(0);
         }
         return "ok";
       }
@@ -1052,12 +1113,13 @@ export function MessageChatVoiceBar({
       });
       return changed ? next : prev;
     });
-    if (voiceSession.localSpeaking) {
+    if (voiceSession.localSpeaking && voiceSession.micActive) {
       setSpeakingByKey((prev) => (prev.self ? prev : { ...prev, self: true }));
       speakingHoldUntilRef.current.set("self", Date.now() + 2_500);
     } else {
       const until = speakingHoldUntilRef.current.get("self") ?? 0;
-      if (until <= Date.now()) {
+      if (!voiceSession.micActive || until <= Date.now()) {
+        speakingHoldUntilRef.current.delete("self");
         setSpeakingByKey((prev) => {
           if (!prev.self) return prev;
           const next = { ...prev };
@@ -1089,7 +1151,7 @@ export function MessageChatVoiceBar({
           title: selfTitleRef.current || "You",
           description: "",
           emoji_status_custom_emoji_id: null,
-          is_speaking: localSpeakingRef.current,
+          is_speaking: Boolean(micActiveRef.current && localSpeakingRef.current),
           is_muted: !micActiveRef.current,
           is_self: true,
         },
@@ -1331,12 +1393,21 @@ export function MessageChatVoiceBar({
   applyRosterRowsRef.current = applyRosterRows;
 
   const rosterIncomplete = useCallback(() => {
+    if (postJoinRosterLoadedRef.current) return false;
     const listed = participantsRef.current.length;
-    // Only a solo/stub roster needs a post-join force load. A multi-person
-    // soft roster (e.g. listed=4 hint=5) is already paint-worthy — forcing
-    // loadGroupCallParticipants in the same window as webrtc_join_ok freezes
-    // the UI thread. Hidden listeners make listed === hint unreachable.
-    if (listed <= 1 && !postJoinRosterLoadedRef.current) return true;
+    const hint = rosterTotalHintRef.current;
+    // Soft polls only return recent_speakers (typically ≤3). Treating
+    // listed>=2 as "done" left listed=3 hint=9 forever (no force after join).
+    // Post-join effect still waits ~2s after webrtc_join_ok before force HTTP.
+    if (listed <= 1) return true;
+    // Cap of recent_speakers while TDLib reports more people in the call.
+    if (hint > listed && listed <= 3) return true;
+    // Severely thin vs hint (not just one hidden listener).
+    if (hint >= listed + 3) return true;
+    const emptyTitles = participantsRef.current.filter(
+      (row) => !row.title.trim() && !row.is_self,
+    ).length;
+    if (emptyTitles > 0 && emptyTitles >= Math.ceil(listed / 2)) return true;
     return false;
   }, []);
 
@@ -1373,7 +1444,8 @@ export function MessageChatVoiceBar({
       meta?: { loadedAll?: boolean; hasHiddenListeners?: boolean },
     ) => {
       // Telegram Web/Desktop: complete from loaded_all / hidden-listeners, never
-      // from listed === participant_count (muted listeners are omitted).
+      // from listed === participant_count alone (muted listeners are omitted) and
+      // never from a soft recent_speakers subset (listed=3 while hint=9).
       if (listed <= 0) return false;
       if (meta?.loadedAll) {
         postJoinRosterLoadedRef.current = true;
@@ -1383,15 +1455,13 @@ export function MessageChatVoiceBar({
         postJoinRosterLoadedRef.current = true;
         return true;
       }
-      // Multi-person soft roster is complete enough; SSE fills the rest.
-      if (listed >= 2) {
+      if (hint > 0 && listed >= hint) {
         postJoinRosterLoadedRef.current = true;
         return true;
       }
-      // Solo stub before any joined load — keep waiting for one force pass.
-      if (listed <= 1 && !meta?.loadedAll && !meta?.hasHiddenListeners) return false;
-      postJoinRosterLoadedRef.current = true;
-      return true;
+      // Still thin vs TDLib's count — keep forcing (no-growth / give-up paths
+      // accept a visible roster when hidden listeners never set the flag).
+      return false;
     },
     [],
   );
@@ -1591,13 +1661,35 @@ export function MessageChatVoiceBar({
       }
       const listed = participantsRef.current.length;
       const hint = rosterTotalHintRef.current;
-      // Multi-person soft roster is enough — don't soft-reload into Join/SDP.
-      const rosterLooksComplete = listed > 1;
+      const emptyTitles = participantsRef.current.filter(
+        (row) => !row.title.trim() && !row.is_self,
+      ).length;
+      // Soft recent_speakers (≤3) with a higher hint still needs a later force;
+      // skip only a soft HTTP here so we don't contend with Join/SDP.
+      const stuckOnSpeakers = listed > 0 && listed <= 3 && hint > listed;
+      const titlesThin = emptyTitles > 0 && emptyTitles >= Math.ceil(Math.max(listed, 1) / 2);
+      const rosterLooksComplete = listed > 1 && !stuckOnSpeakers && !titlesThin;
       if (rosterLooksComplete) {
         logPageDisplay("messages_voice_dialog_open_skip_reload", {
           chatId,
           listed,
           hint,
+          elapsedMs: Math.round(
+            (typeof performance !== "undefined" && typeof performance.now === "function"
+              ? performance.now()
+              : Date.now()) - openedAt,
+          ),
+        });
+        return;
+      }
+      if (stuckOnSpeakers && !titlesThin) {
+        // Membership fill is owned by post-join force after webrtc_join_ok.
+        logPageDisplay("messages_voice_dialog_open_defer_force_to_webrtc", {
+          chatId,
+          listed,
+          hint,
+          reason: "thin_speakers_await_join_force",
+          webrtcJoined: voiceSessionJoinedRef.current,
           elapsedMs: Math.round(
             (typeof performance !== "undefined" && typeof performance.now === "function"
               ? performance.now()
@@ -1703,7 +1795,7 @@ export function MessageChatVoiceBar({
           chatId,
           listed: participantsRef.current.length,
           hint: rosterTotalHintRef.current,
-          reason: "multi_person_roster_no_force",
+          reason: "roster_already_filled",
           source: "joined_effect",
         });
         return;
@@ -1775,9 +1867,8 @@ export function MessageChatVoiceBar({
           level: "warn",
         });
       }
-      // Settle SDP / ICE briefly before force roster HTTP — overlapping them
-      // froze the UI (join_ok → postjoin_reload_start). SDP answer now applies
-      // ~350ms after join_ok; waiting 2.5s here only delayed roster with no gain.
+      // Settle SDP / ICE before force roster HTTP — overlapping them froze the
+      // UI (join_ok → postjoin_reload_start → Close dead, pointer backdrop stuck).
       if (voiceSessionJoinedRef.current) {
         const now =
           typeof performance !== "undefined" && typeof performance.now === "function"
@@ -1785,8 +1876,10 @@ export function MessageChatVoiceBar({
             : Date.now();
         if (webrtcJoinedSeenAt <= 0) webrtcJoinedSeenAt = now;
         const settleMs = now - webrtcJoinedSeenAt;
-        if (settleMs < 800) {
-          armRetry(Math.max(120, 800 - settleMs));
+        // Soft recent_speakers fill needs force; wait for media to settle first.
+        const settleNeedMs = 2_500;
+        if (settleMs < settleNeedMs) {
+          armRetry(Math.max(200, settleNeedMs - settleMs));
           return;
         }
       }
@@ -1898,6 +1991,9 @@ export function MessageChatVoiceBar({
   const unlockThenJoin = useCallback(() => {
     unlockVoiceAutoplay();
     voiceSession.unlockAudio();
+    // Start mic during the click gesture so default-unmute after join_ok does not
+    // block on a permission prompt (and freezes less after SDP).
+    voiceSession.prefetchMic();
     onJoin();
   }, [onJoin, voiceSession]);
 

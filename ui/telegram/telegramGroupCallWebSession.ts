@@ -1,6 +1,7 @@
 import { appWarn } from "../../shared/appLog";
 import {
   buildGroupCallJoinPayloadJson,
+  groupCallAnswerDtlsSetup,
   groupCallAnswerSdpFromTransport,
   parseGroupCallJoinTransport,
   parseGroupCallOfferSdp,
@@ -25,15 +26,17 @@ function voiceDebug(tag: string, event: string, details?: Record<string, unknown
 }
 
 /**
- * Cap answer candidates so setRemoteDescription stays cheap, but do not take only
- * the first IPv4 — that often missed Telegram's reachable host and left join_ok
- * with permanent silence.
+ * telegram-tt embeds every SFU transport candidate in the answer (no trickle).
+ * Prefer IPv4 — broken IPv6 often stalls ICE — but do not rank-cut to 1–3 hosts;
+ * that caused join_ok + permanent silence when the reachable SFU IP was dropped.
+ * Soft-cap only pathological payloads so setRemoteDescription stays cheap.
  */
 function pickJoinAnswerCandidates(
   candidates: TelegramGroupCallCandidate[],
 ): TelegramGroupCallCandidate[] {
   const ipv4 = candidates.filter((c) => !String(c.ip).includes(":"));
   const pool = ipv4.length > 0 ? ipv4 : candidates;
+  if (pool.length <= 16) return pool;
   const typeRank = (t: string) => {
     const typ = String(t || "").toLowerCase();
     if (typ === "host") return 0;
@@ -47,7 +50,7 @@ function pickJoinAnswerCandidates(
       if (byType !== 0) return byType;
       return Number(b.priority) - Number(a.priority);
     })
-    .slice(0, 3);
+    .slice(0, 16);
 }
 
 type SessionInput = {
@@ -208,6 +211,8 @@ export class TelegramGroupCallWebSession {
   private speakingListeners = new Set<(speaking: boolean) => void>();
   private analyserCtx: AudioContext | null = null;
   private analyserRaf: number | null = null;
+  /** In-flight getUserMedia from the Join click — reused by setMicEnabled. */
+  private micPrefetch: Promise<void> | null = null;
   private lastSpeakingSyncAt = 0;
   private lastSpeakingSynced: boolean | null = null;
   /** After GROUPCALL_JOIN_MISSING, stop hammering speaking until we rejoin. */
@@ -1017,23 +1022,53 @@ export class TelegramGroupCallWebSession {
     }
   }
 
-  /** Acquire a real mic (user gesture). Replaces silent placeholder if already joined. */
-  async ensureLocalMic(): Promise<void> {
+  /**
+   * Start getUserMedia during the Join click (user gesture). Call before SDP so
+   * the post-join unmute does not wait on a permission prompt mid-dialog.
+   */
+  prefetchLocalMic(): void {
+    if (typeof window === "undefined") return;
     if (this.audioTrack && !this.usingSilentAudio) return;
+    if (this.micPrefetch) return;
+    this.micPrefetch = this.ensureLocalMic({ fromUserGesture: true })
+      .catch((err) => {
+        appWarn(
+          "[voice-mic-prefetch]",
+          err instanceof Error ? err.message : String(err),
+          { chatId: this.input.chatId, groupCallId: this.input.groupCallId },
+        );
+      })
+      .finally(() => {
+        this.micPrefetch = null;
+      });
+  }
+
+  /** Acquire a real mic (user gesture). Replaces silent placeholder if already joined. */
+  async ensureLocalMic(options?: { fromUserGesture?: boolean }): Promise<void> {
+    if (this.audioTrack && !this.usingSilentAudio) return;
+    if (this.micPrefetch && !options?.fromUserGesture) {
+      await this.micPrefetch;
+      if (this.audioTrack && !this.usingSilentAudio) return;
+    }
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       throw new Error("microphone_unavailable");
     }
     // Yield so the voice dialog can paint / handle Close before getUserMedia
     // device enumeration freezes the main thread (logs: unmute → stuck UI).
-    await new Promise<void>((resolve) => {
-      if (typeof requestAnimationFrame === "function") {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => resolve());
-        });
-      } else {
-        setTimeout(resolve, 0);
-      }
-    });
+    // Skip the yield when prefetching from the Join click — Safari needs the
+    // gesture stack for the permission prompt.
+    if (!options?.fromUserGesture) {
+      await new Promise<void>((resolve) => {
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => resolve());
+          });
+        } else {
+          setTimeout(resolve, 0);
+        }
+      });
+    }
+    if (this.audioTrack && !this.usingSilentAudio) return;
     const micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -1405,10 +1440,22 @@ export class TelegramGroupCallWebSession {
       await ctx.resume().catch(() => undefined);
     }
 
-    // HTML <audio> is the reliable sink after a user gesture. The previous
-    // Web-Audio-only path often stayed silent (tracks added after the source
-    // node was created, or the shared unlock context was stale after rejoin).
-    this.teardownWebAudioPlayback();
+    // telegram-tt: WebAudio → destination is the hearable sink. A muted Audio
+    // element with the same MediaStream is a Chrome WebRTC+AudioContext hack —
+    // not the playback path. HTML <audio>.play() is a secondary unlock.
+    const webaudioOk =
+      Boolean(ctx && ctx.state === "running" && this.rebuildWebAudioPlayback());
+    if (webaudioOk) {
+      try {
+        const probe = new Audio();
+        probe.muted = true;
+        probe.srcObject = stream;
+        probe.remove();
+      } catch {
+        // ignore
+      }
+    }
+
     const audio = this.ensureRemoteAudioElement();
     if (audio.srcObject !== stream) {
       audio.srcObject = stream;
@@ -1419,28 +1466,33 @@ export class TelegramGroupCallWebSession {
       if (audio.paused) {
         await audio.play();
       }
-      // Success path used to appWarn on every watchdog tick and flood the console.
-      return;
-    } catch (err) {
-      this.armGestureUnmute();
-      appWarn("[voice-remote-audio]", err instanceof Error ? err.message : String(err), {
+      voiceDebug("[voice-remote-playback]", "ok", {
         reason,
+        webaudio: webaudioOk,
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         tracks: stream.getAudioTracks().length,
         ctxState: ctx?.state ?? "none",
       });
-    }
-
-    // Fallback when HTML autoplay is blocked but AudioContext was resumed.
-    if (ctx?.state === "running" && this.rebuildWebAudioPlayback()) {
-      appWarn("[voice-remote-playback]", "webaudio-fallback", {
-        reason,
-        chatId: this.input.chatId,
-        groupCallId: this.input.groupCallId,
-        tracks: stream.getAudioTracks().length,
-        ctxState: ctx.state,
-      });
+      return;
+    } catch (err) {
+      this.armGestureUnmute();
+      if (!webaudioOk) {
+        appWarn("[voice-remote-audio]", err instanceof Error ? err.message : String(err), {
+          reason,
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          tracks: stream.getAudioTracks().length,
+          ctxState: ctx?.state ?? "none",
+        });
+      } else {
+        // WebAudio is already driving speakers — HTML autoplay block is fine.
+        voiceDebug("[voice-remote-playback]", "html_blocked_webaudio_ok", {
+          reason,
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+        });
+      }
     }
   }
 
@@ -1552,13 +1604,14 @@ export class TelegramGroupCallWebSession {
       iceCandidatePoolSize: 0,
     });
     connection.addTrack(audioTrack, localStream);
-    // Park video inactive on listen join. A live sendrecv video m-line made the
-    // SFU answer huge and Chromium setRemoteDescription wedged the tab after
-    // join_ok (no apply_start ever flushed). Camera/screen renegotiate later.
-    const videoTransceiver = connection.addTransceiver("video", {
-      direction: startMuted ? "inactive" : "sendrecv",
-    });
-    this.outboundVideoTrack = videoTransceiver.sender.track;
+    // telegram-tt always attaches a black canvas video track (disabled) on join
+    // so the offer carries FID ssrc-groups — required by their parseSdp and
+    // matching TDLib joinVideoChat. An inactive transceiver skipped FID and
+    // left a thinner SFU session that often never delivered remote audio.
+    const placeholderVideo = createSilentVideoTrack();
+    placeholderVideo.enabled = false;
+    connection.addTrack(placeholderVideo, new MediaStream([placeholderVideo]));
+    this.outboundVideoTrack = placeholderVideo;
     const stopJoinVideoPlaceholder = () => {
       const track = this.outboundVideoTrack;
       this.outboundVideoTrack = null;
@@ -1651,9 +1704,8 @@ export class TelegramGroupCallWebSession {
 
     const offer = await connection.createOffer({
       offerToReceiveAudio: true,
-      // Listen-only: do not ask for remote video in the first offer — keeps the
-      // answer tiny so setRemoteDescription cannot wedge the main thread.
-      offerToReceiveVideo: !startMuted,
+      // telegram-tt always offers to receive video on group join.
+      offerToReceiveVideo: true,
     });
     // Yield after createOffer — it is the heaviest sync chunk and used to freeze
     // Close for hundreds of ms when Join armed in the same turn as open.
@@ -1757,36 +1809,41 @@ export class TelegramGroupCallWebSession {
       stopJoinVideoPlaceholder();
       throw new Error("join_transport_invalid");
     }
-    const answerDtlsSetup =
-      transport.fingerprints[0]?.setup?.trim().toLowerCase() === "passive"
-        ? "passive"
-        : "active";
-    // Cap candidates — huge lists froze setRemoteDescription; a single first
-    // IPv4 often missed the reachable Telegram host (join_ok, permanent silence).
+    // Prefer all IPv4 SFU candidates (telegram-tt). Soft-cap only huge lists.
     const slimTransport = {
       ...transport,
       candidates: pickJoinAnswerCandidates(transport.candidates),
     };
+    logPageDisplay("messages_voice_join_transport", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      candidateCount: slimTransport.candidates.length,
+      rawCandidateCount: transport.candidates.length,
+      fingerprintCount: transport.fingerprints.length,
+      candidateIps: slimTransport.candidates
+        .slice(0, 8)
+        .map((c) => `${c.ip}:${c.port}/${c.type}`)
+        .join(","),
+      level: "info",
+    });
     voiceDebug("[voice-dtls]", "roles", {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
       offerSetup: parsed.setup,
       joinSetup: "passive",
-      answerSetup: answerDtlsSetup,
+      answerSetup: groupCallAnswerDtlsSetup(localSdp),
     });
     voiceDebug("[voice-join-transport]", "ok", {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
       candidateCount: slimTransport.candidates.length,
       fingerprintCount: transport.fingerprints.length,
-      answerDtlsSetup,
+      answerDtlsSetup: groupCallAnswerDtlsSetup(localSdp),
       candidateIps: slimTransport.candidates.map((c) => `${c.ip}:${c.port}/${c.type}`).join(","),
     });
 
-    // Mark joined and return BEFORE setRemoteDescription. In Chromium the answer
-    // apply can block the main thread for hundreds of ms–seconds (logs: join_ok
-    // then UI dead with no further page-display lines). Defer briefly past paint
-    // so Close stays usable; skip entirely if the sheet closed meanwhile.
+    // Apply answer before returning join_ok (see await applyAnswer below).
+    // Mark session joined first so ontrack during SRD can attach playback.
     this.connection = connection;
     this.localStream = localStream;
     this.audioTrack = audioTrack;
@@ -1883,15 +1940,23 @@ export class TelegramGroupCallWebSession {
         return;
       }
       if (this.connection !== connection || !this.joined) return;
+      // Start playback in this turn (shared AudioContext already resumed on Join
+      // gesture). Deferring with setTimeout(0) lost the gesture for HTML audio
+      // and raced React roster work. telegram-tt wires WebAudio immediately on
+      // ontrack; we kick both sinks here and again from ontrack/ICE.
       if (!this.usingSilentAudio) {
         this.startSpeakingMonitor();
       }
       this.resumeRemoteAudio();
       this.armGestureUnmute();
       this.startPlaybackWatchdog(connection);
+      // Video renegotiation stays deferred — full publisher SDP can freeze Close.
       if (this.requestedRemoteVideo.length > 0) {
-        this.lastAppliedRemoteVideoKey = "";
-        this.setRequestedRemoteVideos(this.requestedRemoteVideo.slice());
+        window.setTimeout(() => {
+          if (this.connection !== connection || !this.joined) return;
+          this.lastAppliedRemoteVideoKey = "";
+          this.setRequestedRemoteVideos(this.requestedRemoteVideo.slice());
+        }, 0);
       }
     };
 
@@ -1911,8 +1976,36 @@ export class TelegramGroupCallWebSession {
       await applyAnswer();
     }
 
+    // Yield so Close/Escape can run before React processes webrtc_join_ok and
+    // stacks roster/force-reload work on the same frame as SDP apply.
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        window.setTimeout(resolve, 0);
+      });
+    });
+
     const joinChatId = this.input.chatId;
     const joinCallId = this.input.groupCallId;
+    // Surface ICE health after apply — silence with apply_ok usually means the
+    // wrong candidate set or consent failure (logs used to stop at join_ok).
+    window.setTimeout(() => {
+      if (!this.joined || this.connection !== connection) return;
+      void this.logIceDiagnostics(connection, "post_apply_2s").then(() => {
+        logPageDisplay("messages_voice_ice_post_apply", {
+          chatId: joinChatId,
+          groupCallId: joinCallId,
+          ice: connection.iceConnectionState,
+          conn: connection.connectionState,
+          mediaConnected: this.isMediaConnected(),
+          remoteTracks: this.remoteStream?.getAudioTracks().length ?? 0,
+          level: this.isMediaConnected() ? "info" : "warn",
+        });
+      });
+    }, 2_000);
     // Do NOT markJoinLost on a slow ICE check — tearing down and auto-rejoining
     // every ~20s freezes the whole app. Log only; scheduleJoinLostIfStillBroken
     // still handles failed/closed.
@@ -1940,15 +2033,35 @@ export class TelegramGroupCallWebSession {
         this.clearPlaybackWatchdog();
         return;
       }
-      if (!this.remoteAudioEnabled || !this.isMediaConnected()) return;
-      const audio = this.remoteAudio;
-      // Avoid rebuilding playback every tick — that was a steady main-thread tax.
-      if (audio && !audio.paused && audio.srcObject && audio.readyState >= 2) {
+      if (!this.remoteAudioEnabled) return;
+      // Tracks often arrive while ICE is still "checking" — don't wait for
+      // connected or we never kick WebAudio/HTML after apply_ok silence.
+      const ice = connection.iceConnectionState;
+      if (
+        ice === "failed" ||
+        ice === "closed" ||
+        ice === "disconnected"
+      ) {
         return;
       }
-      this.pullRemoteMediaTracks(connection);
+      const audio = this.remoteAudio;
+      const hasTracks = (this.remoteStream?.getAudioTracks().length ?? 0) > 0;
+      const webAudioLive = Boolean(this.playbackSource);
+      // Avoid rebuilding every tick when either sink is already healthy.
+      if (
+        webAudioLive &&
+        audio &&
+        !audio.paused &&
+        audio.srcObject &&
+        audio.readyState >= 2
+      ) {
+        return;
+      }
+      if (!hasTracks && !this.isMediaConnected()) {
+        this.pullRemoteMediaTracks(connection);
+      }
       this.queueRemotePlayback("watchdog");
-    }, 4_000);
+    }, 2_000);
   }
 
   private clearPlaybackWatchdog(): void {
@@ -2001,6 +2114,7 @@ export class TelegramGroupCallWebSession {
     }
     this.joined = false;
     this.micEnabled = false;
+    this.micPrefetch = null;
     this.speakingListeners.clear();
     this.localMediaListeners.clear();
   }
