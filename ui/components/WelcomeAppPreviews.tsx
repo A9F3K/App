@@ -1,6 +1,8 @@
 import { Image } from "expo-image";
-import { Platform, StyleSheet, useWindowDimensions, View } from "react-native";
+import * as Linking from "expo-linking";
+import { Platform, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { useEffect, useState } from "react";
+import { useAppStrings } from "../../locales/AppStringsContext";
 import { light, useColors } from "../theme";
 
 /** Use `white/` previews only on a light app surface — not `primary` alone (TMA merge can set black text without a light bg). */
@@ -61,7 +63,11 @@ const MAX_WIDTH_DESKTOP = 768;
 const MAX_WIDTH_FULL = 1024;
 
 const GAP_ABOVE_PREVIEW = 20;
-const GAP_BELOW_PREVIEW = 20;
+/** Space from preview image bottom to attribution line. */
+const GAP_BELOW_PREVIEW_TO_CREDIT = 33;
+const CREDIT_FONT_SIZE = 11;
+/** Space from attribution to end of content area. */
+const GAP_BELOW_CREDIT = 11;
 const PREVIEW_BORDER_WIDTH = 1;
 
 const MAX_WIDTH_BY_KIND: Record<keyof typeof PREVIEW_ASSETS, number> = {
@@ -83,6 +89,7 @@ function previewKindForWidth(windowWidth: number): keyof typeof PREVIEW_ASSETS {
 export function WelcomeAppPreviews() {
   const { width: windowWidth } = useWindowDimensions();
   const colors = useColors();
+  const { t } = useAppStrings();
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
@@ -101,12 +108,13 @@ export function WelcomeAppPreviews() {
     Math.round(Math.min(fromViewport, maxW, spec.width)),
   );
   const previewHeight = (previewWidth * spec.height) / spec.width;
+  const attributionUrl = t("welcome.attribution.url");
 
   return (
     <View
       style={[
         styles.wrap,
-        { marginTop: GAP_ABOVE_PREVIEW, marginBottom: GAP_BELOW_PREVIEW },
+        { marginTop: GAP_ABOVE_PREVIEW, marginBottom: GAP_BELOW_CREDIT },
       ]}
     >
       <View
@@ -127,6 +135,18 @@ export function WelcomeAppPreviews() {
           accessibilityLabel="App preview"
         />
       </View>
+      <Text style={[styles.credit, { color: colors.secondary, marginTop: GAP_BELOW_PREVIEW_TO_CREDIT }]}>
+        {t("welcome.attribution.prefix")}{" "}
+        <Text
+          accessibilityRole="link"
+          onPress={() => {
+            void Linking.openURL(attributionUrl);
+          }}
+          style={styles.creditLink}
+        >
+          {attributionUrl}
+        </Text>
+      </Text>
     </View>
   );
 }
@@ -147,5 +167,14 @@ const styles = StyleSheet.create({
   imageFill: {
     width: "100%",
     height: "100%",
+  },
+  credit: {
+    fontSize: CREDIT_FONT_SIZE,
+    lineHeight: CREDIT_FONT_SIZE + 4,
+    fontWeight: "400",
+    textAlign: "center",
+  },
+  creditLink: {
+    textDecorationLine: "underline",
   },
 });

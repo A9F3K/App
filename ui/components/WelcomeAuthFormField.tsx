@@ -138,7 +138,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 30,
     fontWeight: "400",
-    textAlign: "center",
+    textAlign: "left",
   },
   inputShell: {
     width: "100%",

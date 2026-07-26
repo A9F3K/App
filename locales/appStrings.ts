@@ -227,7 +227,7 @@ const en = {
   "send.action.summaryWithAddress": "Send 1 dollar to {{address}}",
   "send.action.button": "Send",
 
-  "global.logoBar.about": "About",
+  "global.logoBar.about": "Landing",
   "global.logoBar.aboutHint": "Opens the Hyperlinks Space Program landing page in the browser",
   "global.logoBar.wordmarkA11y": "Hyperlinks Space",
 
@@ -374,8 +374,12 @@ const en = {
   "welcome.auth.telegramStartError": "Could not start Telegram sign-in. Try again.",
   "welcome.auth.telegramCallbackError": "Telegram sign-in failed ({{reason}}). Try again.",
 
+  "welcome.attribution.prefix": "by",
+  "welcome.attribution.url": "https://www.hyperlinks.space/",
+
   "welcome.subtitle": "This is the best way to earn and spend",
-  "welcome.title": "Welcome to our program",
+  /** NBSP after "to" so the preposition does not dangle at a line end. */
+  "welcome.title": "Welcome to\u00A0our program",
 } as const;
 
 const ru = {
@@ -597,7 +601,7 @@ const ru = {
   "send.action.summaryWithAddress": "Отправить 1 доллар на {{address}}",
   "send.action.button": "Отправить",
 
-  "global.logoBar.about": "О программе",
+  "global.logoBar.about": "Лендинг",
   "global.logoBar.aboutHint": "Откроет сайт программы Hyperlinks Space в браузере",
   "global.logoBar.wordmarkA11y": "Hyperlinks Space",
 
@@ -744,8 +748,12 @@ const ru = {
   "welcome.auth.telegramStartError": "Не удалось начать вход через Telegram. Попробуйте снова.",
   "welcome.auth.telegramCallbackError": "Вход через Telegram не удался ({{reason}}). Попробуйте снова.",
 
+  "welcome.attribution.prefix": "от",
+  "welcome.attribution.url": "https://www.hyperlinks.space/",
+
   "welcome.subtitle": "Лучший способ заработать и потратить",
-  "welcome.title": "Добро пожаловать в нашу программу",
+  /** NBSP after "в" so the preposition does not dangle at a line end. */
+  "welcome.title": "Добро пожаловать в\u00A0нашу программу",
 } satisfies { [K in keyof typeof en]: string };
 
 export const appStrings = {
