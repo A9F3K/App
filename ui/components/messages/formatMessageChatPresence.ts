@@ -1,4 +1,4 @@
-import { formatAppString, type AppLocale } from "../../../locales/appStrings";
+import { appLocaleToBcp47, formatAppString, type AppLocale } from "../../../locales/appStrings";
 import { formatMessageChatWallClock } from "./formatMessageChatTime";
 import type { MessageChatRowData } from "./MessageChatRow";
 
@@ -14,7 +14,7 @@ export function formatMessageChatMemberCountLabel(
 ): string {
   const count = chat.member_count;
   if (count == null || count <= 0) return "";
-  const formatted = count.toLocaleString(locale === "ru" ? "ru-RU" : "en-US");
+  const formatted = count.toLocaleString(appLocaleToBcp47(locale));
   const key =
     chat.chat_kind === "channel"
       ? "messages.chatMemberCount.subscribers"

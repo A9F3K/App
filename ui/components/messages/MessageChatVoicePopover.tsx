@@ -17,6 +17,7 @@ import {
   type ThemeColors,
 } from "../../theme";
 import { useAppStrings } from "../../../locales/AppStringsContext";
+import { appLocaleToBcp47 } from "../../../locales/appStrings";
 import { LiquidGlassShaderUndercover } from "../LiquidGlassShaderUndercover";
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
@@ -658,7 +659,7 @@ export function MessageChatVoicePopover({
   const participantCountLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
-          count: totalParticipantCount.toLocaleString(locale === "ru" ? "ru-RU" : "en-US"),
+          count: totalParticipantCount.toLocaleString(appLocaleToBcp47(locale)),
         })
       : "";
   const [moreMenuAnchor, setMoreMenuAnchor] = useState<VoiceMoreMenuAnchor | null>(null);

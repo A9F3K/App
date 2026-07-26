@@ -14,7 +14,7 @@ export function isFeedCatalogLocale(raw: unknown): raw is FeedCatalogLocale {
 
 /**
  * Map a BCP-47 / Telegram `language_code` tag to a feed catalogue locale.
- * Rule today: Russian → `ru`, everything else → `en`. Add cases here for new languages.
+ * Russian → `ru`; Chinese and everything else → `en` until a `zh` catalogue exists.
  */
 export function resolveFeedCatalogLocaleFromLanguageTag(
   raw: string | null | undefined,
@@ -28,7 +28,8 @@ export function resolveFeedCatalogLocaleFromLanguageTag(
 /**
  * Locale used when rendering welcome-bundle feed copy from `feed_default_messages`.
  * When manual welcome translation is off, follows Telegram language policy only.
- * When on, follows the effective UI locale (header manual toggle included).
+ * When on, follows the effective UI locale (header / welcome switcher included);
+ * Chinese UI falls back to the English catalogue until `zh` rows exist.
  */
 export function resolveWelcomeFeedDisplayLocale(opts: {
   telegramLanguageCode: string | null | undefined;
@@ -36,7 +37,7 @@ export function resolveWelcomeFeedDisplayLocale(opts: {
   manualWelcomeTranslationEnabled: boolean;
 }): FeedCatalogLocale {
   if (opts.manualWelcomeTranslationEnabled) {
-    return opts.uiLocale;
+    return opts.uiLocale === "ru" ? "ru" : FEED_CATALOG_FALLBACK_LOCALE;
   }
   return resolveFeedCatalogLocaleFromLanguageTag(opts.telegramLanguageCode);
 }

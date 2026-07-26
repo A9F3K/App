@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
+import { appLocaleToBcp47 } from "../../../locales/appStrings";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { layout, typographyFixedRow30Label, type ThemeColors } from "../../theme";
 import {
@@ -119,7 +120,7 @@ export function MessageChatVoiceBar({
   const participantsA11yLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
-          count: totalParticipantCount.toLocaleString(locale === "ru" ? "ru-RU" : "en-US"),
+          count: totalParticipantCount.toLocaleString(appLocaleToBcp47(locale)),
         })
       : t("messages.voiceChat.participants");
 

@@ -44,7 +44,7 @@ function SlowRotatingSettingsIcon({ color, size }: { color: string; size: number
   }, [spin]);
   const rotate = spin.interpolate({
     inputRange: [0, 1],
-    outputRange: ["0deg", "360deg"],
+    outputRange: ["0deg", "-360deg"],
   });
   return (
     <Animated.View

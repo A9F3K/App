@@ -3,7 +3,7 @@ import type { AppLocale } from "./appStrings";
 const STORAGE_KEY = "hyperlinks_app_manual_locale_v1";
 
 function isStoredLocale(s: string): s is AppLocale {
-  return s === "en" || s === "ru";
+  return s === "en" || s === "ru" || s === "zh";
 }
 
 /** Web: `localStorage`. Native: not available (returns null); override is session-only. */

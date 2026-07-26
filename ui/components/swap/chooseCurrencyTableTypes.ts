@@ -70,7 +70,7 @@ export function buildChooseCurrencyDllrRow(locale: AppLocale): ChooseCurrencyRow
     balance: "1",
     rate: "$1",
     networks: "TON, ETH...",
-    marketCap: formatSwapUsdCompact(16_000_000_000, locale),
+    marketCap: formatSwapUsdCompact(3_000_000_000_000, locale),
     volume: formatSwapUsdCompact(123_000_000, locale),
     lastYearKind: "stable",
   };

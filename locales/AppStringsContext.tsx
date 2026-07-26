@@ -21,6 +21,7 @@ import {
   type AppStringKey,
   formatAppString,
   getAppString,
+  nextAppLocale,
   translateFlowErrorForDisplay,
 } from "./appStrings";
 import { readStoredManualAppLocale, writeStoredManualAppLocale } from "./manualAppLocaleStorage";
@@ -35,19 +36,24 @@ import {
 } from "./resolveFeedCatalogLocale";
 
 export type AppStringsContextValue = {
-  /** Effective UI locale (manual override or Telegram-derived). */
+  /** Effective UI locale (manual override or auto / system / Telegram). */
   locale: AppLocale;
-  /** Locale from Telegram init / policy only (no manual override). */
+  /** Locale from Telegram / system policy only (no manual override). */
   autoLocale: AppLocale;
-  /** User override from header toggle; `null` = follow {@link autoLocale}. */
+  /** User override from welcome switcher or header toggle; `null` = follow {@link autoLocale}. */
   manualLocale: AppLocale | null;
   /** Glyph shown on the header language chip: language you switch *to* when tapped. */
-  headerLanguageToggleShows: "en" | "ru";
+  headerLanguageToggleShows: AppLocale;
   t: (key: AppStringKey) => string;
   tf: (key: AppStringKey, vars?: Record<string, string | number | boolean>) => string;
   /** Map known English wallet-flow errors to the current locale. */
   translateFlowError: (message: string) => string;
-  /** Toggle EN ↔ RU; clears override when the new choice matches {@link autoLocale}. */
+  /**
+   * Choose a UI locale (welcome segmented control or header cycle).
+   * Clears the override when `next` matches {@link autoLocale}.
+   */
+  setUiLocale: (next: AppLocale) => void;
+  /** Cycle EN → RU → ZH → EN; clears override when the new choice matches {@link autoLocale}. */
   toggleUiLanguage: () => void;
   /** When true, welcome feed catalogue locale follows {@link locale}; when false, Telegram language rules. */
   welcomeFeedManualTranslation: boolean;
@@ -100,19 +106,26 @@ export function AppStringsProvider({ children }: { children: ReactNode }) {
     });
   }, [locale, welcomeFeedManualTranslation, isInTelegram, status, initData]);
 
+  const setUiLocale = useCallback(
+    (next: AppLocale) => {
+      const effective = manualLocale ?? autoLocale;
+      const newManual = next === autoLocale ? null : next;
+      logPageDisplay("app_locale_manual_set", {
+        effectiveBefore: effective,
+        nextTapTargetLocale: next,
+        autoLocale,
+        manualAfter: newManual,
+        clearedToFollowAuto: newManual == null,
+      });
+      setManualLocale(newManual);
+    },
+    [manualLocale, autoLocale],
+  );
+
   const toggleUiLanguage = useCallback(() => {
     const effective = manualLocale ?? autoLocale;
-    const next: AppLocale = effective === "ru" ? "en" : "ru";
-    const newManual = next === autoLocale ? null : next;
-    logPageDisplay("app_locale_manual_toggle", {
-      effectiveBefore: effective,
-      nextTapTargetLocale: next,
-      autoLocale,
-      manualAfter: newManual,
-      clearedToFollowTelegram: newManual == null,
-    });
-    setManualLocale(newManual);
-  }, [manualLocale, autoLocale]);
+    setUiLocale(nextAppLocale(effective));
+  }, [manualLocale, autoLocale, setUiLocale]);
 
   useEffect(() => {
     const u = getUser();
@@ -171,7 +184,7 @@ export function AppStringsProvider({ children }: { children: ReactNode }) {
     debug.initDataLength,
   ]);
 
-  const headerLanguageToggleShows: "en" | "ru" = locale === "ru" ? "en" : "ru";
+  const headerLanguageToggleShows: AppLocale = nextAppLocale(locale);
 
   const t = useCallback((key: AppStringKey) => getAppString(locale, key), [locale]);
 
@@ -195,6 +208,7 @@ export function AppStringsProvider({ children }: { children: ReactNode }) {
       t,
       tf,
       translateFlowError,
+      setUiLocale,
       toggleUiLanguage,
       welcomeFeedManualTranslation,
       setWelcomeFeedManualTranslation,
@@ -208,6 +222,7 @@ export function AppStringsProvider({ children }: { children: ReactNode }) {
       t,
       tf,
       translateFlowError,
+      setUiLocale,
       toggleUiLanguage,
       welcomeFeedManualTranslation,
       welcomeFeedCatalogLocale,

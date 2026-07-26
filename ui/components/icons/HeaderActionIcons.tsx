@@ -1,4 +1,4 @@
-import Svg, { Path, Rect } from "react-native-svg";
+import Svg, { Path, Rect, Text as SvgText } from "react-native-svg";
 import type { ReactNode } from "react";
 
 type Props = {
@@ -241,6 +241,24 @@ export function HeaderIconEn({ color, size }: Props) {
         strokeWidth={1.33}
         fill="none"
       />
+    </Root>
+  );
+}
+
+/** Chinese language glyph (中文) — themed fill like EN / RU header icons. */
+export function HeaderIconZh({ color, size }: Props) {
+  return (
+    <Root size={size}>
+      <SvgText
+        x={15}
+        y={20}
+        fill={color}
+        fontSize={11}
+        fontWeight="600"
+        textAnchor="middle"
+      >
+        中文
+      </SvgText>
     </Root>
   );
 }

@@ -140,6 +140,11 @@ export function WelcomeAppPreviews() {
         <Text
           accessibilityRole="link"
           onPress={() => {
+            if (Platform.OS === "web" && typeof window !== "undefined") {
+              // Browser: new tab. Desktop shell: setWindowOpenHandler → shell.openExternal.
+              window.open(attributionUrl, "_blank", "noopener,noreferrer");
+              return;
+            }
             void Linking.openURL(attributionUrl);
           }}
           style={styles.creditLink}

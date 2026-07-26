@@ -11,6 +11,7 @@ import { useAppStrings } from "../../locales/AppStringsContext";
 import { logPageDisplay } from "../pageDisplayLog";
 import { hasWelcomeBrowserAuthContext } from "../appShell";
 import { WelcomeAuthButtons } from "./WelcomeAuthButtons";
+import { WelcomeLanguageSwitcher } from "./WelcomeLanguageSwitcher";
 import { isActuallyInTelegram } from "./telegramWebApp";
 import { HspScrollColumn } from "./HspScrollColumn";
 
@@ -18,6 +19,7 @@ const CONTENT_GAP_BELOW_HEADER = 20;
 const MAX_TEXT_WIDTH = 360;
 const WIDE_LAYOUT_MIN_WIDTH = 480;
 const GAP_ABOVE_AUTH_BUTTONS = 20;
+const GAP_ABOVE_LANGUAGE_SWITCHER = 20;
 const SUBTITLE_TOP_INDENT_WIDE = 10;
 
 const HEADING_FONT_WIDE = 35;
@@ -228,6 +230,9 @@ export function WelcomeContent() {
               {t("welcome.subtitle")}
             </Text>
           </View>
+          <View style={styles.languageBlock}>
+            <WelcomeLanguageSwitcher />
+          </View>
           <View style={styles.authBlock}>
             <WelcomeAuthButtons />
           </View>
@@ -287,6 +292,12 @@ const styles = StyleSheet.create({
   headingTextNarrow: {
     fontSize: 25,
     lineHeight: HEADING_LINE_NARROW,
+  },
+  languageBlock: {
+    width: "100%",
+    maxWidth: MAX_TEXT_WIDTH,
+    marginTop: GAP_ABOVE_LANGUAGE_SWITCHER,
+    alignItems: "center",
   },
   authBlock: {
     width: "100%",

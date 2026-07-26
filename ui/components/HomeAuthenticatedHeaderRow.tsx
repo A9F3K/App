@@ -36,6 +36,7 @@ import {
   HeaderIconExit,
   HeaderIconKey,
   HeaderIconRu,
+  HeaderIconZh,
 } from "./icons/HeaderActionIcons";
 
 const AH = layout.authenticatedHome;
@@ -419,7 +420,9 @@ export function HomeAuthenticatedHeaderRow({
             accessibilityLabel={
               headerLanguageToggleShows === "en"
                 ? t("home.header.languageIconSwitchToEn")
-                : t("home.header.languageIconSwitchToRu")
+                : headerLanguageToggleShows === "ru"
+                  ? t("home.header.languageIconSwitchToRu")
+                  : t("home.header.languageIconSwitchToZh")
             }
             hitSlop={AH.headerPressableHitSlop}
             onPress={() => {
@@ -434,8 +437,13 @@ export function HomeAuthenticatedHeaderRow({
                 color={menuIconStrokeColor(colors, "highlight")}
                 size={AH.headerIconDisplaySize}
               />
-            ) : (
+            ) : headerLanguageToggleShows === "ru" ? (
               <HeaderIconRu
+                color={menuIconStrokeColor(colors, "highlight")}
+                size={AH.headerIconDisplaySize}
+              />
+            ) : (
+              <HeaderIconZh
                 color={menuIconStrokeColor(colors, "highlight")}
                 size={AH.headerIconDisplaySize}
               />

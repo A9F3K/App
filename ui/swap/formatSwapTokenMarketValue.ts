@@ -19,7 +19,11 @@ export function formatSwapUsdCompact(
     return `${value.toFixed(2)} $`;
   }
 
-  if (abs >= 1e12) return `${(value / 1e12).toFixed(1)}t$`;
+  if (abs >= 1e12) {
+    const scaled = value / 1e12;
+    const label = Number.isInteger(scaled) ? String(Math.round(scaled)) : scaled.toFixed(1).replace(/\.0$/, "");
+    return `${label}T$+`;
+  }
   if (abs >= 1e9) return `${Math.round(value / 1e9)}b$+`;
   if (abs >= 1e6) return `${Math.round(value / 1e6)}m$`;
   if (abs >= 1e3) return `${Math.round(value / 1e3)}k$`;
