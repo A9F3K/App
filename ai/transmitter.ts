@@ -12,6 +12,7 @@ import {
   getThreadHistory,
   type Message,
 } from "../database/messages.js";
+import { trustJettonMarketCapUsd } from "../ui/swap/resolveJettonMarketCapUsd.js";
 
 export type AiRequest = AiRequestBase & {
   mode?: AiMode;
@@ -94,7 +95,11 @@ function buildTokenFactsBlock(symbol: string, token: any): string {
   const holders =
     market?.holders_count ?? token?.holders ?? market?.holders ?? null;
   const priceUsd = market?.price_usd ?? null;
-  const mcap = market?.mcap ?? market?.fdmc ?? null;
+  // Same GAZZA-style supply×price fantasies must not reach AI context.
+  const mcap = trustJettonMarketCapUsd({
+    verification: verification ?? undefined,
+    market_stats: market,
+  });
   const volume24h = market?.volume_usd_24h ?? null;
 
   lines.push(`Symbol: ${sym}`);
