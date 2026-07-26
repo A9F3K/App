@@ -6,6 +6,7 @@ import {
   formatSwapTokenPriceUsd,
   formatSwapUsdCompact,
 } from "./formatSwapTokenMarketValue";
+import { jettonUsesStolenUsdtBranding } from "./jettonStolenUsdtBranding";
 import { resolveJettonMarketCapUsd } from "./resolveJettonMarketCapUsd";
 import type { SwapAccountJettonBalance, SwapJetton } from "./swapJettonsTypes";
 
@@ -23,9 +24,14 @@ export function buildBalanceByJettonAddress(
 }
 
 function jettonIcon(jetton: SwapJetton) {
+  if (jettonUsesStolenUsdtBranding(jetton)) return null;
   if (jetton.image_url) return { uri: jetton.image_url } as const;
   if (jetton.symbol?.trim().toUpperCase() === "TON") return swapTonTokenImage;
   return null;
+}
+
+function normalizeJettonLabel(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
 }
 
 export function mapJettonToChooseCurrencyRow(
@@ -33,19 +39,21 @@ export function mapJettonToChooseCurrencyRow(
   balanceByAddress: Map<string, string>,
   locale: AppLocale = "en",
 ): ChooseCurrencyRow | null {
-  const symbol = jetton.symbol?.trim() ?? "";
+  const symbol = normalizeJettonLabel(jetton.symbol ?? "");
   const address = jetton.address?.toLowerCase();
   if (!symbol || !address || symbol.toUpperCase() === DLLR_SYMBOL) return null;
 
   const stats = jetton.market_stats;
   const balanceRaw = balanceByAddress.get(address);
-  const resolvedCap = resolveJettonMarketCapUsd(jetton);
+  const stolenUsdt = jettonUsesStolenUsdtBranding(jetton);
+  const resolvedCap = stolenUsdt ? null : resolveJettonMarketCapUsd(jetton);
   const marketCapUsd = resolvedCap ?? 0;
+  const name = normalizeJettonLabel(jetton.name ?? "") || symbol;
 
   return {
     rowKey: address,
     currency: {
-      name: jetton.name?.trim() || symbol,
+      name,
       ticker: symbol,
       icon: jettonIcon(jetton),
     },

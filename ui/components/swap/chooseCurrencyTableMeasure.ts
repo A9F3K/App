@@ -127,7 +127,7 @@ const COLUMN_FLOOR_PX: Record<ChooseCurrencyColumnKey, number> = {
 
 const COLUMN_FLEX_WEIGHT: Record<ChooseCurrencyColumnKey, number> = {
   rank: 0,
-  currency: 4,
+  currency: 5,
   balance: 1.2,
   rate: 1.2,
   marketCap: 1,
