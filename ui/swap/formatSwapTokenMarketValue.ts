@@ -1,33 +1,43 @@
 import type { AppLocale } from "../../locales/appStrings";
 
+/**
+ * Compact USD for choose-currency market cap / volume.
+ * Always uses Q / T / B / M (quadrillion → million), same for every UI locale.
+ * Example: 2.1T$+, 7.7B$+, 278.8M$+.
+ */
 export function formatSwapUsdCompact(
   value: number | null | undefined,
-  locale: AppLocale = "en",
+  _locale: AppLocale = "en",
 ): string {
   if (value == null || !Number.isFinite(value) || value <= 0) return "—";
+
   const abs = Math.abs(value);
+  const tiers = [
+    { min: 1e15, div: 1e15, suffix: "Q$+" },
+    { min: 1e12, div: 1e12, suffix: "T$+" },
+    { min: 1e9, div: 1e9, suffix: "B$+" },
+    { min: 1e6, div: 1e6, suffix: "M$+" },
+  ] as const;
 
-  if (locale === "ru") {
-    if (abs >= 1e12) {
-      const scaled = value / 1e12;
-      const label = Number.isInteger(scaled) ? String(Math.round(scaled)) : scaled.toFixed(1).replace(/\.0$/, "");
-      return `${label} трлн. $ +`;
+  for (const tier of tiers) {
+    if (abs >= tier.min) {
+      return `${formatCompactCoefficient(value / tier.div)}${tier.suffix}`;
     }
-    if (abs >= 1e9) return `${Math.round(value / 1e9)} млрд. $ +`;
-    if (abs >= 1e6) return `${Math.round(value / 1e6)} млн. $ +`;
-    if (abs >= 1e3) return `${Math.round(value / 1e3)} тыс. $ +`;
-    return `${value.toFixed(2)} $`;
   }
 
-  if (abs >= 1e12) {
-    const scaled = value / 1e12;
-    const label = Number.isInteger(scaled) ? String(Math.round(scaled)) : scaled.toFixed(1).replace(/\.0$/, "");
-    return `${label}T$+`;
+  if (abs >= 1e3) {
+    return `${formatCompactCoefficient(value / 1e3)}K$+`;
   }
-  if (abs >= 1e9) return `${Math.round(value / 1e9)}b$+`;
-  if (abs >= 1e6) return `${Math.round(value / 1e6)}m$`;
-  if (abs >= 1e3) return `${Math.round(value / 1e3)}k$`;
+
   return `${value.toFixed(2)}$`;
+}
+
+/** One decimal max; drop trailing `.0` so 3 → `3`, 2.1 → `2.1`. */
+function formatCompactCoefficient(scaled: number): string {
+  const rounded = Math.round(scaled * 10) / 10;
+  if (!Number.isFinite(rounded)) return "0";
+  if (Number.isInteger(rounded)) return String(rounded);
+  return rounded.toFixed(1);
 }
 
 export function formatSwapTokenPriceUsd(value: number | null | undefined): string {

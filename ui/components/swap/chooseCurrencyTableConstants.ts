@@ -35,20 +35,19 @@ export const CHOOSE_CURRENCY_TABLE_VOLUME_COLUMN_FLOOR_PX = 80;
 export const CHOOSE_CURRENCY_TABLE_MARKET_CAP_LAYOUT_SAMPLES = [
   "2.1T$+",
   "3T$+",
-  "16b$+",
-  "999b$+",
-  "2.1 трлн. $ +",
-  "3 трлн. $ +",
-  "16 млрд. $ +",
-  "999 млрд. $ +",
+  "7.7B$+",
+  "999B$+",
+  "278.8M$+",
+  "999M$+",
+  "1.2Q$+",
 ] as const;
 
 /** Representative volume strings for column width measurement. */
 export const CHOOSE_CURRENCY_TABLE_VOLUME_LAYOUT_SAMPLES = [
-  "123m$",
-  "999m$",
-  "123 млн. $ +",
-  "999 млн. $ +",
+  "123M$+",
+  "999M$+",
+  "1.4B$+",
+  "2.1T$+",
 ] as const;
 export const CHOOSE_CURRENCY_TABLE_LAST_YEAR_COLUMN_FLOOR_PX = 44;
 

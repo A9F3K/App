@@ -299,6 +299,11 @@ const MemoDataRow = memo(
   DataRow,
   (prev, next) =>
     prev.row.rowKey === next.row.rowKey &&
+    prev.row.marketCap === next.row.marketCap &&
+    prev.row.marketCapUsd === next.row.marketCapUsd &&
+    prev.row.volume === next.row.volume &&
+    prev.row.balance === next.row.balance &&
+    prev.row.rate === next.row.rate &&
     prev.rank === next.rank &&
     prev.visibleColumns === next.visibleColumns,
 );

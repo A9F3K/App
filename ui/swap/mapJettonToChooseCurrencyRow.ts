@@ -6,6 +6,7 @@ import {
   formatSwapTokenPriceUsd,
   formatSwapUsdCompact,
 } from "./formatSwapTokenMarketValue";
+import { resolveJettonMarketCapUsd } from "./resolveJettonMarketCapUsd";
 import type { SwapAccountJettonBalance, SwapJetton } from "./swapJettonsTypes";
 
 const DLLR_SYMBOL = "DLLR";
@@ -38,6 +39,8 @@ export function mapJettonToChooseCurrencyRow(
 
   const stats = jetton.market_stats;
   const balanceRaw = balanceByAddress.get(address);
+  const resolvedCap = resolveJettonMarketCapUsd(jetton);
+  const marketCapUsd = resolvedCap ?? 0;
 
   return {
     rowKey: address,
@@ -52,7 +55,8 @@ export function mapJettonToChooseCurrencyRow(
         : "—",
     rate: formatSwapTokenPriceUsd(stats?.price_usd),
     networks: "TON",
-    marketCap: formatSwapUsdCompact(stats?.mcap ?? stats?.fdmc, locale),
+    marketCapUsd,
+    marketCap: formatSwapUsdCompact(resolvedCap, locale),
     volume: formatSwapUsdCompact(stats?.volume_usd_24h, locale),
     lastYearKind: "stable",
   };

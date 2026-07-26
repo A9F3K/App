@@ -18,12 +18,6 @@ import {
 } from "./swapJettonsCatalogCache";
 import type { SwapAccountJettonBalance, SwapJetton } from "./swapJettonsTypes";
 
-function jettonMarketCapUsd(jetton: SwapJetton): number {
-  const stats = jetton.market_stats;
-  const value = stats?.mcap ?? stats?.fdmc;
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
 function mergeAccountJettons(
   catalog: readonly SwapJetton[],
   accountItems: readonly SwapAccountJettonBalance[] | undefined,
@@ -106,13 +100,17 @@ export function useChooseCurrencyRows(
   const dllrRow = useMemo(() => buildChooseCurrencyDllrRow(locale), [locale]);
 
   const rows = useMemo(() => {
-    const ranked = [...jettons].sort((a, b) => jettonMarketCapUsd(b) - jettonMarketCapUsd(a));
     const apiRows: ChooseCurrencyRow[] = [];
-    for (const jetton of ranked) {
+    for (const jetton of jettons) {
       const row = mapJettonToChooseCurrencyRow(jetton, balanceByAddress, locale);
       if (!row) continue;
       apiRows.push(row);
     }
+    apiRows.sort((a, b) => {
+      const delta = b.marketCapUsd - a.marketCapUsd;
+      if (delta !== 0) return delta;
+      return a.currency.ticker.localeCompare(b.currency.ticker);
+    });
     return [dllrRow, ...apiRows];
   }, [balanceByAddress, dllrRow, jettons, locale]);
 

@@ -30,6 +30,8 @@ export type ChooseCurrencyRow = {
   rate: string;
   networks: string;
   marketCap: string;
+  /** Numeric USD market cap used for descending sort (0 when unknown). */
+  marketCapUsd: number;
   volume: string;
   /** Stablecoin rows use a flat horizontal line in the mini chart slot. */
   lastYearKind: "stable";
@@ -60,6 +62,7 @@ export const CHOOSE_CURRENCY_COLUMN_PRIORITY: Record<ChooseCurrencyColumnKey, Ch
 
 /** Locale-aware DLLR placeholder stats for the pinned first row. */
 export function buildChooseCurrencyDllrRow(locale: AppLocale): ChooseCurrencyRow {
+  const marketCapUsd = 3_000_000_000_000;
   return {
     rowKey: "jetton:dllr",
     currency: {
@@ -70,7 +73,8 @@ export function buildChooseCurrencyDllrRow(locale: AppLocale): ChooseCurrencyRow
     balance: "1",
     rate: "$1",
     networks: "TON, ETH...",
-    marketCap: formatSwapUsdCompact(3_000_000_000_000, locale),
+    marketCapUsd,
+    marketCap: formatSwapUsdCompact(marketCapUsd, locale),
     volume: formatSwapUsdCompact(123_000_000, locale),
     lastYearKind: "stable",
   };
