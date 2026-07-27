@@ -225,13 +225,13 @@ export function WelcomeContent() {
               {t("welcome.title")}
             </Text>
           </View>
+          <View style={styles.languageBlock}>
+            <WelcomeLanguageSwitcher />
+          </View>
           <View style={[styles.subtitleBlock, isWideLayout && styles.subtitleBlockWide]}>
             <Text style={[styles.subtitleText, { color: colors.secondary }]}>
               {t("welcome.subtitle")}
             </Text>
-          </View>
-          <View style={styles.languageBlock}>
-            <WelcomeLanguageSwitcher />
           </View>
           <View style={styles.authBlock}>
             <WelcomeAuthButtons />

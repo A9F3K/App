@@ -1,4 +1,5 @@
 Theme change in settings
+Chat unselected when on other page
 Unreads
 Connection lost
 Messages count and scrolling bugs
