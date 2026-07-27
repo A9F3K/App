@@ -1,3 +1,4 @@
+Theme change in settings
 Unreads
 Connection lost
 Messages count and scrolling bugs

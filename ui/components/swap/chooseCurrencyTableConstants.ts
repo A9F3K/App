@@ -14,8 +14,18 @@ export const CHOOSE_CURRENCY_TABLE_CURRENCY_ICON_SIZE_PX = 20;
 
 export const CHOOSE_CURRENCY_TABLE_CURRENCY_ICON_TEXT_GAP_PX = 8;
 
-/** Mini chart slot in Last Year column (px tall; width tracks column width). */
-export const CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX = 40;
+/** Name line in the currency column (title). */
+export const CHOOSE_CURRENCY_CURRENCY_NAME_LINE_HEIGHT_PX = 16;
+
+/** Ticker line under the name (subtitle). */
+export const CHOOSE_CURRENCY_CURRENCY_TICKER_LINE_HEIGHT_PX = 16;
+
+/**
+ * Last-year sparkline height — exactly name + ticker line boxes so the plot
+ * aligns with the currency text stack in the same row.
+ */
+export const CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX =
+  CHOOSE_CURRENCY_CURRENCY_NAME_LINE_HEIGHT_PX + CHOOSE_CURRENCY_CURRENCY_TICKER_LINE_HEIGHT_PX;
 
 export const CHOOSE_CURRENCY_TABLE_MINI_CHART_MIN_WIDTH_PX = 40;
 

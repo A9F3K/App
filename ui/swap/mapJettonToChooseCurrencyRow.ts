@@ -66,6 +66,6 @@ export function mapJettonToChooseCurrencyRow(
     marketCapUsd,
     marketCap: formatSwapUsdCompact(resolvedCap, locale),
     volume: formatSwapUsdCompact(stats?.volume_usd_24h, locale),
-    lastYearKind: "stable",
+    lastYearKind: "sparkline",
   };
 }

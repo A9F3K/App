@@ -12,7 +12,6 @@ import {
 import {
   ActivityIndicator,
   FlatList,
-  PixelRatio,
   Platform,
   StyleSheet,
   Text,
@@ -38,10 +37,13 @@ import {
 } from "../../theme";
 import { ScrollIndicatorDragHandle } from "../ScrollIndicatorDragHandle";
 import { SmartGradientDivider } from "../smart/SmartGradientDivider";
+import { ChooseCurrencyLastYearMiniChart } from "./ChooseCurrencyLastYearMiniChart";
 import {
   CHOOSE_CURRENCY_TABLE_CELL_PADDING_HORIZONTAL_PX,
   CHOOSE_CURRENCY_TABLE_CURRENCY_ICON_SIZE_PX,
   CHOOSE_CURRENCY_TABLE_CURRENCY_ICON_TEXT_GAP_PX,
+  CHOOSE_CURRENCY_CURRENCY_NAME_LINE_HEIGHT_PX,
+  CHOOSE_CURRENCY_CURRENCY_TICKER_LINE_HEIGHT_PX,
   CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX,
   CHOOSE_CURRENCY_TABLE_RANK_CELL_PADDING_RIGHT_PX,
   CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX,
@@ -61,40 +63,6 @@ const CONTENT_INSET_PX = layout.contentSideInsetPx;
 const SCROLLBAR_RIGHT_INSET_PX = layout.scrollIndicatorRightInsetPx;
 const HEADER_DIVIDER_HEIGHT_PX = scrollIndicatorHairlineBorderWidthPx();
 const HEADER_BLOCK_HEIGHT_PX = CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX + HEADER_DIVIDER_HEIGHT_PX;
-
-function miniChartLineThicknessPx(): number {
-  if (Platform.OS === "web") {
-    if (typeof window !== "undefined" && window.devicePixelRatio > 0) {
-      return 1 / window.devicePixelRatio;
-    }
-    return 1;
-  }
-  return PixelRatio.roundToNearestPixel(1 / PixelRatio.get());
-}
-
-function StablecoinMiniChart() {
-  const colors = useColors();
-  const lineThickness = miniChartLineThicknessPx();
-
-  return (
-    <View
-      style={{
-        width: "100%",
-        height: CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX,
-        justifyContent: "center",
-        alignItems: "stretch",
-      }}
-    >
-      <View
-        style={{
-          width: "100%",
-          height: lineThickness,
-          backgroundColor: colors.primary,
-        }}
-      />
-    </View>
-  );
-}
 
 function CurrencyIcon({ row }: { row: ChooseCurrencyRow }) {
   const colors = useColors();
@@ -147,14 +115,25 @@ function CurrencyCell({ row }: { row: ChooseCurrencyRow }) {
       <View style={{ width: CHOOSE_CURRENCY_TABLE_CURRENCY_ICON_TEXT_GAP_PX }} />
       <View style={styles.currencyTextStack}>
         <Text
-          style={[typographyAeroport15, typographySansSemibold, styles.truncatedText, { color: colors.primary }]}
+          style={[
+            typographyAeroport15,
+            typographySansSemibold,
+            styles.truncatedText,
+            styles.currencyNameText,
+            { color: colors.primary },
+          ]}
           numberOfLines={1}
           ellipsizeMode="tail"
         >
           {row.currency.name}
         </Text>
         <Text
-          style={[typographyAeroport15, styles.truncatedText, { color: colors.secondary }]}
+          style={[
+            typographyAeroport15,
+            styles.truncatedText,
+            styles.currencyTickerText,
+            { color: colors.secondary },
+          ]}
           numberOfLines={1}
           ellipsizeMode="tail"
         >
@@ -204,7 +183,7 @@ function CellContent({
         </Text>
       );
     case "lastYear":
-      return <StablecoinMiniChart />;
+      return <ChooseCurrencyLastYearMiniChart row={row} />;
     default:
       return null;
   }
@@ -720,6 +699,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
     width: "100%",
     maxWidth: "100%",
+    height: CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX,
     overflow: "hidden",
   },
   currencyIconSlot: {
@@ -730,6 +710,20 @@ const styles = StyleSheet.create({
     minWidth: 0,
     flexShrink: 1,
     flex: 1,
+    height: CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX,
+  },
+  currencyNameText: {
+    fontSize: 15,
+    lineHeight: CHOOSE_CURRENCY_CURRENCY_NAME_LINE_HEIGHT_PX,
+    height: CHOOSE_CURRENCY_CURRENCY_NAME_LINE_HEIGHT_PX,
+    // Cancel Aeroport global translateY so name/ticker line boxes stack flush with the chart.
+    transform: [{ translateY: 0 }],
+  },
+  currencyTickerText: {
+    fontSize: 15,
+    lineHeight: CHOOSE_CURRENCY_CURRENCY_TICKER_LINE_HEIGHT_PX,
+    height: CHOOSE_CURRENCY_CURRENCY_TICKER_LINE_HEIGHT_PX,
+    transform: [{ translateY: 0 }],
   },
   footerState: {
     flexDirection: "row",

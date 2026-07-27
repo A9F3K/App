@@ -33,8 +33,11 @@ export type ChooseCurrencyRow = {
   /** Numeric USD market cap used for descending sort (0 when unknown). */
   marketCapUsd: number;
   volume: string;
-  /** Stablecoin rows use a flat horizontal line in the mini chart slot. */
-  lastYearKind: "stable";
+  /**
+   * `stable` — flat line (DLLR).
+   * `sparkline` — last-year price plot (trade chart style, no legend).
+   */
+  lastYearKind: "stable" | "sparkline";
 };
 
 export const CHOOSE_CURRENCY_COLUMN_ORDER: readonly ChooseCurrencyColumnKey[] = [

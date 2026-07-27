@@ -147,19 +147,31 @@ export function normalizeChartSeries(points: SwapChartPoint[]): NormalizedChartS
   };
 }
 
-export async function fetchSwapChartSeries(
+export async function fetchJettonChartSeries(
+  jettonAddress: string,
   resolution: SwapChartResolution,
+  opts?: { respectGlobalRateLimit?: boolean },
 ): Promise<{ ok: true; series: NormalizedChartSeries } | { ok: false; error: string; retryable: boolean }> {
-  await respectChartRateLimit();
+  if (opts?.respectGlobalRateLimit !== false) {
+    await respectChartRateLimit();
+  }
+
+  const address = jettonAddress.trim();
+  if (!address) {
+    return { ok: false, error: "Missing jetton address", retryable: false };
+  }
 
   const timeRange = getTimeRange(resolution);
-  const url = new URL(`${DYOR_CHART_API_BASE}/v1/jettons/${TON_JETTON_ADDRESS}/price/chart`);
+  const url = new URL(
+    `${DYOR_CHART_API_BASE}/v1/jettons/${encodeURIComponent(address)}/price/chart`,
+  );
   url.searchParams.set("resolution", resolution);
   url.searchParams.set("currency", "usd");
   url.searchParams.set("from", timeRange.from);
   url.searchParams.set("to", timeRange.to);
 
-      swapChartLog("fetch_start", {
+  swapChartLog("fetch_start", {
+    jettonAddress: address,
     resolution,
     url: url.toString(),
     from: timeRange.from,
@@ -172,6 +184,7 @@ export async function fetchSwapChartSeries(
     const elapsedMs = Date.now() - startedAt;
 
     swapChartLog("fetch_response", {
+      jettonAddress: address,
       status: response.status,
       ok: response.ok,
       elapsedMs,
@@ -187,7 +200,11 @@ export async function fetchSwapChartSeries(
       } catch {
         bodyPreview = "(unreadable body)";
       }
-      swapChartWarn("fetch_http_error", { status: response.status, bodyPreview });
+      swapChartWarn("fetch_http_error", {
+        jettonAddress: address,
+        status: response.status,
+        bodyPreview,
+      });
       return {
         ok: false,
         error: `Failed to load chart (${response.status})`,
@@ -197,22 +214,24 @@ export async function fetchSwapChartSeries(
 
     const data = await response.json();
     swapChartLog("fetch_json", {
+      jettonAddress: address,
       topLevelKeys: data && typeof data === "object" ? Object.keys(data as object) : [],
     });
 
     const parsed = parseChartPoints(data);
     if (parsed.length === 0) {
-      swapChartWarn("fetch_no_parsed_points");
+      swapChartWarn("fetch_no_parsed_points", { jettonAddress: address });
       return { ok: false, error: "No price data available", retryable: false };
     }
 
     const series = normalizeChartSeries(parsed);
     if (!series) {
-      swapChartWarn("fetch_normalize_failed");
+      swapChartWarn("fetch_normalize_failed", { jettonAddress: address });
       return { ok: false, error: "No price data available", retryable: false };
     }
 
     swapChartLog("fetch_success", {
+      jettonAddress: address,
       pointCount: series.points.length,
       minPrice: series.minPrice,
       maxPrice: series.maxPrice,
@@ -223,9 +242,19 @@ export async function fetchSwapChartSeries(
     return { ok: true, series };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    swapChartError("fetch_exception", { message, name: e instanceof Error ? e.name : "unknown" });
+    swapChartError("fetch_exception", {
+      jettonAddress: address,
+      message,
+      name: e instanceof Error ? e.name : "unknown",
+    });
     return { ok: false, error: `Network error: ${message}`, retryable: true };
   }
+}
+
+export async function fetchSwapChartSeries(
+  resolution: SwapChartResolution,
+): Promise<{ ok: true; series: NormalizedChartSeries } | { ok: false; error: string; retryable: boolean }> {
+  return fetchJettonChartSeries(TON_JETTON_ADDRESS, resolution);
 }
 
 export async function fetchSwapMarketStats(): Promise<SwapMarketStats> {
