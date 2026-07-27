@@ -34,6 +34,7 @@ import {
   MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
   MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX,
   MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
+  resolveVoiceBarParticipantPreview,
 } from "./messageListLayout";
 import { clearQueuedNormalNetworkFetches } from "./networkFetchQueue";
 
@@ -102,21 +103,18 @@ export function MessageChatVoiceBar({
   speakingByKeyRef.current = speakingByKey;
   // Preview faces = other people only (never lead with self).
   const previewParticipants = participants.filter((row) => !row.is_self);
-  // Before join, soft polls only return recent_speakers (~2–3) while TDLib's
-  // participant_count is the real strip headline (Telegram Desktop parity).
-  // After join, prefer the painted roster so hidden listeners don't inflate "+N".
-  const totalParticipantCount = joined
-    ? participants.length
-    : Math.max(participants.length, rosterCountHint);
   const stackedParticipants = previewParticipants.slice(
     0,
     MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
   );
-  const overflowCount = Math.max(
-    0,
-    (joined ? previewParticipants.length : Math.max(previewParticipants.length, rosterCountHint)) -
-      stackedParticipants.length,
-  );
+  const { displayTotal: totalParticipantCount, overflowCount } =
+    resolveVoiceBarParticipantPreview({
+      listedTotal: participants.length,
+      othersListed: previewParticipants.length,
+      tdlibHint: rosterCountHint,
+      maxAvatars: MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
+      joined,
+    });
   const participantsA11yLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
@@ -637,7 +635,10 @@ export function MessageChatVoiceBar({
       // the soft poll just painted — strip showed 0 faces while the call had 3.
       // Call-end clears via setParticipants([]) on has_active_voice_chat=false.
       if (withLocalSpeaking.length === 0 && prev.length > 0) {
-        const totalHint = Math.max(rosterTotalHintRef.current, hint, prev.length);
+        const totalHint =
+          hint > 0
+            ? Math.max(hint, prev.length)
+            : Math.max(rosterTotalHintRef.current, prev.length);
         rosterTotalHintRef.current = totalHint;
         if (rosterCountHintStateRef.current !== totalHint) {
           rosterCountHintStateRef.current = totalHint;
@@ -766,10 +767,13 @@ export function MessageChatVoiceBar({
         });
       }
 
-      // UI listed count matches painted rows; keep TDLib hint for labels / reload.
-      // Never lower the high-water hint from a thin SSE/poll — that marked a
-      // recent_speakers subset "complete" (listed=3, hint=3) and stopped reloads.
-      const totalHint = Math.max(rosterTotalHintRef.current, hint, next.length);
+      // Keep a TDLib floor for the strip label / reload. Follow the live server
+      // hint when present (don't stick above a stale high-water), but never drop
+      // below the painted roster. hint=0 empty payloads keep the previous floor.
+      const totalHint =
+        hint > 0
+          ? Math.max(hint, next.length)
+          : Math.max(rosterTotalHintRef.current, next.length);
       rosterTotalHintRef.current = totalHint;
       const nextCount = next.length;
 

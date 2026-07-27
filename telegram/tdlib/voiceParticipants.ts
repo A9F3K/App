@@ -283,18 +283,47 @@ function ratchetParticipantCountHint(
 ): void {
   if (!Number.isFinite(nextHint) || nextHint < 0) return;
   const hint = Math.trunc(nextHint);
-  // Soft getGroupCall often under-counts (1) before join. Never shrink the
-  // high-water mark until a finished load confirms a smaller size — otherwise
-  // recent_speakers stubs are filtered out (logs: listed=1 totalHint=1).
-  if (!cached.loadedAll) {
-    cached.participantCountHint = Math.max(cached.participantCountHint, hint);
+  const listed = cached.members.size;
+  const prev = cached.participantCountHint;
+  // Soft getGroupCall often flashes participant_count=0/1 before the real
+  // total. Ignore that collapse. Otherwise follow live TDLib up and down so a
+  // leftover high-water (7) cannot stick after the call drops to 6.
+  if (hint <= 1 && prev > hint) {
+    cached.participantCountHint = Math.max(prev, listed);
     return;
   }
-  if (hint >= cached.members.size) {
-    cached.participantCountHint = Math.max(cached.participantCountHint, hint);
+  if (!cached.loadedAll) {
+    if (hint >= 2) {
+      cached.participantCountHint = Math.max(hint, listed);
+      return;
+    }
+    cached.participantCountHint = Math.max(prev, hint, listed);
+    return;
+  }
+  if (hint >= listed) {
+    cached.participantCountHint = Math.max(hint, listed);
     return;
   }
   cached.participantCountHint = hint;
+}
+
+/** Strip / SSE headline: live TDLib count, with a soft-undercount floor. */
+function resolveDisplayParticipantCount(
+  liveTdlib: number,
+  stickyHint: number,
+  listed: number,
+): number {
+  const live =
+    Number.isFinite(liveTdlib) && liveTdlib >= 0 ? Math.trunc(liveTdlib) : 0;
+  const sticky =
+    Number.isFinite(stickyHint) && stickyHint >= 0 ? Math.trunc(stickyHint) : 0;
+  const painted = Math.max(0, Math.trunc(listed));
+  // Soft polls can flash 0/1 while recent_speakers are still loading — keep the
+  // prior floor then. A live count of 2+ is trusted (including shrinks 7→6).
+  if (live <= 1 && sticky > live) {
+    return Math.max(sticky, painted);
+  }
+  return Math.max(live > 0 ? live : sticky, painted);
 }
 
 /** Sync profile peek — never blocks the request path on getUser. */
@@ -1659,11 +1688,11 @@ export async function fetchChatVoiceParticipants(
   // even after loaded_all (which can arrive with a thin self-only map when
   // has_hidden_listeners trips early). Filtering stubs left dialog rows empty.
   const rosterLoadedAll = Boolean(callMembersCache.get(callId)?.loadedAll);
-  const hintForDisplay = Math.max(
-    callMembersCache.get(callId)?.participantCountHint ?? 0,
-    Number.isFinite(participantCountHint) ? Math.trunc(participantCountHint) : 0,
-    collected.size,
-  );
+  const liveTdlibCount =
+    Number.isFinite(participantCountHint) && participantCountHint >= 0
+      ? Math.trunc(participantCountHint)
+      : 0;
+  const stickyHint = callMembersCache.get(callId)?.participantCountHint ?? 0;
   if (speakers.size > 0) {
     collected = mergeSpeakerStubsForDisplay(collected, speakers);
   }
@@ -1725,24 +1754,24 @@ export async function fetchChatVoiceParticipants(
     if (warmed > 0) bumpVoiceCallRevision(callId);
   });
 
-  // Prefer high-water hint over a soft under-count so the UI header matches
-  // Telegram Desktop ("N participants") before the full load lands.
-  const participantCount = Number(groupCall.participant_count);
+  // Prefer live TDLib participant_count as the strip headline (Telegram Desktop).
+  // Soft polls only return recent_speakers faces, so listed alone under-counts —
+  // but never floor on a sticky high-water above the live count (7 stuck vs 6).
   const listedCount = participants.length;
-  const tdlibCount =
-    Number.isFinite(participantCount) && participantCount >= 0
-      ? Math.trunc(participantCount)
-      : 0;
-  const resolvedCount = Math.max(tdlibCount, hintForDisplay, listedCount);
+  const resolvedCount = resolveDisplayParticipantCount(
+    liveTdlibCount,
+    stickyHint,
+    listedCount,
+  );
   logGateway("voice_participants_resolved", {
     chatId,
     groupCallId: callId,
     listed: listedCount,
     participantCount: resolvedCount,
-    tdlibCount: tdlibCount > 0 ? tdlibCount : null,
-    hint: hintForDisplay,
+    tdlibCount: liveTdlibCount > 0 ? liveTdlibCount : null,
+    hint: stickyHint,
     isJoined,
-    hasHiddenListeners: Boolean(groupCall.has_hidden_listeners),
+    hasHiddenListeners,
     usedCache: callMembersCache.has(callId),
     resolveSource: resolved.source,
   });
@@ -1844,10 +1873,15 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
       };
     });
   participants.sort(compareVoiceParticipantRows);
-  const hint = Math.max(cached.participantCountHint, participants.length);
+  const listed = participants.length;
+  const count = resolveDisplayParticipantCount(
+    cached.participantCountHint,
+    cached.participantCountHint,
+    listed,
+  );
   return {
     revision: cached.revision,
-    participant_count: hint > 0 ? hint : participants.length,
+    participant_count: count > 0 ? count : listed,
     participants,
   };
 }

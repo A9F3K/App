@@ -6,6 +6,39 @@ export const MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX = 44;
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_PX = 28;
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX = 10;
 export const MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS = 5;
+
+/**
+ * Standard voice-bar preview headcount for every chat.
+ *
+ * Label and `+N` always follow `max(painted roster, TDLib participant_count)`.
+ * Soft polls only return recent_speakers faces, so the TDLib floor is required
+ * or a 6-person call with 2 loaded faces would show "2 participants".
+ * Overflow is unknowns beyond the stacked avatars, not beyond the thin list.
+ */
+export function resolveVoiceBarParticipantPreview(input: {
+  listedTotal: number;
+  othersListed: number;
+  tdlibHint: number;
+  maxAvatars: number;
+  joined: boolean;
+}): { displayTotal: number; overflowCount: number } {
+  const listed = Math.max(0, Math.trunc(input.listedTotal));
+  const others = Math.max(0, Math.trunc(input.othersListed));
+  const hint = Math.max(0, Math.trunc(input.tdlibHint));
+  const maxAvatars = Math.max(1, Math.trunc(input.maxAvatars));
+  const stacked = Math.min(others, maxAvatars);
+
+  void input.joined;
+  const displayTotal = Math.max(listed, hint);
+  const selfListed = Math.max(0, listed - others);
+  const othersTotal = Math.max(others, Math.max(0, displayTotal - selfListed));
+
+  return {
+    displayTotal,
+    overflowCount: Math.max(0, othersTotal - stacked),
+  };
+}
+
 /** Max height for the in-chat remote camera / screen-share plane (16:9). */
 export const MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX = 320;
 
