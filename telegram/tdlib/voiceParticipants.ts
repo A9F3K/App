@@ -1872,6 +1872,22 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
   let collected = cached.members;
   if (cached.speakers && cached.speakers.size > 0) {
     collected = applySpeakingOverlay(cached.members, cached.speakers);
+    // Persist speaking hold clocks onto members. Overlay is ephemeral; without
+    // this, a speakers map that drops mid-hold left SSE speakingCount=0 while
+    // people were still mid-sentence (green mics never stuck after join).
+    for (const [key, row] of collected) {
+      const prev = cached.members.get(key);
+      if (!prev) continue;
+      if (
+        row.lastSpokeAt != null &&
+        (prev.lastSpokeAt == null || row.lastSpokeAt > prev.lastSpokeAt)
+      ) {
+        cached.members.set(key, {
+          ...prev,
+          lastSpokeAt: row.lastSpokeAt,
+        });
+      }
+    }
     const hintGap =
       cached.participantCountHint > collected.size ||
       cached.members.size === 0 ||

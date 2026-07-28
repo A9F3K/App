@@ -110,22 +110,33 @@ function createSilentVideoTrack(): MediaStreamTrack {
 /**
  * Local audio for listen-only joins — no mic permission / user gesture.
  * Real mic is swapped in later via setMicEnabled().
- * Reuse one AudioContext — creating a new one per join was a multi-hundred-ms
- * main-thread stall that stacked with createOffer during dialog open.
+ * Prefer the Join-gesture AudioContext (already resumed). A separate suspended
+ * context produces no outbound RTP → SFU sends nothing → remote track stays
+ * muted with inboundAudio=0 forever.
  */
 let sharedSilentAudioCtx: AudioContext | null = null;
+
+/** Near-silent (~-90 dB). Gain 0 often yields zero RTP under Chrome DTX. */
+const SILENT_OUTBOUND_GAIN = 0.0000316;
 
 function createSilentAudioTrack(): MediaStreamTrack {
   if (typeof AudioContext === "undefined") {
     throw new Error("silent_audio_unavailable");
   }
-  if (!sharedSilentAudioCtx || sharedSilentAudioCtx.state === "closed") {
+  // Reuse the gesture-unlocked context whenever possible.
+  unlockVoiceAutoplay();
+  const unlocked = getVoiceAutoplayAudioContext();
+  if (unlocked && unlocked.state !== "closed") {
+    sharedSilentAudioCtx = unlocked;
+  } else if (!sharedSilentAudioCtx || sharedSilentAudioCtx.state === "closed") {
     sharedSilentAudioCtx = new AudioContext();
   }
   const ctx = sharedSilentAudioCtx;
+  void ctx.resume().catch(() => undefined);
   const oscillator = ctx.createOscillator();
+  oscillator.frequency.value = 20;
   const gain = ctx.createGain();
-  gain.gain.value = 0;
+  gain.gain.value = SILENT_OUTBOUND_GAIN;
   oscillator.connect(gain);
   const dest = ctx.createMediaStreamDestination();
   gain.connect(dest);
@@ -142,13 +153,39 @@ function createSilentAudioTrack(): MediaStreamTrack {
     } catch {
       // already stopped
     }
-    // Do not close sharedSilentAudioCtx — reused across joins.
+    // Do not close sharedSilentAudioCtx — reused across joins / shared with unlock.
     stopTrack();
   };
   // Keep enabled so the transceiver stays live and the SFU can deliver remote audio.
   // Telegram mute is signaled separately via is_muted / muteGroupCallParticipant.
   track.enabled = true;
+  logPageDisplay("messages_voice_silent_track", {
+    ctxState: ctx.state,
+    sampleRate: ctx.sampleRate,
+    gain: SILENT_OUTBOUND_GAIN,
+    reusedUnlockCtx: unlocked != null && unlocked === ctx,
+    level: ctx.state === "running" ? "info" : "warn",
+  });
   return track;
+}
+
+async function resumeSilentOutboundContext(): Promise<void> {
+  const ctx = sharedSilentAudioCtx ?? getVoiceAutoplayAudioContext();
+  if (!ctx || ctx.state === "closed") return;
+  if (ctx.state === "suspended") {
+    try {
+      await ctx.resume();
+    } catch {
+      // ignore
+    }
+  }
+  if (ctx.state !== "running") {
+    logPageDisplay("messages_voice_silent_ctx_suspended", {
+      ctxState: ctx.state,
+      level: "warn",
+      note: "outbound silence may not produce RTP — inbound stays muted",
+    });
+  }
 }
 
 /** Browser WebRTC session for a Telegram group voice call. */
@@ -158,6 +195,12 @@ export class TelegramGroupCallWebSession {
   private audioTrack: MediaStreamTrack | null = null;
   /** True when `audioTrack` is a placeholder (no real mic yet). */
   private usingSilentAudio = false;
+  /**
+   * Real mic from Join-click prefetch, held while listen-only publishes silence.
+   * Attaching the prefetched track with enabled=false sent zero RTP and the SFU
+   * never delivered remote audio (outboundPackets=0, remoteMuted forever).
+   */
+  private prefetchedMicTrack: MediaStreamTrack | null = null;
   /** Outbound video sender track (silent placeholder, camera, or screen). */
   private outboundVideoTrack: MediaStreamTrack | null = null;
   private cameraTrack: MediaStreamTrack | null = null;
@@ -664,6 +707,9 @@ export class TelegramGroupCallWebSession {
     try {
       const stats = await connection.getStats();
       let inboundAudio = 0;
+      let outboundAudio = 0;
+      let inboundPackets = 0;
+      let outboundPackets = 0;
       let pairsSucceeded = 0;
       let pairsInProgress = 0;
       let pairsFailed = 0;
@@ -672,6 +718,11 @@ export class TelegramGroupCallWebSession {
       stats.forEach((report) => {
         if (report.type === "inbound-rtp" && report.kind === "audio") {
           inboundAudio += Number(report.bytesReceived) || 0;
+          inboundPackets += Number(report.packetsReceived) || 0;
+        }
+        if (report.type === "outbound-rtp" && report.kind === "audio") {
+          outboundAudio += Number(report.bytesSent) || 0;
+          outboundPackets += Number(report.packetsSent) || 0;
         }
         if (report.type === "candidate-pair") {
           if (report.state === "succeeded") pairsSucceeded++;
@@ -687,12 +738,18 @@ export class TelegramGroupCallWebSession {
           remotes.push(`${addr}:${report.port}/${report.candidateType}`);
         }
       });
+      const silentCtx = sharedSilentAudioCtx ?? getVoiceAutoplayAudioContext();
       appWarn("[voice-ice-stats]", label, {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         ice: connection.iceConnectionState,
         conn: connection.connectionState,
         inboundAudio,
+        inboundPackets,
+        outboundAudio,
+        outboundPackets,
+        usingSilentAudio: this.usingSilentAudio,
+        silentCtxState: silentCtx?.state ?? "none",
         pairsSucceeded,
         pairsInProgress,
         pairsFailed,
@@ -747,19 +804,12 @@ export class TelegramGroupCallWebSession {
       this.audioTrack = null;
     }
     this.usingSilentAudio = false;
+    // Keep prefetched mic across silent markJoinLost so unmute after rejoin
+    // does not re-prompt — only drop ended tracks.
+    if (this.prefetchedMicTrack && this.prefetchedMicTrack.readyState !== "live") {
+      this.prefetchedMicTrack = null;
+    }
     this.stopLocalVideoCaptures();
-    this.outboundVideoTrack = null;
-    this.audioSourceId = null;
-    if (this.connection) {
-      this.connection.close();
-      this.connection = null;
-    }
-    if (this.iceDisconnectTimer) {
-      window.clearTimeout(this.iceDisconnectTimer);
-      this.iceDisconnectTimer = null;
-    }
-    this.clearPlaybackWatchdog();
-    this.teardownWebAudioPlayback();
     if (this.remoteStream) {
       this.remoteStream.getTracks().forEach((track) => track.stop());
       this.remoteStream = null;
@@ -1025,12 +1075,17 @@ export class TelegramGroupCallWebSession {
   /**
    * Start getUserMedia during the Join click (user gesture). Call before SDP so
    * the post-join unmute does not wait on a permission prompt mid-dialog.
+   *
+   * Stash-only: never replaceTrack onto the live PC. A late prefetch that
+   * attached enabled=false over the silent sender killed outbound RTP
+   * (outboundPackets=0 → SFU keeps remoteMuted forever).
    */
   prefetchLocalMic(): void {
     if (typeof window === "undefined") return;
     if (this.audioTrack && !this.usingSilentAudio) return;
+    if (this.prefetchedMicTrack && this.prefetchedMicTrack.readyState === "live") return;
     if (this.micPrefetch) return;
-    this.micPrefetch = this.ensureLocalMic({ fromUserGesture: true })
+    this.micPrefetch = this.ensureLocalMic({ fromUserGesture: true, publish: false })
       .catch((err) => {
         appWarn(
           "[voice-mic-prefetch]",
@@ -1043,46 +1098,94 @@ export class TelegramGroupCallWebSession {
       });
   }
 
-  /** Acquire a real mic (user gesture). Replaces silent placeholder if already joined. */
-  async ensureLocalMic(options?: { fromUserGesture?: boolean }): Promise<void> {
+  /**
+   * Acquire a real mic (user gesture).
+   * - publish:false → stash in prefetchedMicTrack only (Join-click prefetch).
+   * - publish:true → replace silent sender; enable before replaceTrack so RTP
+   *   never drops to a disabled track mid-call.
+   */
+  async ensureLocalMic(options?: {
+    fromUserGesture?: boolean;
+    publish?: boolean;
+    enabled?: boolean;
+  }): Promise<void> {
+    const publish = options?.publish !== false;
     if (this.audioTrack && !this.usingSilentAudio) return;
     if (this.micPrefetch && !options?.fromUserGesture) {
       await this.micPrefetch;
       if (this.audioTrack && !this.usingSilentAudio) return;
     }
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error("microphone_unavailable");
-    }
-    // Yield so the voice dialog can paint / handle Close before getUserMedia
-    // device enumeration freezes the main thread (logs: unmute → stuck UI).
-    // Skip the yield when prefetching from the Join click — Safari needs the
-    // gesture stack for the permission prompt.
-    if (!options?.fromUserGesture) {
-      await new Promise<void>((resolve) => {
-        if (typeof requestAnimationFrame === "function") {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => resolve());
-          });
-        } else {
-          setTimeout(resolve, 0);
+    // Prefer the Join-click stash over a second getUserMedia.
+    let audioTrack: MediaStreamTrack | null =
+      this.prefetchedMicTrack && this.prefetchedMicTrack.readyState === "live"
+        ? this.prefetchedMicTrack
+        : null;
+    if (audioTrack) {
+      this.prefetchedMicTrack = null;
+    } else {
+      if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+        throw new Error("microphone_unavailable");
+      }
+      // Yield so the voice dialog can paint / handle Close before getUserMedia
+      // device enumeration freezes the main thread (logs: unmute → stuck UI).
+      // Skip the yield when prefetching from the Join click — Safari needs the
+      // gesture stack for the permission prompt.
+      if (!options?.fromUserGesture) {
+        await new Promise<void>((resolve) => {
+          if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => resolve());
+            });
+          } else {
+            setTimeout(resolve, 0);
+          }
+        });
+      }
+      if (this.audioTrack && !this.usingSilentAudio) return;
+      // Prefetch may have finished while we yielded.
+      if (this.prefetchedMicTrack && this.prefetchedMicTrack.readyState === "live") {
+        audioTrack = this.prefetchedMicTrack;
+        this.prefetchedMicTrack = null;
+      } else {
+        const micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+          video: false,
+        });
+        audioTrack = micStream.getAudioTracks()[0] ?? null;
+        if (!audioTrack) {
+          micStream.getTracks().forEach((track) => track.stop());
+          throw new Error("microphone_unavailable");
         }
+      }
+    }
+
+    if (!publish) {
+      // Keep listen-only silent RTP on the PC; stash mic for later unmute.
+      audioTrack.enabled = false;
+      if (this.prefetchedMicTrack && this.prefetchedMicTrack !== audioTrack) {
+        try {
+          this.prefetchedMicTrack.stop();
+        } catch {
+          // ignore
+        }
+      }
+      this.prefetchedMicTrack = audioTrack;
+      logPageDisplay("messages_voice_mic_prefetched", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        usingSilentAudio: this.usingSilentAudio,
+        hasConnection: Boolean(this.connection),
+        level: "info",
       });
+      return;
     }
-    if (this.audioTrack && !this.usingSilentAudio) return;
-    const micStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-      video: false,
-    });
-    const audioTrack = micStream.getAudioTracks()[0];
-    if (!audioTrack) {
-      micStream.getTracks().forEach((track) => track.stop());
-      throw new Error("microphone_unavailable");
-    }
-    audioTrack.enabled = false;
+
+    // Publishing: never put enabled=false on the live sender (DTX / SFU stall).
+    audioTrack.enabled = options?.enabled !== false;
 
     const previous = this.audioTrack;
     if (this.connection && previous) {
@@ -1093,8 +1196,11 @@ export class TelegramGroupCallWebSession {
         await sender.replaceTrack(audioTrack);
       }
     }
-    if (previous) {
-      previous.stop();
+    if (previous && previous !== audioTrack) {
+      // Don't stop a stashed prefetch that somehow aliased; only stop silence.
+      if (this.usingSilentAudio || previous !== this.prefetchedMicTrack) {
+        previous.stop();
+      }
     }
 
     this.audioTrack = audioTrack;
@@ -1115,10 +1221,35 @@ export class TelegramGroupCallWebSession {
     // branch called getUserMedia on every muted joinListen path and could hang
     // the page (permission prompt / device enumeration) right as the dialog opened.
     if (enabled) {
-      await this.ensureLocalMic();
-    }
-    if (this.audioTrack) {
-      this.audioTrack.enabled = enabled;
+      await this.ensureLocalMic({ publish: true, enabled: true });
+      if (this.audioTrack) this.audioTrack.enabled = true;
+    } else if (this.audioTrack && !this.usingSilentAudio && this.connection) {
+      // Swap back to near-silent outbound instead of track.enabled=false — a
+      // disabled sender stops RTP and Telegram's SFU often stops forwarding
+      // remote audio (same failure mode as the prefetch+muted join bug).
+      const silent = createSilentAudioTrack();
+      silent.enabled = true;
+      const previous = this.audioTrack;
+      const sender = this.connection
+        .getSenders()
+        .find((s) => s.track?.kind === "audio" || s.track === previous);
+      if (sender) {
+        await sender.replaceTrack(silent);
+      }
+      // Keep the real mic around for a quick unmute (don't stop it).
+      this.prefetchedMicTrack = previous;
+      previous.enabled = false;
+      this.audioTrack = silent;
+      this.usingSilentAudio = true;
+      if (this.localStream) {
+        for (const t of this.localStream.getAudioTracks()) {
+          this.localStream.removeTrack(t);
+        }
+        this.localStream.addTrack(silent);
+      }
+    } else if (this.audioTrack) {
+      // Already on silence — keep the sender enabled so RTP continues.
+      this.audioTrack.enabled = true;
     }
     this.micEnabled = enabled;
     if (!enabled) {
@@ -1135,8 +1266,11 @@ export class TelegramGroupCallWebSession {
         await this.ensureJoinedListenOnly();
         if (enabled) {
           await this.ensureLocalMic();
+          if (this.audioTrack) this.audioTrack.enabled = true;
+        } else if (this.audioTrack) {
+          // Keep sender publishing (silence) after listen-only join.
+          this.audioTrack.enabled = true;
         }
-        if (this.audioTrack) this.audioTrack.enabled = enabled;
         this.micEnabled = enabled;
       }
       this.resumeRemoteAudio();
@@ -1166,7 +1300,7 @@ export class TelegramGroupCallWebSession {
           await new Promise<void>((resolve) => setTimeout(resolve, 0));
           await this.joinInternal(!enabled);
           if (enabled) {
-            await this.ensureLocalMic();
+            await this.ensureLocalMic({ publish: true, enabled: true });
             if (this.audioTrack) this.audioTrack.enabled = true;
             this.micEnabled = true;
           }
@@ -1175,8 +1309,24 @@ export class TelegramGroupCallWebSession {
           typeof err === "string" &&
           /Can't unmute user/i.test(err)
         ) {
-          // Admin-muted / no permission — revert local mic to muted.
-          if (this.audioTrack) this.audioTrack.enabled = false;
+          // Admin-muted / no permission — publish silence, keep RTP alive.
+          if (this.audioTrack && !this.usingSilentAudio && this.connection) {
+            const silent = createSilentAudioTrack();
+            silent.enabled = true;
+            const previous = this.audioTrack;
+            const sender = this.connection
+              .getSenders()
+              .find((s) => s.track?.kind === "audio" || s.track === previous);
+            if (sender) {
+              await sender.replaceTrack(silent);
+            }
+            this.prefetchedMicTrack = previous;
+            previous.enabled = false;
+            this.audioTrack = silent;
+            this.usingSilentAudio = true;
+          } else if (this.audioTrack) {
+            this.audioTrack.enabled = true;
+          }
           this.micEnabled = false;
           this.setLocalSpeaking(false);
         }
@@ -1621,12 +1771,28 @@ export class TelegramGroupCallWebSession {
       return;
     }
 
-    // Listen-only: silent local audio (no mic prompt). Real mic on unmute.
+    // Resume autoplay/silent AudioContext in the Join turn before we create the
+    // outbound silence track — suspended ctx → no RTP → inboundAudio=0.
+    unlockVoiceAutoplay();
+
+    // Listen-only: always publish enabled near-silence. Join-click prefetch may
+    // already own a real mic with enabled=false — using that as the PC sender
+    // produced outboundPackets=0 and the SFU never unmuted the remote track.
     if (startMuted) {
-      if (!this.audioTrack) {
+      if (this.audioTrack && !this.usingSilentAudio) {
+        if (
+          this.audioTrack.readyState === "live" &&
+          this.audioTrack !== this.prefetchedMicTrack
+        ) {
+          this.prefetchedMicTrack = this.audioTrack;
+        }
+        this.audioTrack = createSilentAudioTrack();
+        this.usingSilentAudio = true;
+      } else if (!this.audioTrack) {
         this.audioTrack = createSilentAudioTrack();
         this.usingSilentAudio = true;
       }
+      await resumeSilentOutboundContext();
     } else {
       await this.ensureLocalMic();
     }
@@ -1634,13 +1800,9 @@ export class TelegramGroupCallWebSession {
     if (!audioTrack) {
       throw new Error("microphone_unavailable");
     }
-    // Listen-only still keeps the local track enabled (silent / zero-gain) so RTP
-    // receive stays negotiated. Mic privacy is Telegram is_muted + real mic swap.
-    if (this.usingSilentAudio) {
-      audioTrack.enabled = true;
-    } else {
-      audioTrack.enabled = !startMuted;
-    }
+    // Always keep the WebRTC sender enabled. Telegram mute is is_muted /
+    // muteGroupCallParticipant — never track.enabled=false on the live sender.
+    audioTrack.enabled = true;
 
     const localStream = new MediaStream([audioTrack]);
 
@@ -1728,6 +1890,7 @@ export class TelegramGroupCallWebSession {
       if (ice === "connected" || ice === "completed") {
         this.pullRemoteMediaTracks(connection);
         unlockVoiceAutoplay();
+        void resumeSilentOutboundContext();
         this.teardownWebAudioPlayback();
         this.queueRemotePlayback("ice-connected");
       }
@@ -2088,6 +2251,7 @@ export class TelegramGroupCallWebSession {
         // onto a silent muted track (common Chrome quirk).
         if (tracks.some((t) => t.muted) || !this.isMediaConnected()) {
           unlockVoiceAutoplay();
+          void resumeSilentOutboundContext();
           this.teardownWebAudioPlayback();
           this.queueRemotePlayback(`post_apply_${label}`);
         }
@@ -2212,6 +2376,10 @@ export class TelegramGroupCallWebSession {
     if (this.audioTrack) {
       this.audioTrack.stop();
       this.audioTrack = null;
+    }
+    if (this.prefetchedMicTrack) {
+      this.prefetchedMicTrack.stop();
+      this.prefetchedMicTrack = null;
     }
     this.usingSilentAudio = false;
     this.stopLocalVideoCaptures();
