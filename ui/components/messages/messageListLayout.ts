@@ -10,10 +10,11 @@ export const MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS = 5;
 /**
  * Standard voice-bar preview headcount for every chat.
  *
- * Label and `+N` always follow `max(painted roster, TDLib participant_count)`.
- * Soft polls only return recent_speakers faces, so the TDLib floor is required
- * or a 6-person call with 2 loaded faces would show "2 participants".
- * Overflow is unknowns beyond the stacked avatars, not beyond the thin list.
+ * Label follows TDLib `participant_count` once it is a real total (≥2). Soft
+ * polls only return recent_speakers faces — that floor is required — but
+ * untitled stubs must not raise the label above TDLib (2 faces + "?" → "4").
+ * Overflow is unknowns beyond the stacked avatars, with self excluded from the
+ * stack still consuming one slot of the total when present in the roster.
  */
 export function resolveVoiceBarParticipantPreview(input: {
   listedTotal: number;
@@ -21,21 +22,25 @@ export function resolveVoiceBarParticipantPreview(input: {
   tdlibHint: number;
   maxAvatars: number;
   joined: boolean;
-}): { displayTotal: number; overflowCount: number } {
+}): { displayTotal: number; overflowCount: number; stackedLimit: number } {
   const listed = Math.max(0, Math.trunc(input.listedTotal));
   const others = Math.max(0, Math.trunc(input.othersListed));
   const hint = Math.max(0, Math.trunc(input.tdlibHint));
   const maxAvatars = Math.max(1, Math.trunc(input.maxAvatars));
-  const stacked = Math.min(others, maxAvatars);
 
   void input.joined;
-  const displayTotal = Math.max(listed, hint);
+  // Trust TDLib once it reports a real call size. Ghost soft-merge rows used to
+  // push max(listed, hint) from 3 → 4/5 while only two faces were painted.
+  const displayTotal = hint >= 2 ? hint : Math.max(listed, hint);
   const selfListed = Math.max(0, listed - others);
-  const othersTotal = Math.max(others, Math.max(0, displayTotal - selfListed));
+  const selfInTotal = selfListed > 0 && displayTotal > others ? 1 : 0;
+  const othersBudget = Math.max(0, displayTotal - selfInTotal);
+  const stackedLimit = Math.min(others, maxAvatars, othersBudget);
 
   return {
     displayTotal,
-    overflowCount: Math.max(0, othersTotal - stacked),
+    overflowCount: Math.max(0, othersBudget - stackedLimit),
+    stackedLimit,
   };
 }
 

@@ -319,11 +319,13 @@ function resolveDisplayParticipantCount(
     Number.isFinite(stickyHint) && stickyHint >= 0 ? Math.trunc(stickyHint) : 0;
   const painted = Math.max(0, Math.trunc(listed));
   // Soft polls can flash 0/1 while recent_speakers are still loading — keep the
-  // prior floor then. A live count of 2+ is trusted (including shrinks 7→6).
+  // prior floor then. Once TDLib reports a real total (2+), trust it alone so
+  // untitled speaker stubs cannot inflate "3 participants" → "4" / "5".
   if (live <= 1 && sticky > live) {
     return Math.max(sticky, painted);
   }
-  return Math.max(live > 0 ? live : sticky, painted);
+  if (live > 0) return live;
+  return Math.max(sticky, painted);
 }
 
 /** Sync profile peek — never blocks the request path on getUser. */
@@ -918,14 +920,45 @@ function applySpeakingOverlay(
 function mergeSpeakerStubsForDisplay(
   members: Map<string, CollectedParticipant>,
   speakers: Map<string, CollectedParticipant>,
+  liveCount = 0,
 ): Map<string, CollectedParticipant> {
   if (speakers.size === 0) return members;
   const next = new Map(members);
+  const cap =
+    Number.isFinite(liveCount) && liveCount > 0
+      ? Math.trunc(liveCount)
+      : Number.POSITIVE_INFINITY;
   for (const [key, speaker] of speakers) {
     if (next.has(key)) continue;
+    // Never paint more faces than TDLib's participant_count — leftover speaker
+    // stubs after leaves inflated listed past the real call size.
+    if (next.size >= cap) break;
     next.set(key, { ...speaker });
   }
   return next;
+}
+
+/** Drop excess soft-merge stubs so painted size cannot exceed live TDLib. */
+function trimCollectedToLiveCount(
+  members: Map<string, CollectedParticipant>,
+  speakers: Map<string, CollectedParticipant> | undefined,
+  liveCount: number,
+): Map<string, CollectedParticipant> {
+  if (members.size <= liveCount) return members;
+  const ranked = [...members.entries()].sort(([keyA, a], [keyB, b]) => {
+    const score = (row: CollectedParticipant, key: string) => {
+      let s = 0;
+      if (row.order) s += 8;
+      if (speakers?.has(key)) s += 4;
+      if (row.userId != null && pinnedSelfUserIds.has(row.userId)) s += 2;
+      if (row.isSpeaking || (row.lastSpokeAt != null && Date.now() - row.lastSpokeAt < SPEAKING_HOLD_MS)) {
+        s += 1;
+      }
+      return s;
+    };
+    return score(b, keyB) - score(a, keyA);
+  });
+  return new Map(ranked.slice(0, liveCount));
 }
 
 /** Keep larger base roster; overlay fresher speaking flags from a partial reload. */
@@ -1693,8 +1726,17 @@ export async function fetchChatVoiceParticipants(
       ? Math.trunc(participantCountHint)
       : 0;
   const stickyHint = callMembersCache.get(callId)?.participantCountHint ?? 0;
+  // Cap stubs at the live TDLib total — using collected.size as a floor let
+  // leftover speakers keep growing the painted roster past the real call.
+  const stubCap =
+    liveTdlibCount >= 2
+      ? liveTdlibCount
+      : Math.max(liveTdlibCount, stickyHint, collected.size);
   if (speakers.size > 0) {
-    collected = mergeSpeakerStubsForDisplay(collected, speakers);
+    collected = mergeSpeakerStubsForDisplay(collected, speakers, stubCap);
+  }
+  if (liveTdlibCount >= 2 && collected.size > liveTdlibCount) {
+    collected = trimCollectedToLiveCount(collected, speakers, liveTdlibCount);
   }
   const orderedRows = [...collected.values()].filter((row) => {
     if (row.order) return true;
@@ -1838,7 +1880,11 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
       cached.members.size === 0 ||
       !cached.loadedAll;
     if (hintGap) {
-      collected = mergeSpeakerStubsForDisplay(collected, cached.speakers);
+      collected = mergeSpeakerStubsForDisplay(
+        collected,
+        cached.speakers,
+        cached.participantCountHint,
+      );
     }
   }
   const orderedRows = [...collected.values()].filter((row) => {

@@ -103,11 +103,7 @@ export function MessageChatVoiceBar({
   speakingByKeyRef.current = speakingByKey;
   // Preview faces = other people only (never lead with self).
   const previewParticipants = participants.filter((row) => !row.is_self);
-  const stackedParticipants = previewParticipants.slice(
-    0,
-    MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
-  );
-  const { displayTotal: totalParticipantCount, overflowCount } =
+  const { displayTotal: totalParticipantCount, overflowCount, stackedLimit } =
     resolveVoiceBarParticipantPreview({
       listedTotal: participants.length,
       othersListed: previewParticipants.length,
@@ -115,6 +111,7 @@ export function MessageChatVoiceBar({
       maxAvatars: MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
       joined,
     });
+  const stackedParticipants = previewParticipants.slice(0, stackedLimit);
   const participantsA11yLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
@@ -693,6 +690,10 @@ export function MessageChatVoiceBar({
         });
         for (const inc of next) {
           if (!prevByKey.has(speakKey(inc))) {
+            // Untitled soft stubs must not grow the roster past TDLib's count —
+            // that painted "+1 / 4 participants" for a 3-person call.
+            if (hint >= 2 && merged.length >= hint) continue;
+            if (!inc.title.trim() && hint > 0 && merged.length >= hint) continue;
             merged.push({ ...inc, is_speaking: false });
           }
         }
@@ -736,6 +737,18 @@ export function MessageChatVoiceBar({
             screen_sharing_video_info: screen,
           };
         });
+        // Server soft payloads can still arrive oversized before the gateway
+        // trim lands — keep the painted roster at the TDLib floor.
+        if (hint >= 2 && next.length > hint) {
+          const ranked = [...next].sort((a, b) => {
+            const score = (row: TelegramChatVoiceParticipant) =>
+              (row.title.trim() ? 4 : 0) +
+              (row.is_self ? 2 : 0) +
+              (row.is_speaking ? 1 : 0);
+            return score(b) - score(a);
+          });
+          next = ranked.slice(0, hint);
+        }
       }
 
       // tdesktop parity: roster order is STABLE while rows exist.
@@ -768,11 +781,11 @@ export function MessageChatVoiceBar({
       }
 
       // Keep a TDLib floor for the strip label / reload. Follow the live server
-      // hint when present (don't stick above a stale high-water), but never drop
-      // below the painted roster. hint=0 empty payloads keep the previous floor.
+      // hint when present — do not let ghost soft-merge rows raise it via
+      // next.length (listed=3 totalHint=4 with "?" titles).
       const totalHint =
         hint > 0
-          ? Math.max(hint, next.length)
+          ? hint
           : Math.max(rosterTotalHintRef.current, next.length);
       rosterTotalHintRef.current = totalHint;
       const nextCount = next.length;
