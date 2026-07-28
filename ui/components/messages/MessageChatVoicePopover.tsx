@@ -315,7 +315,9 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           sizePx={MESSAGE_AVATAR_PX}
           colors={colors}
           scheme={colorScheme}
-          fetchPriority="normal"
+          // Must be high/critical — normal is paused while the voice UI gate is
+          // open (see MessageChatAvatarImage), which left letter fallbacks forever.
+          fetchPriority="high"
         />
       </View>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />
@@ -653,9 +655,12 @@ export function MessageChatVoicePopover({
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
   const chatTitle = title.trim() || t("messages.voiceChat.active");
-  // Painted rows only (incl. self) — never fall back to TDLib participant_count
-  // (hidden listeners inflate the label while the roster shows fewer faces).
-  const totalParticipantCount = participants.length;
+  // Prefer the strip's TDLib-backed count when the painted roster is still thin
+  // (listed=5 while participant_count=6 hid the screencaster and under-labeled).
+  const totalParticipantCount = Math.max(
+    participants.length,
+    Number.isFinite(participantCount) ? Math.max(0, Math.trunc(participantCount!)) : 0,
+  );
   const participantCountLabel =
     totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
@@ -790,6 +795,8 @@ export function MessageChatVoicePopover({
     let cancelled = false;
     // Paint chrome + Close first; roster + emoji-status badges caused open
     // longtasks (507–643ms in live browser) before controls could bind.
+    // Keep defer short — 280ms stacked with thin-roster wait left the sheet
+    // looking empty while the call felt stuck.
     const arm = () => {
       if (typeof window === "undefined") {
         if (!cancelled) setRosterPaintReady(true);
@@ -798,7 +805,7 @@ export function MessageChatVoicePopover({
       window.requestAnimationFrame(() => {
         window.setTimeout(() => {
           if (!cancelled) setRosterPaintReady(true);
-        }, 280);
+        }, 80);
       });
     };
     arm();

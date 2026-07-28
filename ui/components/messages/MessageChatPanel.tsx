@@ -38,10 +38,14 @@ function resolveGroupCallId(
   chat: MessageChatRowData,
   startedCallId: number | null,
 ): number | null {
-  return (
-    normalizeTelegramGroupCallId(chat.voice_chat_group_call_id) ??
-    normalizeTelegramGroupCallId(startedCallId)
-  );
+  const fromChat = normalizeTelegramGroupCallId(chat.voice_chat_group_call_id);
+  const started = normalizeTelegramGroupCallId(startedCallId);
+  // Live strip/SSE metadata wins over a stale started id (logs: stream
+  // groupCallId=5 then reconnects as 1 before Join — joining 5 was silent).
+  if (fromChat != null && started != null && fromChat !== started) {
+    return fromChat;
+  }
+  return started ?? fromChat;
 }
 
 /** Wide-layout chat pane (middle column). */

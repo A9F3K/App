@@ -2,6 +2,7 @@ import { buildApiUrl } from "../../../api/_base";
 import { bytesLookLikeTgs, bytesLookLikeVideo } from "./loadTgsAnimation";
 import { runQueuedNetworkFetch, type NetworkFetchPriority } from "./networkFetchQueue";
 import { telegramEmojiDebug } from "./telegramEmojiDebug";
+import { isVoiceDialogUiOpen } from "./voiceDialogUiGate";
 
 export type TelegramEmojiFetchRef =
   | { kind: "custom"; customEmojiId: string }
@@ -111,6 +112,10 @@ export async function fetchTelegramEmojiAsset(
   ref: TelegramEmojiFetchRef,
   options?: { priority?: NetworkFetchPriority },
 ): Promise<TelegramEmojiAsset | null> {
+  if (isVoiceDialogUiOpen() && (options?.priority ?? "normal") === "normal") {
+    telegramEmojiDebug.fetchUnavailableCached(ref);
+    return null;
+  }
   const key = cacheKey(ref);
   const cooldownUntil = transientFailureUntil.get(key);
   if (cooldownUntil != null && Date.now() < cooldownUntil) {
@@ -168,6 +173,7 @@ function collectEmojiRefsFromSegments(
 
 /** Warm the emoji byte cache once per history page instead of per inline component. */
 export function prefetchTelegramEmojiAssetsFromMessages(messages: readonly EmojiPrefetchMessage[]): void {
+  if (isVoiceDialogUiOpen()) return;
   const refs = new Map<string, TelegramEmojiFetchRef>();
   for (const message of messages) {
     collectEmojiRefsFromSegments(message.text_segments, refs);

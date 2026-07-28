@@ -871,7 +871,11 @@ export async function resolveVoiceStreamGroupCallId(
 }
 
 type AvatarImageResult = { data: Buffer; mime: string } | "no_avatar" | null;
-const userAvatarCache = new Map<string, AvatarImageResult>();
+type CachedAvatarEntry = { value: AvatarImageResult; atMs: number };
+const userAvatarCache = new Map<string, CachedAvatarEntry>();
+/** Cold getUser often lacks profile_photo — do not sticky-fail forever. */
+const USER_NO_AVATAR_TTL_MS = 60_000;
+const USER_AVATAR_OK_TTL_MS = 10 * 60_000;
 const chatAvatarCache = new Map<string, AvatarImageResult>();
 
 function avatarCacheKey(telegramUsername: string, id: number): string {
@@ -1264,14 +1268,21 @@ export async function getUserAvatarImageForUser(
 ): Promise<{ data: Buffer; mime: string } | "no_avatar" | null> {
   const cacheKey = avatarCacheKey(telegramUsername, userId);
   const cached = userAvatarCache.get(cacheKey);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    const ttl =
+      cached.value === "no_avatar" || cached.value == null
+        ? USER_NO_AVATAR_TTL_MS
+        : USER_AVATAR_OK_TTL_MS;
+    if (Date.now() - cached.atMs < ttl) return cached.value;
+    userAvatarCache.delete(cacheKey);
+  }
 
   const record = await requireReadySessionFast(telegramUsername);
   if (!record) return null;
   const result = await readUserAvatarBytes(record.client, userId);
   const resolved: AvatarImageResult =
     result === TELEGRAM_THREAD_NO_AVATAR ? "no_avatar" : result;
-  userAvatarCache.set(cacheKey, resolved);
+  userAvatarCache.set(cacheKey, { value: resolved, atMs: Date.now() });
   return resolved;
 }
 

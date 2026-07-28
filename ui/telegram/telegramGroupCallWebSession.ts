@@ -13,7 +13,7 @@ import { logPageDisplay } from "../pageDisplayLog";
 import { joinTelegramChatVoice } from "./joinTelegramChatVoice";
 import { setTelegramChatVoiceMicMuted } from "./setTelegramChatVoiceMicMuted";
 import { setTelegramChatVoiceSpeaking } from "./setTelegramChatVoiceSpeaking";
-import { getVoiceAutoplayAudioContext } from "./unlockVoiceAutoplay";
+import { getVoiceAutoplayAudioContext, unlockVoiceAutoplay } from "./unlockVoiceAutoplay";
 
 /** Hot-path ICE/track logs freeze DevTools when console is open — gate behind flag. */
 const VOICE_DEBUG =
@@ -1401,10 +1401,40 @@ export class TelegramGroupCallWebSession {
     }
   }
 
+  /** Caps nested queueRemotePlayback — attach→pull→attach used to infinite-loop. */
+  private remotePlayQueueDepth = 0;
+  private remotePlayLoopWarnAt = 0;
+
   private queueRemotePlayback(reason: string): void {
+    this.remotePlayQueueDepth += 1;
+    // attachRemoteAudioTrack used to always queue, and ensureRemotePlaybackInternal
+    // always pull→attach — that formed an endless promise chain after join_ok
+    // (UI dead; ice_post_apply timers never ran). Drop excess while a kick runs.
+    if (this.remotePlayQueueDepth > 4) {
+      const now =
+        typeof performance !== "undefined" && typeof performance.now === "function"
+          ? performance.now()
+          : Date.now();
+      if (now - this.remotePlayLoopWarnAt > 2_000) {
+        this.remotePlayLoopWarnAt = now;
+        logPageDisplay("messages_voice_playback_queue_storm", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          reason,
+          depth: this.remotePlayQueueDepth,
+          level: "error",
+          note: "dropped nested playback kick — would freeze the tab",
+        });
+      }
+      this.remotePlayQueueDepth -= 1;
+      return;
+    }
     this.remotePlayChain = this.remotePlayChain
       .then(() => this.ensureRemotePlaybackInternal(reason))
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        this.remotePlayQueueDepth = Math.max(0, this.remotePlayQueueDepth - 1);
+      });
   }
 
   private async ensureRemotePlaybackInternal(reason: string): Promise<void> {
@@ -1421,8 +1451,9 @@ export class TelegramGroupCallWebSession {
       return;
     }
 
-    // Re-pull live receivers — ontrack can fire before our stream is ready, and
-    // SFU SSRC switches can replace tracks without a fresh attach.
+    // Re-pull receivers for late/replaced tracks. attachRemoteAudioTrack only
+    // queues playback when the track is NEW — re-attach must not re-queue or
+    // join_ok storms the main thread (UI freeze; ice_post_apply never fires).
     const pc = this.connection;
     if (pc) {
       this.pullRemoteMediaTracks(pc);
@@ -1503,24 +1534,44 @@ export class TelegramGroupCallWebSession {
     const already = stream.getAudioTracks().some((t) => t.id === track.id);
     if (!already) {
       stream.addTrack(track);
-      voiceDebug("[voice-remote-track]", "attached", {
+      logPageDisplay("messages_voice_remote_track", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         trackId: track.id,
         muted: track.muted,
         readyState: track.readyState,
         trackCount: stream.getAudioTracks().length,
+        level: "info",
       });
     }
     track.onunmute = () => {
-      voiceDebug("[voice-remote-track]", "unmuted", {
+      // Ungated — silence after join_ok was common while track stayed muted until
+      // the first RTP packet; without this log we could not tell unmute fired.
+      logPageDisplay("messages_voice_remote_track_unmute", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         trackId: track.id,
+        ice: this.connection?.iceConnectionState ?? "none",
+        level: "info",
       });
+      // Chrome can keep a MediaStreamSource silent if it was built while muted.
+      this.teardownWebAudioPlayback();
       this.queueRemotePlayback("track-unmute");
     };
-    this.queueRemotePlayback("track");
+    track.onmute = () => {
+      logPageDisplay("messages_voice_remote_track_mute", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        trackId: track.id,
+        ice: this.connection?.iceConnectionState ?? "none",
+        level: "warn",
+      });
+    };
+    // Only for newly attached tracks. ensureRemotePlaybackInternal → pull →
+    // attach used to always queue here and loop forever after join_ok.
+    if (!already) {
+      this.queueRemotePlayback("track-attach");
+    }
   }
 
   /**
@@ -1654,10 +1705,14 @@ export class TelegramGroupCallWebSession {
 
     connection.oniceconnectionstatechange = () => {
       const ice = connection.iceConnectionState;
-      voiceDebug("[voice-pc-ice]", ice, {
+      logPageDisplay("messages_voice_pc_ice", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
+        ice,
         conn: connection.connectionState,
+        remoteTracks: this.remoteStream?.getAudioTracks().length ?? 0,
+        remoteMuted: (this.remoteStream?.getAudioTracks() ?? []).some((t) => t.muted),
+        level: ice === "connected" || ice === "completed" ? "info" : "warn",
       });
       if (ice === "failed" || ice === "closed") {
         void this.logIceDiagnostics(connection, `ice_${ice}`);
@@ -1672,19 +1727,25 @@ export class TelegramGroupCallWebSession {
       this.clearJoinLostTimer();
       if (ice === "connected" || ice === "completed") {
         this.pullRemoteMediaTracks(connection);
+        unlockVoiceAutoplay();
+        this.teardownWebAudioPlayback();
         this.queueRemotePlayback("ice-connected");
       }
     };
 
     connection.onconnectionstatechange = () => {
       const state = connection.connectionState;
-      voiceDebug("[voice-pc-state]", state, {
+      logPageDisplay("messages_voice_pc_state", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
+        conn: state,
         ice: connection.iceConnectionState,
+        level: state === "connected" ? "info" : "warn",
       });
       if (state === "connected") {
         this.pullRemoteMediaTracks(connection);
+        unlockVoiceAutoplay();
+        this.teardownWebAudioPlayback();
         this.queueRemotePlayback("pc-connected");
       } else if (state === "failed" || state === "disconnected") {
         this.scheduleJoinLostIfStillBroken(connection, `pc_${state}`);
@@ -1947,9 +2008,21 @@ export class TelegramGroupCallWebSession {
       if (!this.usingSilentAudio) {
         this.startSpeakingMonitor();
       }
+      // Re-unlock in case the Join gesture's AudioContext suspended during SDP.
+      unlockVoiceAutoplay();
       this.resumeRemoteAudio();
       this.armGestureUnmute();
       this.startPlaybackWatchdog(connection);
+      // Ungated — silence after apply_ok was invisible when voiceDebug was off.
+      logPageDisplay("messages_voice_playback_kick", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        remoteTracks: this.remoteStream?.getAudioTracks().length ?? 0,
+        ice: connection.iceConnectionState,
+        conn: connection.connectionState,
+        remoteAudioEnabled: this.remoteAudioEnabled,
+        level: "info",
+      });
       // Video renegotiation stays deferred — full publisher SDP can freeze Close.
       if (this.requestedRemoteVideo.length > 0) {
         window.setTimeout(() => {
@@ -1992,20 +2065,36 @@ export class TelegramGroupCallWebSession {
     const joinCallId = this.input.groupCallId;
     // Surface ICE health after apply — silence with apply_ok usually means the
     // wrong candidate set or consent failure (logs used to stop at join_ok).
-    window.setTimeout(() => {
-      if (!this.joined || this.connection !== connection) return;
-      void this.logIceDiagnostics(connection, "post_apply_2s").then(() => {
-        logPageDisplay("messages_voice_ice_post_apply", {
-          chatId: joinChatId,
-          groupCallId: joinCallId,
-          ice: connection.iceConnectionState,
-          conn: connection.connectionState,
-          mediaConnected: this.isMediaConnected(),
-          remoteTracks: this.remoteStream?.getAudioTracks().length ?? 0,
-          level: this.isMediaConnected() ? "info" : "warn",
+    const logPostApply = (label: string, delayMs: number) => {
+      window.setTimeout(() => {
+        if (!this.joined || this.connection !== connection) return;
+        const tracks = this.remoteStream?.getAudioTracks() ?? [];
+        void this.logIceDiagnostics(connection, label).then(() => {
+          logPageDisplay("messages_voice_ice_post_apply", {
+            chatId: joinChatId,
+            groupCallId: joinCallId,
+            label,
+            ice: connection.iceConnectionState,
+            conn: connection.connectionState,
+            mediaConnected: this.isMediaConnected(),
+            remoteTracks: tracks.length,
+            remoteMuted: tracks.some((t) => t.muted),
+            level: this.isMediaConnected() && !tracks.some((t) => t.muted)
+              ? "info"
+              : "warn",
+          });
         });
-      });
-    }, 2_000);
+        // Still muted while ICE checks — rebuild sinks in case WebAudio latched
+        // onto a silent muted track (common Chrome quirk).
+        if (tracks.some((t) => t.muted) || !this.isMediaConnected()) {
+          unlockVoiceAutoplay();
+          this.teardownWebAudioPlayback();
+          this.queueRemotePlayback(`post_apply_${label}`);
+        }
+      }, delayMs);
+    };
+    logPostApply("post_apply_800ms", 800);
+    logPostApply("post_apply_2s", 2_000);
     // Do NOT markJoinLost on a slow ICE check — tearing down and auto-rejoining
     // every ~20s freezes the whole app. Log only; scheduleJoinLostIfStillBroken
     // still handles failed/closed.
@@ -2045,20 +2134,40 @@ export class TelegramGroupCallWebSession {
         return;
       }
       const audio = this.remoteAudio;
-      const hasTracks = (this.remoteStream?.getAudioTracks().length ?? 0) > 0;
+      const tracks = this.remoteStream?.getAudioTracks() ?? [];
+      const hasTracks = tracks.length > 0;
+      const anyMuted = tracks.some((t) => t.muted);
       const webAudioLive = Boolean(this.playbackSource);
-      // Avoid rebuilding every tick when either sink is already healthy.
+      // Playing + WebAudio while every track is still muted is NOT healthy —
+      // Chrome reports readyState>=2 on silent muted tracks and we used to
+      // skip rebuild forever (join_ok → muted=true → no audio).
       if (
         webAudioLive &&
         audio &&
         !audio.paused &&
         audio.srcObject &&
-        audio.readyState >= 2
+        audio.readyState >= 2 &&
+        hasTracks &&
+        !anyMuted
       ) {
         return;
       }
       if (!hasTracks && !this.isMediaConnected()) {
         this.pullRemoteMediaTracks(connection);
+      }
+      if (anyMuted || !webAudioLive) {
+        logPageDisplay("messages_voice_playback_watchdog", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          ice,
+          conn: connection.connectionState,
+          remoteTracks: tracks.length,
+          remoteMuted: anyMuted,
+          webAudioLive,
+          audioPaused: audio?.paused ?? true,
+          level: "warn",
+        });
+        this.teardownWebAudioPlayback();
       }
       this.queueRemotePlayback("watchdog");
     }, 2_000);

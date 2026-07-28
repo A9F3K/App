@@ -1,6 +1,7 @@
 import { CHART_RATE_LIMIT_MS, TON_JETTON_ADDRESS } from "./swapChartConstants";
 import { fetchJettonChartSeries } from "./fetchSwapChart";
 import { peekSwapChartSeriesCache } from "./swapChartSeriesCache";
+import { isVoiceDialogUiOpen } from "../components/messages/voiceDialogUiGate";
 
 export type ChooseCurrencyYearChartSnapshot =
   | { status: "idle" }
@@ -99,6 +100,14 @@ function scheduleRetry(address: string, attempt: number): void {
 }
 
 async function runFetch(address: string): Promise<void> {
+  if (isVoiceDialogUiOpen()) {
+    // Defer mid-dialog — parsing chart JSON on the main thread freezes Close.
+    if (!queuedSet.has(address)) {
+      queuedSet.add(address);
+      queued.push(address);
+    }
+    return;
+  }
   if (trySeedFromTonMainChart(address)) return;
 
   setSnapshot(address, LOADING_SNAPSHOT);
@@ -106,6 +115,16 @@ async function runFetch(address: string): Promise<void> {
     // Share the global chart limiter with the main swap chart.
     respectGlobalRateLimit: true,
   });
+
+  if (isVoiceDialogUiOpen()) {
+    // Dialog opened while the fetch was in flight — don't parse/apply yet.
+    if (!queuedSet.has(address)) {
+      queuedSet.add(address);
+      queued.push(address);
+    }
+    cache.delete(address);
+    return;
+  }
 
   if (result.ok) {
     attemptCount.delete(address);
@@ -133,6 +152,12 @@ function pumpQueue(): void {
 
   const tick = () => {
     pumpTimer = null;
+    // Year sparklines parse 200–300 points each and freeze the voice dialog
+    // (logs: swap_chart_parse_done overlapping voice_dialog_longtask / raf_stall).
+    if (isVoiceDialogUiOpen()) {
+      pumpTimer = setTimeout(tick, 2_500);
+      return;
+    }
     if (activeCount >= MAX_CONCURRENT || queued.length === 0) return;
 
     const wait = Math.max(0, REQUEST_GAP_MS - (Date.now() - lastStartMs));
@@ -163,6 +188,12 @@ function pumpQueue(): void {
   };
 
   tick();
+}
+
+/** Drop pending sparkline work when the voice sheet opens. */
+export function clearQueuedChooseCurrencyYearCharts(): void {
+  queued.length = 0;
+  queuedSet.clear();
 }
 
 export function getChooseCurrencyYearChartSnapshot(address: string): ChooseCurrencyYearChartSnapshot {

@@ -6,6 +6,7 @@ import {
   TelegramGroupCallWebSession,
   type TelegramRemoteVideoRequest,
 } from "./telegramGroupCallWebSession";
+import { unlockVoiceAutoplay } from "./unlockVoiceAutoplay";
 
 type Input = {
   chatId: number;
@@ -271,26 +272,43 @@ export function useTelegramVoiceSession({
       if (visible) {
         session.resumeRemoteAudio();
       }
-      // Mic ON by default after join (Telegram Desktop parity). Defer getUserMedia
-      // / track swap so the dialog paints and Close stays responsive — prefetch
-      // from the Join click usually already finished by now.
+      // Mic ON by default after join (Telegram Desktop parity). Wait for ICE to
+      // connect (or a short ceiling) before getUserMedia — doing it at ~480ms
+      // while ice=checking froze the dialog and often left remote audio muted.
       micActiveRef.current = true;
       setMicActive(true);
       void (async () => {
-        await new Promise<void>((resolve) => {
-          if (typeof requestAnimationFrame === "function") {
-            requestAnimationFrame(() => {
-              requestAnimationFrame(() => setTimeout(resolve, 160));
-            });
-          } else {
-            setTimeout(resolve, 200);
-          }
-        });
         const live = sessionRef.current;
         if (!live || !live.isJoined || !micActiveRef.current) return;
+        const deadline =
+          (typeof performance !== "undefined" && typeof performance.now === "function"
+            ? performance.now()
+            : Date.now()) + 2_800;
+        while (!live.isMediaConnected()) {
+          const now =
+            typeof performance !== "undefined" && typeof performance.now === "function"
+              ? performance.now()
+              : Date.now();
+          if (now >= deadline) break;
+          if (!sessionRef.current?.isJoined || !micActiveRef.current) return;
+          await new Promise<void>((resolve) => setTimeout(resolve, 200));
+        }
+        // One paint after ICE so Close stays responsive during device enum.
+        await new Promise<void>((resolve) => {
+          if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => setTimeout(resolve, 80));
+          } else {
+            setTimeout(resolve, 100);
+          }
+        });
+        const sessionLive = sessionRef.current;
+        if (!sessionLive || !sessionLive.isJoined || !micActiveRef.current) return;
         try {
-          await live.setMicEnabled(true);
-          const enabled = live.isMicEnabled;
+          unlockVoiceAutoplay();
+          sessionLive.unlockRemoteAudio();
+          await sessionLive.setMicEnabled(true);
+          sessionLive.resumeRemoteAudio();
+          const enabled = sessionLive.isMicEnabled;
           micActiveRef.current = enabled;
           setMicActive(enabled);
           if (!enabled) setLocalSpeaking(false);

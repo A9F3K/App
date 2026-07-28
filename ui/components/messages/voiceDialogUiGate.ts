@@ -7,9 +7,17 @@
 let voiceDialogOpen = false;
 const listeners = new Set<(open: boolean) => void>();
 
+function syncVoiceDialogDocumentFlag(open: boolean): void {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  if (open) root.setAttribute("data-hsp-voice-dialog", "1");
+  else root.removeAttribute("data-hsp-voice-dialog");
+}
+
 export function setVoiceDialogUiOpen(open: boolean): void {
   if (voiceDialogOpen === open) return;
   voiceDialogOpen = open;
+  syncVoiceDialogDocumentFlag(open);
   for (const listener of listeners) {
     try {
       listener(open);

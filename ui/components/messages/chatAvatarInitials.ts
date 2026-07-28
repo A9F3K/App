@@ -73,7 +73,7 @@ function tryParseRgb888(hex: string): [number, number, number] | null {
   return null;
 }
 
-function mixRgbHex(from: string, to: string, t: number): string {
+export function mixRgbHex(from: string, to: string, t: number): string {
   const A = tryParseRgb888(from);
   const B = tryParseRgb888(to);
   if (!A || !B) return from;
@@ -82,6 +82,28 @@ function mixRgbHex(from: string, to: string, t: number): string {
   const g = Math.round(A[1] + (B[1] - A[1]) * u);
   const b = Math.round(A[2] + (B[2] - A[2]) * u);
   return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+}
+
+/** CSS custom-property palette for animated 3D null-avatar chips. */
+export function avatarFallback3dCssVars(
+  letterColor: string | null,
+  backgroundColor: string,
+  scheme: ThemeName,
+): Record<string, string> {
+  const accent = letterColor ?? (scheme === "light" ? "#3949AB" : "#8C9EFF");
+  const towardBlack = scheme === "light" ? "#1A1A1A" : "#000000";
+  const towardWhite = scheme === "light" ? "#FFFFFF" : "#E8E8E8";
+  return {
+    ["--hsp-af-letter"]: accent,
+    ["--hsp-af-depth1"]: mixRgbHex(accent, towardBlack, 0.28),
+    ["--hsp-af-depth2"]: mixRgbHex(accent, towardBlack, 0.48),
+    ["--hsp-af-depth3"]: mixRgbHex(accent, towardBlack, 0.68),
+    ["--hsp-af-hi"]: mixRgbHex(accent, towardWhite, 0.35),
+    ["--hsp-af-bg0"]: backgroundColor,
+    ["--hsp-af-bg1"]: mixRgbHex(backgroundColor, accent, scheme === "light" ? 0.2 : 0.28),
+    ["--hsp-af-bg2"]: mixRgbHex(backgroundColor, accent, scheme === "light" ? 0.38 : 0.48),
+    ["--hsp-af-glow"]: mixRgbHex(accent, towardWhite, 0.2),
+  };
 }
 
 function isInvisibleInitialGrapheme(grapheme: string): boolean {

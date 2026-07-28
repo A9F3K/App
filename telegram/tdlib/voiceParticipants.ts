@@ -105,8 +105,9 @@ export async function resolveBoundGroupCallId(
         };
       }
       // Chat still advertises this call id, but getGroupCall says it is dead.
-      // Do NOT fall through to preferred/history — that resurrected ended calls
-      // (false voice preview on chats with no live call).
+      // Clear the sticky map and fall through to preferred/history — returning
+      // none here blocked a live preferred id when chat metadata lagged
+      // (client logs: stream groupCallId=5 then reconnects as 1).
       chatToGroupCallId.delete(Math.trunc(chatId));
       logGateway("voice_call_id_inactive_on_chat", {
         chatId,
@@ -115,12 +116,6 @@ export async function resolveBoundGroupCallId(
         isJoined: Boolean(groupCall.is_joined),
         participantCount: Number(groupCall.participant_count) || 0,
       });
-      return {
-        callId: 0,
-        source: "none",
-        videoChatRaw: video.raw,
-        voice: { has_active_voice_chat: false, voice_chat_group_call_id: null },
-      };
     } catch {
       /* treat as inactive and continue */
     }
@@ -948,6 +943,8 @@ function trimCollectedToLiveCount(
   const ranked = [...members.entries()].sort(([keyA, a], [keyB, b]) => {
     const score = (row: CollectedParticipant, key: string) => {
       let s = 0;
+      if (row.screenInfo?.source_groups?.length) s += 16;
+      if (row.videoInfo?.source_groups?.length) s += 8;
       if (row.order) s += 8;
       if (speakers?.has(key)) s += 4;
       if (row.userId != null && pinnedSelfUserIds.has(row.userId)) s += 2;

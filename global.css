@@ -483,3 +483,95 @@ textarea[data-ai-input="true"] {
     transform: rotateY(-12deg) rotateX(8deg);
   }
 }
+
+/*
+ * Null chat avatars — lightweight 3D look:
+ * - extruded text-shadow (static depth)
+ * - tiny rotateY wobble (no full spin / no translateZ)
+ * - soft radial glow opacity pulse (no conic / blend / will-change)
+ * Paused while voice dialog is open (html[data-hsp-voice-dialog="1"]).
+ */
+.hsp-avatar-fallback-3d {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--hsp-af-bg0, #323232);
+  /* Flat stacking — avoid preserve-3d so letters cannot paint over photos. */
+  isolation: isolate;
+}
+
+.hsp-avatar-fallback-3d-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      circle at 32% 28%,
+      var(--hsp-af-glow) 0%,
+      transparent 58%
+    ),
+    linear-gradient(145deg, var(--hsp-af-bg1), var(--hsp-af-bg0) 55%, var(--hsp-af-bg2));
+  opacity: 0.85;
+  animation: hsp-avatar-fallback-bg-pulse 4.8s ease-in-out infinite;
+}
+
+.hsp-avatar-fallback-3d-scene {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+}
+
+.hsp-avatar-fallback-3d-letter {
+  display: inline-block;
+  color: var(--hsp-af-letter);
+  transform-origin: 50% 55%;
+  /* Perspective + small wobble only — never full Y orbit (backface flash + cost). */
+  transform: perspective(90px) rotateY(-10deg) rotateX(6deg);
+  animation: hsp-avatar-fallback-letter-wobble 4.2s ease-in-out infinite;
+  text-shadow:
+    0.5px 0.5px 0 var(--hsp-af-depth1),
+    1px 1px 0 var(--hsp-af-depth2),
+    1.5px 1.5px 0 var(--hsp-af-depth3);
+}
+
+@keyframes hsp-avatar-fallback-bg-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes hsp-avatar-fallback-letter-wobble {
+  0%,
+  100% {
+    transform: perspective(90px) rotateY(-10deg) rotateX(6deg);
+  }
+  50% {
+    transform: perspective(90px) rotateY(10deg) rotateX(-4deg);
+  }
+}
+
+html[data-hsp-voice-dialog="1"] .hsp-avatar-fallback-3d-bg,
+html[data-hsp-voice-dialog="1"] .hsp-avatar-fallback-3d-letter {
+  animation: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hsp-avatar-fallback-3d-bg,
+  .hsp-avatar-fallback-3d-letter {
+    animation: none;
+  }
+
+  .hsp-avatar-fallback-3d-letter {
+    transform: perspective(90px) rotateY(-8deg) rotateX(5deg);
+  }
+}

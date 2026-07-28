@@ -113,6 +113,10 @@ export function MessageChatAvatarSlot({
     ? sizePx
     : Math.max(1, sizePx - AVATAR_BORDER_WIDTH_PX * 2);
 
+  // Unmount letter fallback once the photo is ready — 3D CSS transforms on
+  // the fallback can otherwise paint above the image (stacking / translateZ).
+  const showFallback = !imageReady || !tryImage;
+
   const face = (
     <View
       style={{
@@ -130,18 +134,24 @@ export function MessageChatAvatarSlot({
         ...webBox,
       }}
     >
-      <ChatAvatarFallback
-        initials={initials}
-        sizePx={faceContentSizePx}
-        colors={colors}
-        scheme={scheme}
-        fill
-      />
+      {showFallback ? (
+        <ChatAvatarFallback
+          initials={initials}
+          sizePx={faceContentSizePx}
+          colors={colors}
+          scheme={scheme}
+          fill
+        />
+      ) : null}
       {tryImage ? (
         <View
           style={[
             StyleSheet.absoluteFillObject,
-            { opacity: imageReady ? 1 : 0 },
+            {
+              zIndex: 1,
+              opacity: imageReady ? 1 : 0,
+              backgroundColor: imageReady ? colors.undercover : "transparent",
+            },
           ]}
         >
           <MessageChatAvatarImage

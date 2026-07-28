@@ -36,7 +36,8 @@ import {
   MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
   resolveVoiceBarParticipantPreview,
 } from "./messageListLayout";
-import { clearQueuedNormalNetworkFetches } from "./networkFetchQueue";
+import { clearQueuedNetworkFetches } from "./networkFetchQueue";
+import { clearQueuedChooseCurrencyYearCharts } from "../../swap/chooseCurrencyYearChartCache";
 
 const JOIN_BUTTON_HEIGHT_PX = 30;
 const JOIN_BUTTON_TEXT_INSET_PX = 30;
@@ -346,9 +347,21 @@ export function MessageChatVoiceBar({
           level: ok ? "info" : "warn",
         },
       );
-      // Do NOT kick force-reload on join_ok — multi-person soft roster is enough
-      // and the kick used to stack loadGroupCallParticipants with setRemoteDescription.
-      if (!ok && typeof window !== "undefined") {
+      // Do NOT kick force-reload on join_ok in the same turn as setRemoteDescription
+      // — that froze the tab. Thin recent_speakers (listed≪hint) still need a
+      // short deferred force so the dialog does not stay at 2/6 participants.
+      if (ok && typeof window !== "undefined") {
+        const kickChatId = chatId;
+        window.setTimeout(() => {
+          if (chatIdRef.current !== kickChatId) return;
+          if (!popoverOpenRef.current || !voiceJoinedRef.current) return;
+          const listed = participantsRef.current.length;
+          const hint = rosterTotalHintRef.current;
+          if (listed <= 3 && hint > listed) {
+            kickPostJoinForceReloadRef.current?.("webrtc_join_ok_thin_roster");
+          }
+        }, 200);
+      } else if (!ok && typeof window !== "undefined") {
         // Join API / SDP may have partially succeeded — kick roster on fail only.
         const kickChatId = chatId;
         window.setTimeout(() => {
@@ -742,6 +755,8 @@ export function MessageChatVoiceBar({
         if (hint >= 2 && next.length > hint) {
           const ranked = [...next].sort((a, b) => {
             const score = (row: TelegramChatVoiceParticipant) =>
+              (row.screen_sharing_video_info?.source_groups?.length ? 8 : 0) +
+              (row.video_info?.source_groups?.length ? 4 : 0) +
               (row.title.trim() ? 4 : 0) +
               (row.is_self ? 2 : 0) +
               (row.is_speaking ? 1 : 0);
@@ -875,6 +890,22 @@ export function MessageChatVoiceBar({
     const applyRows = (rows: TelegramChatVoiceParticipant[], countHint: number) => {
       // SSE payloads are often recent-speakers-only; merge so we never drop a
       // fuller roster that force-reload already painted.
+      const prevListed = participantsRef.current.length;
+      if (
+        popoverOpenRef.current &&
+        prevListed > 0 &&
+        rows.length > 0 &&
+        rows.length < prevListed &&
+        countHint >= prevListed
+      ) {
+        logPageDisplay("messages_voice_dialog_sse_skip_thin", {
+          chatId,
+          listed: rows.length,
+          prevListed,
+          hint: countHint,
+        });
+        return;
+      }
       applyRosterRows(rows, countHint, {
         preferMerge: true,
       });
@@ -1371,15 +1402,20 @@ export function MessageChatVoiceBar({
         return a.kind === "screen" ? -1 : 1;
       });
       setRemoteVideoRequests(requests.slice(0, 4));
-      if (requests.length > 0) {
-        logPageDisplay("messages_voice_remote_video_requests", {
-          chatId,
-          count: requests.length,
-          kinds: requests.map((r) => r.kind),
-          endpoints: requests.map((r) => r.endpointId).slice(0, 4),
-        });
-      }
-    }, 4_000);
+      logPageDisplay("messages_voice_remote_video_requests", {
+        chatId,
+        count: requests.length,
+        kinds: requests.map((r) => r.kind),
+        endpoints: requests.map((r) => r.endpointId).slice(0, 4),
+        listed: participantsRef.current.length,
+        hint: rosterTotalHintRef.current,
+        level: requests.length > 0 ? "info" : "warn",
+        note:
+          requests.length > 0
+            ? undefined
+            : "no screen/camera source_groups on roster — force-reload may still be pending",
+      });
+    }, 2_500);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -1418,10 +1454,9 @@ export function MessageChatVoiceBar({
     // listed>=2 as "done" left listed=3 hint=9 forever (no force after join).
     // Post-join effect still waits ~2s after webrtc_join_ok before force HTTP.
     if (listed <= 1) return true;
-    // Cap of recent_speakers while TDLib reports more people in the call.
-    if (hint > listed && listed <= 3) return true;
-    // Severely thin vs hint (not just one hidden listener).
-    if (hint >= listed + 3) return true;
+    // Any gap vs TDLib means the roster is incomplete — listed=5 hint=6 used
+    // to skip force-reload and hide the screencaster (no video_info rows).
+    if (hint > listed) return true;
     const emptyTitles = participantsRef.current.filter(
       (row) => !row.title.trim() && !row.is_self,
     ).length;
@@ -1432,9 +1467,15 @@ export function MessageChatVoiceBar({
   const reloadVoiceRoster = useCallback(
     async (options?: { force?: boolean; cancelled?: () => boolean }) => {
       const requestChatId = chatId;
-      const result = await fetchTelegramChatVoiceParticipants(requestChatId, null, {
-        forceReload: Boolean(options?.force),
-      });
+      // Prefer the live call id the strip is bound to — null used getChat alone
+      // and could race a stale preferred id on the gateway.
+      const result = await fetchTelegramChatVoiceParticipants(
+        requestChatId,
+        groupCallId,
+        {
+          forceReload: Boolean(options?.force),
+        },
+      );
       if (chatIdRef.current !== requestChatId) {
         return { ok: false as const, error: "chat_switched" };
       }
@@ -1452,7 +1493,7 @@ export function MessageChatVoiceBar({
       }
       return result;
     },
-    [chatId, syncVoicePresence],
+    [chatId, groupCallId, syncVoicePresence],
   );
 
   const markPostJoinRosterComplete = useCallback(
@@ -1624,8 +1665,9 @@ export function MessageChatVoiceBar({
         groupCallId,
       });
       // Keep high/critical so voice roster avatars already queued can finish;
-      // drop normal (chat-list) jobs that remount under the sheet.
-      clearQueuedNormalNetworkFetches();
+      // drop queued avatar/emoji/media work that remounts under the sheet.
+      clearQueuedNetworkFetches();
+      clearQueuedChooseCurrencyYearCharts();
       softPollAbortRef.current?.abort();
     }
 
@@ -1887,6 +1929,8 @@ export function MessageChatVoiceBar({
       }
       // Settle SDP / ICE before force roster HTTP — overlapping them froze the
       // UI (join_ok → postjoin_reload_start → Close dead, pointer backdrop stuck).
+      // Thin recent_speakers (listed=2 hint=6) must not wait the full media settle
+      // or the dialog stays half-empty while the call feels stuck.
       if (voiceSessionJoinedRef.current) {
         const now =
           typeof performance !== "undefined" && typeof performance.now === "function"
@@ -1894,10 +1938,12 @@ export function MessageChatVoiceBar({
             : Date.now();
         if (webrtcJoinedSeenAt <= 0) webrtcJoinedSeenAt = now;
         const settleMs = now - webrtcJoinedSeenAt;
-        // Soft recent_speakers fill needs force; wait for media to settle first.
-        const settleNeedMs = 2_500;
+        const listedNow = participantsRef.current.length;
+        const hintNow = rosterTotalHintRef.current;
+        const thinVsHint = listedNow <= 3 && hintNow > listedNow;
+        const settleNeedMs = thinVsHint ? 200 : 2_500;
         if (settleMs < settleNeedMs) {
-          armRetry(Math.max(200, settleNeedMs - settleMs));
+          armRetry(Math.max(80, settleNeedMs - settleMs));
           return;
         }
       }

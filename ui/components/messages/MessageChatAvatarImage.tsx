@@ -12,6 +12,9 @@ function needsAuthenticatedFetch(uri: string): boolean {
 /** Reuse blob URLs so avatar proxy images do not refetch on every list re-render. */
 const avatarBlobCache = new Map<string, string>();
 const avatarFailedUrls = new Set<string>();
+/** Wall-clock of sticky 404/403 — expire so voice roster can recover after a cold miss. */
+const avatarFailedAtMs = new Map<string, number>();
+const AVATAR_FAIL_TTL_MS = 45_000;
 const inflightAvatarFetches = new Map<string, Promise<string | null>>();
 const avatarCacheListeners = new Set<() => void>();
 let avatarCacheRevision = 0;
@@ -44,7 +47,14 @@ export function isMessageChatAvatarBlobCached(uri: string): boolean {
 }
 
 export function isMessageChatAvatarFetchFailed(uri: string): boolean {
-  return avatarFailedUrls.has(uri);
+  if (!avatarFailedUrls.has(uri)) return false;
+  const at = avatarFailedAtMs.get(uri) ?? 0;
+  if (Date.now() - at > AVATAR_FAIL_TTL_MS) {
+    avatarFailedUrls.delete(uri);
+    avatarFailedAtMs.delete(uri);
+    return false;
+  }
+  return true;
 }
 
 async function fetchAvatarBlobOnce(uri: string): Promise<string | null> {
@@ -59,7 +69,9 @@ async function fetchAvatarBlobOnce(uri: string): Promise<string | null> {
       // Record the miss but do NOT notify every avatar subscriber — a burst of
       // 404s used to bump cacheRevision and re-run effects for every mounted
       // avatar on the page (chat list + history + voice dialog), freezing the UI.
+      // TTL so a cold TDLib miss does not permanently leave voice rows on letters.
       avatarFailedUrls.add(uri);
+      avatarFailedAtMs.set(uri, Date.now());
     }
     return null;
   }
