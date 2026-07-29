@@ -227,12 +227,16 @@ export class TelegramGroupCallWebSession {
    * never delivered remote audio (outboundPackets=0, remoteMuted forever).
    */
   private prefetchedMicTrack: MediaStreamTrack | null = null;
+  /** Reused near-silent outbound track for mute — avoids oscillator churn on every toggle. */
+  private silentOutboundTrack: MediaStreamTrack | null = null;
   /** Outbound video sender track (silent placeholder, camera, or screen). */
   private outboundVideoTrack: MediaStreamTrack | null = null;
   private cameraTrack: MediaStreamTrack | null = null;
   private screenTrack: MediaStreamTrack | null = null;
   private cameraEnabled = false;
   private screenSharing = false;
+  /** In-dialog stage size used to adapt screen-share encode quality. */
+  private screenShareDisplaySize = { width: 640, height: 360 };
   private localCameraStream: MediaStream | null = null;
   private localScreenStream: MediaStream | null = null;
   private localMediaListeners = new Set<
@@ -1042,7 +1046,12 @@ export class TelegramGroupCallWebSession {
 
     const displayStream = await navigator.mediaDevices.getDisplayMedia({
       audio: false,
-      video: true,
+      video: {
+        // Cap capture intent at 360p — browsers may ignore; encoding still enforces.
+        width: { max: 640, ideal: 640 },
+        height: { max: 360, ideal: 360 },
+        frameRate: { max: 15, ideal: 10 },
+      },
     });
     const track = displayStream.getVideoTracks()[0];
     if (!track) {
@@ -1050,6 +1059,7 @@ export class TelegramGroupCallWebSession {
       throw new Error("screen_share_unavailable");
     }
     track.enabled = true;
+    await this.constrainScreenShareTrack(track);
 
     try {
       this.presentationJoining = this.joinPresentationConnection(track);
@@ -1069,6 +1079,7 @@ export class TelegramGroupCallWebSession {
     track.onended = () => {
       void this.stopScreenShare();
     };
+    await this.applyScreenShareEncoding();
     this.notifyLocalMediaListeners();
     logPageDisplay("messages_voice_screen_share_started", {
       chatId: this.input.chatId,
@@ -1076,6 +1087,98 @@ export class TelegramGroupCallWebSession {
       presentationAudioSourceId: this.presentationAudioSourceId,
       level: "info",
     });
+  }
+
+  /** Tune encode target from the in-dialog screenshare stage size. */
+  setScreenShareDisplaySize(width: number, height: number): void {
+    const nextW = Math.max(1, Math.round(width));
+    const nextH = Math.max(1, Math.round(height));
+    if (
+      nextW === this.screenShareDisplaySize.width &&
+      nextH === this.screenShareDisplaySize.height
+    ) {
+      return;
+    }
+    this.screenShareDisplaySize = { width: nextW, height: nextH };
+    if (this.screenSharing && this.screenTrack) {
+      void this.constrainScreenShareTrack(this.screenTrack);
+      void this.applyScreenShareEncoding();
+    }
+  }
+
+  private async constrainScreenShareTrack(track: MediaStreamTrack): Promise<void> {
+    const { width: targetW, height: targetH, maxFramerate } =
+      this.computeScreenShareTargets();
+    try {
+      await track.applyConstraints({
+        width: { max: targetW, ideal: targetW },
+        height: { max: targetH, ideal: targetH },
+        frameRate: { max: maxFramerate, ideal: Math.min(10, maxFramerate) },
+      });
+    } catch {
+      // Screen tracks often reject resolution constraints — encoding still caps.
+    }
+  }
+
+  private computeScreenShareTargets(): {
+    width: number;
+    height: number;
+    maxBitrate: number;
+    maxFramerate: number;
+    scaleResolutionDownBy: number;
+  } {
+    const dpr =
+      typeof window !== "undefined"
+        ? Math.min(window.devicePixelRatio || 1, 1.5)
+        : 1;
+    const displayW = this.screenShareDisplaySize.width;
+    const displayH = this.screenShareDisplaySize.height;
+    // Never exceed 360p; shrink further when the stage is small.
+    const width = Math.min(640, Math.max(160, Math.round(displayW * dpr)));
+    const height = Math.min(360, Math.max(90, Math.round(displayH * dpr)));
+    const areaRatio = (width * height) / (640 * 360);
+    const maxBitrate = Math.round(120_000 + areaRatio * 380_000);
+    const maxFramerate = width < 320 ? 8 : 12;
+    const settings = this.screenTrack?.getSettings?.() ?? {};
+    const srcW = typeof settings.width === "number" && settings.width > 0 ? settings.width : 1920;
+    const scaleResolutionDownBy = Math.max(1, srcW / width);
+    return { width, height, maxBitrate, maxFramerate, scaleResolutionDownBy };
+  }
+
+  private async applyScreenShareEncoding(): Promise<void> {
+    const pc = this.presentationConnection;
+    const track = this.screenTrack;
+    if (!pc || !track) return;
+    const sender = pc
+      .getSenders()
+      .find((s) => s.track === track || s.track?.kind === "video");
+    if (!sender) return;
+    const targets = this.computeScreenShareTargets();
+    try {
+      const params = sender.getParameters();
+      if (!params.encodings?.length) {
+        params.encodings = [{}];
+      }
+      for (const encoding of params.encodings) {
+        encoding.scaleResolutionDownBy = targets.scaleResolutionDownBy;
+        encoding.maxBitrate = targets.maxBitrate;
+        encoding.maxFramerate = targets.maxFramerate;
+      }
+      await sender.setParameters(params);
+      logPageDisplay("messages_voice_screen_share_quality", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        displayW: this.screenShareDisplaySize.width,
+        displayH: this.screenShareDisplaySize.height,
+        targetW: targets.width,
+        targetH: targets.height,
+        maxBitrate: targets.maxBitrate,
+        scale: targets.scaleResolutionDownBy,
+        level: "info",
+      });
+    } catch {
+      // setParameters can fail before the first negotiation completes
+    }
   }
 
   async stopScreenShare(): Promise<void> {
@@ -1444,12 +1547,15 @@ export class TelegramGroupCallWebSession {
         .getSenders()
         .find((s) => s.track?.kind === "audio" || s.track === previous);
       if (sender) {
-        await sender.replaceTrack(audioTrack);
+        // Don't block unmute UI on replaceTrack — local swap is enough for the chip.
+        void sender.replaceTrack(audioTrack).catch(() => undefined);
       }
     }
     if (previous && previous !== audioTrack) {
-      // Don't stop a stashed prefetch that somehow aliased; only stop silence.
-      if (this.usingSilentAudio || previous !== this.prefetchedMicTrack) {
+      if (this.usingSilentAudio) {
+        // Keep silence for the next mute instead of recreating oscillators.
+        this.silentOutboundTrack = previous;
+      } else if (previous !== this.prefetchedMicTrack) {
         previous.stop();
       }
     }
@@ -1478,14 +1584,15 @@ export class TelegramGroupCallWebSession {
       // Swap back to near-silent outbound instead of track.enabled=false — a
       // disabled sender stops RTP and Telegram's SFU often stops forwarding
       // remote audio (same failure mode as the prefetch+muted join bug).
-      const silent = createSilentAudioTrack();
+      const silent = this.getOrCreateSilentOutboundTrack();
       silent.enabled = true;
       const previous = this.audioTrack;
       const sender = this.connection
         .getSenders()
         .find((s) => s.track?.kind === "audio" || s.track === previous);
       if (sender) {
-        await sender.replaceTrack(silent);
+        // Don't await — UI unmute/mute must feel instant; replaceTrack is local.
+        void sender.replaceTrack(silent).catch(() => undefined);
       }
       // Keep the real mic around for a quick unmute (don't stop it).
       this.prefetchedMicTrack = previous;
@@ -1511,30 +1618,47 @@ export class TelegramGroupCallWebSession {
       void this.analyserCtx?.resume().catch(() => undefined);
     }
 
-    // Best-effort: join + unmute on Telegram. Local UI/mic stay as set.
+    // Best-effort Telegram mute — never block the control chip on the network RTT.
+    void this.syncMicMutedToTelegram(!enabled);
+  }
+
+  private getOrCreateSilentOutboundTrack(): MediaStreamTrack {
+    if (
+      this.silentOutboundTrack &&
+      this.silentOutboundTrack.readyState === "live"
+    ) {
+      this.silentOutboundTrack.enabled = true;
+      return this.silentOutboundTrack;
+    }
+    const silent = createSilentAudioTrack();
+    silent.enabled = true;
+    this.silentOutboundTrack = silent;
+    return silent;
+  }
+
+  private async syncMicMutedToTelegram(isMuted: boolean): Promise<void> {
     try {
       if (!this.joined) {
         await this.ensureJoinedListenOnly();
-        if (enabled) {
-          await this.ensureLocalMic();
+        if (!isMuted) {
+          await this.ensureLocalMic({ publish: true, enabled: true });
           if (this.audioTrack) this.audioTrack.enabled = true;
+          this.micEnabled = true;
         } else if (this.audioTrack) {
-          // Keep sender publishing (silence) after listen-only join.
           this.audioTrack.enabled = true;
         }
-        this.micEnabled = enabled;
       }
       this.resumeRemoteAudio();
       const muteResult = await setTelegramChatVoiceMicMuted({
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
-        isMuted: !enabled,
+        isMuted,
       });
       if (!muteResult.ok) {
         appWarn("[voice-mic-sync]", muteResult.error, {
           chatId: this.input.chatId,
           groupCallId: this.input.groupCallId,
-          enabled,
+          enabled: !isMuted,
         });
         const err = muteResult.error;
         const needsRejoin =
@@ -1544,13 +1668,10 @@ export class TelegramGroupCallWebSession {
             err.includes("GROUPCALL_INVALID") ||
             err.includes("GROUPCALL_SSRC_DUPLICATE_SIMULTANEOUS"));
         if (needsRejoin) {
-          // TDLib lost the join — rebuild WebRTC with the desired mute baked into join.
-          // Silent: keep React mic intent until joinInternal finishes.
-          // Defer the heavy rejoin so unmute click doesn't freeze the dialog sheet.
           this.markJoinLost(err, { silent: true });
           await new Promise<void>((resolve) => setTimeout(resolve, 0));
-          await this.joinInternal(!enabled);
-          if (enabled) {
+          await this.joinInternal(isMuted);
+          if (!isMuted) {
             await this.ensureLocalMic({ publish: true, enabled: true });
             if (this.audioTrack) this.audioTrack.enabled = true;
             this.micEnabled = true;
@@ -1560,16 +1681,15 @@ export class TelegramGroupCallWebSession {
           typeof err === "string" &&
           /Can't unmute user/i.test(err)
         ) {
-          // Admin-muted / no permission — publish silence, keep RTP alive.
           if (this.audioTrack && !this.usingSilentAudio && this.connection) {
-            const silent = createSilentAudioTrack();
+            const silent = this.getOrCreateSilentOutboundTrack();
             silent.enabled = true;
             const previous = this.audioTrack;
             const sender = this.connection
               .getSenders()
               .find((s) => s.track?.kind === "audio" || s.track === previous);
             if (sender) {
-              await sender.replaceTrack(silent);
+              void sender.replaceTrack(silent).catch(() => undefined);
             }
             this.prefetchedMicTrack = previous;
             previous.enabled = false;
@@ -1586,7 +1706,7 @@ export class TelegramGroupCallWebSession {
       appWarn(
         "[voice-mic-sync]",
         err instanceof Error ? err.message : String(err),
-        { chatId: this.input.chatId, groupCallId: this.input.groupCallId, enabled },
+        { chatId: this.input.chatId, groupCallId: this.input.groupCallId, enabled: !isMuted },
       );
     }
   }
@@ -2650,13 +2770,18 @@ export class TelegramGroupCallWebSession {
       this.localStream.getTracks().forEach((track) => track.stop());
       this.localStream = null;
     }
-    if (this.audioTrack) {
-      this.audioTrack.stop();
-      this.audioTrack = null;
-    }
     if (this.prefetchedMicTrack) {
       this.prefetchedMicTrack.stop();
       this.prefetchedMicTrack = null;
+    }
+    const silentOutbound = this.silentOutboundTrack;
+    this.silentOutboundTrack = null;
+    if (silentOutbound && silentOutbound !== this.audioTrack) {
+      silentOutbound.stop();
+    }
+    if (this.audioTrack) {
+      this.audioTrack.stop();
+      this.audioTrack = null;
     }
     this.usingSilentAudio = false;
     this.stopLocalVideoCaptures();

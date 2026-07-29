@@ -743,8 +743,11 @@ export function MessageChatVoiceBar({
           const nextEmoji =
             inc.emoji_status_custom_emoji_id ?? row.emoji_status_custom_emoji_id;
           const nextVideo = inc.video_info ?? row.video_info ?? null;
+          // Trust explicit null from SSE/poll so stopped shares clear the icon.
           const nextScreen =
-            inc.screen_sharing_video_info ?? row.screen_sharing_video_info ?? null;
+            inc.screen_sharing_video_info === undefined
+              ? (row.screen_sharing_video_info ?? null)
+              : (inc.screen_sharing_video_info ?? null);
           if (
             Boolean(row.is_muted) === nextMuted &&
             row.title === nextTitle &&
@@ -787,9 +790,9 @@ export function MessageChatVoiceBar({
             null;
           const video = row.video_info ?? prevMatch?.video_info ?? null;
           const screen =
-            row.screen_sharing_video_info ??
-            prevMatch?.screen_sharing_video_info ??
-            null;
+            row.screen_sharing_video_info === undefined
+              ? (prevMatch?.screen_sharing_video_info ?? null)
+              : (row.screen_sharing_video_info ?? null);
           if (
             prevMatch &&
             prevMatch.user_id === row.user_id &&
@@ -2494,6 +2497,7 @@ export function MessageChatVoiceBar({
         localCameraStream={voiceSession.localCameraStream}
         localScreenStream={voiceSession.localScreenStream}
         videoActive={Boolean(joined && voiceSession.joined && visible)}
+        onScreenShareDisplaySize={voiceSession.setScreenShareDisplaySize}
       />
     </>
   );

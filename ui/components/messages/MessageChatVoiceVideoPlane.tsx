@@ -162,6 +162,8 @@ type StageProps = {
   maxHeightPx?: number;
   horizontalInsetPx?: number;
   marginBottomPx?: number;
+  /** Fill the parent height (side-by-side voice dialog) instead of 16:9 stack. */
+  fillHeight?: boolean;
 };
 
 /**
@@ -174,6 +176,7 @@ function MessageChatVoiceMediaStageInner({
   maxHeightPx = MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
   horizontalInsetPx = 0,
   marginBottomPx = 0,
+  fillHeight = false,
 }: StageProps) {
   const [swapped, setSwapped] = useState(false);
   const [mainHasFrames, setMainHasFrames] = useState(false);
@@ -202,7 +205,19 @@ function MessageChatVoiceMediaStageInner({
     <View
       style={
         mainHasFrames
-          ? {
+          ? fillHeight
+            ? {
+                flex: 1,
+                alignSelf: "stretch",
+                width: "100%",
+                minHeight: 0,
+                paddingHorizontal: horizontalInsetPx,
+                marginBottom: marginBottomPx,
+                backgroundColor: "#000000",
+                overflow: "hidden",
+                position: "relative",
+              }
+            : {
               alignSelf: "stretch",
               width: "100%",
               paddingHorizontal: horizontalInsetPx,

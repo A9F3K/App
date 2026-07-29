@@ -312,7 +312,7 @@ export function useTelegramVoiceSession({
     sessionRef.current?.prefetchLocalMic();
   }, []);
 
-  const toggleMic = useCallback(async () => {
+  const toggleMic = useCallback(() => {
     const next = !micActiveRef.current;
     micActiveRef.current = next;
     setMicActive(next);
@@ -321,25 +321,28 @@ export function useTelegramVoiceSession({
     const session = sessionRef.current;
     if (!session || Platform.OS !== "web") return;
 
-    try {
-      setError(null);
-      if (next) unlockVoiceAutoplay();
-      session.unlockRemoteAudio();
-      await session.setMicEnabled(next);
-      setJoined(session.isJoined);
-      setMediaConnected(session.isMediaConnected());
-      session.resumeRemoteAudio();
-      const enabled = session.isMicEnabled;
-      micActiveRef.current = enabled;
-      setMicActive(enabled);
-      if (!enabled) setLocalSpeaking(false);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "mic_toggle_failed";
-      setError(message);
-      micActiveRef.current = session.isMicEnabled;
-      setMicActive(session.isMicEnabled);
-      appWarn("[voice-session-mic]", message, { chatId, groupCallId });
-    }
+    setError(null);
+    if (next) unlockVoiceAutoplay();
+    session.unlockRemoteAudio();
+    // Never await here — mute/unmute chip must flip instantly; network sync is background.
+    void session
+      .setMicEnabled(next)
+      .then(() => {
+        setJoined(session.isJoined);
+        setMediaConnected(session.isMediaConnected());
+        session.resumeRemoteAudio();
+        const enabled = session.isMicEnabled;
+        micActiveRef.current = enabled;
+        setMicActive(enabled);
+        if (!enabled) setLocalSpeaking(false);
+      })
+      .catch((err) => {
+        const message = err instanceof Error ? err.message : "mic_toggle_failed";
+        setError(message);
+        micActiveRef.current = session.isMicEnabled;
+        setMicActive(session.isMicEnabled);
+        appWarn("[voice-session-mic]", message, { chatId, groupCallId });
+      });
   }, [chatId, groupCallId]);
 
   const toggleCamera = useCallback(async () => {
@@ -411,6 +414,10 @@ export function useTelegramVoiceSession({
     sessionRef.current?.setRequestedRemoteVideos(requests);
   }, []);
 
+  const setScreenShareDisplaySize = useCallback((width: number, height: number) => {
+    sessionRef.current?.setScreenShareDisplaySize(width, height);
+  }, []);
+
   const leaveVoice = useCallback(async () => {
     speakingUnsubRef.current?.();
     speakingUnsubRef.current = null;
@@ -449,6 +456,7 @@ export function useTelegramVoiceSession({
     startScreenShare,
     stopScreenShare,
     setRemoteVideoRequests,
+    setScreenShareDisplaySize,
     leaveVoice,
   };
 }
