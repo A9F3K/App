@@ -11,6 +11,10 @@ import {
 } from "../../shared/telegramGroupCallSdp";
 import { logPageDisplay } from "../pageDisplayLog";
 import { joinTelegramChatVoice } from "./joinTelegramChatVoice";
+import {
+  endTelegramChatVoiceScreenShare,
+  startTelegramChatVoiceScreenShare,
+} from "./telegramChatVoiceScreenShare";
 import { setTelegramChatVoiceMicMuted } from "./setTelegramChatVoiceMicMuted";
 import { setTelegramChatVoiceSpeaking } from "./setTelegramChatVoiceSpeaking";
 import { getVoiceAutoplayAudioContext, unlockVoiceAutoplay } from "./unlockVoiceAutoplay";
@@ -208,6 +212,11 @@ async function resumeSilentOutboundContext(): Promise<void> {
 /** Browser WebRTC session for a Telegram group voice call. */
 export class TelegramGroupCallWebSession {
   private connection: RTCPeerConnection | null = null;
+  /** Separate WebRTC connection for screen-share presentation (Telegram SFU). */
+  private presentationConnection: RTCPeerConnection | null = null;
+  private presentationAudioTrack: MediaStreamTrack | null = null;
+  private presentationAudioSourceId: number | null = null;
+  private presentationJoining: Promise<void> | null = null;
   private localStream: MediaStream | null = null;
   private audioTrack: MediaStreamTrack | null = null;
   /** True when `audioTrack` is a placeholder (no real mic yet). */
@@ -827,6 +836,7 @@ export class TelegramGroupCallWebSession {
       this.prefetchedMicTrack = null;
     }
     this.stopLocalVideoCaptures();
+    this.teardownPresentationConnection();
     if (this.remoteStream) {
       this.remoteStream.getTracks().forEach((track) => track.stop());
       this.remoteStream = null;
@@ -944,9 +954,9 @@ export class TelegramGroupCallWebSession {
     }
   }
 
-  /** Prefer screen, then camera, else keep/create a silent placeholder. */
+  /** Prefer camera on the main PC; screen share uses a separate presentation PC. */
   private async syncOutboundVideoTrack(): Promise<void> {
-    const preferred = this.screenTrack ?? this.cameraTrack;
+    const preferred = this.screenSharing ? null : this.cameraTrack;
     if (preferred) {
       await this.replaceOutboundVideo(preferred);
       return;
@@ -1015,6 +1025,21 @@ export class TelegramGroupCallWebSession {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getDisplayMedia) {
       throw new Error("screen_share_unavailable");
     }
+    if (!this.joined) {
+      await this.ensureJoinedListenOnly();
+    }
+    if (!this.joined) {
+      throw new Error("voice_not_joined");
+    }
+    if (this.presentationJoining) {
+      await this.presentationJoining;
+      if (this.screenSharing) return;
+    }
+    if (this.screenSharing && this.presentationConnection) {
+      this.notifyLocalMediaListeners();
+      return;
+    }
+
     const displayStream = await navigator.mediaDevices.getDisplayMedia({
       audio: false,
       video: true,
@@ -1025,6 +1050,18 @@ export class TelegramGroupCallWebSession {
       throw new Error("screen_share_unavailable");
     }
     track.enabled = true;
+
+    try {
+      this.presentationJoining = this.joinPresentationConnection(track);
+      await this.presentationJoining;
+    } catch (err) {
+      track.stop();
+      displayStream.getTracks().forEach((t) => t.stop());
+      throw err;
+    } finally {
+      this.presentationJoining = null;
+    }
+
     this.screenTrack?.stop();
     this.screenTrack = track;
     this.localScreenStream = new MediaStream([track]);
@@ -1032,24 +1069,221 @@ export class TelegramGroupCallWebSession {
     track.onended = () => {
       void this.stopScreenShare();
     };
-    if (!this.joined) {
-      await this.ensureJoinedListenOnly();
-    }
-    await this.syncOutboundVideoTrack();
     this.notifyLocalMediaListeners();
+    logPageDisplay("messages_voice_screen_share_started", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      presentationAudioSourceId: this.presentationAudioSourceId,
+      level: "info",
+    });
   }
 
   async stopScreenShare(): Promise<void> {
-    if (!this.screenSharing && !this.screenTrack) {
+    if (!this.screenSharing && !this.screenTrack && !this.presentationConnection) {
       this.notifyLocalMediaListeners();
       return;
     }
+    if (this.joined) {
+      void endTelegramChatVoiceScreenShare({
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+      }).catch((err) => {
+        appWarn(
+          "[voice-screen-share-end]",
+          err instanceof Error ? err.message : String(err),
+          { chatId: this.input.chatId, groupCallId: this.input.groupCallId },
+        );
+      });
+    }
+    this.teardownPresentationConnection();
     this.screenTrack?.stop();
     this.screenTrack = null;
     this.localScreenStream = null;
     this.screenSharing = false;
     await this.syncOutboundVideoTrack();
     this.notifyLocalMediaListeners();
+    logPageDisplay("messages_voice_screen_share_stopped", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      level: "info",
+    });
+  }
+
+  private teardownPresentationConnection(): void {
+    if (this.presentationAudioTrack) {
+      try {
+        this.presentationAudioTrack.stop();
+      } catch {
+        // ignore
+      }
+      this.presentationAudioTrack = null;
+    }
+    if (this.presentationConnection) {
+      try {
+        this.presentationConnection.close();
+      } catch {
+        // ignore
+      }
+      this.presentationConnection = null;
+    }
+    this.presentationAudioSourceId = null;
+  }
+
+  /** Publish screen on a dedicated presentation WebRTC connection (Telegram API). */
+  private async joinPresentationConnection(screenTrack: MediaStreamTrack): Promise<void> {
+    this.teardownPresentationConnection();
+
+    const presentationAudio = createSilentAudioTrack();
+    presentationAudio.enabled = true;
+
+    const connection = new RTCPeerConnection({
+      iceServers: [],
+      iceTransportPolicy: "all",
+      bundlePolicy: "max-bundle",
+      rtcpMuxPolicy: "require",
+      iceCandidatePoolSize: 0,
+    });
+    // Presentation is publish-only — sendonly m-lines require a recvonly answer
+    // (see groupCallAnswerSdpFromTransport presentation:true).
+    connection.addTransceiver(presentationAudio, { direction: "sendonly" });
+    connection.addTransceiver(screenTrack, { direction: "sendonly" });
+
+    connection.oniceconnectionstatechange = () => {
+      const ice = connection.iceConnectionState;
+      logPageDisplay("messages_voice_presentation_pc_ice", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        ice,
+        conn: connection.connectionState,
+        level: ice === "connected" || ice === "completed" ? "info" : "warn",
+      });
+    };
+
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        window.setTimeout(resolve, 32);
+      });
+    });
+
+    const offer = await connection.createOffer();
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.setTimeout(resolve, 32);
+    });
+    await connection.setLocalDescription(offer);
+    await disableAudioSenderDtx(connection);
+
+    await new Promise<void>((resolve) => {
+      if (connection.iceGatheringState === "complete") {
+        resolve();
+        return;
+      }
+      const gatherBudgetMs = 1_800;
+      const timeout = window.setTimeout(() => {
+        connection.removeEventListener("icegatheringstatechange", onGather);
+        resolve();
+      }, gatherBudgetMs);
+      const onGather = () => {
+        if (connection.iceGatheringState === "complete") {
+          window.clearTimeout(timeout);
+          connection.removeEventListener("icegatheringstatechange", onGather);
+          resolve();
+        }
+      };
+      connection.addEventListener("icegatheringstatechange", onGather);
+    });
+
+    const localSdp = connection.localDescription?.sdp ?? offer.sdp;
+    if (!localSdp) {
+      connection.close();
+      presentationAudio.stop();
+      throw new Error("presentation_offer_sdp_missing");
+    }
+
+    const parsed = parseGroupCallOfferSdp(localSdp);
+    const joinPayloadJson = buildGroupCallJoinPayloadJson(parsed);
+    if (!joinPayloadJson || parsed.source == null) {
+      connection.close();
+      presentationAudio.stop();
+      throw new Error("presentation_join_payload_build_failed");
+    }
+    if (!parsed.sourceGroup || parsed.sourceGroup.length === 0) {
+      connection.close();
+      presentationAudio.stop();
+      throw new Error("presentation_video_ssrc_missing");
+    }
+
+    logPageDisplay("messages_voice_screen_share_join_start", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      audioSourceId: parsed.source,
+      fidCount: parsed.sourceGroup.length,
+      level: "info",
+    });
+
+    const joinResult = await startTelegramChatVoiceScreenShare({
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      audioSourceId: parsed.source,
+      payload: joinPayloadJson,
+    });
+    if (!joinResult.ok) {
+      connection.close();
+      presentationAudio.stop();
+      throw new Error(joinResult.error);
+    }
+
+    const rollbackTdlibShare = () => {
+      void endTelegramChatVoiceScreenShare({
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+      }).catch(() => undefined);
+    };
+
+    const transport = parseGroupCallJoinTransport(joinResult.join_payload);
+    if (!transport) {
+      connection.close();
+      presentationAudio.stop();
+      rollbackTdlibShare();
+      throw new Error("presentation_join_transport_invalid");
+    }
+    const slimTransport = {
+      ...transport,
+      candidates: pickJoinAnswerCandidates(transport.candidates),
+    };
+    const answerSdp = groupCallAnswerSdpFromTransport(slimTransport, localSdp, [], {
+      minimalVideo: false,
+      presentation: true,
+    });
+
+    try {
+      await connection.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      await disableAudioSenderDtx(connection);
+    } catch (err) {
+      connection.close();
+      presentationAudio.stop();
+      rollbackTdlibShare();
+      throw err;
+    }
+
+    this.presentationConnection = connection;
+    this.presentationAudioTrack = presentationAudio;
+    this.presentationAudioSourceId = parsed.source;
+
+    logPageDisplay("messages_voice_screen_share_join_ok", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      audioSourceId: parsed.source,
+      candidateCount: slimTransport.candidates.length,
+      level: "info",
+    });
   }
 
   private stopLocalVideoCaptures(): void {
@@ -2426,6 +2660,7 @@ export class TelegramGroupCallWebSession {
     }
     this.usingSilentAudio = false;
     this.stopLocalVideoCaptures();
+    this.teardownPresentationConnection();
     this.outboundVideoTrack = null;
     this.audioSourceId = null;
     if (this.connection) {

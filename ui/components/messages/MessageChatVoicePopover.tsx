@@ -41,6 +41,7 @@ import {
   VoiceMessagesIcon,
   VoiceMicControlIcon,
   VoiceMoreIcon,
+  VoiceScreenShareIcon,
   VoiceWindowCrossIcon,
   VoiceWindowSizeIcon,
   VoiceWindowTrayIcon,
@@ -367,22 +368,49 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
         ) : null}
       </View>
       <View
-        accessibilityRole="image"
         style={{
-          width: 28,
-          height: 28,
+          flexDirection: "row",
           alignItems: "center",
-          justifyContent: "center",
+          gap: 4,
           marginLeft: 8,
           flexShrink: 0,
         }}
       >
-        <VoiceParticipantStateMicIcon
-          speaking={speaking}
-          muted={Boolean(participant.is_muted) && !speaking}
-          color={colors.primary}
-          size={20}
-        />
+        {participant.screen_sharing_video_info?.source_groups?.length ||
+        participant.screen_sharing_video_info?.endpoint_id ? (
+          <View
+            accessibilityRole="image"
+            accessibilityLabel="Screen sharing"
+            style={{
+              width: 28,
+              height: 28,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <VoiceScreenShareIcon
+              color={VOICE_SPEAKING_MIC_COLOR}
+              size={18}
+              active
+            />
+          </View>
+        ) : null}
+        <View
+          accessibilityRole="image"
+          style={{
+            width: 28,
+            height: 28,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <VoiceParticipantStateMicIcon
+            speaking={speaking}
+            muted={Boolean(participant.is_muted) && !speaking}
+            color={colors.primary}
+            size={20}
+          />
+        </View>
       </View>
     </View>
   );
@@ -1083,7 +1111,12 @@ export function MessageChatVoicePopover({
 
   const mediaSources = useMemo((): VoiceMediaStageSource[] => {
     const rows: VoiceMediaStageSource[] = [];
-    // Remote presentation first (tdesktop docks screencast above local previews).
+    // Local screencast first while presenting — matches the dialog mock (own
+    // cast docks above the roster immediately after the user starts sharing).
+    if (localScreenStream) {
+      rows.push({ id: "local-screen", stream: localScreenStream });
+    }
+    // Remote presentation next (tdesktop docks other people's screencast).
     // Previously remote was skipped whenever any local camera/screen was active,
     // so an active participant screencast never appeared in the dialog.
     if (remoteVideoStream) {
@@ -1100,9 +1133,6 @@ export function MessageChatVoicePopover({
           });
         }
       }
-    }
-    if (localScreenStream) {
-      rows.push({ id: "local-screen", stream: localScreenStream });
     }
     if (localCameraStream) {
       rows.push({ id: "local-camera", stream: localCameraStream });
@@ -1343,7 +1373,10 @@ export function MessageChatVoicePopover({
               mediaSources.length > 0 &&
               (videoActive || localScreenStream != null || localCameraStream != null),
           )}
-          maxHeightPx={Math.min(220, MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX)}
+          maxHeightPx={Math.min(
+            localScreenStream || remoteVideoStream ? 280 : 220,
+            MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
+          )}
           horizontalInsetPx={20}
           marginBottomPx={16}
         />
@@ -1481,6 +1514,30 @@ export function MessageChatVoicePopover({
             }}
           >
             <VoiceMessagesIcon color={iconColor} size={CONTROL_ICON_PX} />
+          </VoiceControlChip>
+          <VoiceControlChip
+            key="screen"
+            testId="screen-share"
+            label={
+              screenSharing
+                ? t("messages.voiceChat.controls.stopSharing")
+                : t("messages.voiceChat.controls.screenShare")
+            }
+            variant="simple"
+            undercoverColor={colors.undercover}
+            onPress={() => {
+              logPageDisplay("messages_voice_dialog_control_click", {
+                action: screenSharing ? "stop_screen_share" : "start_screen_share",
+              });
+              if (screenSharing) onStopScreenShare();
+              else onStartScreenShare();
+            }}
+          >
+            <VoiceScreenShareIcon
+              color={screenSharing ? VOICE_SPEAKING_MIC_COLOR : iconColor}
+              size={CONTROL_ICON_PX}
+              active={screenSharing}
+            />
           </VoiceControlChip>
           <VoiceControlChip
             key="phone"

@@ -989,6 +989,67 @@ export async function gatewayJoinChatVoice(
   };
 }
 
+export async function gatewayStartChatVoiceScreenShare(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  joinParameters: {
+    audio_source_id: number;
+    payload: string;
+  },
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  join_payload: string;
+}> {
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  const { response, json } = await gatewayFetch("/v1/chat/voice/screen-share/start", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+      ...(callId != null ? { groupCallId: callId } : {}),
+      joinParameters,
+    }),
+  });
+  const joinPayload = typeof json.join_payload === "string" ? json.join_payload : "";
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "screen_share_start_failed",
+      join_payload: joinPayload,
+    };
+  }
+  return {
+    ok: true,
+    error: null,
+    join_payload: joinPayload,
+  };
+}
+
+export async function gatewayEndChatVoiceScreenShare(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+): Promise<{ ok: boolean; error: string | null }> {
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  const { response, json } = await gatewayFetch("/v1/chat/voice/screen-share/end", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+      ...(callId != null ? { groupCallId: callId } : {}),
+    }),
+  });
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "screen_share_end_failed",
+    };
+  }
+  return { ok: true, error: null };
+}
+
 export async function gatewayStartChatVoice(
   telegramUsername: string,
   chatId: number,

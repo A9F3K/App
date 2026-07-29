@@ -289,14 +289,23 @@ class SdpBuilder {
     transport: TelegramGroupCallTransport,
     dtlsSetup: "active" | "passive" = "active",
     mids: [string, string] = ["0", "1"],
-    opts?: { minimalVideo?: boolean },
+    opts?: {
+      minimalVideo?: boolean;
+      /**
+       * Presentation (screen-share) offers are sendonly — the answer must be
+       * recvonly or Chrome rejects with "Incompatible receive direction".
+       */
+      presentation?: boolean;
+    },
   ): void {
+    const audioDir = opts?.presentation ? "recvonly" : "sendrecv";
+    const videoDir = opts?.presentation ? "recvonly" : "sendrecv";
     this.add("m=audio 9 UDP/TLS/RTP/SAVPF 111 126");
     this.add("c=IN IP4 0.0.0.0");
     this.add("a=rtcp:9 IN IP4 0.0.0.0");
     this.add("a=rtcp-mux");
     this.add(`a=mid:${mids[0]}`);
-    this.add("a=sendrecv");
+    this.add(`a=${audioDir}`);
     this.addTransport(transport, dtlsSetup, { includeCandidates: true });
     this.add("a=rtpmap:111 opus/48000/2");
     this.add("a=rtpmap:126 telephone-event/8000");
@@ -326,7 +335,7 @@ class SdpBuilder {
     this.add("a=rtcp:9 IN IP4 0.0.0.0");
     this.add("a=rtcp-mux");
     this.add(`a=mid:${mids[1]}`);
-    this.add("a=sendrecv");
+    this.add(`a=${videoDir}`);
     this.addTransport(transport, dtlsSetup, { includeCandidates: false });
     this.addVideoRtpMaps();
   }
@@ -384,11 +393,12 @@ class SdpBuilder {
     dtlsSetup: "active" | "passive",
     mids: string[],
     remoteVideoSections: TelegramGroupCallRemoteVideoSection[],
-    opts?: { minimalVideo?: boolean },
+    opts?: { minimalVideo?: boolean; presentation?: boolean },
   ): void {
     this.addHeader(sessionId, mids);
     this.addSsrcEntry(transport, dtlsSetup, [mids[0] ?? "0", mids[1] ?? "1"], {
       minimalVideo: Boolean(opts?.minimalVideo) && remoteVideoSections.length === 0,
+      presentation: Boolean(opts?.presentation),
     });
     for (let i = 0; i < remoteVideoSections.length; i += 1) {
       const mid = mids[2 + i] ?? String(2 + i);
@@ -410,7 +420,7 @@ export function groupCallAnswerSdpFromTransport(
   transport: TelegramGroupCallTransport,
   offerSdp?: string,
   remoteVideoSections: TelegramGroupCallRemoteVideoSection[] = [],
-  opts?: { minimalVideo?: boolean },
+  opts?: { minimalVideo?: boolean; presentation?: boolean },
 ): string {
   const sdp = new SdpBuilder();
   // Browser offered actpass/passive → answer must be active so SFU drives DTLS.
@@ -430,6 +440,7 @@ export function groupCallAnswerSdpFromTransport(
       : ["0", "1", ...sections.map((_, i) => String(2 + i))];
   sdp.addConference(Date.now(), transport, dtlsSetup, mids, sections, {
     minimalVideo: Boolean(opts?.minimalVideo),
+    presentation: Boolean(opts?.presentation),
   });
   return sdp.finalize();
 }

@@ -41,6 +41,8 @@ import {
   sendChatPhotoForUser,
   leaveChatVoiceForUser,
   joinChatVoiceForUser,
+  startChatVoiceScreenShareForUser,
+  endChatVoiceScreenShareForUser,
   startChatVoiceForUser,
   setChatVoiceMicMutedForUser,
   setChatVoiceParticipantSpeakingForUser,
@@ -715,6 +717,90 @@ export function startTdlibGatewayServer(): http.Server {
           sendJson(res, result.ok ? 200 : 503, {
             ok: result.ok,
             join_payload: result.join_payload,
+            error: result.error,
+          });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chat/voice/screen-share/start") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            chatId?: number;
+            groupCallId?: number;
+            joinParameters?: {
+              audio_source_id?: number;
+              payload?: string;
+            };
+          };
+          const telegramUsername = (body.telegramUsername || "").trim();
+          const chatId = Number(body.chatId);
+          const groupCallId = normalizeTelegramGroupCallId(body.groupCallId);
+          const joinParameters = body.joinParameters;
+          const audioSourceId = Number(joinParameters?.audio_source_id) | 0;
+          const payload = typeof joinParameters?.payload === "string" ? joinParameters.payload : "";
+          if (
+            !telegramUsername ||
+            !Number.isFinite(chatId) ||
+            !Number.isFinite(Number(joinParameters?.audio_source_id)) ||
+            audioSourceId === 0 ||
+            !payload.trim()
+          ) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const started = Date.now();
+          const result = await startChatVoiceScreenShareForUser(
+            telegramUsername,
+            chatId,
+            groupCallId,
+            {
+              audio_source_id: audioSourceId,
+              payload,
+            },
+          );
+          logGateway("chat_voice_screen_share_start", {
+            telegramUsername,
+            chatId,
+            ok: result.ok,
+            error: result.error,
+            ms: Date.now() - started,
+          });
+          sendJson(res, result.ok ? 200 : 503, {
+            ok: result.ok,
+            join_payload: result.join_payload,
+            error: result.error,
+          });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chat/voice/screen-share/end") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            chatId?: number;
+            groupCallId?: number;
+          };
+          const telegramUsername = (body.telegramUsername || "").trim();
+          const chatId = Number(body.chatId);
+          const groupCallId = normalizeTelegramGroupCallId(body.groupCallId);
+          if (!telegramUsername || !Number.isFinite(chatId)) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const started = Date.now();
+          const result = await endChatVoiceScreenShareForUser(
+            telegramUsername,
+            chatId,
+            groupCallId,
+          );
+          logGateway("chat_voice_screen_share_end", {
+            telegramUsername,
+            chatId,
+            ok: result.ok,
+            error: result.error,
+            ms: Date.now() - started,
+          });
+          sendJson(res, result.ok ? 200 : 503, {
+            ok: result.ok,
             error: result.error,
           });
           return;

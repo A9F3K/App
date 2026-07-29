@@ -174,6 +174,9 @@ export function useTelegramVoiceSession({
     setRemoteVideoStream(null);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
+    setScreenSharing(false);
+    setCameraActive(false);
+    cameraActiveRef.current = false;
     return session;
   }, [bindSession, chatId]);
 
@@ -245,6 +248,18 @@ export function useTelegramVoiceSession({
     setNegotiating(false);
     setJoining(true);
     setError(null);
+    // Enter listen-only with mic/camera/screen off (parity with muted join).
+    micActiveRef.current = false;
+    setMicActive(false);
+    cameraActiveRef.current = false;
+    setCameraActive(false);
+    setScreenSharing(false);
+    setLocalCameraStream(null);
+    setLocalScreenStream(null);
+    if (session.isScreenSharing || session.isCameraEnabled) {
+      void session.stopScreenShare().catch(() => undefined);
+      void session.setCameraEnabled(false).catch(() => undefined);
+    }
     let joinWatchdog: ReturnType<typeof setTimeout> | null = null;
     try {
       const joinedOk = await Promise.race([

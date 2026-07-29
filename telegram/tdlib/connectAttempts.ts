@@ -1854,6 +1854,52 @@ export async function joinChatVoiceForUser(
   }
 }
 
+export async function startChatVoiceScreenShareForUser(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  joinParameters: {
+    audio_source_id: number;
+    payload: string;
+  },
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  join_payload: string;
+}> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready", join_payload: "" };
+  }
+
+  try {
+    const { startChatVoiceScreenShare } = await import("./voiceScreenShare.js");
+    return await startChatVoiceScreenShare(record.client, chatId, groupCallId, joinParameters);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "screen_share_start_failed";
+    return { ok: false, error: message, join_payload: "" };
+  }
+}
+
+export async function endChatVoiceScreenShareForUser(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+): Promise<{ ok: boolean; error: string | null }> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+
+  try {
+    const { endChatVoiceScreenShare } = await import("./voiceScreenShare.js");
+    return await endChatVoiceScreenShare(record.client, chatId, groupCallId);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "screen_share_end_failed";
+    return { ok: false, error: message };
+  }
+}
+
 export async function startChatVoiceForUser(
   telegramUsername: string,
   chatId: number,

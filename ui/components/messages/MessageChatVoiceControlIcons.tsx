@@ -179,3 +179,27 @@ export function VoiceMoreIcon({ color, size = 20 }: IconProps) {
     </Svg>
   );
 }
+
+/** Screen-share / presentation control (monitor with arrow). */
+export function VoiceScreenShareIcon({
+  color,
+  size = 20,
+  active = false,
+}: IconProps & { active?: boolean }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M20 3H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h4v2h8v-2h4c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 12H4V5h16v10z"
+        fill={color}
+      />
+      {active ? (
+        <Path d="M8 9.5h8v2H8v-2z" fill={color} />
+      ) : (
+        <Path
+          d="M12 8.2l2.6 2.6-1.1 1.1-1-1V14h-1.5v-3.1l-1 1-1.1-1.1L12 8.2z"
+          fill={color}
+        />
+      )}
+    </Svg>
+  );
+}

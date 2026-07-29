@@ -1429,6 +1429,14 @@ export function MessageChatVoiceBar({
     // Defer publisher renegotiation until after join SDP/ICE settle — running
     // createOffer in the same window as join_ok froze the dialog hard.
     let cancelled = false;
+    const hasVideoPublishers = participantsRef.current.some(
+      (row) =>
+        !row.is_self &&
+        Boolean(
+          row.screen_sharing_video_info?.source_groups?.length ||
+            row.video_info?.source_groups?.length,
+        ),
+    );
     const timer = window.setTimeout(() => {
       if (cancelled) return;
       const requests: Array<{
@@ -1480,7 +1488,7 @@ export function MessageChatVoiceBar({
             ? undefined
             : "no screen/camera source_groups on roster — force-reload may still be pending",
       });
-    }, 2_500);
+    }, hasVideoPublishers ? 600 : 2_500);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
