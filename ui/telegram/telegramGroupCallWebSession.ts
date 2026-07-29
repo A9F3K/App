@@ -116,8 +116,8 @@ function createSilentVideoTrack(): MediaStreamTrack {
  */
 let sharedSilentAudioCtx: AudioContext | null = null;
 
-/** Near-silent (~-90 dB). Gain 0 often yields zero RTP under Chrome DTX. */
-const SILENT_OUTBOUND_GAIN = 0.0000316;
+/** Near-silent (~-60 dB). Too low and Chrome DTX sends no RTP → SFU mutes inbound. */
+const SILENT_OUTBOUND_GAIN = 0.001;
 
 function createSilentAudioTrack(): MediaStreamTrack {
   if (typeof AudioContext === "undefined") {
@@ -167,6 +167,23 @@ function createSilentAudioTrack(): MediaStreamTrack {
     level: ctx.state === "running" ? "info" : "warn",
   });
   return track;
+}
+
+/** Keep the live audio sender out of Opus DTX — silence must still produce RTP. */
+async function disableAudioSenderDtx(connection: RTCPeerConnection): Promise<void> {
+  const sender = connection.getSenders().find((s) => s.track?.kind === "audio");
+  if (!sender) return;
+  try {
+    const params = sender.getParameters();
+    if (params.encodings?.length) {
+      for (const encoding of params.encodings) {
+        encoding.dtx = false;
+      }
+      await sender.setParameters(params);
+    }
+  } catch {
+    // ignore — setParameters can fail before the first negotiation completes
+  }
 }
 
 async function resumeSilentOutboundContext(): Promise<void> {
@@ -1941,6 +1958,7 @@ export class TelegramGroupCallWebSession {
       window.setTimeout(resolve, 32);
     });
     await connection.setLocalDescription(offer);
+    await disableAudioSenderDtx(connection);
     // Yield after setLocalDescription — ICE candidate work otherwise stacks into
     // one longtask and freezes dialog Close for the whole gather window.
     await new Promise<void>((resolve) => {
@@ -2001,7 +2019,10 @@ export class TelegramGroupCallWebSession {
       groupCallId: this.input.groupCallId,
       audioSourceId: parsed.source,
       payload: joinPayloadJson,
-      isMuted: startMuted,
+      // Join unmuted on the SFU so mixed inbound audio is routed immediately.
+      // Listen-only still publishes near-silent RTP locally; Telegram mute is
+      // signaled right after SDP apply (is_muted / toggleGroupCallParticipant).
+      isMuted: false,
     });
     if (!joinResult.ok) {
       connection.close();
@@ -2096,7 +2117,8 @@ export class TelegramGroupCallWebSession {
     }
 
     const answerSdp = groupCallAnswerSdpFromTransport(slimTransport, localSdp, [], {
-      minimalVideo: startMuted,
+      // Full sendrecv video answer — minimal recvonly starved mixed audio demux.
+      minimalVideo: false,
     });
     const applyAnswer = async () => {
       if (isWebDriver) return;
@@ -2132,7 +2154,7 @@ export class TelegramGroupCallWebSession {
           groupCallId: this.input.groupCallId,
           sdpBytes: answerSdp.length,
           candidates: slimTransport.candidates.length,
-          minimalVideo: startMuted,
+          minimalVideo: false,
           level: "info",
         });
         // Yield once more immediately before the sync Chromium wedge.
@@ -2149,6 +2171,27 @@ export class TelegramGroupCallWebSession {
           groupCallId: this.input.groupCallId,
           level: "info",
         });
+        await disableAudioSenderDtx(connection);
+        if (startMuted) {
+          const muteResult = await setTelegramChatVoiceMicMuted({
+            chatId: this.input.chatId,
+            groupCallId: this.input.groupCallId,
+            isMuted: true,
+          });
+          if (!muteResult.ok) {
+            appWarn("[voice-join-mute]", muteResult.error, {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              note: "listen-only post-join mute failed — inbound may still work",
+            });
+          } else {
+            logPageDisplay("messages_voice_join_listen_muted", {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              level: "info",
+            });
+          }
+        }
       } catch (err) {
         logPageDisplay("messages_voice_sdp_answer_apply_fail", {
           chatId: this.input.chatId,
@@ -2205,7 +2248,7 @@ export class TelegramGroupCallWebSession {
       groupCallId: this.input.groupCallId,
       sdpBytes: answerSdp.length,
       candidates: slimTransport.candidates.length,
-      minimalVideo: startMuted,
+      minimalVideo: false,
       level: "info",
     });
     if (!isWebDriver) {

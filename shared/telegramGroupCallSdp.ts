@@ -300,7 +300,9 @@ class SdpBuilder {
     this.addTransport(transport, dtlsSetup, { includeCandidates: true });
     this.add("a=rtpmap:111 opus/48000/2");
     this.add("a=rtpmap:126 telephone-event/8000");
-    this.add("a=fmtp:111 minptime=10;useinbandfec=1;usedtx=1");
+    // Omit usedtx=1 — DTX suppresses our near-silent listen-only sender and the
+    // SFU often withholds mixed inbound audio (inboundPackets=0, remoteMuted).
+    this.add("a=fmtp:111 minptime=10;useinbandfec=1");
     this.add("a=rtcp-fb:111 transport-cc");
     this.add("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level");
 

@@ -2055,9 +2055,8 @@ export function MessageChatVoiceBar({
   const unlockThenJoin = useCallback(() => {
     unlockVoiceAutoplay();
     voiceSession.unlockAudio();
-    // Start mic during the click gesture so default-unmute after join_ok does not
-    // block on a permission prompt (and freezes less after SDP).
-    voiceSession.prefetchMic();
+    // Join muted — do not prefetch/getUserMedia here (browser mic light + RTP race).
+    // Mic is acquired only when the user unmutes.
     onJoin();
   }, [onJoin, voiceSession]);
 

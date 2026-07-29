@@ -272,57 +272,11 @@ export function useTelegramVoiceSession({
       if (visible) {
         session.resumeRemoteAudio();
       }
-      // Mic ON by default after join (Telegram Desktop parity). Wait for ICE to
-      // connect (or a short ceiling) before getUserMedia — doing it at ~480ms
-      // while ice=checking froze the dialog and often left remote audio muted.
-      micActiveRef.current = true;
-      setMicActive(true);
-      void (async () => {
-        const live = sessionRef.current;
-        if (!live || !live.isJoined || !micActiveRef.current) return;
-        const deadline =
-          (typeof performance !== "undefined" && typeof performance.now === "function"
-            ? performance.now()
-            : Date.now()) + 2_800;
-        while (!live.isMediaConnected()) {
-          const now =
-            typeof performance !== "undefined" && typeof performance.now === "function"
-              ? performance.now()
-              : Date.now();
-          if (now >= deadline) break;
-          if (!sessionRef.current?.isJoined || !micActiveRef.current) return;
-          await new Promise<void>((resolve) => setTimeout(resolve, 200));
-        }
-        // One paint after ICE so Close stays responsive during device enum.
-        await new Promise<void>((resolve) => {
-          if (typeof requestAnimationFrame === "function") {
-            requestAnimationFrame(() => setTimeout(resolve, 80));
-          } else {
-            setTimeout(resolve, 100);
-          }
-        });
-        const sessionLive = sessionRef.current;
-        if (!sessionLive || !sessionLive.isJoined || !micActiveRef.current) return;
-        try {
-          unlockVoiceAutoplay();
-          sessionLive.unlockRemoteAudio();
-          await sessionLive.setMicEnabled(true);
-          sessionLive.resumeRemoteAudio();
-          const enabled = sessionLive.isMicEnabled;
-          micActiveRef.current = enabled;
-          setMicActive(enabled);
-          if (!enabled) setLocalSpeaking(false);
-        } catch (err) {
-          micActiveRef.current = false;
-          setMicActive(false);
-          setLocalSpeaking(false);
-          appWarn(
-            "[voice-session-mic-default]",
-            err instanceof Error ? err.message : String(err),
-            { chatId, groupCallId },
-          );
-        }
-      })();
+      // Join muted: keep silent outbound RTP until the user unmutes. Auto-mic-on
+      // raced the silent sender (usingSilentAudio flipped early) and also
+      // contradicted enter-with-mic-off UX.
+      micActiveRef.current = false;
+      setMicActive(false);
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "voice_join_failed";
@@ -354,6 +308,7 @@ export function useTelegramVoiceSession({
 
     try {
       setError(null);
+      if (next) unlockVoiceAutoplay();
       session.unlockRemoteAudio();
       await session.setMicEnabled(next);
       setJoined(session.isJoined);
