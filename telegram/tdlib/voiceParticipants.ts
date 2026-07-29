@@ -390,6 +390,8 @@ type CallParticipantsCache = {
    * the same speaking overlay + thin-roster stub fallback as the poll path.
    */
   speakers?: Map<string, CollectedParticipant>;
+  /** Throttle SSE refresh while is_speaking stays true (long utterances). */
+  lastSpeakingRefreshAt?: number;
 };
 
 const PROFILE_TTL_MS = 30 * 60_000;
@@ -475,6 +477,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
   let speakingBecameTrue = false;
   let speakingBecameFalse = false;
   let mediaBecameLive = false;
+  let speakingRefresh = false;
   if (!order) {
     // Empty order means left per TDLib. Muted self can also get empty order while
     // still joined — keep pinned self. Everyone else must drop immediately or the
@@ -537,12 +540,19 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       videoInfo: nextVideo,
       screenInfo: nextScreen,
     });
+    if (isSpeaking) {
+      const lastRefresh = cached.lastSpeakingRefreshAt ?? 0;
+      if (now - lastRefresh >= 900) {
+        cached.lastSpeakingRefreshAt = now;
+        speakingRefresh = true;
+      }
+    }
   }
   // Speaking START and new camera/screencast endpoints flush immediately so the
   // dialog can renegotiate for presentation video without waiting on debounce.
   void speakingBecameFalse;
   bumpVoiceCallRevision(callId, {
-    immediate: speakingBecameTrue || mediaBecameLive,
+    immediate: speakingBecameTrue || mediaBecameLive || speakingRefresh,
   });
 }
 
@@ -581,6 +591,7 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
   let changed = false;
   let speakingBecameTrue = false;
   let speakingBecameFalse = false;
+  let speakingRefresh = false;
 
   const now = Date.now();
   for (const [key, speaker] of speakers) {
@@ -601,6 +612,11 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
         lastSpokeAt: now,
       });
       changed = true;
+      const lastRefresh = cached.lastSpeakingRefreshAt ?? 0;
+      if (now - lastRefresh >= 900) {
+        cached.lastSpeakingRefreshAt = now;
+        speakingRefresh = true;
+      }
       continue;
     }
     if (!prev.isSpeaking) continue;
@@ -641,7 +657,7 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
       revision: (callMembersCache.get(callId)?.revision ?? 0) + 1,
     });
   }
-  bumpVoiceCallRevision(callId, { immediate: speakingBecameTrue });
+  bumpVoiceCallRevision(callId, { immediate: speakingBecameTrue || speakingRefresh });
 }
 
 function participantKey(userId: number | null, chatId: number | null): string | null {

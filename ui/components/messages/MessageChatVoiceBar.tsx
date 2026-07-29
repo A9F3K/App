@@ -484,17 +484,77 @@ export function MessageChatVoiceBar({
     return `t:${row.title}`;
   }, []);
 
+  /** Prefer stable u:/c: keys — SSE stubs often lack user_id while the roster has it. */
+  const canonicalSpeakKey = useCallback(
+    (row: TelegramChatVoiceParticipant): string => {
+      if (row.is_self) return "self";
+      if (row.user_id != null && row.user_id > 0) return `u:${row.user_id}`;
+      if (row.chat_id != null && row.chat_id !== 0) return `c:${row.chat_id}`;
+      const title = row.title.trim();
+      if (title) {
+        const match = participantsRef.current.find((candidate) => {
+          if (candidate.is_self) return false;
+          if (candidate.title.trim() !== title) return false;
+          return candidate.user_id != null && candidate.user_id > 0;
+        });
+        if (match?.user_id != null) return `u:${match.user_id}`;
+        const chatMatch = participantsRef.current.find(
+          (candidate) =>
+            candidate.title.trim() === title &&
+            candidate.chat_id != null &&
+            candidate.chat_id !== 0,
+        );
+        if (chatMatch?.chat_id != null) return `c:${chatMatch.chat_id}`;
+      }
+      return `t:${title || "?"}`;
+    },
+    [],
+  );
+
   const applySpeakingMap = useCallback(
     (rows: TelegramChatVoiceParticipant[]) => {
       // Speaking glow lives in speakingByKey so membership rows stay referentially
       // stable (tdesktop / Telegram Web parity). Keep hold short so mics clear.
       const now = Date.now();
-      const holdMs = 2_400;
+      const holdMs = 3_200;
       let soonestExpiry = 0;
       const next: Record<string, true> = {};
       const joinedLocally = voiceJoinedRef.current;
+      // Union SSE/poll rows with the painted roster so speaking flags reach faces
+      // already on screen when a partial recent_speakers payload omits them.
+      const mergedByKey = new Map<string, TelegramChatVoiceParticipant>();
+      for (const row of participantsRef.current) {
+        mergedByKey.set(participantSpeakKey(row), row);
+      }
       for (const row of rows) {
-        const key = participantSpeakKey(row);
+        const rosterKey = participantSpeakKey(row);
+        const prev = mergedByKey.get(rosterKey);
+        mergedByKey.set(
+          rosterKey,
+          prev
+            ? {
+                ...prev,
+                ...row,
+                title: row.title.trim() || prev.title,
+                description: row.description || prev.description,
+                is_speaking: Boolean(row.is_speaking || prev.is_speaking),
+              }
+            : row,
+        );
+      }
+      const mergedRows = [...mergedByKey.values()];
+      const markSpeaking = (row: TelegramChatVoiceParticipant) => {
+        const keys = new Set([
+          canonicalSpeakKey(row),
+          participantSpeakKey(row),
+        ]);
+        for (const speakKey of keys) {
+          speakingHoldUntilRef.current.set(speakKey, now + holdMs);
+          next[speakKey] = true;
+        }
+      };
+      for (const row of mergedRows) {
+        const key = canonicalSpeakKey(row);
         // Local self: only RMS + live mic. TDLib often marks self speaking on join
         // while the mic is still muted — that painted a green ring incorrectly.
         if (key === "self" && joinedLocally) {
@@ -507,16 +567,21 @@ export function MessageChatVoiceBar({
           continue;
         }
         if (row.is_speaking) {
-          speakingHoldUntilRef.current.set(key, now + holdMs);
-          next[key] = true;
+          markSpeaking(row);
           continue;
         }
-        const until = speakingHoldUntilRef.current.get(key) ?? 0;
+        const rosterKey = participantSpeakKey(row);
+        const until = Math.max(
+          speakingHoldUntilRef.current.get(key) ?? 0,
+          speakingHoldUntilRef.current.get(rosterKey) ?? 0,
+        );
         if (until > now) {
           next[key] = true;
+          if (rosterKey !== key) next[rosterKey] = true;
           if (soonestExpiry === 0 || until < soonestExpiry) soonestExpiry = until;
         } else {
           speakingHoldUntilRef.current.delete(key);
+          if (rosterKey !== key) speakingHoldUntilRef.current.delete(rosterKey);
         }
       }
       // Partial SSE snapshots (recent_speakers, thin roster) omit people who are
@@ -552,7 +617,7 @@ export function MessageChatVoiceBar({
           });
         }, soonestExpiry - now + 16);
       }
-      speakingListedRef.current = rows.length;
+      speakingListedRef.current = mergedRows.length;
       pendingSpeakingMapRef.current = next;
       if (speakingRafRef.current != null) return;
       const schedule =
@@ -590,7 +655,7 @@ export function MessageChatVoiceBar({
         });
       });
     },
-    [chatId, participantSpeakKey],
+    [canonicalSpeakKey, chatId, participantSpeakKey],
   );
 
   const applyRosterRows = useCallback(
@@ -1424,20 +1489,24 @@ export function MessageChatVoiceBar({
 
   const displayParticipants = useMemo(() => {
     return participants.map((row) => {
-      const key = participantSpeakKey(row);
-      const speaking = Boolean(speakingByKey[key]);
+      const speaking = Boolean(
+        speakingByKey[canonicalSpeakKey(row)] || speakingByKey[participantSpeakKey(row)],
+      );
       return speaking === Boolean(row.is_speaking)
         ? row
         : { ...row, is_speaking: speaking };
     });
-  }, [participantSpeakKey, participants, speakingByKey]);
+  }, [canonicalSpeakKey, participantSpeakKey, participants, speakingByKey]);
 
   const resolveParticipantSpeaking = useCallback(
     (row: TelegramChatVoiceParticipant) => {
-      const key = participantSpeakKey(row);
-      return Boolean(speakingByKey[key] || row.is_speaking);
+      return Boolean(
+        speakingByKey[canonicalSpeakKey(row)] ||
+          speakingByKey[participantSpeakKey(row)] ||
+          row.is_speaking,
+      );
     },
-    [participantSpeakKey, speakingByKey],
+    [canonicalSpeakKey, participantSpeakKey, speakingByKey],
   );
 
   // Opening the sheet: paint first, then load roster. Do NOT wait for WebRTC
@@ -2250,7 +2319,8 @@ export function MessageChatVoiceBar({
                   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
                   const participantTitle = participant.title.trim() || "?";
                   const speaking = Boolean(
-                    speakingByKey[participantSpeakKey(participant)] ||
+                    speakingByKey[canonicalSpeakKey(participant)] ||
+                      speakingByKey[participantSpeakKey(participant)] ||
                       participant.is_speaking,
                   );
                   const avatarPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_PX;
