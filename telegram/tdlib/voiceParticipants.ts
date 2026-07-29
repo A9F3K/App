@@ -341,6 +341,14 @@ function peekParticipantProfile(
   };
 }
 
+/** Cached roster title for in-call message overlays (empty until profiles warm). */
+export function peekVoiceParticipantTitle(
+  userId: number | null,
+  chatId: number | null,
+): string {
+  return peekParticipantProfile(userId, chatId).title;
+}
+
 function normalizeVideoInfo(
   raw: TdParticipantVideoInfo | null | undefined,
 ): VoiceParticipantVideoInfo | null {

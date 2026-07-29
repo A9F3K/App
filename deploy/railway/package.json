@@ -8,7 +8,7 @@
   "dependencies": {
     "@neondatabase/serverless": "^1.0.2",
     "dotenv": "^16.6.1",
-    "prebuilt-tdlib": "^0.1008050.0",
+    "prebuilt-tdlib": "0.1008066.0",
     "tdl": "^8.1.0",
     "tsx": "^4.19.2"
   }

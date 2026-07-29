@@ -51,6 +51,7 @@ import {
   MessageChatVoiceMediaStage,
   type VoiceMediaStageSource,
 } from "./MessageChatVoiceVideoPlane";
+import { MessageChatComposePill } from "./MessageChatComposePill";
 import {
   MessageChatVoiceMoreMenu,
   type VoiceMoreMenuAnchor,
@@ -167,6 +168,8 @@ const SIDE_BY_SIDE_BREAKPOINT_PX =
 const VOICE_SIZE_STORAGE_KEY = "hsp.voiceChatDialog.size.v1";
 const VOICE_OFFSET_STORAGE_KEY = "hsp.voiceChatDialog.offset.v1";
 const VOICE_SPEAKING_MIC_COLOR = "#34C759";
+/** How long an ephemeral chat message stays visible before fading out (ms). */
+const CHAT_MSG_TTL_MS = 6_000;
 
 const AH = layout.authenticatedHome;
 const HIT = AH.splitPaneDividerHitWidthPx;
@@ -209,6 +212,18 @@ type Props = {
   videoActive?: boolean;
   /** Adapt outbound screen-share encode to the in-dialog stage size. */
   onScreenShareDisplaySize?: (width: number, height: number) => void;
+  /** Ephemeral chat messages to show above the controls (newest first). */
+  chatMessages?: VoiceChatMessage[];
+  /** Submit an in-call group message (TDLib sendGroupCallMessage). */
+  onSendChatMessage?: (text: string) => void | Promise<void>;
+};
+
+export type VoiceChatMessage = {
+  id: string;
+  text: string;
+  senderName: string;
+  /** Unix ms timestamp for display / auto-dismiss. */
+  sentAt: number;
 };
 
 type SheetSize = { width: number; height: number };
@@ -735,6 +750,8 @@ export function MessageChatVoicePopover({
   localScreenStream = null,
   videoActive = false,
   onScreenShareDisplaySize,
+  chatMessages = [],
+  onSendChatMessage,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
@@ -1321,12 +1338,6 @@ export function MessageChatVoicePopover({
     localScreenStream || remoteVideoStream ? 280 : 220,
     MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
   );
-  const listMaxHeight = Math.max(
-    80,
-    sheetSize.height -
-      SHEET_CHROME_HEIGHT_PX -
-      (sideBySide || !videoStageActive ? 0 : stackedVideoMaxHeight + 16),
-  );
   const handles: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
 
   useEffect(() => {
@@ -1485,19 +1496,18 @@ export function MessageChatVoicePopover({
     </View>
   );
 
-  const renderParticipantList = (maxHeight: number) => (
+  const renderParticipantList = (_maxHeight?: number) => (
     <View
       style={{
         paddingHorizontal: 20,
         flex: 1,
         minHeight: 0,
-        maxHeight,
         zIndex: 1,
         overflow: "hidden",
       }}
       pointerEvents="auto"
     >
-      <ScrollView style={{ flex: 1, maxHeight }} nestedScrollEnabled>
+      <ScrollView style={{ flex: 1 }} nestedScrollEnabled>
         {displayParticipants.length > 0 ? (
           displayParticipants.map((participant, index) => (
             <VoiceParticipantRow
@@ -1525,6 +1535,169 @@ export function MessageChatVoicePopover({
       </ScrollView>
     </View>
   );
+
+  const [visibleMsgIds, setVisibleMsgIds] = useState<Set<string>>(new Set());
+  const msgTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+
+  useEffect(() => {
+    const timers = msgTimersRef.current;
+    for (const msg of chatMessages) {
+      if (timers.has(msg.id)) continue;
+      setVisibleMsgIds((prev) => {
+        const next = new Set(prev);
+        next.add(msg.id);
+        return next;
+      });
+      const remaining = Math.max(0, msg.sentAt + CHAT_MSG_TTL_MS - Date.now());
+      timers.set(
+        msg.id,
+        setTimeout(() => {
+          timers.delete(msg.id);
+          setVisibleMsgIds((prev) => {
+            const next = new Set(prev);
+            next.delete(msg.id);
+            return next;
+          });
+        }, remaining),
+      );
+    }
+    return () => {
+      for (const [id, timer] of timers) {
+        clearTimeout(timer);
+        timers.delete(id);
+      }
+    };
+  }, [chatMessages]);
+
+  const visibleChatMessages = useMemo(
+    () => chatMessages.filter((m) => visibleMsgIds.has(m.id)),
+    [chatMessages, visibleMsgIds],
+  );
+  const hasChatMessages = visibleChatMessages.length > 0;
+
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeDraft, setComposeDraft] = useState("");
+  const [composeSending, setComposeSending] = useState(false);
+
+  useEffect(() => {
+    if (!visible) {
+      setComposeOpen(false);
+      setComposeDraft("");
+      setComposeSending(false);
+    }
+  }, [visible]);
+
+  const submitCompose = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || !onSendChatMessage || composeSending) return;
+      setComposeSending(true);
+      try {
+        await onSendChatMessage(trimmed);
+        setComposeDraft("");
+        setComposeOpen(false);
+      } finally {
+        setComposeSending(false);
+      }
+    },
+    [composeSending, onSendChatMessage],
+  );
+
+  const renderChatOverlay = () => {
+    if (!hasChatMessages) return null;
+    return (
+      <View
+        pointerEvents="none"
+        style={{
+          paddingHorizontal: 20,
+          flexShrink: 0,
+          zIndex: 30,
+        }}
+      >
+        {visibleChatMessages.slice(-4).map((msg) => (
+          <View
+            key={msg.id}
+            style={{
+              flexDirection: "row",
+              marginBottom: 4,
+              ...(Platform.OS === "web"
+                ? ({ animation: "voiceChatMsgFadeIn 0.25s ease-out" } as object)
+                : {}),
+            }}
+          >
+            <Text
+              numberOfLines={2}
+              style={{
+                fontFamily:
+                  Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                fontSize: 13,
+                lineHeight: 17,
+                color: colors.primary,
+                includeFontPadding: false,
+              }}
+            >
+              <Text style={{ fontWeight: "600" }}>{msg.senderName}: </Text>
+              {msg.text}
+            </Text>
+          </View>
+        ))}
+      </View>
+    );
+  };
+
+  const renderControlsShadow = () => {
+    if (!hasChatMessages) return null;
+    return (
+      <View
+        pointerEvents="none"
+        style={{
+          height: 24,
+          flexShrink: 0,
+          zIndex: 29,
+          ...(Platform.OS === "web"
+            ? ({
+                background: `linear-gradient(to bottom, transparent, ${colors.background})`,
+              } as object)
+            : {}),
+        }}
+      />
+    );
+  };
+
+  const renderChatComposer = () => {
+    if (!composeOpen || !onSendChatMessage) return null;
+    return (
+      <View
+        style={{
+          flexShrink: 0,
+          zIndex: 40,
+          marginTop: 8,
+          paddingHorizontal: 12,
+          ...(Platform.OS === "web"
+            ? ({ position: "relative" } as object)
+            : {}),
+        }}
+        pointerEvents="auto"
+        {...(Platform.OS === "web"
+          ? ({
+              onPointerDown: (e: { stopPropagation?: () => void }) =>
+                e.stopPropagation?.(),
+            } as object)
+          : {})}
+      >
+        <MessageChatComposePill
+          placeholder={t("messages.chatWrite.placeholderPill")}
+          value={composeDraft}
+          onChangeText={setComposeDraft}
+          onSubmit={(text) => {
+            void submitCompose(text);
+          }}
+          sendAccessibilityLabel={t("messages.chatWrite.send")}
+          canSend={Boolean(composeDraft.trim()) && !composeSending}
+        />
+      </View>
+    );
+  };
 
   const renderDivider = () => (
     <View
@@ -1619,33 +1792,15 @@ export function MessageChatVoicePopover({
         variant="simple"
         undercoverColor={colors.undercover}
         onPress={() => {
-          requestClose("messages_chip");
-        }}
-      >
-        <VoiceMessagesIcon color={iconColor} size={CONTROL_ICON_PX} />
-      </VoiceControlChip>
-      <VoiceControlChip
-        key="screen"
-        testId="screen-share"
-        label={
-          screenSharing
-            ? t("messages.voiceChat.controls.stopSharing")
-            : t("messages.voiceChat.controls.screenShare")
-        }
-        variant="simple"
-        undercoverColor={colors.undercover}
-        onPress={() => {
           logPageDisplay("messages_voice_dialog_control_click", {
-            action: screenSharing ? "stop_screen_share" : "start_screen_share",
+            action: composeOpen ? "hide_compose" : "show_compose",
           });
-          if (screenSharing) onStopScreenShare();
-          else onStartScreenShare();
+          setComposeOpen((prev) => !prev);
         }}
       >
-        <VoiceScreenShareIcon
-          color={screenSharing ? VOICE_SPEAKING_MIC_COLOR : iconColor}
+        <VoiceMessagesIcon
+          color={composeOpen ? VOICE_SPEAKING_MIC_COLOR : iconColor}
           size={CONTROL_ICON_PX}
-          active={screenSharing}
         />
       </VoiceControlChip>
       <VoiceControlChip
@@ -1817,9 +1972,12 @@ export function MessageChatVoicePopover({
               }}
             >
               {renderHeader()}
-              {renderParticipantList(listMaxHeight)}
+              {renderParticipantList()}
+              {renderChatOverlay()}
+              {renderControlsShadow()}
               {renderDivider()}
               {renderControls()}
+              {renderChatComposer()}
             </View>
           </View>
         ) : (
@@ -1832,9 +1990,12 @@ export function MessageChatVoicePopover({
               horizontalInsetPx={20}
               marginBottomPx={16}
             />
-            {renderParticipantList(listMaxHeight)}
+            {renderParticipantList()}
+            {renderChatOverlay()}
+            {renderControlsShadow()}
             {renderDivider()}
             {renderControls()}
+            {renderChatComposer()}
           </>
         )}
       </View>

@@ -38,12 +38,15 @@ type Props = {
   trailing?: ReactNode;
   /** Reports measured compose pill height for message list bottom inset. */
   onComposeOverlayHeightChange?: (heightPx: number) => void;
+  /** Fired after a message is successfully submitted (draft cleared). */
+  onSent?: () => void;
 };
 
 export function MessageChatWriteBottomBar({
   embedded = false,
   trailing = null,
   onComposeOverlayHeightChange,
+  onSent,
 }: Props) {
   const { t } = useAppStrings();
   const colors = useColors();
@@ -122,6 +125,7 @@ export function MessageChatWriteBottomBar({
             );
             clearMessageChatCompose(selectedChat.telegram_chat_id);
             setDraft("");
+            onSent?.();
           } else {
             appWarn("[message-edit]", String(result.error), {
               chatId: selectedChat.telegram_chat_id,
@@ -147,6 +151,7 @@ export function MessageChatWriteBottomBar({
           clearMessageChatCompose(selectedChat.telegram_chat_id);
           setDraft("");
           setPendingPhoto(null);
+          onSent?.();
 
           const result = await sendTelegramChatPhoto({
             chatId: selectedChat.telegram_chat_id,
@@ -196,6 +201,7 @@ export function MessageChatWriteBottomBar({
         publishOutgoingChatMessage(selectedChat.telegram_chat_id, optimistic);
         clearMessageChatCompose(selectedChat.telegram_chat_id);
         setDraft("");
+        onSent?.();
 
         const result = await sendTelegramChatMessage(
           selectedChat.telegram_chat_id,
@@ -240,7 +246,7 @@ export function MessageChatWriteBottomBar({
         setSending(false);
       }
     },
-    [compose, isTelegramMessagesConnected, selectedChat],
+    [compose, isTelegramMessagesConnected, onSent, selectedChat],
   );
 
   const onDismissCompose = useCallback(() => {

@@ -180,7 +180,7 @@
     "lottie-web": "^5.13.0",
     "openai": "^6.25.0",
     "pako": "^3.0.0",
-    "prebuilt-tdlib": "^0.1008050.0",
+    "prebuilt-tdlib": "^0.1008066.0",
     "qrcode": "^1.5.4",
     "react": "19.1.0",
     "react-dom": "19.1.0",

@@ -9,6 +9,7 @@ import { shouldIncludeChatInList } from "./chatListFilter.js";
 import { emojiStatusCustomIdFromUser, parseEmojiStatusCustomId } from "./emojiStatus.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
 import { ingestGroupCallParticipantUpdate, ingestGroupCallUpdate } from "./voiceParticipants.js";
+import { ingestNewGroupCallMessage } from "./voiceCallMessages.js";
 
 const CHAT_REFRESH_DEBOUNCE_MS = 800;
 
@@ -396,6 +397,12 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
     }
     if (type === "updateGroupCall") {
       ingestGroupCallUpdate(update);
+      return;
+    }
+    if (type === "updateNewGroupCallMessage") {
+      ingestNewGroupCallMessage(update, {
+        telegramUsername: record.telegramUsername,
+      });
       return;
     }
     if (typeof type !== "string" || !LIVE_UPDATE_TYPES.has(type)) return;

@@ -1900,6 +1900,36 @@ export async function endChatVoiceScreenShareForUser(
   }
 }
 
+export async function sendChatVoiceCallMessageForUser(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  text: string,
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  message: import("./voiceCallMessages.js").VoiceCallMessageRow | null;
+}> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready", message: null };
+  }
+
+  try {
+    const { sendChatVoiceCallMessage } = await import("./voiceCallMessages.js");
+    return await sendChatVoiceCallMessage(
+      record.client,
+      chatId,
+      groupCallId,
+      text,
+      telegramUsername,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "voice_call_message_failed";
+    return { ok: false, error: message, message: null };
+  }
+}
+
 export async function startChatVoiceForUser(
   telegramUsername: string,
   chatId: number,

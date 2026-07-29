@@ -1050,6 +1050,128 @@ export async function gatewayEndChatVoiceScreenShare(
   return { ok: true, error: null };
 }
 
+export type GatewayVoiceCallMessage = {
+  id: string;
+  message_id: number;
+  group_call_id: number;
+  text: string;
+  sender_name: string;
+  sender_user_id: number | null;
+  sender_chat_id: number | null;
+  is_self: boolean;
+  sent_at: number;
+};
+
+export async function gatewaySendChatVoiceCallMessage(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  text: string,
+): Promise<{
+  ok: boolean;
+  error: string | null;
+  message: GatewayVoiceCallMessage | null;
+}> {
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  const { response, json } = await gatewayFetch("/v1/chat/voice/message/send", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+      ...(callId != null ? { groupCallId: callId } : {}),
+      text,
+    }),
+  });
+  const raw = json.message;
+  const message =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as GatewayVoiceCallMessage)
+      : null;
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "voice_call_message_failed",
+      message,
+    };
+  }
+  return { ok: true, error: null, message };
+}
+
+export function gatewayVoiceCallMessagesStreamUrl(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+  sinceRevision?: number | null,
+): string {
+  const base = getGatewayBaseUrl().replace(/\/$/, "");
+  const params = new URLSearchParams({
+    telegramUsername,
+    chatId: String(Math.trunc(chatId)),
+  });
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  if (callId != null) params.set("groupCallId", String(callId));
+  if (
+    sinceRevision != null &&
+    Number.isFinite(sinceRevision) &&
+    sinceRevision > 0
+  ) {
+    params.set("sinceRevision", String(sinceRevision));
+  }
+  return `${base}/v1/chat/voice/messages/stream?${params.toString()}`;
+}
+
+export async function gatewayOpenVoiceCallMessagesStream(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId?: number | null,
+  sinceRevision?: number | null,
+  signal?: AbortSignal,
+): Promise<Response | null> {
+  const url = gatewayVoiceCallMessagesStreamUrl(
+    telegramUsername,
+    chatId,
+    groupCallId,
+    sinceRevision,
+  );
+  const secret = getGatewaySecret();
+  const started = Date.now();
+  logTdlibGatewayApi("gateway_stream_start", {
+    method: "GET",
+    path: "/v1/chat/voice/messages/stream",
+    gatewayHost: safeHost(url),
+  });
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { "X-Gateway-Secret": secret },
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      logTdlibGatewayApi("gateway_stream_done", {
+        path: "/v1/chat/voice/messages/stream",
+        status: response.status,
+        ok: false,
+        elapsedMs: Date.now() - started,
+      });
+      return null;
+    }
+    logTdlibGatewayApi("gateway_stream_open", {
+      path: "/v1/chat/voice/messages/stream",
+      status: response.status,
+      ok: true,
+      elapsedMs: Date.now() - started,
+    });
+    return response;
+  } catch (err) {
+    logTdlibGatewayApi("gateway_stream_error", {
+      path: "/v1/chat/voice/messages/stream",
+      error: err instanceof Error ? err.message : String(err),
+      elapsedMs: Date.now() - started,
+    });
+    return null;
+  }
+}
+
 export async function gatewayStartChatVoice(
   telegramUsername: string,
   chatId: number,

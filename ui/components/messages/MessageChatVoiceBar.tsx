@@ -22,12 +22,15 @@ import {
   MessageChatLeaveVoiceIcon,
   MessageChatMicIcon,
 } from "./MessageChatVoiceIcons";
-import { MessageChatVoicePopover } from "./MessageChatVoicePopover";
+import { MessageChatVoicePopover, type VoiceChatMessage } from "./MessageChatVoicePopover";
 import { MessageChatVoiceVideoPlane } from "./MessageChatVoiceVideoPlane";
 import {
   useTelegramVoiceParticipantsStream,
   type VoiceParticipantsStreamSnapshot,
 } from "./useTelegramVoiceParticipantsStream";
+import { useTelegramVoiceCallMessagesStream } from "./useTelegramVoiceCallMessagesStream";
+import { sendTelegramChatVoiceCallMessage } from "../../telegram/sendTelegramChatVoiceCallMessage";
+import type { TelegramVoiceCallMessage } from "../../telegram/sendTelegramChatVoiceCallMessage";
 import { useVoiceDialogFreezeDetector } from "./useVoiceDialogFreezeDetector";
 import {
   MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
@@ -97,6 +100,9 @@ export function MessageChatVoiceBar({
   const rosterCountHintStateRef = useRef(0);
   /** Speaking glow is a side map (tdesktop parity) — never rebuilds roster order. */
   const [speakingByKey, setSpeakingByKey] = useState<Record<string, true>>({});
+  /** In-call ephemeral messages (TDLib sendGroupCallMessage / updateNewGroupCallMessage). */
+  const [voiceChatMessages, setVoiceChatMessages] = useState<VoiceChatMessage[]>([]);
+  const voiceChatMessagesRevisionRef = useRef(0);
   /** Hide the empty strip until a poll/SSE proves real (non-self) presence. */
   const [presenceConfirmed, setPresenceConfirmed] = useState(false);
   const stripPaddingX = layout.contentSideInsetPx;
@@ -1134,6 +1140,87 @@ export function MessageChatVoiceBar({
     onParticipants: onStreamParticipants,
     onStreamActiveChange,
   });
+
+  const mapVoiceCallMessage = useCallback(
+    (row: TelegramVoiceCallMessage): VoiceChatMessage => ({
+      id: row.id,
+      text: row.text,
+      senderName: row.sender_name || (row.is_self ? "You" : "?"),
+      sentAt: row.sent_at,
+    }),
+    [],
+  );
+
+  const appendVoiceChatMessage = useCallback(
+    (row: TelegramVoiceCallMessage) => {
+      const mapped = mapVoiceCallMessage(row);
+      setVoiceChatMessages((prev) => {
+        if (prev.some((m) => m.id === mapped.id)) return prev;
+        // Prefer the TDLib-backed id over the optimistic local row.
+        if (!mapped.id.includes(":local:")) {
+          const withoutLocal = prev.filter(
+            (m) =>
+              !(
+                m.id.includes(":local:") &&
+                m.text === mapped.text &&
+                m.senderName === mapped.senderName
+              ),
+          );
+          const next = [...withoutLocal, mapped];
+          return next.length > 40 ? next.slice(-40) : next;
+        }
+        const next = [...prev, mapped];
+        return next.length > 40 ? next.slice(-40) : next;
+      });
+    },
+    [mapVoiceCallMessage],
+  );
+
+  useTelegramVoiceCallMessagesStream({
+    enabled:
+      isTelegramMessagesConnected &&
+      Boolean(popoverOpen) &&
+      Boolean(joined) &&
+      groupCallId != null &&
+      groupCallId > 0,
+    chatId,
+    groupCallId,
+    getSinceRevision: () => voiceChatMessagesRevisionRef.current || null,
+    onReadyMessages: (messages, revision) => {
+      voiceChatMessagesRevisionRef.current = revision;
+      setVoiceChatMessages(messages.map(mapVoiceCallMessage));
+    },
+    onMessage: (message, revision) => {
+      if (revision > voiceChatMessagesRevisionRef.current) {
+        voiceChatMessagesRevisionRef.current = revision;
+      }
+      appendVoiceChatMessage(message);
+    },
+  });
+
+  useEffect(() => {
+    if (popoverOpen) return;
+    setVoiceChatMessages([]);
+    voiceChatMessagesRevisionRef.current = 0;
+  }, [popoverOpen]);
+
+  const onSendVoiceChatMessage = useCallback(
+    async (text: string) => {
+      const result = await sendTelegramChatVoiceCallMessage({
+        chatId,
+        groupCallId,
+        text,
+      });
+      if (!result.ok) {
+        appWarn("[voice-call-message]", result.error, { chatId, groupCallId });
+        return;
+      }
+      if (result.message) {
+        appendVoiceChatMessage(result.message);
+      }
+    },
+    [appendVoiceChatMessage, chatId, groupCallId],
+  );
 
   const refreshParticipants = useCallback(async (): Promise<"ok" | "retry_soon" | "backoff"> => {
     if (!isTelegramMessagesConnected) return "backoff";
@@ -2498,6 +2585,8 @@ export function MessageChatVoiceBar({
         localScreenStream={voiceSession.localScreenStream}
         videoActive={Boolean(joined && voiceSession.joined && visible)}
         onScreenShareDisplaySize={voiceSession.setScreenShareDisplaySize}
+        chatMessages={voiceChatMessages}
+        onSendChatMessage={onSendVoiceChatMessage}
       />
     </>
   );
