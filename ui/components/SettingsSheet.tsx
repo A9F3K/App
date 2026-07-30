@@ -31,7 +31,13 @@ export function SettingsSheet() {
       }
     >
       {telegramUsername ? (
-        <Text style={[typographyRect15, appModalSheetStyles.body, { color: colors.secondary }]}>
+        <Text
+          style={[
+            typographyRect15,
+            appModalSheetStyles.body,
+            { color: colors.secondary, textAlign: "left" },
+          ]}
+        >
           {tf("home.wallet.loggedInAs", { username: telegramUsername })}
         </Text>
       ) : null}
