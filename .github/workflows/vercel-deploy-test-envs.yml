@@ -20,15 +20,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build web assets
-        # Skip migrate/stamp DB — CI has no DATABASE_URL; stamp falls back to 0.
-        run: npx tsx scripts/vercel-export-web.ts
-        env:
-          SKIP_DB_MIGRATE: "1"
+      - name: Link Vercel project
+        # Prefer checked-in .vercel/project.json (hsbexpo) over stale secret IDs
+        # that previously targeted the wrong project (hyperlinksspaceprsbot).
+        run: |
+          ORG_ID=$(node -p "require('./.vercel/project.json').orgId")
+          PROJECT_ID=$(node -p "require('./.vercel/project.json').projectId")
+          echo "VERCEL_ORG_ID=$ORG_ID" >> "$GITHUB_ENV"
+          echo "VERCEL_PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
+          echo "Linked org=$ORG_ID project=$PROJECT_ID"
 
       - name: Deploy to Vercel
-        run: npx vercel@latest deploy --prebuilt --prod --yes --token "$VERCEL_TOKEN"
+        # Full remote build (not --prebuilt) so /api serverless routes stay intact.
+        run: npx vercel@38.0.0 deploy --prod --yes --token "$VERCEL_TOKEN"
         env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          VERCEL_ORG_ID: ${{ env.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ env.VERCEL_PROJECT_ID }}
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          SKIP_DB_MIGRATE: "1"
