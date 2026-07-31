@@ -21,14 +21,14 @@ jobs:
         run: npm ci
 
       - name: Link Vercel project
-        # Prefer checked-in .vercel/project.json (hsbexpo) over stale secret IDs
-        # that previously targeted the wrong project (hyperlinksspaceprsbot).
+        # hsbexpo — do not use stale VERCEL_* secrets (they pointed at hyperlinksspaceprsbot).
+        # .vercel/project.json is gitignored, so IDs are inlined here.
         run: |
-          ORG_ID=$(node -p "require('./.vercel/project.json').orgId")
-          PROJECT_ID=$(node -p "require('./.vercel/project.json').projectId")
-          echo "VERCEL_ORG_ID=$ORG_ID" >> "$GITHUB_ENV"
-          echo "VERCEL_PROJECT_ID=$PROJECT_ID" >> "$GITHUB_ENV"
-          echo "Linked org=$ORG_ID project=$PROJECT_ID"
+          echo "VERCEL_ORG_ID=team_mVzQdD8oDUbuxCjFcZKAeekc" >> "$GITHUB_ENV"
+          echo "VERCEL_PROJECT_ID=prj_n2G3iB1fyD0QFX0jNvOyAnu1X1rO" >> "$GITHUB_ENV"
+          mkdir -p .vercel
+          printf '%s\n' '{"orgId":"team_mVzQdD8oDUbuxCjFcZKAeekc","projectId":"prj_n2G3iB1fyD0QFX0jNvOyAnu1X1rO"}' > .vercel/project.json
+          echo "Linked hsbexpo"
 
       - name: Deploy to Vercel
         # Full remote build (not --prebuilt) so /api serverless routes stay intact.
