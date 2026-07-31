@@ -55,6 +55,54 @@ export type TelegramGroupCallTransport = {
   candidates: TelegramGroupCallCandidate[];
 };
 
+/** Codec line from Telegram SFU join payload (`video.payload-types`). */
+export type TelegramGroupCallPayloadType = {
+  id: number;
+  name: string;
+  clockrate: number;
+  channels?: number;
+  parameters?: Record<string, string | number>;
+  "rtcp-fbs"?: Array<{ type: string; subtype?: string }>;
+};
+
+export type TelegramGroupCallRtpExtension = {
+  id: number;
+  uri: string;
+};
+
+/** SFU RTP carries the sender's MID; negotiating MID on video demuxes packets away. */
+const RTP_MID_EXTENSION_URI = "urn:ietf:params:rtp-hdrext:sdes:mid";
+
+function isRtpMidExtensionUri(uri: string): boolean {
+  return uri.trim().toLowerCase() === RTP_MID_EXTENSION_URI;
+}
+
+function filterVideoRtpExtensions(
+  extensions?: TelegramGroupCallRtpExtension[],
+): TelegramGroupCallRtpExtension[] {
+  return (extensions ?? []).filter((ext) => !isRtpMidExtensionUri(ext.uri));
+}
+
+/** Drop MID extmap lines copied from a browser offer (see GroupInstanceReferenceImpl). */
+function filterOfferVideoCodecLines(lines: string[]): string[] {
+  return lines.filter((line) => {
+    if (!line.startsWith("a=extmap:")) return true;
+    const uri = line.replace(/^a=extmap:\S+\s+/, "").trim();
+    return !isRtpMidExtensionUri(uri);
+  });
+}
+
+/**
+ * Join response media params. Screencast RTP uses these payload-type ids — if the
+ * answer only advertises VP8/VP9, inbound packets arrive but framesDecoded stays 0
+ * (black <video>).
+ */
+export type ParsedGroupCallJoin = {
+  transport: TelegramGroupCallTransport;
+  videoPayloadTypes: TelegramGroupCallPayloadType[];
+  videoExtensions: TelegramGroupCallRtpExtension[];
+};
+
 /** One `a=ssrc-group` for a remote participant's video (SIM / FID semantics). */
 export type TelegramGroupCallVideoSsrcGroup = {
   semantics: string;
@@ -153,7 +201,69 @@ export function groupCallAnswerDtlsSetup(offerSdp?: string): "active" | "passive
   return "active";
 }
 
-export function parseGroupCallJoinTransport(joinPayload: string): TelegramGroupCallTransport | null {
+function parseJoinPayloadTypes(raw: unknown): TelegramGroupCallPayloadType[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TelegramGroupCallPayloadType[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const id = Number(row.id);
+    const name = typeof row.name === "string" ? row.name.trim() : "";
+    const clockrate = Number(row.clockrate);
+    if (!Number.isFinite(id) || !name || !Number.isFinite(clockrate)) continue;
+    const channelsRaw = Number(row.channels);
+    const parameters =
+      row.parameters && typeof row.parameters === "object" && !Array.isArray(row.parameters)
+        ? (row.parameters as Record<string, string | number>)
+        : undefined;
+    const feedbackRaw = row["rtcp-fbs"];
+    const feedback = Array.isArray(feedbackRaw)
+      ? feedbackRaw
+          .map((fb) => {
+            if (!fb || typeof fb !== "object" || Array.isArray(fb)) return null;
+            const f = fb as Record<string, unknown>;
+            const type = typeof f.type === "string" ? f.type.trim() : "";
+            if (!type) return null;
+            const subtype =
+              typeof f.subtype === "string" && f.subtype.trim()
+                ? f.subtype.trim()
+                : undefined;
+            return subtype ? { type, subtype } : { type };
+          })
+          .filter((fb): fb is { type: string; subtype?: string } => fb != null)
+      : undefined;
+    const parsed: TelegramGroupCallPayloadType = {
+      id: Math.trunc(id),
+      name,
+      clockrate: Math.trunc(clockrate),
+    };
+    if (Number.isFinite(channelsRaw) && channelsRaw > 0) {
+      parsed.channels = Math.trunc(channelsRaw);
+    }
+    if (parameters) parsed.parameters = parameters;
+    if (feedback && feedback.length > 0) parsed["rtcp-fbs"] = feedback;
+    out.push(parsed);
+  }
+  return out;
+}
+
+function parseJoinRtpExtensions(raw: unknown): TelegramGroupCallRtpExtension[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TelegramGroupCallRtpExtension[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const id = Number(row.id);
+    const uri = typeof row.uri === "string" ? row.uri.trim() : "";
+    if (!Number.isFinite(id) || !uri) continue;
+    out.push({ id: Math.trunc(id), uri });
+  }
+  return out;
+}
+
+export function parseGroupCallJoinTransport(
+  joinPayload: string,
+): ParsedGroupCallJoin | null {
   const trimmed = joinPayload.trim();
   if (!trimmed) return null;
   try {
@@ -164,6 +274,14 @@ export function parseGroupCallJoinTransport(joinPayload: string): TelegramGroupC
       pwd?: string;
       fingerprints?: TelegramGroupCallFingerprint[];
       candidates?: TelegramGroupCallCandidate[];
+      video?: {
+        "payload-types"?: unknown;
+        "rtp-hdrexts"?: unknown;
+      };
+      audio?: {
+        "payload-types"?: unknown;
+        "rtp-hdrexts"?: unknown;
+      };
     };
     // Broadcast/stream-mode calls are not WebRTC playable in-browser yet.
     if (root.stream) return null;
@@ -178,15 +296,35 @@ export function parseGroupCallJoinTransport(joinPayload: string): TelegramGroupC
       return null;
     }
     return {
-      ufrag: transport.ufrag,
-      pwd: transport.pwd,
-      fingerprints: transport.fingerprints,
-      candidates: transport.candidates,
+      transport: {
+        ufrag: transport.ufrag,
+        pwd: transport.pwd,
+        fingerprints: transport.fingerprints,
+        candidates: transport.candidates,
+      },
+      videoPayloadTypes: parseJoinPayloadTypes(root.video?.["payload-types"]),
+      videoExtensions: parseJoinRtpExtensions(root.video?.["rtp-hdrexts"]),
     };
   } catch {
     return null;
   }
 }
+
+export type ParsedOfferMediaSection = {
+  kind: "audio" | "video" | "application" | "unknown";
+  mid: string;
+  protocol?: string;
+  formats?: string;
+  sctpPort?: number;
+  maxMessageSize?: number;
+  /**
+   * Codec / extension attribute lines from the offer m-section (rtpmap, fmtp,
+   * rtcp-fb, extmap, rtcp-rsize, …). Renegotiate answers must reuse these so
+   * payload-type ids match Chrome's offer — Telegram join PTs (100–105) often
+   * differ on new recvonly mids and leave inboundVideoPackets=0.
+   */
+  codecLines?: string[];
+};
 
 class SdpBuilder {
   private lines: string[] = [];
@@ -243,7 +381,7 @@ class SdpBuilder {
 
   addTransport(
     transport: TelegramGroupCallTransport,
-    dtlsSetup: "active" | "passive",
+    dtlsSetup: "active" | "passive" | "actpass",
     opts?: { includeCandidates?: boolean },
   ): void {
     this.add(`a=ice-ufrag:${transport.ufrag}`);
@@ -264,7 +402,41 @@ class SdpBuilder {
     }
   }
 
-  private addVideoRtpMaps(): void {
+  private addVideoPayloadType(payloadType: TelegramGroupCallPayloadType): void {
+    const channels =
+      payloadType.channels && payloadType.channels > 0
+        ? `/${payloadType.channels}`
+        : "";
+    this.add(
+      `a=rtpmap:${payloadType.id} ${payloadType.name}/${payloadType.clockrate}${channels}`,
+    );
+    if (payloadType.parameters && Object.keys(payloadType.parameters).length > 0) {
+      const parametersString = Object.entries(payloadType.parameters)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(";");
+      this.add(`a=fmtp:${payloadType.id} ${parametersString}`);
+    }
+    for (const fb of payloadType["rtcp-fbs"] ?? []) {
+      this.add(
+        `a=rtcp-fb:${payloadType.id} ${fb.type}${fb.subtype ? ` ${fb.subtype}` : ""}`,
+      );
+    }
+  }
+
+  private addVideoRtpMaps(
+    payloadTypes?: TelegramGroupCallPayloadType[],
+    extensions?: TelegramGroupCallRtpExtension[],
+  ): void {
+    if (payloadTypes && payloadTypes.length > 0) {
+      for (const payloadType of payloadTypes) {
+        this.addVideoPayloadType(payloadType);
+      }
+      for (const extension of filterVideoRtpExtensions(extensions)) {
+        this.add(`a=extmap:${extension.id} ${extension.uri}`);
+      }
+      return;
+    }
+    // Fallback when join payload omitted video codecs (should be rare).
     this.add("a=rtpmap:100 VP8/90000");
     this.add("a=fmtp:100 x-google-start-bitrate=800");
     this.add("a=rtcp-fb:100 goog-remb");
@@ -282,31 +454,46 @@ class SdpBuilder {
     this.add("a=rtcp-fb:102 nack pli");
     this.add("a=rtpmap:103 rtx/90000");
     this.add("a=fmtp:103 apt=102");
+    // H264 — Telegram mobile/desktop screencasts often publish this; VP8-only
+    // answers demux RTP (unmute + packets) but never decode (black stage).
+    this.add("a=rtpmap:104 H264/90000");
+    this.add(
+      "a=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+    );
+    this.add("a=rtcp-fb:104 goog-remb");
+    this.add("a=rtcp-fb:104 transport-cc");
+    this.add("a=rtcp-fb:104 ccm fir");
+    this.add("a=rtcp-fb:104 nack");
+    this.add("a=rtcp-fb:104 nack pli");
+    this.add("a=rtpmap:105 rtx/90000");
+    this.add("a=fmtp:105 apt=104");
   }
 
-  /** Browser-compatible answer (UDP/TLS/RTP/SAVPF, port 9, sendrecv). */
-  addSsrcEntry(
+  private videoPayloadTypeIds(
+    payloadTypes?: TelegramGroupCallPayloadType[],
+  ): string {
+    if (payloadTypes && payloadTypes.length > 0) {
+      return payloadTypes.map((p) => String(p.id)).join(" ");
+    }
+    return "100 101 102 103 104 105";
+  }
+
+  addMainAudioSection(
     transport: TelegramGroupCallTransport,
-    dtlsSetup: "active" | "passive" = "active",
-    mids: [string, string] = ["0", "1"],
-    opts?: {
-      minimalVideo?: boolean;
-      /**
-       * Presentation (screen-share) offers are sendonly — the answer must be
-       * recvonly or Chrome rejects with "Incompatible receive direction".
-       */
-      presentation?: boolean;
-    },
+    dtlsSetup: "active" | "passive" | "actpass",
+    mid: string,
+    opts?: { presentation?: boolean; includeCandidates?: boolean },
   ): void {
     const audioDir = opts?.presentation ? "recvonly" : "sendrecv";
-    const videoDir = opts?.presentation ? "recvonly" : "sendrecv";
     this.add("m=audio 9 UDP/TLS/RTP/SAVPF 111 126");
     this.add("c=IN IP4 0.0.0.0");
     this.add("a=rtcp:9 IN IP4 0.0.0.0");
     this.add("a=rtcp-mux");
-    this.add(`a=mid:${mids[0]}`);
+    this.add(`a=mid:${mid}`);
     this.add(`a=${audioDir}`);
-    this.addTransport(transport, dtlsSetup, { includeCandidates: true });
+    this.addTransport(transport, dtlsSetup, {
+      includeCandidates: opts?.includeCandidates !== false,
+    });
     this.add("a=rtpmap:111 opus/48000/2");
     this.add("a=rtpmap:126 telephone-event/8000");
     // Omit usedtx=1 — DTX suppresses our near-silent listen-only sender and the
@@ -314,7 +501,20 @@ class SdpBuilder {
     this.add("a=fmtp:111 minptime=10;useinbandfec=1");
     this.add("a=rtcp-fb:111 transport-cc");
     this.add("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level");
+  }
 
+  addMainVideoSection(
+    transport: TelegramGroupCallTransport,
+    dtlsSetup: "active" | "passive" | "actpass",
+    mid: string,
+    opts?: {
+      minimalVideo?: boolean;
+      presentation?: boolean;
+      videoPayloadTypes?: TelegramGroupCallPayloadType[];
+      videoExtensions?: TelegramGroupCallRtpExtension[];
+    },
+  ): void {
+    const videoDir = opts?.presentation ? "recvonly" : "sendrecv";
     // Slim VP8-only video keeps setRemoteDescription cheap. telegram-tt's SFU
     // answer uses recvonly for the main video mid (not inactive) — inactive
     // mismatched a black placeholder track and starved remote audio demux.
@@ -323,21 +523,50 @@ class SdpBuilder {
       this.add("c=IN IP4 0.0.0.0");
       this.add("a=rtcp:9 IN IP4 0.0.0.0");
       this.add("a=rtcp-mux");
-      this.add(`a=mid:${mids[1]}`);
+      this.add(`a=mid:${mid}`);
       this.add("a=recvonly");
       this.addTransport(transport, dtlsSetup, { includeCandidates: false });
       this.add("a=rtpmap:100 VP8/90000");
       return;
     }
 
-    this.add("m=video 9 UDP/TLS/RTP/SAVPF 100 101 102 103");
+    const payloadIds = this.videoPayloadTypeIds(opts?.videoPayloadTypes);
+    this.add(`m=video 9 UDP/TLS/RTP/SAVPF ${payloadIds}`);
     this.add("c=IN IP4 0.0.0.0");
     this.add("a=rtcp:9 IN IP4 0.0.0.0");
     this.add("a=rtcp-mux");
-    this.add(`a=mid:${mids[1]}`);
+    this.add(`a=mid:${mid}`);
     this.add(`a=${videoDir}`);
     this.addTransport(transport, dtlsSetup, { includeCandidates: false });
-    this.addVideoRtpMaps();
+    this.addVideoRtpMaps(opts?.videoPayloadTypes, opts?.videoExtensions);
+  }
+
+  /**
+   * Colibri / Telegram group-call data channel. Required so we can send
+   * ReceiverVideoConstraints — without it the SFU never forwards screencast RTP.
+   */
+  addApplicationSection(
+    transport: TelegramGroupCallTransport,
+    dtlsSetup: "active" | "passive" | "actpass",
+    mid: string,
+    offer?: ParsedOfferMediaSection | null,
+  ): void {
+    // Match telegram-tt buildSdp application m-line (port 1, mid after transport).
+    // Crafted answers that diverge here leave RTCDataChannel stuck in "connecting"
+    // and ReceiverVideoConstraints never reach the SFU.
+    const sctpPort =
+      offer?.sctpPort && Number.isFinite(offer.sctpPort) ? offer.sctpPort : 5000;
+    const maxMessageSize =
+      offer?.maxMessageSize && Number.isFinite(offer.maxMessageSize)
+        ? offer.maxMessageSize
+        : 262144;
+    this.add("m=application 1 UDP/DTLS/SCTP webrtc-datachannel");
+    this.add("c=IN IP4 0.0.0.0");
+    this.addTransport(transport, dtlsSetup, { includeCandidates: false });
+    this.add("a=ice-options:trickle");
+    this.add(`a=mid:${mid}`);
+    this.add(`a=sctp-port:${sctpPort}`);
+    this.add(`a=max-message-size:${maxMessageSize}`);
   }
 
   /**
@@ -347,27 +576,65 @@ class SdpBuilder {
    */
   addRemoteVideoSection(
     transport: TelegramGroupCallTransport,
-    dtlsSetup: "active" | "passive",
+    dtlsSetup: "active" | "passive" | "actpass",
     mid: string,
     section: TelegramGroupCallRemoteVideoSection,
+    opts?: {
+      videoPayloadTypes?: TelegramGroupCallPayloadType[];
+      videoExtensions?: TelegramGroupCallRtpExtension[];
+      /** Prefer offer codecs when answering a browser createOffer renegotiate. */
+      offerSection?: ParsedOfferMediaSection | null;
+      /**
+       * telegram-tt remote *offers* use a=bundle-only on non-main video.
+       * Join/renegotiate *answers* should leave this false.
+       */
+      bundleOnly?: boolean;
+    },
   ): void {
-    this.add("m=video 9 UDP/TLS/RTP/SAVPF 100 101 102 103");
+    const offerFormats = opts?.offerSection?.formats?.trim();
+    const offerCodecLines = opts?.offerSection?.codecLines ?? [];
+    const useJoinCodecs = Boolean(opts?.videoPayloadTypes?.length);
+    const useOfferCodecs =
+      !useJoinCodecs && Boolean(offerFormats) && offerCodecLines.length > 0;
+    const payloadIds = useJoinCodecs
+      ? this.videoPayloadTypeIds(opts?.videoPayloadTypes)
+      : useOfferCodecs
+        ? offerFormats!
+        : this.videoPayloadTypeIds(undefined);
+    // telegram-tt remote *offers* use port 1 + RTP/SAVPF layout. Keep UDP/TLS
+    // so m-line protocol stays compatible with Chrome's join offer/answer.
+    this.add(`m=video 9 UDP/TLS/RTP/SAVPF ${payloadIds}`);
     this.add("c=IN IP4 0.0.0.0");
-    this.add("a=rtcp:9 IN IP4 0.0.0.0");
-    this.add("a=rtcp-mux");
+    this.add("b=AS:1300");
     this.add(`a=mid:${mid}`);
+    this.add("a=rtcp-mux");
+    // Codecs/extmaps before transport — matches telegram-tt addSsrcEntry order.
+    if (useJoinCodecs) {
+      this.addVideoRtpMaps(opts?.videoPayloadTypes, opts?.videoExtensions);
+    } else if (useOfferCodecs) {
+      for (const line of filterOfferVideoCodecLines(offerCodecLines)) {
+        this.add(line);
+      }
+    } else {
+      this.addVideoRtpMaps(opts?.videoPayloadTypes, opts?.videoExtensions);
+    }
+    this.add("a=rtcp:9 IN IP4 0.0.0.0");
+    this.add("a=rtcp-rsize");
     if (!section || section.ssrcGroups.length === 0) {
-      // Keep the m-line count in sync with the offer, but park the slot.
+      this.addTransport(transport, dtlsSetup, {
+        includeCandidates: Boolean(opts?.bundleOnly),
+      });
       this.add("a=inactive");
-      this.addTransport(transport, dtlsSetup, { includeCandidates: false });
-      this.addVideoRtpMaps();
       return;
     }
-    // Answer perspective: the SFU sends this video to us.
+    // telegram-tt: transport, then sendonly (+ bundle-only for remote offers).
+    this.addTransport(transport, dtlsSetup, {
+      includeCandidates: Boolean(opts?.bundleOnly),
+    });
     this.add("a=sendonly");
-    this.add("a=bundle-only");
-    this.addTransport(transport, dtlsSetup, { includeCandidates: false });
-    this.addVideoRtpMaps();
+    if (opts?.bundleOnly) {
+      this.add("a=bundle-only");
+    }
     const endpoint = section.endpointId || `video-${mid}`;
     const seen = new Set<number>();
     for (const group of section.ssrcGroups) {
@@ -387,47 +654,241 @@ class SdpBuilder {
     }
   }
 
-  addConference(
+  /**
+   * Mirror the browser offer m-line kinds. telegram-tt puts the SCTP datachannel
+   * at mid 2 and remote video after it — if we treat every mid≥2 as video, the
+   * screencast SSRCs land on the application m-line and inboundVideoPackets=0.
+   */
+  addConferenceFromOffer(
     sessionId: number,
     transport: TelegramGroupCallTransport,
-    dtlsSetup: "active" | "passive",
+    dtlsSetup: "active" | "passive" | "actpass",
+    offerSections: ParsedOfferMediaSection[],
+    remoteVideoSections: TelegramGroupCallRemoteVideoSection[],
+    opts?: {
+      minimalVideo?: boolean;
+      presentation?: boolean;
+      videoPayloadTypes?: TelegramGroupCallPayloadType[];
+      videoExtensions?: TelegramGroupCallRtpExtension[];
+      /** When set, main video mid uses these instead of videoPayloadTypes. */
+      mainVideoPayloadTypes?: TelegramGroupCallPayloadType[];
+      mainVideoExtensions?: TelegramGroupCallRtpExtension[];
+    },
+  ): void {
+    const mids = offerSections.map((section, index) => section.mid || String(index));
+    this.addHeader(sessionId, mids);
+    let mainAudioDone = false;
+    let mainVideoDone = false;
+    let remoteVideoIndex = 0;
+    let candidatesPlaced = false;
+    const useMinimalVideo =
+      Boolean(opts?.minimalVideo) && remoteVideoSections.every((s) => !s);
+    // Main mid keeps join codecs; extra recv slots prefer telegram join PTs so
+    // H264 screencasts demux. Passing the same object to both rewrote main on
+    // every renegotiate and could starve inbound audio/video.
+    const mainVideoMedia =
+      opts && "mainVideoPayloadTypes" in opts
+        ? {
+            videoPayloadTypes: opts.mainVideoPayloadTypes,
+            videoExtensions: opts.mainVideoExtensions,
+          }
+        : {
+            videoPayloadTypes: opts?.videoPayloadTypes,
+            videoExtensions: opts?.videoExtensions,
+          };
+    const remoteVideoMedia = {
+      videoPayloadTypes: opts?.videoPayloadTypes,
+      videoExtensions: opts?.videoExtensions,
+    };
+
+    for (const offerSection of offerSections) {
+      const mid = offerSection.mid || "0";
+      if (offerSection.kind === "audio" && !mainAudioDone) {
+        mainAudioDone = true;
+        this.addMainAudioSection(transport, dtlsSetup, mid, {
+          presentation: Boolean(opts?.presentation),
+          includeCandidates: !candidatesPlaced,
+        });
+        candidatesPlaced = true;
+        continue;
+      }
+      if (offerSection.kind === "video" && !mainVideoDone) {
+        mainVideoDone = true;
+        this.addMainVideoSection(transport, dtlsSetup, mid, {
+          minimalVideo: useMinimalVideo,
+          presentation: Boolean(opts?.presentation),
+          ...mainVideoMedia,
+        });
+        continue;
+      }
+      if (offerSection.kind === "application") {
+        this.addApplicationSection(transport, dtlsSetup, mid, offerSection);
+        continue;
+      }
+      if (offerSection.kind === "video") {
+        this.addRemoteVideoSection(
+          transport,
+          dtlsSetup,
+          mid,
+          remoteVideoSections[remoteVideoIndex] ?? null,
+          { ...remoteVideoMedia, offerSection },
+        );
+        remoteVideoIndex += 1;
+        continue;
+      }
+      // Unknown media — reject so m-line counts still match.
+      this.add(`m=${offerSection.kind === "unknown" ? "application" : offerSection.kind} 0 ${offerSection.protocol || "UDP/DTLS/SCTP"} ${offerSection.formats || "webrtc-datachannel"}`);
+      this.add("c=IN IP4 0.0.0.0");
+      this.add(`a=mid:${mid}`);
+      this.add("a=inactive");
+    }
+  }
+
+  /** Fallback when the offer SDP is missing — audio + video only. */
+  addConferenceLegacy(
+    sessionId: number,
+    transport: TelegramGroupCallTransport,
+    dtlsSetup: "active" | "passive" | "actpass",
     mids: string[],
     remoteVideoSections: TelegramGroupCallRemoteVideoSection[],
-    opts?: { minimalVideo?: boolean; presentation?: boolean },
+    opts?: {
+      minimalVideo?: boolean;
+      presentation?: boolean;
+      videoPayloadTypes?: TelegramGroupCallPayloadType[];
+      videoExtensions?: TelegramGroupCallRtpExtension[];
+    },
   ): void {
+    const videoMedia = {
+      videoPayloadTypes: opts?.videoPayloadTypes,
+      videoExtensions: opts?.videoExtensions,
+    };
     this.addHeader(sessionId, mids);
-    this.addSsrcEntry(transport, dtlsSetup, [mids[0] ?? "0", mids[1] ?? "1"], {
+    this.addMainAudioSection(transport, dtlsSetup, mids[0] ?? "0", {
+      presentation: Boolean(opts?.presentation),
+      includeCandidates: true,
+    });
+    this.addMainVideoSection(transport, dtlsSetup, mids[1] ?? "1", {
       minimalVideo: Boolean(opts?.minimalVideo) && remoteVideoSections.length === 0,
       presentation: Boolean(opts?.presentation),
+      ...videoMedia,
     });
     for (let i = 0; i < remoteVideoSections.length; i += 1) {
       const mid = mids[2 + i] ?? String(2 + i);
-      this.addRemoteVideoSection(transport, dtlsSetup, mid, remoteVideoSections[i] ?? null);
+      this.addRemoteVideoSection(
+        transport,
+        dtlsSetup,
+        mid,
+        remoteVideoSections[i] ?? null,
+        videoMedia,
+      );
     }
   }
 }
 
 /** Mids in m-line order from an SDP (offer) — used to mirror them in the answer. */
 export function parseSdpMids(sdp: string): string[] {
-  const mids: string[] = [];
-  for (const line of sdp.split(/\r?\n/)) {
-    if (line.startsWith("a=mid:")) mids.push(line.slice("a=mid:".length).trim());
+  return parseOfferMediaSections(sdp).map((section, index) => section.mid || String(index));
+}
+
+/** Offer m-lines with kind so answers can keep SCTP vs remote video distinct. */
+export function parseOfferMediaSections(sdp: string): ParsedOfferMediaSection[] {
+  const sections: ParsedOfferMediaSection[] = [];
+  let current: ParsedOfferMediaSection | null = null;
+  for (const raw of sdp.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith("m=")) {
+      const parts = line.slice(2).split(/\s+/);
+      const media = parts[0] ?? "unknown";
+      const kind =
+        media === "audio" || media === "video" || media === "application"
+          ? media
+          : "unknown";
+      current = {
+        kind,
+        mid: "",
+        protocol: parts[2],
+        formats: parts.slice(3).join(" "),
+        codecLines: [],
+      };
+      sections.push(current);
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith("a=mid:")) {
+      current.mid = line.slice("a=mid:".length).trim();
+    } else if (line.startsWith("a=sctp-port:")) {
+      const port = Number(line.slice("a=sctp-port:".length).trim());
+      if (Number.isFinite(port)) current.sctpPort = port;
+    } else if (line.startsWith("a=max-message-size:")) {
+      const size = Number(line.slice("a=max-message-size:".length).trim());
+      if (Number.isFinite(size)) current.maxMessageSize = size;
+    } else if (
+      line.startsWith("a=rtpmap:") ||
+      line.startsWith("a=fmtp:") ||
+      line.startsWith("a=rtcp-fb:") ||
+      line.startsWith("a=extmap:") ||
+      line === "a=rtcp-rsize"
+    ) {
+      current.codecLines = current.codecLines ?? [];
+      current.codecLines.push(line);
+    }
   }
-  return mids;
+  return sections;
 }
 
 export function groupCallAnswerSdpFromTransport(
   transport: TelegramGroupCallTransport,
   offerSdp?: string,
   remoteVideoSections: TelegramGroupCallRemoteVideoSection[] = [],
-  opts?: { minimalVideo?: boolean; presentation?: boolean },
+  opts?: {
+    minimalVideo?: boolean;
+    presentation?: boolean;
+    videoPayloadTypes?: TelegramGroupCallPayloadType[];
+    videoExtensions?: TelegramGroupCallRtpExtension[];
+    mainVideoPayloadTypes?: TelegramGroupCallPayloadType[];
+    mainVideoExtensions?: TelegramGroupCallRtpExtension[];
+  },
 ): string {
   const sdp = new SdpBuilder();
   // Browser offered actpass/passive → answer must be active so SFU drives DTLS.
   const dtlsSetup = groupCallAnswerDtlsSetup(offerSdp);
+  const offerSections = offerSdp ? parseOfferMediaSections(offerSdp) : [];
+  const mediaOpts = {
+    minimalVideo: Boolean(opts?.minimalVideo),
+    presentation: Boolean(opts?.presentation),
+    videoPayloadTypes: opts?.videoPayloadTypes,
+    videoExtensions: opts?.videoExtensions,
+    ...(opts && "mainVideoPayloadTypes" in opts
+      ? {
+          mainVideoPayloadTypes: opts.mainVideoPayloadTypes,
+          mainVideoExtensions: opts.mainVideoExtensions,
+        }
+      : {}),
+  };
+  if (offerSections.length >= 2) {
+    // Remote video sections map onto *extra* video m-lines only (after main
+    // video). Application/SCTP m-lines are answered separately — never as video.
+    const extraVideoCount = offerSections.filter((section, index, all) => {
+      if (section.kind !== "video") return false;
+      const firstVideo = all.findIndex((s) => s.kind === "video");
+      return index !== firstVideo;
+    }).length;
+    const sections: TelegramGroupCallRemoteVideoSection[] = [];
+    for (let i = 0; i < extraVideoCount; i += 1) {
+      sections.push(remoteVideoSections[i] ?? null);
+    }
+    sdp.addConferenceFromOffer(
+      Date.now(),
+      transport,
+      dtlsSetup,
+      offerSections,
+      sections,
+      mediaOpts,
+    );
+    return sdp.finalize();
+  }
+
   const offerMids = offerSdp ? parseSdpMids(offerSdp) : [];
-  // The answer must have exactly as many m-lines as the offer. Slots beyond the
-  // provided sections render inactive; sections beyond the offer are dropped.
   const extraCount =
     offerMids.length >= 2 ? Math.max(0, offerMids.length - 2) : remoteVideoSections.length;
   const sections: TelegramGroupCallRemoteVideoSection[] = [];
@@ -438,9 +899,268 @@ export function groupCallAnswerSdpFromTransport(
     offerMids.length >= 2
       ? offerMids
       : ["0", "1", ...sections.map((_, i) => String(2 + i))];
-  sdp.addConference(Date.now(), transport, dtlsSetup, mids, sections, {
-    minimalVideo: Boolean(opts?.minimalVideo),
-    presentation: Boolean(opts?.presentation),
-  });
+  sdp.addConferenceLegacy(Date.now(), transport, dtlsSetup, mids, sections, mediaOpts);
+  return sdp.finalize();
+}
+
+/** First `a=ssrc:` value in an m= section of the given kind (uint32). */
+export function parsePrimarySsrcFromSdp(
+  sdp: string,
+  kind: "audio" | "video",
+): number | null {
+  let inSection = false;
+  for (const raw of sdp.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith("m=")) {
+      inSection = line.startsWith(`m=${kind} `);
+      continue;
+    }
+    if (!inSection) continue;
+    if (line.startsWith("a=ssrc:")) {
+      const id = Number(line.slice("a=ssrc:".length).split(/\s+/)[0]);
+      if (Number.isFinite(id)) return id >>> 0;
+    }
+  }
+  return null;
+}
+
+/**
+ * Rewrite *extra* video m-lines in a browser createOffer so their payload-type
+ * ids match the Telegram join conference (typically 100–105). Without this,
+ * Chrome assigns fresh PTs on recvonly slots while the SFU still sends with
+ * join PTs — answer negotiation can succeed but inboundVideoPackets stays 0.
+ */
+export function mungeLocalOfferExtraVideoToJoinCodecs(
+  offerSdp: string,
+  videoPayloadTypes: TelegramGroupCallPayloadType[],
+  videoExtensions: TelegramGroupCallRtpExtension[] = [],
+): string {
+  if (!videoPayloadTypes.length) return offerSdp;
+  const payloadIds = videoPayloadTypes.map((p) => String(p.id)).join(" ");
+  const codecBlock: string[] = [];
+  for (const payloadType of videoPayloadTypes) {
+    const channels =
+      payloadType.channels != null && payloadType.channels > 1
+        ? `/${payloadType.channels}`
+        : "";
+    codecBlock.push(
+      `a=rtpmap:${payloadType.id} ${payloadType.name}/${payloadType.clockrate}${channels}`,
+    );
+    if (payloadType.parameters && Object.keys(payloadType.parameters).length > 0) {
+      const parametersString = Object.entries(payloadType.parameters)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(";");
+      codecBlock.push(`a=fmtp:${payloadType.id} ${parametersString}`);
+    }
+    for (const fb of payloadType["rtcp-fbs"] ?? []) {
+      codecBlock.push(
+        `a=rtcp-fb:${payloadType.id} ${fb.type}${fb.subtype ? ` ${fb.subtype}` : ""}`,
+      );
+    }
+  }
+    for (const extension of videoExtensions) {
+      if (isRtpMidExtensionUri(extension.uri)) continue;
+      codecBlock.push(`a=extmap:${extension.id} ${extension.uri}`);
+    }
+
+  const lines = offerSdp.split(/\r?\n/);
+  const out: string[] = [];
+  let videoIndex = 0;
+  let inExtraVideo = false;
+  let pendingCodecInject = false;
+
+  const flushCodecs = () => {
+    if (pendingCodecInject) {
+      out.push(...codecBlock);
+      pendingCodecInject = false;
+    }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    const trimmed = line.trim();
+    if (trimmed.startsWith("m=")) {
+      flushCodecs();
+      if (trimmed.startsWith("m=video ")) {
+        videoIndex += 1;
+        inExtraVideo = videoIndex >= 2;
+        if (inExtraVideo) {
+          const parts = trimmed.split(/\s+/);
+          out.push(
+            `m=video ${parts[1] ?? "9"} ${parts[2] ?? "UDP/TLS/RTP/SAVPF"} ${payloadIds}`,
+          );
+          pendingCodecInject = true;
+          continue;
+        }
+      } else {
+        inExtraVideo = false;
+      }
+      out.push(line);
+      continue;
+    }
+    if (inExtraVideo) {
+      if (
+        trimmed.startsWith("a=rtpmap:") ||
+        trimmed.startsWith("a=fmtp:") ||
+        trimmed.startsWith("a=rtcp-fb:") ||
+        trimmed.startsWith("a=extmap:") ||
+        trimmed === "a=rtcp-rsize"
+      ) {
+        continue;
+      }
+      out.push(line);
+      // Inject after DTLS setup (last transport attribute typically).
+      if (pendingCodecInject && trimmed.startsWith("a=setup:")) {
+        flushCodecs();
+      }
+      continue;
+    }
+    out.push(line);
+  }
+  flushCodecs();
+
+  const endsWithBlank = offerSdp.endsWith("\r\n") || offerSdp.endsWith("\n");
+  const body = out.join("\r\n");
+  return endsWithBlank && !body.endsWith("\r\n") ? `${body}\r\n` : body;
+}
+
+/**
+ * telegram-tt subscribe path: craft an SFU *offer* that declares remote camera/
+ * screencast SSRCs, then the browser createAnswer()s. createOffer + fake answer
+ * often left Colibri SCTP stuck in "connecting" (no ReceiverVideoConstraints).
+ *
+ * m-line order must match the current local description or setRemoteDescription fails.
+ */
+export function groupCallRemoteSubscribeOfferSdp(
+  transport: TelegramGroupCallTransport,
+  localSdp: string,
+  remoteVideoSections: TelegramGroupCallRemoteVideoSection[],
+  opts?: {
+    videoPayloadTypes?: TelegramGroupCallPayloadType[];
+    videoExtensions?: TelegramGroupCallRtpExtension[];
+    audioSourceId?: number | null;
+  },
+): string {
+  const localSections = parseOfferMediaSections(localSdp);
+  const videoMedia = {
+    videoPayloadTypes: opts?.videoPayloadTypes,
+    videoExtensions: opts?.videoExtensions,
+    bundleOnly: true as const,
+  };
+  const audioSource =
+    opts?.audioSourceId != null && Number.isFinite(opts.audioSourceId)
+      ? opts.audioSourceId >>> 0
+      : parsePrimarySsrcFromSdp(localSdp, "audio");
+
+  // Ensure we have enough video slots beyond main: reuse existing extras, then
+  // append new mids (never colliding with an existing mid).
+  const existingMids = new Set(
+    localSections.map((s) => s.mid).filter(Boolean),
+  );
+  let nextMid =
+    Math.max(
+      0,
+      ...[...existingMids].map((m) => {
+        const n = Number(m);
+        return Number.isFinite(n) ? n : 0;
+      }),
+    ) + 1;
+  const firstVideoIdx = localSections.findIndex((s) => s.kind === "video");
+  const existingExtraCount = localSections.filter(
+    (s, index) => s.kind === "video" && index !== firstVideoIdx,
+  ).length;
+  const appendExtraCount = Math.max(0, remoteVideoSections.length - existingExtraCount);
+  const appendMids: string[] = [];
+  while (appendMids.length < appendExtraCount) {
+    const mid = String(nextMid++);
+    if (existingMids.has(mid)) continue;
+    appendMids.push(mid);
+    existingMids.add(mid);
+  }
+
+  const mids = [
+    ...localSections.map((s, index) => s.mid || String(index)),
+    ...appendMids,
+  ];
+  // If local SDP somehow lacks SCTP, append it (telegram-tt always has mid 2).
+  const hasApplication = localSections.some((s) => s.kind === "application");
+  let synthesizedApplicationMid: string | null = null;
+  if (!hasApplication) {
+    synthesizedApplicationMid = existingMids.has("2") ? String(nextMid++) : "2";
+    mids.push(synthesizedApplicationMid);
+  }
+
+  const sdp = new SdpBuilder();
+  const dtlsSetup = "actpass" as const;
+  sdp.addHeader(Date.now(), mids);
+
+  let mainAudioDone = false;
+  let mainVideoDone = false;
+  let remoteVideoIndex = 0;
+  let candidatesPlaced = false;
+
+  for (const offerSection of localSections) {
+    const mid = offerSection.mid || "0";
+    if (offerSection.kind === "audio" && !mainAudioDone) {
+      mainAudioDone = true;
+      sdp.addMainAudioSection(transport, dtlsSetup, mid, {
+        includeCandidates: !candidatesPlaced,
+      });
+      candidatesPlaced = true;
+      if (audioSource != null && audioSource !== 0) {
+        sdp.add(`a=ssrc:${audioSource} cname:audio${audioSource}`);
+        sdp.add(
+          `a=ssrc:${audioSource} msid:audio${audioSource} audio${audioSource}`,
+        );
+      }
+      continue;
+    }
+    if (offerSection.kind === "video" && !mainVideoDone) {
+      mainVideoDone = true;
+      sdp.addMainVideoSection(transport, dtlsSetup, mid, {
+        minimalVideo: false,
+        videoPayloadTypes: opts?.videoPayloadTypes,
+        videoExtensions: opts?.videoExtensions,
+      });
+      continue;
+    }
+    if (offerSection.kind === "application") {
+      sdp.addApplicationSection(transport, dtlsSetup, mid, offerSection);
+      continue;
+    }
+    if (offerSection.kind === "video") {
+      sdp.addRemoteVideoSection(
+        transport,
+        dtlsSetup,
+        mid,
+        remoteVideoSections[remoteVideoIndex] ?? null,
+        videoMedia,
+      );
+      remoteVideoIndex += 1;
+      continue;
+    }
+    sdp.add(
+      `m=${offerSection.kind === "unknown" ? "application" : offerSection.kind} 0 ${offerSection.protocol || "UDP/DTLS/SCTP"} ${offerSection.formats || "webrtc-datachannel"}`,
+    );
+    sdp.add("c=IN IP4 0.0.0.0");
+    sdp.add(`a=mid:${mid}`);
+    sdp.add("a=inactive");
+  }
+
+  for (const mid of appendMids) {
+    sdp.addRemoteVideoSection(
+      transport,
+      dtlsSetup,
+      mid,
+      remoteVideoSections[remoteVideoIndex] ?? null,
+      videoMedia,
+    );
+    remoteVideoIndex += 1;
+  }
+
+  if (synthesizedApplicationMid) {
+    sdp.addApplicationSection(transport, dtlsSetup, synthesizedApplicationMid, null);
+  }
+
   return sdp.finalize();
 }

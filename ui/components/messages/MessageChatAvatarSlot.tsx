@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { Platform, StyleSheet, View } from "react-native";
 import type { ThemeColors, ThemeName } from "../../theme";
-import { MESSAGE_CHAT_READ_CHECK_COLOR } from "./messageChatLayout";
 import { ChatAvatarFallback } from "./ChatAvatarFallback";
 import type { NetworkFetchPriority } from "./networkFetchQueue";
 import { isMessageChatAvatarBlobCached, isMessageChatAvatarFetchFailed, MessageChatAvatarImage } from "./MessageChatAvatarImage";
@@ -14,9 +13,11 @@ const VOICE_RING_GAP_PX = 1;
 const VOICE_RING_WIDTH_PX = 2;
 
 const VOICE_RING_STYLE_ID = "hsp-voice-active-ring-style";
-const VOICE_RING_GREEN = MESSAGE_CHAT_READ_CHECK_COLOR;
-const VOICE_RING_GREEN_BRIGHT = "#7CFF6B";
-const VOICE_RING_GREEN_DEEP = "#0A6E0A";
+/** Active voice chat ring — Telegram-style blue (same motion as the former green). */
+const VOICE_RING_BLUE = "#3390EC";
+const VOICE_RING_BLUE_BRIGHT = "#6BB6FF";
+const VOICE_RING_BLUE_DEEP = "#1A5FB4";
+export const MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR = VOICE_RING_BLUE;
 
 /** Web: animate gradient stop colors in place — no transform/rotation on the ring. */
 function ensureActiveVoiceRingCss(): void {
@@ -25,14 +26,14 @@ function ensureActiveVoiceRingCss(): void {
   const el = document.createElement("style");
   el.id = VOICE_RING_STYLE_ID;
   el.textContent = `
-@property --hsp-vr-a { syntax: '<color>'; inherits: false; initial-value: ${VOICE_RING_GREEN}; }
-@property --hsp-vr-b { syntax: '<color>'; inherits: false; initial-value: ${VOICE_RING_GREEN_BRIGHT}; }
-@property --hsp-vr-c { syntax: '<color>'; inherits: false; initial-value: ${VOICE_RING_GREEN_DEEP}; }
+@property --hsp-vr-a { syntax: '<color>'; inherits: false; initial-value: ${VOICE_RING_BLUE}; }
+@property --hsp-vr-b { syntax: '<color>'; inherits: false; initial-value: ${VOICE_RING_BLUE_BRIGHT}; }
+@property --hsp-vr-c { syntax: '<color>'; inherits: false; initial-value: ${VOICE_RING_BLUE_DEEP}; }
 @keyframes hsp-voice-ring-colors {
-  0%   { --hsp-vr-a: ${VOICE_RING_GREEN}; --hsp-vr-b: ${VOICE_RING_GREEN_BRIGHT}; --hsp-vr-c: ${VOICE_RING_GREEN_DEEP}; }
-  33%  { --hsp-vr-a: ${VOICE_RING_GREEN_BRIGHT}; --hsp-vr-b: ${VOICE_RING_GREEN_DEEP}; --hsp-vr-c: ${VOICE_RING_GREEN}; }
-  66%  { --hsp-vr-a: ${VOICE_RING_GREEN_DEEP}; --hsp-vr-b: ${VOICE_RING_GREEN}; --hsp-vr-c: ${VOICE_RING_GREEN_BRIGHT}; }
-  100% { --hsp-vr-a: ${VOICE_RING_GREEN}; --hsp-vr-b: ${VOICE_RING_GREEN_BRIGHT}; --hsp-vr-c: ${VOICE_RING_GREEN_DEEP}; }
+  0%   { --hsp-vr-a: ${VOICE_RING_BLUE}; --hsp-vr-b: ${VOICE_RING_BLUE_BRIGHT}; --hsp-vr-c: ${VOICE_RING_BLUE_DEEP}; }
+  33%  { --hsp-vr-a: ${VOICE_RING_BLUE_BRIGHT}; --hsp-vr-b: ${VOICE_RING_BLUE_DEEP}; --hsp-vr-c: ${VOICE_RING_BLUE}; }
+  66%  { --hsp-vr-a: ${VOICE_RING_BLUE_DEEP}; --hsp-vr-b: ${VOICE_RING_BLUE}; --hsp-vr-c: ${VOICE_RING_BLUE_BRIGHT}; }
+  100% { --hsp-vr-a: ${VOICE_RING_BLUE}; --hsp-vr-b: ${VOICE_RING_BLUE_BRIGHT}; --hsp-vr-c: ${VOICE_RING_BLUE_DEEP}; }
 }
 [data-hsp-voice-ring="1"] {
   background-image: conic-gradient(
@@ -178,7 +179,7 @@ export function MessageChatAvatarSlot({
     return face;
   }
 
-  const ringColor = borderColor ?? colors.highlight;
+  const ringColor = borderColor ?? VOICE_RING_BLUE;
   const outerPx =
     sizePx + (VOICE_RING_GAP_PX + VOICE_RING_WIDTH_PX) * 2;
   const inset = -(VOICE_RING_GAP_PX + VOICE_RING_WIDTH_PX);

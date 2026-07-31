@@ -485,6 +485,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
   let speakingBecameTrue = false;
   let speakingBecameFalse = false;
   let mediaBecameLive = false;
+  let mediaCleared = false;
   let speakingRefresh = false;
   if (!order) {
     // Empty order means left per TDLib. Muted self can also get empty order while
@@ -524,15 +525,19 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       isSpeaking || (lastSpokeAt != null && now - lastSpokeAt < SPEAKING_HOLD_MS);
     speakingBecameTrue = effNext && !effPrev;
     speakingBecameFalse = effPrev && !effNext;
-    const nextVideo = videoInfo ?? prev?.videoInfo ?? null;
-    const nextScreen = screenInfo ?? prev?.screenInfo ?? null;
-    // Immediate SSE only when a camera/screencast endpoint newly appears — clears
-    // must not flush every mute/order sync (that flooded renegotiation).
+    // Trust TDLib nulls — sticky keep made stopped shares keep a green icon and
+    // inflated self as a publisher so remote screencasts never requested.
+    const nextVideo = videoInfo;
+    const nextScreen = screenInfo;
+    // Immediate SSE when a camera/screencast endpoint newly appears OR clears.
     mediaBecameLive =
       (Boolean(nextVideo?.endpoint_id) &&
         (nextVideo?.endpoint_id ?? "") !== (prev?.videoInfo?.endpoint_id ?? "")) ||
       (Boolean(nextScreen?.endpoint_id) &&
         (nextScreen?.endpoint_id ?? "") !== (prev?.screenInfo?.endpoint_id ?? ""));
+    mediaCleared =
+      (Boolean(prev?.videoInfo?.endpoint_id) && !nextVideo?.endpoint_id) ||
+      (Boolean(prev?.screenInfo?.endpoint_id) && !nextScreen?.endpoint_id);
     cached.members.set(key, {
       userId,
       chatId,
@@ -556,11 +561,12 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       }
     }
   }
-  // Speaking START and new camera/screencast endpoints flush immediately so the
+  // Speaking START and camera/screencast appear/clear flush immediately so the
   // dialog can renegotiate for presentation video without waiting on debounce.
   void speakingBecameFalse;
   bumpVoiceCallRevision(callId, {
-    immediate: speakingBecameTrue || mediaBecameLive || speakingRefresh,
+    immediate:
+      speakingBecameTrue || mediaBecameLive || mediaCleared || speakingRefresh,
   });
 }
 
@@ -1003,8 +1009,9 @@ function mergeParticipantMaps(
               : (prev.lastSpokeAt ?? row.lastSpokeAt),
             isMuted: row.isMuted,
             order: row.order || prev.order,
-            videoInfo: row.videoInfo ?? prev.videoInfo ?? null,
-            screenInfo: row.screenInfo ?? prev.screenInfo ?? null,
+            // Trust TDLib nulls — do not sticky-keep cleared camera/screen.
+            videoInfo: row.videoInfo,
+            screenInfo: row.screenInfo,
           }
         : { ...row },
     );
@@ -1324,8 +1331,9 @@ async function loadJoinedParticipants(
       lastSpokeAt: isSpeaking ? Date.now() : prev?.lastSpokeAt,
       isMuted: Boolean(participant.is_muted_for_all_users),
       order,
-      videoInfo: videoInfo ?? prev?.videoInfo ?? null,
-      screenInfo: screenInfo ?? prev?.screenInfo ?? null,
+      // Trust TDLib nulls — do not sticky-keep cleared camera/screen.
+      videoInfo,
+      screenInfo,
     });
   };
 
@@ -1796,6 +1804,7 @@ export async function fetchChatVoiceParticipants(
 
   const participants: VoiceParticipantRow[] = displayRows.map((row) => {
     const profile = peekParticipantProfile(row.userId, row.chatId);
+    const isSelf = selfUserId != null && row.userId === selfUserId;
     return {
       user_id: row.userId,
       chat_id: row.chatId,
@@ -1804,10 +1813,13 @@ export async function fetchChatVoiceParticipants(
       emoji_status_custom_emoji_id: profile.emoji_status_custom_emoji_id,
       is_speaking: effectiveSpeaking(row, Date.now()),
       is_muted: row.isMuted,
-      is_self: selfUserId != null && row.userId === selfUserId,
+      is_self: isSelf,
       order: row.order || "",
-      video_info: row.videoInfo ?? null,
-      screen_sharing_video_info: row.screenInfo ?? null,
+      // Never paint self camera/screen from TDLib — this client's local
+      // getDisplayMedia / camera owns that chrome. Sticky TDLib self-share left
+      // a green screencast icon on join while local share was off.
+      video_info: isSelf ? null : (row.videoInfo ?? null),
+      screen_sharing_video_info: isSelf ? null : (row.screenInfo ?? null),
     };
   });
 
@@ -1941,6 +1953,7 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
     .map((row) => {
       const key = participantKey(row.userId, row.chatId);
       const profile = key ? profileCache.get(key) : undefined;
+      const isSelf = selfUserId != null && row.userId === selfUserId;
       return {
         user_id: row.userId,
         chat_id: row.chatId,
@@ -1949,10 +1962,10 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
         emoji_status_custom_emoji_id: profile?.emoji_status_custom_emoji_id ?? null,
         is_speaking: effectiveSpeaking(row, nowMs),
         is_muted: row.isMuted,
-        is_self: selfUserId != null && row.userId === selfUserId,
+        is_self: isSelf,
         order: row.order || "",
-        video_info: row.videoInfo ?? null,
-        screen_sharing_video_info: row.screenInfo ?? null,
+        video_info: isSelf ? null : (row.videoInfo ?? null),
+        screen_sharing_video_info: isSelf ? null : (row.screenInfo ?? null),
       };
     });
   participants.sort(compareVoiceParticipantRows);

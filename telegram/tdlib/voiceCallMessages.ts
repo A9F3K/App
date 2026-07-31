@@ -76,10 +76,11 @@ function appendMessage(row: VoiceCallMessageRow): void {
   const callId = row.group_call_id;
   const list = messagesByCall.get(callId) ?? [];
   if (list.some((m) => m.id === row.id)) return;
-  // Replace optimistic local self rows when the real updateNewGroupCallMessage arrives.
-  if (!row.id.includes(":local:") && row.is_self) {
+  // Replace optimistic local rows when the real updateNewGroupCallMessage arrives.
+  // Match on text only — is_self / sender title can race before getMe / roster titles resolve.
+  if (!row.id.includes(":local:")) {
     const idx = list.findIndex(
-      (m) => m.id.includes(":local:") && m.is_self && m.text === row.text,
+      (m) => m.id.includes(":local:") && m.text === row.text,
     );
     if (idx >= 0) {
       list[idx] = row;
@@ -88,6 +89,9 @@ function appendMessage(row: VoiceCallMessageRow): void {
       emitVoiceCallMessage(callId, revision, row);
       return;
     }
+  } else if (list.some((m) => !m.id.includes(":local:") && m.text === row.text)) {
+    // Canonical row already present — drop late optimistic.
+    return;
   }
   list.push(row);
   while (list.length > MAX_MESSAGES_PER_CALL) list.shift();
@@ -212,6 +216,8 @@ export async function sendChatVoiceCallMessage(
       }
     }
     const title = peekVoiceParticipantTitle(selfUserId, null) || "You";
+    // HTTP-only optimistic row — do not append/emit here. SSE delivers the
+    // canonical updateNewGroupCallMessage; double-emitting caused duplicate bubbles.
     const optimistic: VoiceCallMessageRow = {
       id: `${callId}:local:${Date.now()}`,
       message_id: 0,
@@ -223,7 +229,6 @@ export async function sendChatVoiceCallMessage(
       is_self: true,
       sent_at: Date.now(),
     };
-    appendMessage(optimistic);
 
     logGateway("voice_call_message_sent", {
       chatId,

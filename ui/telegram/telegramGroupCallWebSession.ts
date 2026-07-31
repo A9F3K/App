@@ -3,12 +3,20 @@ import {
   buildGroupCallJoinPayloadJson,
   groupCallAnswerDtlsSetup,
   groupCallAnswerSdpFromTransport,
+  groupCallRemoteSubscribeOfferSdp,
   parseGroupCallJoinTransport,
   parseGroupCallOfferSdp,
+  parseOfferMediaSections,
+  parsePrimarySsrcFromSdp,
   type TelegramGroupCallCandidate,
+  type TelegramGroupCallPayloadType,
   type TelegramGroupCallRemoteVideoSection,
+  type TelegramGroupCallRtpExtension,
   type TelegramGroupCallTransport,
 } from "../../shared/telegramGroupCallSdp";
+
+/** Match telegram-tt: SFU forwards remote video only after Colibri constraints. */
+const GROUP_CALL_VIDEO_MAX_HEIGHT = 720;
 import { logPageDisplay } from "../pageDisplayLog";
 import { joinTelegramChatVoice } from "./joinTelegramChatVoice";
 import {
@@ -120,8 +128,11 @@ function createSilentVideoTrack(): MediaStreamTrack {
  */
 let sharedSilentAudioCtx: AudioContext | null = null;
 
-/** Near-silent (~-60 dB). Too low and Chrome DTX sends no RTP → SFU mutes inbound. */
-const SILENT_OUTBOUND_GAIN = 0.001;
+/**
+ * Near-silent (~-42 dB). 0.001 was often DTX'd by Chrome despite usedtx=0 in SDP
+ * (outboundPackets rose slowly while inboundPackets stayed 0 / remoteMuted forever).
+ */
+const SILENT_OUTBOUND_GAIN = 0.008;
 
 function createSilentAudioTrack(): MediaStreamTrack {
   if (typeof AudioContext === "undefined") {
@@ -254,24 +265,47 @@ export class TelegramGroupCallWebSession {
   private videoListeners = new Set<(stream: MediaStream | null) => void>();
   /** Join-time SFU transport — reused to synthesize renegotiation answers. */
   private lastTransport: TelegramGroupCallTransport | null = null;
+  /** SFU video codecs from join payload — required to decode screencast RTP. */
+  private videoPayloadTypes: TelegramGroupCallPayloadType[] = [];
+  private videoExtensions: TelegramGroupCallRtpExtension[] = [];
+  /**
+   * Colibri data channel (`label=data`, id=0) — carries ReceiverVideoConstraints.
+   * Without an open channel the SFU never sends screencast RTP (inboundVideo=0).
+   */
+  private dataChannel: RTCDataChannel | null = null;
   /** Remote participant videos we want to receive (endpoint + ssrc groups). */
   private requestedRemoteVideo: TelegramRemoteVideoRequest[] = [];
   /** recvonly transceiver slots for remote video, in m-line order after mid 0/1. */
   private videoRecvSlots: Array<{
-    transceiver: RTCRtpTransceiver;
+    transceiver: RTCRtpTransceiver | null;
     endpointId: string | null;
   }> = [];
   /** Serialize renegotiations — parallel setLocalDescription calls throw. */
   private renegotiationChain: Promise<void> = Promise.resolve();
   private lastAppliedRemoteVideoKey = "";
+  /** Endpoint ids from the last successful video renegotiation. */
+  private lastAppliedRemoteVideoEndpoints: string[] = [];
+  /** Caps automatic re-renegotiate when inboundVideoPackets stay 0. */
+  private remoteVideoPacketRetries = 0;
   private remoteVideoByEndpoint = new Map<string, MediaStream>();
+  /** Stable UI MediaStreams so React does not remount video on every notify. */
+  private remoteVideoUiByEndpoint = new Map<string, MediaStream>();
+  private lastRemoteVideoSourcesSig = "";
   private remoteVideoSourceListeners = new Set<
     (sources: TelegramRemoteVideoSource[]) => void
   >();
-  /** Gate remote playback on chat-panel visibility (only hear while in the dialog). */
+  /** Gate remote playback (false only on leave/dispose — stay on while minimized). */
   private remoteAudioEnabled = true;
+  /** Wait for PC connected before first video renegotiate (protects audio m-line). */
+  private pendingVideoRenegotiateOnConnect = false;
+  private videoRenegotiateConnectListener: (() => void) | null = null;
   private playbackCtx: AudioContext | null = null;
   private playbackSource: MediaStreamAudioSourceNode | null = null;
+  /** Track-id key for the live WebAudio MediaStreamSource — skip no-op rebuilds. */
+  private playbackTrackKey = "";
+  /** Rate-limit join-placeholder video skip logs (pull/watchdog used to spam). */
+  private remoteVideoSkipLogAt = 0;
+  private remoteVideoSkipLogTrackId = "";
   /** Serialize play() / graph rebuild — concurrent calls interrupt each other. */
   private remotePlayChain: Promise<void> = Promise.resolve();
   private audioSourceId: number | null = null;
@@ -414,27 +448,34 @@ export class TelegramGroupCallWebSession {
 
   getLiveRemoteVideoSources(): TelegramRemoteVideoSource[] {
     const out: TelegramRemoteVideoSource[] = [];
+    const keep = new Set<string>();
     for (const req of this.requestedRemoteVideo) {
       const stream = this.remoteVideoByEndpoint.get(req.endpointId);
       if (!stream) continue;
+      // Wait for RTP (track.muted=false). Emitting muted join leftovers as
+      // "live" made the media stage lock onto a black main tile and hide
+      // local screencast PiPs until mainHasFrames (never).
       const live = stream
         .getVideoTracks()
-        .some((t) => t.readyState === "live" && t.enabled);
+        .find((t) => t.readyState === "live" && t.enabled && !t.muted);
       if (!live) continue;
-      out.push({ endpointId: req.endpointId, kind: req.kind, stream });
-    }
-    // Fallback: tracks that arrived without an endpoint mapping yet.
-    if (out.length === 0 && this.remoteVideoStream) {
-      const live = this.remoteVideoStream
-        .getVideoTracks()
-        .some((t) => t.readyState === "live" && t.enabled);
-      if (live) {
-        out.push({
-          endpointId: "unknown",
-          kind: "screen",
-          stream: this.remoteVideoStream,
-        });
+      keep.add(req.endpointId);
+      // Reuse one MediaStream per endpoint. `new MediaStream([live])` on every
+      // notify remounted <video> and reset mainHasFrames forever under SSE churn.
+      let ui = this.remoteVideoUiByEndpoint.get(req.endpointId);
+      const uiTrack = ui?.getVideoTracks()[0];
+      if (!ui || uiTrack?.id !== live.id) {
+        ui = new MediaStream([live]);
+        this.remoteVideoUiByEndpoint.set(req.endpointId, ui);
       }
+      out.push({
+        endpointId: req.endpointId,
+        kind: req.kind,
+        stream: ui,
+      });
+    }
+    for (const endpointId of [...this.remoteVideoUiByEndpoint.keys()]) {
+      if (!keep.has(endpointId)) this.remoteVideoUiByEndpoint.delete(endpointId);
     }
     return out;
   }
@@ -456,6 +497,23 @@ export class TelegramGroupCallWebSession {
             sourceIds: g.sourceIds.map((id) => Math.trunc(id)),
           })),
       }));
+    // Soft roster polls often drop source_groups after a good load — clearing
+    // here renegotiates to sections=0 and unmaps a live screencast.
+    if (normalized.length === 0 && this.requestedRemoteVideo.length > 0) {
+      const hasLiveMapped = [...this.remoteVideoByEndpoint.values()].some((stream) =>
+        stream.getVideoTracks().some((t) => t.readyState === "live"),
+      );
+      if (hasLiveMapped) {
+        logPageDisplay("messages_voice_remote_video_sticky_keep", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          kept: this.requestedRemoteVideo.map((r) => r.endpointId),
+          level: "warn",
+          note: "ignored empty request while live video tracks are mapped",
+        });
+        return;
+      }
+    }
     const nextKey = normalized
       .map(
         (r) =>
@@ -465,12 +523,47 @@ export class TelegramGroupCallWebSession {
       )
       .sort()
       .join("|");
-    if (nextKey === this.lastAppliedRemoteVideoKey) return;
     this.requestedRemoteVideo = normalized;
-    this.lastAppliedRemoteVideoKey = nextKey;
     this.notifyVideoListeners();
     this.notifyRemoteVideoSourceListeners();
-    if (!this.joined || !this.connection || !this.lastTransport) return;
+    if (nextKey === this.lastAppliedRemoteVideoKey) return;
+    // Same endpoints already slotted — roster SSRC churn / join kicks used to
+    // re-renegotiate and zero inboundVideoPackets before the SFU could forward.
+    const nextEndpoints = normalized.map((r) => r.endpointId);
+    const prevEndpoints = this.lastAppliedRemoteVideoEndpoints;
+    const sameEndpoints =
+      prevEndpoints.length === nextEndpoints.length &&
+      nextEndpoints.every((id) => prevEndpoints.includes(id));
+    const hasSlotted =
+      sameEndpoints &&
+      this.videoRecvSlots.some(
+        (slot) => slot.endpointId && nextEndpoints.includes(slot.endpointId),
+      );
+    if (hasSlotted && normalized.length > 0) {
+      this.lastAppliedRemoteVideoKey = nextKey;
+      this.sendReceiverVideoConstraints();
+      logPageDisplay("messages_voice_remote_video_skip_renegotiate", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        endpoints: nextEndpoints,
+        level: "info",
+        note: "kept live slots; refreshed Colibri constraints only",
+      });
+      return;
+    }
+    this.remoteVideoPacketRetries = 0;
+    if (!this.joined || !this.connection || !this.lastTransport) {
+      // Do not stamp lastApplied — join's deferred apply must still renegotiate.
+      logPageDisplay("messages_voice_remote_video_deferred", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        count: normalized.length,
+        joined: this.joined,
+        hasTransport: Boolean(this.lastTransport),
+        level: "info",
+      });
+      return;
+    }
     this.queueRemoteVideoRenegotiation();
   }
 
@@ -485,8 +578,26 @@ export class TelegramGroupCallWebSession {
     }
   }
 
-  private notifyRemoteVideoSourceListeners(): void {
+  private remoteVideoSourcesSignature(
+    sources: TelegramRemoteVideoSource[],
+  ): string {
+    return sources
+      .map((s) => {
+        const trackIds = s.stream
+          .getVideoTracks()
+          .map((t) => t.id)
+          .join(",");
+        return `${s.kind}:${s.endpointId}:${trackIds}`;
+      })
+      .sort()
+      .join("|");
+  }
+
+  private notifyRemoteVideoSourceListeners(force = false): void {
     const payload = this.getLiveRemoteVideoSources();
+    const sig = this.remoteVideoSourcesSignature(payload);
+    if (!force && sig === this.lastRemoteVideoSourcesSig) return;
+    this.lastRemoteVideoSourcesSig = sig;
     for (const listener of this.remoteVideoSourceListeners) {
       try {
         listener(payload);
@@ -522,8 +633,10 @@ export class TelegramGroupCallWebSession {
       }
     }
     this.remoteVideoByEndpoint.clear();
+    this.remoteVideoUiByEndpoint.clear();
+    this.lastRemoteVideoSourcesSig = "";
     this.notifyVideoListeners();
-    this.notifyRemoteVideoSourceListeners();
+    this.notifyRemoteVideoSourceListeners(true);
   }
 
   private ensureRemoteVideoStream(): MediaStream {
@@ -537,21 +650,59 @@ export class TelegramGroupCallWebSession {
     track: MediaStreamTrack,
     eventStreams: readonly MediaStream[],
   ): string | null {
+    // Prefer transceiver mid → slot.endpointId first. Falling through to
+    // requestedRemoteVideo[0] mis-attached second screencasts onto the first
+    // endpoint when stream.id did not match Telegram's endpoint id.
+    const pc = this.connection;
+    if (pc) {
+      for (const slot of this.videoRecvSlots) {
+        if (
+          slot.endpointId &&
+          slot.transceiver?.receiver.track?.id === track.id
+        ) {
+          return slot.endpointId;
+        }
+      }
+    }
+    // telegram-tt msid: track.id / stream.id === endpointId
+    const byTrackId = this.requestedRemoteVideo.find(
+      (r) => r.endpointId === track.id,
+    );
+    if (byTrackId) return byTrackId.endpointId;
     for (const stream of eventStreams) {
       if (this.remoteVideoByEndpoint.has(stream.id)) return stream.id;
       const match = this.requestedRemoteVideo.find((r) => r.endpointId === stream.id);
       if (match) return match.endpointId;
     }
-    // Slot-based fallback: map by transceiver mid order.
-    const pc = this.connection;
-    if (pc) {
-      for (const slot of this.videoRecvSlots) {
-        if (slot.endpointId && slot.transceiver.receiver.track?.id === track.id) {
-          return slot.endpointId;
-        }
+    const unassigned = this.requestedRemoteVideo.find(
+      (r) => !this.remoteVideoByEndpoint.has(r.endpointId),
+    );
+    return unassigned?.endpointId ?? this.requestedRemoteVideo[0]?.endpointId ?? null;
+  }
+
+  /** True when this receiver belongs to an explicit recvonly remote-video slot. */
+  private isSlottedRemoteVideoTrack(
+    track: MediaStreamTrack,
+    eventStreams: readonly MediaStream[] = [],
+  ): boolean {
+    if (
+      this.videoRecvSlots.some(
+        (slot) => slot.transceiver?.receiver.track?.id === track.id,
+      )
+    ) {
+      return true;
+    }
+    // telegram-tt msid uses endpointId as stream/track id — accept those even
+    // when slot sync races behind ontrack.
+    if (this.requestedRemoteVideo.some((r) => r.endpointId === track.id)) {
+      return true;
+    }
+    for (const stream of eventStreams) {
+      if (this.requestedRemoteVideo.some((r) => r.endpointId === stream.id)) {
+        return true;
       }
     }
-    return this.requestedRemoteVideo[0]?.endpointId ?? null;
+    return false;
   }
 
   private attachRemoteVideoTrack(
@@ -561,18 +712,48 @@ export class TelegramGroupCallWebSession {
     if (track.kind !== "video") return;
     // Ignore ended placeholders / silent negotiation leftovers from the SFU.
     if (track.readyState === "ended") return;
+    // Join always adds a black canvas video m-line (telegram-tt FID parity). Its
+    // receiver fires ontrack with muted=true and no SSRCs. Mapping that ghost onto
+    // the first screen endpoint made HTMLVideoElement play a dead first track —
+    // local + remote screencasts stayed invisible (mainHasFrames never latched).
+    if (!this.isSlottedRemoteVideoTrack(track, eventStreams)) {
+      const now =
+        typeof performance !== "undefined" && typeof performance.now === "function"
+          ? performance.now()
+          : Date.now();
+      // Playback pulls re-walk every receiver; logging each skip froze DevTools
+      // and competed with WebAudio on the main thread during join.
+      if (
+        track.id !== this.remoteVideoSkipLogTrackId ||
+        now - this.remoteVideoSkipLogAt > 5_000
+      ) {
+        this.remoteVideoSkipLogAt = now;
+        this.remoteVideoSkipLogTrackId = track.id;
+        logPageDisplay("messages_voice_remote_video_skip_non_slot", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          trackId: track.id,
+          muted: track.muted,
+          slotCount: this.videoRecvSlots.length,
+          requested: this.requestedRemoteVideo.map((r) => r.endpointId),
+          level: "info",
+        });
+      }
+      return;
+    }
     track.enabled = true;
     const stream = this.ensureRemoteVideoStream();
     const already = stream.getVideoTracks().some((t) => t.id === track.id);
     if (!already) {
       stream.addTrack(track);
-      voiceDebug("[voice-remote-video]", "attached", {
+      logPageDisplay("messages_voice_remote_video_attached", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         trackId: track.id,
         muted: track.muted,
         readyState: track.readyState,
         trackCount: stream.getVideoTracks().length,
+        level: "info",
       });
     }
     const endpointId = this.resolveEndpointIdForTrack(track, eventStreams);
@@ -585,13 +766,31 @@ export class TelegramGroupCallWebSession {
       if (!endpointStream.getVideoTracks().some((t) => t.id === track.id)) {
         endpointStream.addTrack(track);
       }
-    }
-    track.onunmute = () => {
-      voiceDebug("[voice-remote-video]", "unmuted", {
+      logPageDisplay("messages_voice_remote_video_endpoint", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         trackId: track.id,
         endpointId,
+        endpointTrackCount: endpointStream.getVideoTracks().length,
+        mappedEndpoints: [...this.remoteVideoByEndpoint.keys()],
+        level: "info",
+      });
+    } else {
+      logPageDisplay("messages_voice_remote_video_unmapped", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        trackId: track.id,
+        requested: this.requestedRemoteVideo.map((r) => r.endpointId),
+        level: "warn",
+      });
+    }
+    track.onunmute = () => {
+      logPageDisplay("messages_voice_remote_video_unmute", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        trackId: track.id,
+        endpointId,
+        level: "info",
       });
       this.notifyVideoListeners();
       this.notifyRemoteVideoSourceListeners();
@@ -628,10 +827,88 @@ export class TelegramGroupCallWebSession {
     this.notifyRemoteVideoSourceListeners();
   }
 
+  private remoteVideoKeyOf(
+    requests: TelegramRemoteVideoRequest[],
+  ): string {
+    return requests
+      .map(
+        (r) =>
+          `${r.kind}:${r.endpointId}:${r.ssrcGroups
+            .map((g) => `${g.semantics}:${g.sourceIds.join(",")}`)
+            .join(";")}`,
+      )
+      .sort()
+      .join("|");
+  }
+
+  private clearVideoRenegotiateConnectWait(): void {
+    const connection = this.connection;
+    if (connection && this.videoRenegotiateConnectListener) {
+      connection.removeEventListener(
+        "connectionstatechange",
+        this.videoRenegotiateConnectListener,
+      );
+    }
+    this.videoRenegotiateConnectListener = null;
+    this.pendingVideoRenegotiateOnConnect = false;
+  }
+
   private queueRemoteVideoRenegotiation(): void {
+    const connection = this.connection;
+    // Renegotiating video while DTLS is still connecting left inboundAudio=0
+    // and constraints_skip (data channel not open). Wait for PC connected.
+    if (
+      connection &&
+      connection.connectionState !== "connected" &&
+      this.requestedRemoteVideo.length > 0
+    ) {
+      if (!this.pendingVideoRenegotiateOnConnect) {
+        this.pendingVideoRenegotiateOnConnect = true;
+        const onState = () => {
+          if (this.connection !== connection) {
+            this.clearVideoRenegotiateConnectWait();
+            return;
+          }
+          if (connection.connectionState === "connected") {
+            this.clearVideoRenegotiateConnectWait();
+            this.queueRemoteVideoRenegotiation();
+          }
+        };
+        this.videoRenegotiateConnectListener = onState;
+        connection.addEventListener("connectionstatechange", onState);
+        if (typeof window !== "undefined") {
+          window.setTimeout(() => {
+            if (!this.pendingVideoRenegotiateOnConnect) return;
+            if (this.connection !== connection || !this.joined) {
+              this.clearVideoRenegotiateConnectWait();
+              return;
+            }
+            this.clearVideoRenegotiateConnectWait();
+            this.queueRemoteVideoRenegotiation();
+          }, 6_000);
+        }
+        logPageDisplay("messages_voice_remote_video_wait_pc", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          conn: connection.connectionState,
+          ice: connection.iceConnectionState,
+          count: this.requestedRemoteVideo.length,
+          level: "info",
+          note: "defer video renegotiate until PeerConnection connected",
+        });
+      }
+      return;
+    }
     this.renegotiationChain = this.renegotiationChain
       .then(() => this.renegotiateRemoteVideos())
       .catch((err) => {
+        this.lastAppliedRemoteVideoKey = "";
+        logPageDisplay("messages_voice_remote_video_renegotiate_fail", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          error: err instanceof Error ? err.message : String(err),
+          level: "error",
+        });
         appWarn(
           "[voice-remote-video-renegotiate]",
           err instanceof Error ? err.message : String(err),
@@ -640,35 +917,208 @@ export class TelegramGroupCallWebSession {
       });
   }
 
+  /**
+   * telegram-tt / Colibri: SFU only forwards camera/screen once we name the
+   * endpoints in ReceiverVideoConstraints over the SCTP data channel.
+   */
+  private sendReceiverVideoConstraints(): void {
+    const channel = this.dataChannel;
+    if (!channel || channel.readyState !== "open") {
+      logPageDisplay("messages_voice_video_constraints_skip", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        readyState: channel?.readyState ?? "missing",
+        endpoints: this.requestedRemoteVideo.map((r) => r.endpointId),
+        level: "warn",
+      });
+      // Data channel often opens only after remote-offer createAnswer — poll
+      // longer so a late onopen still delivers constraints.
+      if (
+        channel &&
+        channel.readyState === "connecting" &&
+        typeof window !== "undefined" &&
+        this.requestedRemoteVideo.length > 0
+      ) {
+        const started = Date.now();
+        const poll = () => {
+          if (!this.joined || this.dataChannel !== channel) return;
+          if (channel.readyState === "open") {
+            this.sendReceiverVideoConstraints();
+            return;
+          }
+          if (channel.readyState !== "connecting") return;
+          if (Date.now() - started > 8_000) {
+            logPageDisplay("messages_voice_data_channel_stuck", {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              readyState: channel.readyState,
+              elapsedMs: Date.now() - started,
+              level: "error",
+            });
+            return;
+          }
+          window.setTimeout(poll, 250);
+        };
+        window.setTimeout(poll, 250);
+      }
+      return;
+    }
+    const endpoints = this.requestedRemoteVideo
+      .map((r) => r.endpointId)
+      .filter(Boolean);
+    const constraints: Record<string, { minHeight: number; maxHeight: number }> =
+      {};
+    for (const endpoint of endpoints) {
+      constraints[endpoint] = {
+        minHeight: 0,
+        maxHeight: GROUP_CALL_VIDEO_MAX_HEIGHT,
+      };
+    }
+    const message = {
+      colibriClass: "ReceiverVideoConstraints",
+      // Match telegram-tt groupCall.ts updateRemoteVideoConstraints.
+      defaultConstraints: { maxHeight: 0 },
+      constraints,
+      onStageEndpoints: endpoints,
+    };
+    try {
+      channel.send(JSON.stringify(message));
+      logPageDisplay("messages_voice_video_constraints_sent", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        count: endpoints.length,
+        endpoints,
+        level: "info",
+      });
+    } catch (err) {
+      logPageDisplay("messages_voice_video_constraints_fail", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        error: err instanceof Error ? err.message : String(err),
+        level: "error",
+      });
+    }
+  }
+
+  private attachGroupCallDataChannel(connection: RTCPeerConnection): void {
+    try {
+      this.dataChannel?.close();
+    } catch {
+      // ignore
+    }
+    this.dataChannel = null;
+    // Same negotiated channel as telegram-tt (label data, id 0).
+    const channel = connection.createDataChannel("data", {
+      id: 0,
+      ordered: true,
+    });
+    this.dataChannel = channel;
+    logPageDisplay("messages_voice_data_channel_created", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      readyState: channel.readyState,
+      level: "info",
+    });
+    channel.onopen = () => {
+      logPageDisplay("messages_voice_data_channel_open", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        level: "info",
+      });
+      this.sendReceiverVideoConstraints();
+    };
+    channel.onclose = () => {
+      logPageDisplay("messages_voice_data_channel_close", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        level: "warn",
+      });
+    };
+    channel.onerror = () => {
+      logPageDisplay("messages_voice_data_channel_error", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        readyState: channel.readyState,
+        level: "warn",
+      });
+    };
+  }
+
+  /**
+   * Prefer join-payload codecs (H264 first — Telegram mobile screencasts) on
+   * recvonly slots so createOffer advertises them before we mirror PTs in the answer.
+   */
+  private applyJoinVideoCodecPreferences(transceiver: RTCRtpTransceiver): void {
+    try {
+      const caps = RTCRtpReceiver.getCapabilities?.("video");
+      if (!caps?.codecs?.length) return;
+      const preferNames = this.videoPayloadTypes
+        .map((p) => p.name.toUpperCase())
+        .filter((name) => name && name !== "RTX" && name !== "RED" && name !== "ULPFEC");
+      const order =
+        preferNames.length > 0
+          ? preferNames
+          : ["H264", "VP8", "VP9", "AV1"];
+      // H264 first for Telegram desktop/mobile screencasts.
+      if (!order.includes("H264")) order.unshift("H264");
+      const preferred: RTCRtpCodecCapability[] = [];
+      const seen = new Set<string>();
+      for (const name of order) {
+        for (const codec of caps.codecs) {
+          const mime = codec.mimeType?.toUpperCase() ?? "";
+          if (!mime.endsWith(`/${name}`)) continue;
+          const key = `${mime}|${codec.sdpFmtpLine ?? ""}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          preferred.push(codec);
+        }
+      }
+      for (const codec of caps.codecs) {
+        const mime = codec.mimeType?.toUpperCase() ?? "";
+        if (mime.endsWith("/RTX") || mime.endsWith("/RED") || mime.endsWith("/ULPFEC")) {
+          preferred.push(codec);
+        }
+      }
+      if (preferred.length > 0 && typeof transceiver.setCodecPreferences === "function") {
+        transceiver.setCodecPreferences(preferred);
+      }
+    } catch {
+      // Older browsers / unsupported — offer still mirrors whatever Chrome emits.
+    }
+  }
+
   private async renegotiateRemoteVideos(): Promise<void> {
     const connection = this.connection;
     const transport = this.lastTransport;
     if (!connection || !transport || !this.joined) return;
 
-    const wanted = this.requestedRemoteVideo.slice(0, 4);
-    // Grow recvonly slots to match. Never stop() surplus transceivers — a
-    // stopped m-line must be rejected (port 0) in every later answer and our
-    // builder emits live sections, which makes setRemoteDescription throw and
-    // renegotiation loop forever. Park unused slots as inactive instead.
+    const wanted = this.requestedRemoteVideo.slice(0, 8);
+    const wantedKey = this.remoteVideoKeyOf(wanted);
+    if (wantedKey === this.lastAppliedRemoteVideoKey) return;
+
+    logPageDisplay("messages_voice_remote_video_renegotiate_start", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      count: wanted.length,
+      endpoints: wanted.map((r) => r.endpointId),
+      ssrcGroups: wanted.map((r) =>
+        r.ssrcGroups.map((g) => `${g.semantics}:${g.sourceIds.join(",")}`),
+      ),
+      level: "info",
+    });
+
+    // Map slots for ontrack → endpoint association. Do NOT addTransceiver here —
+    // telegram-tt grows m-lines via the remote offer; pre-adding slots made
+    // Chrome's local m-line order diverge from a crafted answer and starved SCTP.
     while (this.videoRecvSlots.length < wanted.length) {
-      const transceiver = connection.addTransceiver("video", {
-        direction: "recvonly",
-      });
-      this.videoRecvSlots.push({ transceiver, endpointId: null });
+      this.videoRecvSlots.push({ transceiver: null, endpointId: null });
     }
     for (let i = 0; i < this.videoRecvSlots.length; i += 1) {
       const slot = this.videoRecvSlots[i]!;
       const req = wanted[i];
       slot.endpointId = req?.endpointId ?? null;
-      try {
-        slot.transceiver.direction = req ? "recvonly" : "inactive";
-      } catch {
-        // ignore
-      }
     }
 
-    // Yield before/after SDP like ensureJoinedListenOnly — renegotiation used to
-    // run immediately after join_ok with no gaps and freeze Close for seconds.
     await new Promise<void>((resolve) => {
       if (typeof window === "undefined") {
         resolve();
@@ -676,24 +1126,7 @@ export class TelegramGroupCallWebSession {
       }
       window.setTimeout(resolve, 32);
     });
-    const offer = await connection.createOffer();
-    await new Promise<void>((resolve) => {
-      if (typeof window === "undefined") {
-        resolve();
-        return;
-      }
-      window.setTimeout(resolve, 32);
-    });
-    await connection.setLocalDescription(offer);
-    await new Promise<void>((resolve) => {
-      if (typeof window === "undefined") {
-        resolve();
-        return;
-      }
-      window.setTimeout(resolve, 32);
-    });
-    const localSdp = connection.localDescription?.sdp ?? offer.sdp ?? "";
-    if (!localSdp) return;
+    if (this.connection !== connection || !this.joined) return;
 
     const sections: TelegramGroupCallRemoteVideoSection[] = wanted.map((req) => ({
       endpointId: req.endpointId,
@@ -702,53 +1135,202 @@ export class TelegramGroupCallWebSession {
         sourceIds: g.sourceIds,
       })),
     }));
-    // Pad inactive slots so m-line counts still match if the offer grew more.
-    const offerMids = (localSdp.match(/^a=mid:.+$/gm) ?? []).length;
-    while (sections.length < Math.max(0, offerMids - 2)) {
-      sections.push(null);
+
+    try {
+      // Prefer the last remote *offer* (has our SCTP + video layout). Fall back
+      // to local description (join offer, or createAnswer after subscribe).
+      const localSdp =
+        (connection.remoteDescription?.type === "offer"
+          ? connection.remoteDescription.sdp
+          : null) ||
+        connection.localDescription?.sdp ||
+        connection.remoteDescription?.sdp ||
+        "";
+      if (!localSdp) return;
+      const offerSdp = groupCallRemoteSubscribeOfferSdp(
+        transport,
+        localSdp,
+        sections,
+        {
+          videoPayloadTypes: this.videoPayloadTypes,
+          videoExtensions: this.videoExtensions,
+          audioSourceId: parsePrimarySsrcFromSdp(
+            connection.localDescription?.sdp || localSdp,
+            "audio",
+          ),
+        },
+      );
+      const offerMedia = parseOfferMediaSections(offerSdp);
+      logPageDisplay("messages_voice_remote_video_offer_codecs", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        mode: "remote_offer",
+        signaling: connection.signalingState,
+        conn: connection.connectionState,
+        dataChannel: this.dataChannel?.readyState ?? "missing",
+        mids: offerMedia.map((s) => `${s.kind}:${s.mid}`),
+        hasApplication: offerMedia.some((s) => s.kind === "application"),
+        joinPayloadIds: this.videoPayloadTypes.map((p) => p.id).slice(0, 8),
+        level: "info",
+      });
+      await connection.setRemoteDescription({
+        type: "offer",
+        sdp: offerSdp,
+      });
+      await new Promise<void>((resolve) => {
+        if (typeof window === "undefined") {
+          resolve();
+          return;
+        }
+        window.setTimeout(resolve, 16);
+      });
+      if (this.connection !== connection || !this.joined) return;
+      const answer = await connection.createAnswer();
+      await connection.setLocalDescription(answer);
+    } catch (err) {
+      this.lastAppliedRemoteVideoKey = "";
+      logPageDisplay("messages_voice_remote_video_renegotiate_fail", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        mode: "remote_offer",
+        signaling: connection.signalingState,
+        conn: connection.connectionState,
+        dataChannel: this.dataChannel?.readyState ?? "missing",
+        error: err instanceof Error ? err.message : String(err),
+        level: "error",
+      });
+      throw err;
     }
 
-    await connection.setRemoteDescription({
-      type: "answer",
-      sdp: groupCallAnswerSdpFromTransport(transport, localSdp, sections),
-    });
-    voiceDebug("[voice-remote-video]", "renegotiated", {
+    this.lastAppliedRemoteVideoKey = wantedKey;
+    this.lastAppliedRemoteVideoEndpoints = wanted.map((r) => r.endpointId);
+    // Bind any new recv transceivers Chrome created for the extra m-lines.
+    const extraVideoTransceivers = connection
+      .getTransceivers()
+      .filter((t) => t.receiver.track?.kind === "video")
+      .filter((t) => t.mid && t.mid !== "1");
+    for (let i = 0; i < wanted.length; i += 1) {
+      const slot = this.videoRecvSlots[i];
+      if (!slot) continue;
+      const transceiver = extraVideoTransceivers[i];
+      if (transceiver) slot.transceiver = transceiver;
+    }
+    logPageDisplay("messages_voice_remote_video_renegotiated", {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
       sections: sections.filter(Boolean).length,
-      mids: offerMids,
+      mids: parseOfferMediaSections(connection.localDescription?.sdp ?? "").length,
+      mediaKinds: parseOfferMediaSections(connection.localDescription?.sdp ?? "").map(
+        (s) => s.kind,
+      ),
+      endpoints: wanted.map((r) => r.endpointId),
+      mode: "remote_offer",
+      dataChannel: this.dataChannel?.readyState ?? "missing",
+      level: "info",
     });
+    this.sendReceiverVideoConstraints();
     this.pullRemoteMediaTracks(connection);
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        if (this.connection !== connection || !this.joined) return;
+        void this.logIceDiagnostics(connection, "post_video_renegotiate_1s").then(
+          (stats) => {
+            if (this.connection !== connection || !this.joined) return;
+            logPageDisplay("messages_voice_remote_video_packets", {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              inboundVideoPackets: stats.inboundVideoPackets,
+              inboundPackets: stats.inboundPackets,
+              outboundPackets: stats.outboundPackets,
+              dataChannel: this.dataChannel?.readyState ?? "missing",
+              slotted: this.videoRecvSlots.filter((s) => s.endpointId).length,
+              mapped: this.remoteVideoByEndpoint.size,
+              level: stats.inboundVideoPackets > 0 ? "info" : "warn",
+            });
+            if (stats.inboundVideoPackets > 0) {
+              this.remoteVideoPacketRetries = 0;
+              return;
+            }
+            if (
+              this.requestedRemoteVideo.length > 0 &&
+              this.remoteVideoPacketRetries < 3
+            ) {
+              this.remoteVideoPacketRetries += 1;
+              this.sendReceiverVideoConstraints();
+              logPageDisplay("messages_voice_remote_video_constraints_retry", {
+                chatId: this.input.chatId,
+                groupCallId: this.input.groupCallId,
+                attempt: this.remoteVideoPacketRetries,
+                dataChannel: this.dataChannel?.readyState ?? "missing",
+                slotted: this.videoRecvSlots.filter((s) => s.endpointId).length,
+                mapped: this.remoteVideoByEndpoint.size,
+                level: "warn",
+              });
+            }
+          },
+        );
+      }, 1_000);
+    }
   }
 
-  private pullRemoteMediaTracks(connection: RTCPeerConnection): void {
+  private pullRemoteMediaTracks(
+    connection: RTCPeerConnection,
+    opts?: { audioOnly?: boolean },
+  ): void {
+    const audioOnly = Boolean(opts?.audioOnly);
     for (const receiver of connection.getReceivers()) {
       const track = receiver.track;
       if (!track) continue;
       if (track.kind === "audio") this.attachRemoteAudioTrack(track);
-      else if (track.kind === "video") this.attachRemoteVideoTrack(track);
+      else if (track.kind === "video" && !audioOnly) {
+        this.attachRemoteVideoTrack(track);
+      }
     }
   }
 
   private async logIceDiagnostics(
     connection: RTCPeerConnection,
     label: string,
-  ): Promise<void> {
+  ): Promise<{
+    inboundPackets: number;
+    inboundVideoPackets: number;
+    outboundPackets: number;
+  }> {
     try {
       const stats = await connection.getStats();
       let inboundAudio = 0;
       let outboundAudio = 0;
       let inboundPackets = 0;
       let outboundPackets = 0;
+      let inboundVideo = 0;
+      let inboundVideoPackets = 0;
+      let framesDecoded = 0;
+      let framesReceived = 0;
+      const videoCodecs: string[] = [];
       let pairsSucceeded = 0;
       let pairsInProgress = 0;
       let pairsFailed = 0;
       const locals: string[] = [];
       const remotes: string[] = [];
+      const codecById = new Map<string, string>();
+      stats.forEach((report) => {
+        if (report.type === "codec" && report.mimeType) {
+          codecById.set(report.id, String(report.mimeType));
+        }
+      });
       stats.forEach((report) => {
         if (report.type === "inbound-rtp" && report.kind === "audio") {
           inboundAudio += Number(report.bytesReceived) || 0;
           inboundPackets += Number(report.packetsReceived) || 0;
+        }
+        if (report.type === "inbound-rtp" && report.kind === "video") {
+          inboundVideo += Number(report.bytesReceived) || 0;
+          inboundVideoPackets += Number(report.packetsReceived) || 0;
+          framesDecoded += Number(report.framesDecoded) || 0;
+          framesReceived += Number(report.framesReceived) || 0;
+          const codecId = report.codecId ? String(report.codecId) : "";
+          const mime = codecId ? codecById.get(codecId) : null;
+          if (mime) videoCodecs.push(mime);
         }
         if (report.type === "outbound-rtp" && report.kind === "audio") {
           outboundAudio += Number(report.bytesSent) || 0;
@@ -776,6 +1358,11 @@ export class TelegramGroupCallWebSession {
         conn: connection.connectionState,
         inboundAudio,
         inboundPackets,
+        inboundVideo,
+        inboundVideoPackets,
+        framesDecoded,
+        framesReceived,
+        videoCodecs: videoCodecs.slice(0, 4).join(",") || "none",
         outboundAudio,
         outboundPackets,
         usingSilentAudio: this.usingSilentAudio,
@@ -786,8 +1373,10 @@ export class TelegramGroupCallWebSession {
         localCandidates: locals.join(","),
         remoteCandidates: remotes.join(","),
       });
+      return { inboundPackets, inboundVideoPackets, outboundPackets };
     } catch {
       // ignore stats errors
+      return { inboundPackets: 0, inboundVideoPackets: 0, outboundPackets: 0 };
     }
   }
 
@@ -850,11 +1439,17 @@ export class TelegramGroupCallWebSession {
       this.remoteAudio.srcObject = null;
     }
     const wasJoined = this.joined;
+    this.clearVideoRenegotiateConnectWait();
     this.joined = false;
     this.micEnabled = false;
     this.lastTransport = null;
+    this.videoPayloadTypes = [];
+    this.videoExtensions = [];
+    this.lastAppliedRemoteVideoEndpoints = [];
     this.videoRecvSlots = [];
+    this.requestedRemoteVideo = [];
     this.lastAppliedRemoteVideoKey = "";
+    this.remoteAudioEnabled = false;
     appWarn("[voice-join-lost]", reason, {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
@@ -1331,6 +1926,19 @@ export class TelegramGroupCallWebSession {
       level: "info",
     });
 
+    // Yield so dialog Close / emoji work can run before the TDLib round-trip —
+    // createOffer + setLocalDescription already burned the main thread and the
+    // 15s fetch abort fired as screen_share_timeout while the UI was frozen.
+    await new Promise<void>((resolve) => {
+      if (typeof window === "undefined") {
+        resolve();
+        return;
+      }
+      window.requestAnimationFrame(() => {
+        window.setTimeout(resolve, 48);
+      });
+    });
+
     const joinResult = await startTelegramChatVoiceScreenShare({
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
@@ -1350,20 +1958,28 @@ export class TelegramGroupCallWebSession {
       }).catch(() => undefined);
     };
 
-    const transport = parseGroupCallJoinTransport(joinResult.join_payload);
-    if (!transport) {
+    const joinParsed = parseGroupCallJoinTransport(joinResult.join_payload);
+    if (!joinParsed) {
       connection.close();
       presentationAudio.stop();
       rollbackTdlibShare();
       throw new Error("presentation_join_transport_invalid");
     }
     const slimTransport = {
-      ...transport,
-      candidates: pickJoinAnswerCandidates(transport.candidates),
+      ...joinParsed.transport,
+      candidates: pickJoinAnswerCandidates(joinParsed.transport.candidates),
     };
     const answerSdp = groupCallAnswerSdpFromTransport(slimTransport, localSdp, [], {
       minimalVideo: false,
       presentation: true,
+      videoPayloadTypes:
+        joinParsed.videoPayloadTypes.length > 0
+          ? joinParsed.videoPayloadTypes
+          : this.videoPayloadTypes,
+      videoExtensions:
+        joinParsed.videoExtensions.length > 0
+          ? joinParsed.videoExtensions
+          : this.videoExtensions,
     });
 
     try {
@@ -1387,6 +2003,31 @@ export class TelegramGroupCallWebSession {
       candidateCount: slimTransport.candidates.length,
       level: "info",
     });
+
+    if (typeof window !== "undefined") {
+      window.setTimeout(() => {
+        if (this.presentationConnection !== connection) return;
+        void connection.getStats().then((stats) => {
+          let outboundVideoPackets = 0;
+          let outboundVideoBytes = 0;
+          stats.forEach((report) => {
+            if (report.type === "outbound-rtp" && report.kind === "video") {
+              outboundVideoPackets += Number(report.packetsSent) || 0;
+              outboundVideoBytes += Number(report.bytesSent) || 0;
+            }
+          });
+          logPageDisplay("messages_voice_screen_share_outbound", {
+            chatId: this.input.chatId,
+            groupCallId: this.input.groupCallId,
+            outboundVideoPackets,
+            outboundVideoBytes,
+            ice: connection.iceConnectionState,
+            conn: connection.connectionState,
+            level: outboundVideoPackets > 0 ? "info" : "warn",
+          });
+        });
+      }, 1_500);
+    }
   }
 
   private stopLocalVideoCaptures(): void {
@@ -1899,18 +2540,36 @@ export class TelegramGroupCallWebSession {
       // ignore
     }
     this.playbackSource = null;
+    this.playbackTrackKey = "";
   }
 
-  private rebuildWebAudioPlayback(): boolean {
+  private remoteAudioTrackKey(stream: MediaStream): string {
+    return stream
+      .getAudioTracks()
+      .map((t) => `${t.id}:${t.readyState}:${t.muted ? "m" : "u"}`)
+      .sort()
+      .join("|");
+  }
+
+  /**
+   * Connect remote audio → AudioContext.destination (telegram-tt hearable path).
+   * Pass force=true after track unmute — Chrome can keep a muted-era source silent.
+   */
+  private rebuildWebAudioPlayback(force = false): boolean {
     const ctx = this.playbackCtx;
     const stream = this.remoteStream;
     if (!ctx || !stream || stream.getAudioTracks().length === 0) return false;
+    const key = this.remoteAudioTrackKey(stream);
+    if (!force && this.playbackSource && this.playbackTrackKey === key) {
+      return true;
+    }
     try {
       this.teardownWebAudioPlayback();
       // Fresh MediaStream snapshot so createMediaStreamSource sees current tracks.
       const snapshot = new MediaStream(stream.getAudioTracks());
       this.playbackSource = ctx.createMediaStreamSource(snapshot);
       this.playbackSource.connect(ctx.destination);
+      this.playbackTrackKey = key;
       return true;
     } catch (err) {
       appWarn(
@@ -1961,8 +2620,7 @@ export class TelegramGroupCallWebSession {
   private async ensureRemotePlaybackInternal(reason: string): Promise<void> {
     if (typeof document === "undefined") return;
 
-    // Panel not visible: keep the call connected but silence output so voice
-    // is only heard while the user is actually in the chat dialog.
+    // Leave/dispose only — minimized dock must keep hearing the call.
     if (!this.remoteAudioEnabled) {
       this.teardownWebAudioPlayback();
       if (this.remoteAudio) {
@@ -1972,12 +2630,12 @@ export class TelegramGroupCallWebSession {
       return;
     }
 
-    // Re-pull receivers for late/replaced tracks. attachRemoteAudioTrack only
-    // queues playback when the track is NEW — re-attach must not re-queue or
-    // join_ok storms the main thread (UI freeze; ice_post_apply never fires).
+    // Re-pull audio receivers for late/replaced tracks. Video is handled by
+    // ontrack + slotted renegotiation — pulling video here only spammed
+    // skip_non_slot and competed with WebAudio on the main thread.
     const pc = this.connection;
     if (pc) {
-      this.pullRemoteMediaTracks(pc);
+      this.pullRemoteMediaTracks(pc, { audioOnly: true });
     }
 
     const stream = this.remoteStream;
@@ -1992,11 +2650,21 @@ export class TelegramGroupCallWebSession {
       await ctx.resume().catch(() => undefined);
     }
 
+    // Force rebuild after unmute / ICE reconnect — Chrome can keep a MediaStreamSource
+    // silent if it was built while the track was still muted.
+    const forceRebuild =
+      reason === "track-unmute" ||
+      reason === "ice-connected" ||
+      reason === "pc-connected";
+
     // telegram-tt: WebAudio → destination is the hearable sink. A muted Audio
     // element with the same MediaStream is a Chrome WebRTC+AudioContext hack —
-    // not the playback path. HTML <audio>.play() is a secondary unlock.
-    const webaudioOk =
-      Boolean(ctx && ctx.state === "running" && this.rebuildWebAudioPlayback());
+    // not the playback path. Unmuted HTML <audio> is fallback only.
+    const webaudioOk = Boolean(
+      ctx &&
+        ctx.state === "running" &&
+        this.rebuildWebAudioPlayback(forceRebuild),
+    );
     if (webaudioOk) {
       try {
         const probe = new Audio();
@@ -2012,39 +2680,55 @@ export class TelegramGroupCallWebSession {
     if (audio.srcObject !== stream) {
       audio.srcObject = stream;
     }
+    if (webaudioOk) {
+      // Keep muted — dual unmuted sinks steal / silence WebAudio on Chrome.
+      audio.muted = true;
+      audio.volume = 0;
+      try {
+        if (audio.paused) {
+          await audio.play().catch(() => undefined);
+        }
+      } catch {
+        // ignore
+      }
+      logPageDisplay("messages_voice_remote_playback_ok", {
+        reason,
+        sink: "webaudio",
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        tracks: stream.getAudioTracks().length,
+        ctxState: ctx?.state ?? "none",
+        mutedTracks: stream.getAudioTracks().filter((t) => t.muted).length,
+        level: "info",
+      });
+      return;
+    }
+
     audio.muted = false;
     audio.volume = 1;
     try {
       if (audio.paused) {
         await audio.play();
       }
-      voiceDebug("[voice-remote-playback]", "ok", {
+      logPageDisplay("messages_voice_remote_playback_ok", {
         reason,
-        webaudio: webaudioOk,
+        sink: "html_audio",
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        tracks: stream.getAudioTracks().length,
+        ctxState: ctx?.state ?? "none",
+        level: "info",
+      });
+      return;
+    } catch (err) {
+      this.armGestureUnmute();
+      appWarn("[voice-remote-audio]", err instanceof Error ? err.message : String(err), {
+        reason,
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         tracks: stream.getAudioTracks().length,
         ctxState: ctx?.state ?? "none",
       });
-      return;
-    } catch (err) {
-      this.armGestureUnmute();
-      if (!webaudioOk) {
-        appWarn("[voice-remote-audio]", err instanceof Error ? err.message : String(err), {
-          reason,
-          chatId: this.input.chatId,
-          groupCallId: this.input.groupCallId,
-          tracks: stream.getAudioTracks().length,
-          ctxState: ctx?.state ?? "none",
-        });
-      } else {
-        // WebAudio is already driving speakers — HTML autoplay block is fine.
-        voiceDebug("[voice-remote-playback]", "html_blocked_webaudio_ok", {
-          reason,
-          chatId: this.input.chatId,
-          groupCallId: this.input.groupCallId,
-        });
-      }
     }
   }
 
@@ -2076,7 +2760,8 @@ export class TelegramGroupCallWebSession {
         level: "info",
       });
       // Chrome can keep a MediaStreamSource silent if it was built while muted.
-      this.teardownWebAudioPlayback();
+      // Force rebuild via playback reason — do not tear down here and race the
+      // queued ensure (watchdog used to leave a gap with no sink).
       this.queueRemotePlayback("track-unmute");
     };
     track.onmute = () => {
@@ -2119,9 +2804,8 @@ export class TelegramGroupCallWebSession {
   }
 
   /**
-   * Enable/disable remote playback based on whether the chat dialog is visible.
-   * Keeps the WebRTC/TDLib join intact — only the audio output is gated so voice
-   * is heard exclusively while the user is looking at the chat.
+   * Enable/disable remote playback. Keep enabled while joined (including
+   * minimized dock); disable only when leaving/disposing the session.
    */
   setRemoteAudioEnabled(enabled: boolean): void {
     if (this.remoteAudioEnabled === enabled) return;
@@ -2196,6 +2880,9 @@ export class TelegramGroupCallWebSession {
     placeholderVideo.enabled = false;
     connection.addTrack(placeholderVideo, new MediaStream([placeholderVideo]));
     this.outboundVideoTrack = placeholderVideo;
+    // Open Colibri data channel before createOffer so the offer includes SCTP
+    // (mid usually 2). Screencast RTP is gated on ReceiverVideoConstraints.
+    this.attachGroupCallDataChannel(connection);
     const stopJoinVideoPlaceholder = () => {
       const track = this.outboundVideoTrack;
       this.outboundVideoTrack = null;
@@ -2259,10 +2946,9 @@ export class TelegramGroupCallWebSession {
       }
       this.clearJoinLostTimer();
       if (ice === "connected" || ice === "completed") {
-        this.pullRemoteMediaTracks(connection);
+        this.pullRemoteMediaTracks(connection, { audioOnly: true });
         unlockVoiceAutoplay();
         void resumeSilentOutboundContext();
-        this.teardownWebAudioPlayback();
         this.queueRemotePlayback("ice-connected");
       }
     };
@@ -2277,9 +2963,8 @@ export class TelegramGroupCallWebSession {
         level: state === "connected" ? "info" : "warn",
       });
       if (state === "connected") {
-        this.pullRemoteMediaTracks(connection);
+        this.pullRemoteMediaTracks(connection, { audioOnly: true });
         unlockVoiceAutoplay();
-        this.teardownWebAudioPlayback();
         this.queueRemotePlayback("pc-connected");
       } else if (state === "failed" || state === "disconnected") {
         this.scheduleJoinLostIfStillBroken(connection, `pc_${state}`);
@@ -2396,8 +3081,8 @@ export class TelegramGroupCallWebSession {
       throw new Error("voice_stream_mode_unsupported");
     }
 
-    const transport = parseGroupCallJoinTransport(joinResult.join_payload);
-    if (!transport) {
+    const joinParsed = parseGroupCallJoinTransport(joinResult.join_payload);
+    if (!joinParsed) {
       appWarn("[voice-join-transport]", "join_transport_invalid", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
@@ -2408,6 +3093,9 @@ export class TelegramGroupCallWebSession {
       stopJoinVideoPlaceholder();
       throw new Error("join_transport_invalid");
     }
+    const transport = joinParsed.transport;
+    this.videoPayloadTypes = joinParsed.videoPayloadTypes;
+    this.videoExtensions = joinParsed.videoExtensions;
     // Prefer all IPv4 SFU candidates (telegram-tt). Soft-cap only huge lists.
     const slimTransport = {
       ...transport,
@@ -2419,6 +3107,8 @@ export class TelegramGroupCallWebSession {
       candidateCount: slimTransport.candidates.length,
       rawCandidateCount: transport.candidates.length,
       fingerprintCount: transport.fingerprints.length,
+      videoCodecs: this.videoPayloadTypes.map((p) => `${p.id}:${p.name}`).slice(0, 12),
+      videoCodecCount: this.videoPayloadTypes.length,
       candidateIps: slimTransport.candidates
         .slice(0, 8)
         .map((c) => `${c.ip}:${c.port}/${c.type}`)
@@ -2473,6 +3163,8 @@ export class TelegramGroupCallWebSession {
     const answerSdp = groupCallAnswerSdpFromTransport(slimTransport, localSdp, [], {
       // Full sendrecv video answer — minimal recvonly starved mixed audio demux.
       minimalVideo: false,
+      videoPayloadTypes: this.videoPayloadTypes,
+      videoExtensions: this.videoExtensions,
     });
     const applyAnswer = async () => {
       if (isWebDriver) return;
@@ -2523,28 +3215,64 @@ export class TelegramGroupCallWebSession {
         logPageDisplay("messages_voice_sdp_answer_apply_ok", {
           chatId: this.input.chatId,
           groupCallId: this.input.groupCallId,
+          dataChannel: this.dataChannel?.readyState ?? "missing",
+          hasApplication: parseOfferMediaSections(answerSdp).some(
+            (s) => s.kind === "application",
+          ),
           level: "info",
         });
+        this.sendReceiverVideoConstraints();
         await disableAudioSenderDtx(connection);
         if (startMuted) {
-          const muteResult = await setTelegramChatVoiceMicMuted({
-            chatId: this.input.chatId,
-            groupCallId: this.input.groupCallId,
-            isMuted: true,
-          });
-          if (!muteResult.ok) {
-            appWarn("[voice-join-mute]", muteResult.error, {
+          // Defer TDLib mute until inbound RTP starts (or a short settle). Muting
+          // in the same turn as setRemoteDescription left inboundPackets=0 /
+          // remoteMuted forever on some SFU joins while outbound silence still
+          // flowed.
+          const applyListenMute = async () => {
+            if (this.connection !== connection || !this.joined) return;
+            const muteResult = await setTelegramChatVoiceMicMuted({
               chatId: this.input.chatId,
               groupCallId: this.input.groupCallId,
-              note: "listen-only post-join mute failed — inbound may still work",
+              isMuted: true,
             });
-          } else {
-            logPageDisplay("messages_voice_join_listen_muted", {
-              chatId: this.input.chatId,
-              groupCallId: this.input.groupCallId,
-              level: "info",
+            if (!muteResult.ok) {
+              appWarn("[voice-join-mute]", muteResult.error, {
+                chatId: this.input.chatId,
+                groupCallId: this.input.groupCallId,
+                note: "listen-only post-join mute failed — inbound may still work",
+              });
+            } else {
+              logPageDisplay("messages_voice_join_listen_muted", {
+                chatId: this.input.chatId,
+                groupCallId: this.input.groupCallId,
+                level: "info",
+              });
+            }
+          };
+          const waitForInboundOrTimeout = () =>
+            new Promise<void>((resolve) => {
+              const tracks = this.remoteStream?.getAudioTracks() ?? [];
+              if (tracks.some((t) => !t.muted)) {
+                resolve();
+                return;
+              }
+              let settled = false;
+              const finish = () => {
+                if (settled) return;
+                settled = true;
+                for (const track of tracks) {
+                  track.removeEventListener("unmute", onUnmute);
+                }
+                window.clearTimeout(timer);
+                resolve();
+              };
+              const onUnmute = () => finish();
+              for (const track of tracks) {
+                track.addEventListener("unmute", onUnmute);
+              }
+              const timer = window.setTimeout(finish, 2_800);
             });
-          }
+          void waitForInboundOrTimeout().then(() => applyListenMute());
         }
       } catch (err) {
         logPageDisplay("messages_voice_sdp_answer_apply_fail", {
@@ -2584,12 +3312,29 @@ export class TelegramGroupCallWebSession {
         level: "info",
       });
       // Video renegotiation stays deferred — full publisher SDP can freeze Close.
-      if (this.requestedRemoteVideo.length > 0) {
-        window.setTimeout(() => {
-          if (this.connection !== connection || !this.joined) return;
-          this.lastAppliedRemoteVideoKey = "";
-          this.setRequestedRemoteVideos(this.requestedRemoteVideo.slice());
-        }, 0);
+      // Retry a few times: React often sets requests after join_ok, and a failed
+      // first renegotiate used to stamp lastApplied and never retry.
+      if (typeof window !== "undefined") {
+        const kickRemoteVideo = (delayMs: number) => {
+          window.setTimeout(() => {
+            if (this.connection !== connection || !this.joined) return;
+            if (this.requestedRemoteVideo.length === 0) return;
+            const key = this.remoteVideoKeyOf(this.requestedRemoteVideo);
+            // Do NOT clear lastApplied — that force-renegotiated at 1.2/3/5.5s
+            // and kept inboundVideoPackets=0 while Сева was already sharing.
+            if (key && key === this.lastAppliedRemoteVideoKey) {
+              this.sendReceiverVideoConstraints();
+              return;
+            }
+            this.queueRemoteVideoRenegotiation();
+          }, delayMs);
+        };
+        // Do not kick at 0ms — video renegotiate while DTLS connecting
+        // correlated with inboundAudio=0. queueRemoteVideoRenegotiation waits
+        // for PC connected; schedule after ICE has had time to finish.
+        kickRemoteVideo(1_200);
+        kickRemoteVideo(3_000);
+        kickRemoteVideo(5_500);
       }
     };
 
@@ -2629,7 +3374,7 @@ export class TelegramGroupCallWebSession {
       window.setTimeout(() => {
         if (!this.joined || this.connection !== connection) return;
         const tracks = this.remoteStream?.getAudioTracks() ?? [];
-        void this.logIceDiagnostics(connection, label).then(() => {
+        void this.logIceDiagnostics(connection, label).then((stats) => {
           logPageDisplay("messages_voice_ice_post_apply", {
             chatId: joinChatId,
             groupCallId: joinCallId,
@@ -2639,10 +3384,65 @@ export class TelegramGroupCallWebSession {
             mediaConnected: this.isMediaConnected(),
             remoteTracks: tracks.length,
             remoteMuted: tracks.some((t) => t.muted),
+            inboundPackets: stats.inboundPackets,
+            inboundVideoPackets: stats.inboundVideoPackets,
             level: this.isMediaConnected() && !tracks.some((t) => t.muted)
               ? "info"
               : "warn",
           });
+          // No inbound RTP after ICE is up — refresh silent sender + DTX kill so
+          // the SFU starts forwarding the mix (classic listen-only stall).
+          if (
+            this.isMediaConnected() &&
+            stats.inboundPackets === 0 &&
+            this.usingSilentAudio
+          ) {
+            void (async () => {
+              await resumeSilentOutboundContext();
+              await disableAudioSenderDtx(connection);
+              if (this.connection !== connection || !this.joined) return;
+              const fresh = createSilentAudioTrack();
+              fresh.enabled = true;
+              const sender = connection
+                .getSenders()
+                .find((s) => s.track?.kind === "audio");
+              if (sender) {
+                try {
+                  await sender.replaceTrack(fresh);
+                  const previous = this.audioTrack;
+                  this.audioTrack = fresh;
+                  this.silentOutboundTrack = fresh;
+                  if (previous && previous !== fresh) {
+                    try {
+                      previous.stop();
+                    } catch {
+                      // ignore
+                    }
+                  }
+                  logPageDisplay("messages_voice_silent_sender_refresh", {
+                    chatId: joinChatId,
+                    groupCallId: joinCallId,
+                    label,
+                    level: "warn",
+                  });
+                } catch {
+                  try {
+                    fresh.stop();
+                  } catch {
+                    // ignore
+                  }
+                }
+              }
+            })();
+          }
+          if (
+            this.requestedRemoteVideo.length > 0 &&
+            stats.inboundVideoPackets === 0 &&
+            this.remoteVideoPacketRetries < 3
+          ) {
+            this.remoteVideoPacketRetries += 1;
+            this.sendReceiverVideoConstraints();
+          }
         });
         // Still muted while ICE checks — rebuild sinks in case WebAudio latched
         // onto a silent muted track (common Chrome quirk).
@@ -2675,7 +3475,7 @@ export class TelegramGroupCallWebSession {
     }, 20_000);
   }
 
-  /** Keep HTML audio playing while ICE stays up (autoplay / track swaps). */
+  /** Keep WebAudio (or HTML fallback) alive while ICE stays up. */
   private startPlaybackWatchdog(connection: RTCPeerConnection): void {
     this.clearPlaybackWatchdog();
     this.playbackWatchdog = window.setInterval(() => {
@@ -2698,23 +3498,22 @@ export class TelegramGroupCallWebSession {
       const tracks = this.remoteStream?.getAudioTracks() ?? [];
       const hasTracks = tracks.length > 0;
       const anyMuted = tracks.some((t) => t.muted);
-      const webAudioLive = Boolean(this.playbackSource);
-      // Playing + WebAudio while every track is still muted is NOT healthy —
-      // Chrome reports readyState>=2 on silent muted tracks and we used to
-      // skip rebuild forever (join_ok → muted=true → no audio).
-      if (
-        webAudioLive &&
-        audio &&
-        !audio.paused &&
-        audio.srcObject &&
-        audio.readyState >= 2 &&
-        hasTracks &&
-        !anyMuted
-      ) {
+      const ctx = this.playbackCtx;
+      const webAudioLive =
+        Boolean(this.playbackSource) && Boolean(ctx && ctx.state === "running");
+      const htmlLive =
+        Boolean(audio) &&
+        !audio!.paused &&
+        Boolean(audio!.srcObject) &&
+        audio!.readyState >= 2 &&
+        !audio!.muted;
+      // WebAudio alone is healthy (telegram-tt). Requiring unmuted HTML play()
+      // used to rebuild the graph every 2s → silence while RTP still flowed.
+      if (hasTracks && !anyMuted && (webAudioLive || htmlLive)) {
         return;
       }
       if (!hasTracks && !this.isMediaConnected()) {
-        this.pullRemoteMediaTracks(connection);
+        this.pullRemoteMediaTracks(connection, { audioOnly: true });
       }
       if (anyMuted || !webAudioLive) {
         logPageDisplay("messages_voice_playback_watchdog", {
@@ -2725,10 +3524,10 @@ export class TelegramGroupCallWebSession {
           remoteTracks: tracks.length,
           remoteMuted: anyMuted,
           webAudioLive,
+          htmlLive,
           audioPaused: audio?.paused ?? true,
           level: "warn",
         });
-        this.teardownWebAudioPlayback();
       }
       this.queueRemotePlayback("watchdog");
     }, 2_000);
@@ -2745,6 +3544,7 @@ export class TelegramGroupCallWebSession {
     this.stopSpeakingMonitor();
     this.clearPlaybackWatchdog();
     this.clearJoinLostTimer();
+    this.clearVideoRenegotiateConnectWait();
     this.gestureUnmuteCleanup?.();
     this.gestureUnmuteCleanup = null;
     this.teardownWebAudioPlayback();
@@ -2763,9 +3563,14 @@ export class TelegramGroupCallWebSession {
     this.videoListeners.clear();
     this.remoteVideoSourceListeners.clear();
     this.lastTransport = null;
+    this.videoPayloadTypes = [];
+    this.videoExtensions = [];
+    this.dataChannel = null;
     this.videoRecvSlots = [];
     this.requestedRemoteVideo = [];
     this.lastAppliedRemoteVideoKey = "";
+    this.lastAppliedRemoteVideoEndpoints = [];
+    this.remoteAudioEnabled = false;
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
       this.localStream = null;

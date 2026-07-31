@@ -22,6 +22,7 @@ import { AuthenticatedHomeLeftNavStrip } from "../components/AuthenticatedHomeLe
 import { AuthenticatedHomeFeedPanel } from "../components/AuthenticatedHomeFeedPanel";
 import { AuthenticatedHomeMessagesPanel } from "../components/AuthenticatedHomeMessagesPanel";
 import { MessageChatPanel } from "../components/messages/MessageChatPanel";
+import { ActiveVoiceCallDock } from "../components/messages/ActiveVoiceCallDock";
 import { MessageChatOlderHistoryLoadLine } from "../components/messages/MessageChatOlderHistoryLoadLine";
 import {
   isChatListBottomLoaderActive,
@@ -148,11 +149,14 @@ function AuthenticatedHomeChrome({
   children,
   /** When set (including `null`), overrides legacy first-child header slot. */
   header,
+  /** Optional strip below the header (e.g. active voice dock on Swap/Trade). */
+  belowHeader,
   /** When false (compact home), vertical insets live in scroll content so the indicator spans header→footer. */
   edgePadding = true,
 }: {
   children: ReactNode;
   header?: ReactNode | null;
+  belowHeader?: ReactNode | null;
   edgePadding?: boolean;
 }) {
   const colors = useColors();
@@ -178,6 +182,7 @@ function AuthenticatedHomeChrome({
         }}
       >
         {head}
+        {belowHeader ?? null}
         <View style={{ flex: 1, width: "100%", minHeight: 0 }}>{body}</View>
       </View>
     </View>
@@ -1548,6 +1553,7 @@ export function HomeAuthenticatedScreen() {
   const homeCompactMainBlock = (
     <>
       {homeHeaderRow}
+      <ActiveVoiceCallDock colors={colors} />
       {homeLeftNavStrip}
       <View style={homeMainColumnInsetStyle}>{homeMainColumnBlocks}</View>
     </>
@@ -1680,7 +1686,11 @@ export function HomeAuthenticatedScreen() {
   );
 
   return (
-    <AuthenticatedHomeChrome header={isWideHome ? homeHeaderRow : null} edgePadding={isWideHome}>
+    <AuthenticatedHomeChrome
+      header={isWideHome ? homeHeaderRow : null}
+      belowHeader={isWideHome ? <ActiveVoiceCallDock colors={colors} /> : null}
+      edgePadding={isWideHome}
+    >
       <AuthenticatedHomeSplitBody
         onSplitLayoutMetricsChange={onSplitLayoutMetricsChange}
         leftColumnFooter={isWideHome ? mainColumnFooter : null}

@@ -8,7 +8,10 @@ import {
   fetchTelegramChatVoiceParticipants,
   type TelegramChatVoiceParticipant,
 } from "../../telegram/fetchTelegramChatVoiceParticipants";
-import { patchAuthenticatedHomeSelectedChatVoice } from "../../authenticatedHomeSelectedChat";
+import {
+  focusAuthenticatedHomeMiddleColumnOnChat,
+  patchAuthenticatedHomeSelectedChatVoice,
+} from "../../authenticatedHomeSelectedChat";
 import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesConnectionContext";
 import { useTelegramVoiceSession } from "../../telegram/useTelegramVoiceSession";
 import { unlockVoiceAutoplay } from "../../telegram/unlockVoiceAutoplay";
@@ -41,9 +44,42 @@ import {
 } from "./messageListLayout";
 import { clearQueuedNetworkFetches } from "./networkFetchQueue";
 import { clearQueuedChooseCurrencyYearCharts } from "../../swap/chooseCurrencyYearChartCache";
+import { setActiveVoiceDock } from "./activeVoiceDockStore";
 
 const JOIN_BUTTON_HEIGHT_PX = 30;
 const JOIN_BUTTON_TEXT_INSET_PX = 30;
+
+function voiceVideoInfoSignature(
+  info: TelegramChatVoiceParticipant["video_info"] | null | undefined,
+): string {
+  if (!info) return "";
+  const groups = (info.source_groups ?? [])
+    .map((g) => `${g.semantics}:${g.source_ids.join(",")}`)
+    .join(";");
+  return `${info.endpoint_id}|g${info.source_groups?.length ?? 0}|${groups}`;
+}
+
+function participantHasVideoPublisher(row: TelegramChatVoiceParticipant): boolean {
+  const screen = row.screen_sharing_video_info;
+  const camera = row.video_info;
+  return Boolean(
+    (screen?.endpoint_id && screen.endpoint_id.trim()) ||
+      (screen?.source_groups?.length ?? 0) > 0 ||
+      (camera?.endpoint_id && camera.endpoint_id.trim()) ||
+      (camera?.source_groups?.length ?? 0) > 0,
+  );
+}
+
+function participantNeedsVideoForceReload(row: TelegramChatVoiceParticipant): boolean {
+  if (row.is_self) return false;
+  const screen = row.screen_sharing_video_info;
+  const camera = row.video_info;
+  const screenNeeds =
+    Boolean(screen?.endpoint_id?.trim()) && !(screen?.source_groups?.length);
+  const cameraNeeds =
+    Boolean(camera?.endpoint_id?.trim()) && !(camera?.source_groups?.length);
+  return screenNeeds || cameraNeeds;
+}
 
 type Props = {
   chatId: number;
@@ -52,7 +88,7 @@ type Props = {
   colors: ThemeColors;
   /** User pressed Join — media session may start. */
   joined: boolean;
-  /** Chat dialog is on-screen — remote audio only plays while visible. */
+  /** Chat pane focus — strip vs global dock; audio stays on while joined. */
   visible?: boolean;
   popoverOpen: boolean;
   /** Increments on each open request — clears a stuck forceClosed portal latch. */
@@ -67,7 +103,7 @@ type Props = {
 };
 
 /**
- * Under-header strip for an active chat voice.
+ * Above-header strip for an active chat voice.
  * Shows participant avatars while a call is live (including self when this
  * account is already in from another client). WebRTC starts only after
  * explicit Join (`joined`) so opening a chat preview never saturates the link.
@@ -133,6 +169,14 @@ export function MessageChatVoiceBar({
   const popoverOpenRef = useRef(false);
   popoverOpenRef.current = Boolean(popoverOpen);
   const participantsRef = useRef(participants);
+  /** Last SFU video requests with real source_groups — soft roster must not wipe them. */
+  const lastGoodRemoteVideoRequestsRef = useRef<
+    Array<{
+      endpointId: string;
+      kind: "camera" | "screen";
+      ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
+    }>
+  >([]);
   participantsRef.current = participants;
   const participantCountRef = useRef(participantCount);
   participantCountRef.current = participantCount;
@@ -458,7 +502,11 @@ export function MessageChatVoiceBar({
           Boolean(left.is_self) !== Boolean(right.is_self) ||
           (left.video_info?.endpoint_id ?? "") !== (right.video_info?.endpoint_id ?? "") ||
           (left.screen_sharing_video_info?.endpoint_id ?? "") !==
-            (right.screen_sharing_video_info?.endpoint_id ?? "")
+            (right.screen_sharing_video_info?.endpoint_id ?? "") ||
+          voiceVideoInfoSignature(left.video_info) !==
+            voiceVideoInfoSignature(right.video_info) ||
+          voiceVideoInfoSignature(left.screen_sharing_video_info) !==
+            voiceVideoInfoSignature(right.screen_sharing_video_info)
         ) {
           return false;
         }
@@ -682,6 +730,9 @@ export function MessageChatVoiceBar({
           // Never trust server speaking for the local row — join pulses green mic.
           is_speaking: Boolean(micActiveRef.current && localSpeakingRef.current),
           is_muted: !micActiveRef.current,
+          // Local getDisplayMedia owns the self screencast icon — strip TDLib sticky.
+          video_info: null,
+          screen_sharing_video_info: null,
         };
       });
       // Speaking map updates separately — never rebuild membership for a mic pulse.
@@ -748,8 +799,12 @@ export function MessageChatVoiceBar({
           const nextDescription = inc.description || row.description;
           const nextEmoji =
             inc.emoji_status_custom_emoji_id ?? row.emoji_status_custom_emoji_id;
-          const nextVideo = inc.video_info ?? row.video_info ?? null;
-          // Trust explicit null from SSE/poll so stopped shares clear the icon.
+          // Trust TDLib/SSE nulls — sticky keep left green icons after stop and
+          // kept self listed as a publisher so remote screencasts were skipped.
+          const nextVideo =
+            inc.video_info === undefined
+              ? (row.video_info ?? null)
+              : (inc.video_info ?? null);
           const nextScreen =
             inc.screen_sharing_video_info === undefined
               ? (row.screen_sharing_video_info ?? null)
@@ -761,7 +816,11 @@ export function MessageChatVoiceBar({
             row.emoji_status_custom_emoji_id === nextEmoji &&
             (row.video_info?.endpoint_id ?? "") === (nextVideo?.endpoint_id ?? "") &&
             (row.screen_sharing_video_info?.endpoint_id ?? "") ===
-              (nextScreen?.endpoint_id ?? "")
+              (nextScreen?.endpoint_id ?? "") &&
+            voiceVideoInfoSignature(row.video_info) ===
+              voiceVideoInfoSignature(nextVideo) &&
+            voiceVideoInfoSignature(row.screen_sharing_video_info) ===
+              voiceVideoInfoSignature(nextScreen)
           ) {
             return row;
           }
@@ -794,7 +853,11 @@ export function MessageChatVoiceBar({
             row.emoji_status_custom_emoji_id ??
             prevMatch?.emoji_status_custom_emoji_id ??
             null;
-          const video = row.video_info ?? prevMatch?.video_info ?? null;
+          // Prefer incoming null over previous — do not sticky-keep cleared media.
+          const video =
+            row.video_info === undefined
+              ? (prevMatch?.video_info ?? null)
+              : (row.video_info ?? null);
           const screen =
             row.screen_sharing_video_info === undefined
               ? (prevMatch?.screen_sharing_video_info ?? null)
@@ -810,7 +873,11 @@ export function MessageChatVoiceBar({
             Boolean(prevMatch.is_self) === Boolean(row.is_self) &&
             (prevMatch.video_info?.endpoint_id ?? "") === (video?.endpoint_id ?? "") &&
             (prevMatch.screen_sharing_video_info?.endpoint_id ?? "") ===
-              (screen?.endpoint_id ?? "")
+              (screen?.endpoint_id ?? "") &&
+            voiceVideoInfoSignature(prevMatch.video_info) ===
+              voiceVideoInfoSignature(video) &&
+            voiceVideoInfoSignature(prevMatch.screen_sharing_video_info) ===
+              voiceVideoInfoSignature(screen)
           ) {
             return prevMatch;
           }
@@ -890,7 +957,15 @@ export function MessageChatVoiceBar({
           totalHint,
           prevListed: prev.length,
           popoverOpen: popoverOpenRef.current,
-          titles: next.slice(0, 4).map((row) => row.title || "?"),
+          titles: next.slice(0, 6).map((row) => row.title || "?"),
+          screens: next
+            .filter((row) => row.screen_sharing_video_info?.endpoint_id)
+            .slice(0, 4)
+            .map((row) => ({
+              title: row.title || "?",
+              endpoint: row.screen_sharing_video_info?.endpoint_id,
+              groups: row.screen_sharing_video_info?.source_groups?.length ?? 0,
+            })),
         });
       }
 
@@ -1157,17 +1232,16 @@ export function MessageChatVoiceBar({
       setVoiceChatMessages((prev) => {
         if (prev.some((m) => m.id === mapped.id)) return prev;
         // Prefer the TDLib-backed id over the optimistic local row.
+        // Match text only — sender display name can differ ("You" vs roster title).
         if (!mapped.id.includes(":local:")) {
           const withoutLocal = prev.filter(
-            (m) =>
-              !(
-                m.id.includes(":local:") &&
-                m.text === mapped.text &&
-                m.senderName === mapped.senderName
-              ),
+            (m) => !(m.id.includes(":local:") && m.text === mapped.text),
           );
           const next = [...withoutLocal, mapped];
           return next.length > 40 ? next.slice(-40) : next;
+        }
+        if (prev.some((m) => !m.id.includes(":local:") && m.text === mapped.text)) {
+          return prev;
         }
         const next = [...prev, mapped];
         return next.length > 40 ? next.slice(-40) : next;
@@ -1507,12 +1581,13 @@ export function MessageChatVoiceBar({
       .filter((row) => !row.is_self)
       .map(
         (row) =>
-          `${row.user_id ?? row.chat_id}:${row.video_info?.endpoint_id ?? ""}:${row.screen_sharing_video_info?.endpoint_id ?? ""}`,
+          `${row.user_id ?? row.chat_id}:${voiceVideoInfoSignature(row.video_info)}:${voiceVideoInfoSignature(row.screen_sharing_video_info)}`,
       )
       .join("|");
   }, [participants]);
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") {
+      lastGoodRemoteVideoRequestsRef.current = [];
       setRemoteVideoRequests([]);
       return;
     }
@@ -1520,20 +1595,17 @@ export function MessageChatVoiceBar({
     // createOffer in the same window as join_ok froze the dialog hard.
     let cancelled = false;
     const hasVideoPublishers = participantsRef.current.some(
-      (row) =>
-        !row.is_self &&
-        Boolean(
-          row.screen_sharing_video_info?.source_groups?.length ||
-            row.video_info?.source_groups?.length,
-        ),
+      (row) => !row.is_self && participantHasVideoPublisher(row),
     );
-    const timer = window.setTimeout(() => {
+    const applyRequests = () => {
       if (cancelled) return;
       const requests: Array<{
         endpointId: string;
         kind: "camera" | "screen";
         ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
       }> = [];
+      const pendingGroups: Array<{ user: string; kind: "camera" | "screen"; endpoint: string }> =
+        [];
       for (const row of participantsRef.current) {
         if (row.is_self) continue;
         const screen = row.screen_sharing_video_info;
@@ -1546,6 +1618,12 @@ export function MessageChatVoiceBar({
               sourceIds: g.source_ids,
             })),
           });
+        } else if (screen?.endpoint_id?.trim()) {
+          pendingGroups.push({
+            user: row.title || String(row.user_id ?? row.chat_id ?? "?"),
+            kind: "screen",
+            endpoint: screen.endpoint_id,
+          });
         }
         const camera = row.video_info;
         if (camera?.source_groups?.length) {
@@ -1557,6 +1635,12 @@ export function MessageChatVoiceBar({
               sourceIds: g.source_ids,
             })),
           });
+        } else if (camera?.endpoint_id?.trim()) {
+          pendingGroups.push({
+            user: row.title || String(row.user_id ?? row.chat_id ?? "?"),
+            kind: "camera",
+            endpoint: camera.endpoint_id,
+          });
         }
       }
       // Prefer screencasts first (tdesktop docks presentation above camera).
@@ -1564,24 +1648,65 @@ export function MessageChatVoiceBar({
         if (a.kind === b.kind) return 0;
         return a.kind === "screen" ? -1 : 1;
       });
-      setRemoteVideoRequests(requests.slice(0, 4));
+      const next = requests.slice(0, 8);
+      // Soft SSE/poll often omits source_groups after a full roster load —
+      // clearing requests renegotiates to empty and unmaps a live screen.
+      if (next.length === 0 && lastGoodRemoteVideoRequestsRef.current.length > 0) {
+        const stillHasVideoEndpoint = participantsRef.current.some(
+          (row) =>
+            !row.is_self &&
+            Boolean(
+              row.screen_sharing_video_info?.endpoint_id?.trim() ||
+                row.video_info?.endpoint_id?.trim(),
+            ),
+        );
+        if (stillHasVideoEndpoint || pendingGroups.length > 0) {
+          logPageDisplay("messages_voice_remote_video_requests", {
+            chatId,
+            count: lastGoodRemoteVideoRequestsRef.current.length,
+            kinds: lastGoodRemoteVideoRequestsRef.current.map((r) => r.kind),
+            endpoints: lastGoodRemoteVideoRequestsRef.current
+              .map((r) => r.endpointId)
+              .slice(0, 4),
+            pendingGroups: pendingGroups.slice(0, 4),
+            listed: participantsRef.current.length,
+            hint: rosterTotalHintRef.current,
+            level: "warn",
+            note: "sticky keep last good video requests — soft roster missing source_groups",
+          });
+          return;
+        }
+      }
+      if (next.length > 0) {
+        lastGoodRemoteVideoRequestsRef.current = next;
+      } else {
+        lastGoodRemoteVideoRequestsRef.current = [];
+      }
+      setRemoteVideoRequests(next);
       logPageDisplay("messages_voice_remote_video_requests", {
         chatId,
-        count: requests.length,
-        kinds: requests.map((r) => r.kind),
-        endpoints: requests.map((r) => r.endpointId).slice(0, 4),
+        count: next.length,
+        kinds: next.map((r) => r.kind),
+        endpoints: next.map((r) => r.endpointId).slice(0, 4),
+        pendingGroups: pendingGroups.slice(0, 4),
         listed: participantsRef.current.length,
         hint: rosterTotalHintRef.current,
-        level: requests.length > 0 ? "info" : "warn",
+        level: next.length > 0 ? "info" : "warn",
         note:
-          requests.length > 0
-            ? undefined
+          next.length > 0
+            ? pendingGroups.length > 0
+              ? "some endpoints still missing source_groups"
+              : undefined
             : "no screen/camera source_groups on roster — force-reload may still be pending",
       });
-    }, hasVideoPublishers ? 600 : 2_500);
+    };
+    // First pass shortly after join; second pass catches late SSE screen info.
+    const timer = window.setTimeout(applyRequests, hasVideoPublishers ? 600 : 2_500);
+    const retry = window.setTimeout(applyRequests, hasVideoPublishers ? 2_200 : 5_000);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearTimeout(retry);
     };
   }, [chatId, remoteVideoSourceKey, setRemoteVideoRequests, voiceJoined]);
 
@@ -1614,6 +1739,9 @@ export function MessageChatVoiceBar({
   applyRosterRowsRef.current = applyRosterRows;
 
   const rosterIncomplete = useCallback(() => {
+    // Endpoint without source_groups cannot request SFU video — keep forcing
+    // even after listed===hint (soft roster often omits groups).
+    if (participantsRef.current.some(participantNeedsVideoForceReload)) return true;
     if (postJoinRosterLoadedRef.current) return false;
     const listed = participantsRef.current.length;
     const hint = rosterTotalHintRef.current;
@@ -1624,10 +1752,14 @@ export function MessageChatVoiceBar({
     // Any gap vs TDLib means the roster is incomplete — listed=5 hint=6 used
     // to skip force-reload and hide the screencaster (no video_info rows).
     if (hint > listed) return true;
-    const emptyTitles = participantsRef.current.filter(
-      (row) => !row.title.trim() && !row.is_self,
-    ).length;
-    if (emptyTitles > 0 && emptyTitles >= Math.ceil(listed / 2)) return true;
+    // Any untitled non-self row ("?" / blank) needs another force pass.
+    if (
+      participantsRef.current.some(
+        (row) => !row.is_self && !row.title.trim(),
+      )
+    ) {
+      return true;
+    }
     return false;
   }, []);
 
@@ -1673,6 +1805,16 @@ export function MessageChatVoiceBar({
       // from listed === participant_count alone (muted listeners are omitted) and
       // never from a soft recent_speakers subset (listed=3 while hint=9).
       if (listed <= 0) return false;
+      const emptyTitles = participantsRef.current.filter(
+        (row) => !row.is_self && !row.title.trim(),
+      ).length;
+      // Keep forcing while TDLib count is higher or names are still blank —
+      // loaded_all with listed=5/hint=8 left "?" rows and missing people.
+      if (hint > listed) return false;
+      if (emptyTitles > 0) return false;
+      if (participantsRef.current.some(participantNeedsVideoForceReload)) {
+        return false;
+      }
       if (meta?.loadedAll) {
         postJoinRosterLoadedRef.current = true;
         return true;
@@ -2030,8 +2172,8 @@ export function MessageChatVoiceBar({
     }
     let cancelled = false;
     let attempts = 0;
-    // Telegram Web: one load after join, then update stream — not N force GETs.
-    const maxAttempts = 2;
+    // Telegram Web: a few load passes after join, then update stream.
+    const maxAttempts = 4;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let inFlight = false;
     let loggedWaitWebrtc = false;
@@ -2285,12 +2427,17 @@ export function MessageChatVoiceBar({
   }, [chatId, groupCallId, joined, leaving, onClosePopover, onLeftVoice, voiceSession]);
 
   const onDropFromPopover = useCallback(async () => {
-    if (leaving || !joined) return;
+    if (leaving) return;
+    // Hide the sheet immediately — leave may take a moment on the gateway.
+    onClosePopover();
+    if (!joined) {
+      onLeftVoice?.();
+      return;
+    }
     setLeaving(true);
     try {
       const result = await voiceSession.leaveVoice();
       if (result.ok) {
-        onClosePopover();
         onLeftVoice?.();
         const live = Boolean(result.has_active_voice_chat);
         setPresenceConfirmed(live);
@@ -2341,6 +2488,45 @@ export function MessageChatVoiceBar({
   }, [voiceSession]);
 
   const showStrip = Boolean(joined || presenceConfirmed);
+
+  const onOpenPopoverRef = useRef(onOpenPopover);
+  onOpenPopoverRef.current = onOpenPopover;
+  const onLeaveRefForDock = useRef(onLeave);
+  onLeaveRefForDock.current = onLeave;
+
+  // When the messages column is hidden (Swap/Trade/…) but we are still in the
+  // call, publish a global dock so the preview stays at the top of that page.
+  useEffect(() => {
+    if (!joined || !voiceSession.joined || visible) {
+      setActiveVoiceDock(null);
+      return;
+    }
+    setActiveVoiceDock({
+      chatId,
+      title,
+      participantCount: totalParticipantCount,
+      micActive: voiceSession.micActive,
+      onOpen: () => {
+        focusAuthenticatedHomeMiddleColumnOnChat();
+        unlockVoiceAutoplay();
+        onOpenPopoverRef.current();
+      },
+      onLeave: () => {
+        void onLeaveRefForDock.current();
+      },
+    });
+    return () => {
+      setActiveVoiceDock(null);
+    };
+  }, [
+    chatId,
+    joined,
+    title,
+    totalParticipantCount,
+    visible,
+    voiceSession.joined,
+    voiceSession.micActive,
+  ]);
 
   // Freeze detector: logs longtask + rAF stalls to [page-display] while the
   // dialog is open or a WebRTC join is in progress — the freeze usually happens
@@ -2581,6 +2767,7 @@ export function MessageChatVoiceBar({
         onDropPress={() => void onDropFromPopover()}
         dropLeaving={leaving}
         remoteVideoStream={voiceSession.remoteVideoStream}
+        remoteVideoSources={voiceSession.remoteVideoSources}
         localCameraStream={voiceSession.localCameraStream}
         localScreenStream={voiceSession.localScreenStream}
         videoActive={Boolean(joined && voiceSession.joined && visible)}

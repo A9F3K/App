@@ -41,6 +41,7 @@ import {
   MESSAGE_CHAT_CHECKMARK_SIZE_PX,
   MESSAGE_CHAT_READ_CHECK_COLOR,
 } from "./messageChatLayout";
+import { MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR } from "./MessageChatAvatarSlot";
 
 const LIST_ROW_CHECKMARK_SIZE_PX = Math.max(11, MESSAGE_CHAT_CHECKMARK_SIZE_PX - 2);
 /** Gap between type glyph and title — keep tight like emoji status spacing. */
@@ -241,7 +242,7 @@ export function MessageChatRow({
           scheme={colorScheme}
           loadEnabled={avatarFetchEnabled}
           fetchPriority={isActive ? "high" : "normal"}
-          borderColor={hasActiveVoice ? MESSAGE_CHAT_READ_CHECK_COLOR : undefined}
+          borderColor={hasActiveVoice ? MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR : undefined}
           activeVoiceRing={hasActiveVoice}
           onLoad={() => {
             logPageDisplay("messages_avatar_load_ok", {

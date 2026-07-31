@@ -4,7 +4,6 @@ import {
   Modal,
   Platform,
   Pressable,
-  ScrollView,
   Text,
   useWindowDimensions,
   View,
@@ -19,6 +18,7 @@ import {
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { appLocaleToBcp47 } from "../../../locales/appStrings";
 import { LiquidGlassShaderUndercover } from "../LiquidGlassShaderUndercover";
+import { HspScrollColumn } from "../HspScrollColumn";
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
 import { logPageDisplay } from "../../pageDisplayLog";
@@ -49,8 +49,10 @@ import {
 import { VoiceParticipantStateMicIcon } from "./MessageChatVoiceParticipantMicIcon";
 import {
   MessageChatVoiceMediaStage,
+  streamLooksLikePlaceholderVideo,
   type VoiceMediaStageSource,
 } from "./MessageChatVoiceVideoPlane";
+import type { TelegramRemoteVideoSource } from "../../telegram/telegramGroupCallWebSession";
 import { MessageChatComposePill } from "./MessageChatComposePill";
 import {
   MessageChatVoiceMoreMenu,
@@ -155,8 +157,6 @@ const DEFAULT_SHEET_WIDTH_PX = 380;
 const DEFAULT_SHEET_HEIGHT_PX = 560;
 const MIN_SHEET_WIDTH_PX = 300;
 const MIN_SHEET_HEIGHT_PX = 280;
-/** Header + divider + control row + vertical padding — keeps the roster from covering chips. */
-const SHEET_CHROME_HEIGHT_PX = 196;
 /** Min width reserved for the share stage when docking left of the roster. */
 const SIDE_BY_SIDE_VIDEO_MIN_PX = 320;
 /**
@@ -207,6 +207,8 @@ type Props = {
   dropLeaving: boolean;
   /** Remote camera / screenshare for the in-dialog video plane. */
   remoteVideoStream?: MediaStream | null;
+  /** Per-endpoint remote camera / screen streams (preferred over merged stream). */
+  remoteVideoSources?: TelegramRemoteVideoSource[];
   localCameraStream?: MediaStream | null;
   localScreenStream?: MediaStream | null;
   videoActive?: boolean;
@@ -327,6 +329,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   colors,
   isSpeaking,
   liteName,
+  localScreenSharing,
 }: {
   participant: TelegramChatVoiceParticipant;
   isLast: boolean;
@@ -334,6 +337,8 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   isSpeaking: boolean;
   /** Skip emoji-status WebGL/fetch on first paint (open longtask). */
   liteName?: boolean;
+  /** Local getDisplayMedia session — authoritative for self row icon. */
+  localScreenSharing?: boolean;
 }) {
   const { colorScheme } = useTelegram();
   const title =
@@ -341,10 +346,16 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
     (participant.is_self ? "You" : "") ||
     (participant.user_id != null ? `User ${participant.user_id}` : "") ||
     (participant.chat_id != null ? `Chat ${Math.abs(participant.chat_id)}` : "") ||
-    "?";
+    "Participant";
   const description = participant.description.trim();
   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
   const speaking = isSpeaking;
+  const showScreenShareIcon = participant.is_self
+    ? Boolean(localScreenSharing)
+    : Boolean(
+        participant.screen_sharing_video_info?.endpoint_id?.trim() ||
+          (participant.screen_sharing_video_info?.source_groups?.length ?? 0) > 0,
+      );
   const textBase = {
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
     fontSize: MESSAGE_FONT_SIZE_PX,
@@ -394,36 +405,25 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
       </View>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />
       <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>
-        {liteName ? (
-          <Text
-            numberOfLines={1}
-            ellipsizeMode="tail"
-            style={{
-              ...textBase,
-              color: colors.primary,
-            }}
-          >
-            {title}
-          </Text>
-        ) : (
-          <SpecialTelegramUserName
-            name={title}
-            telegramUserId={participant.user_id}
-            telegramChatId={participant.chat_id}
-            emojiStatusCustomEmojiId={participant.emoji_status_custom_emoji_id}
-            emojiStatusPriority={false}
-            // Lottie/TGS fetch+animate per row stalls the main thread in a long call.
-            inlineEmojiFetchEnabled={false}
-            inlineEmojiFetchPriority={false}
-            inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
-            textAlign="left"
-            numberOfLines={1}
-            textStyle={{
-              ...textBase,
-              color: colors.primary,
-            }}
-          />
-        )}
+        <SpecialTelegramUserName
+          name={title}
+          telegramUserId={participant.user_id}
+          telegramChatId={participant.chat_id}
+          emojiStatusCustomEmojiId={
+            liteName ? null : participant.emoji_status_custom_emoji_id
+          }
+          emojiStatusPriority={false}
+          // Lottie/TGS fetch+animate per row stalls the main thread in a long call.
+          inlineEmojiFetchEnabled={!liteName}
+          inlineEmojiFetchPriority={false}
+          inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
+          textAlign="left"
+          numberOfLines={1}
+          textStyle={{
+            ...textBase,
+            color: colors.primary,
+          }}
+        />
         {description ? (
           <Text
             numberOfLines={1}
@@ -447,8 +447,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           flexShrink: 0,
         }}
       >
-        {(participant.screen_sharing_video_info?.source_groups?.length ?? 0) >
-        0 ? (
+        {showScreenShareIcon ? (
           <View
             accessibilityRole="image"
             accessibilityLabel="Screen sharing"
@@ -746,6 +745,7 @@ export function MessageChatVoicePopover({
   onDropPress,
   dropLeaving,
   remoteVideoStream = null,
+  remoteVideoSources = [],
   localCameraStream = null,
   localScreenStream = null,
   videoActive = false,
@@ -1253,15 +1253,6 @@ export function MessageChatVoicePopover({
     writeStoredSize(next);
   }, [clampSize, maxHeight, maxWidth]);
 
-  const minimizeSheet = useCallback(() => {
-    const next = clampSize({
-      width: sheetSizeRef.current.width,
-      height: SHEET_CHROME_HEIGHT_PX,
-    });
-    setSheetSize(next);
-    writeStoredSize(next);
-  }, [clampSize]);
-
   const openMoreMenu = useCallback(() => {
     const node = moreChipRef.current as unknown as {
       measureInWindow?: (cb: (x: number, y: number, width: number, height: number) => void) => void;
@@ -1283,40 +1274,130 @@ export function MessageChatVoicePopover({
 
   const mediaSources = useMemo((): VoiceMediaStageSource[] => {
     const rows: VoiceMediaStageSource[] = [];
-    // Local screencast first while presenting — matches the dialog mock (own
-    // cast docks above the roster immediately after the user starts sharing).
+    const self = participants.find((row) => row.is_self);
+    const selfName = (self?.title || "").trim() || "You";
+
+    const pushIfLive = (row: VoiceMediaStageSource) => {
+      if (streamLooksLikePlaceholderVideo(row.stream)) return;
+      const tracks = row.stream
+        .getVideoTracks()
+        .filter((t) => t.readyState === "live" && t.enabled);
+      if (tracks.length === 0) return;
+      // Remote WebRTC tracks stay muted until the first RTP packet. Promoting them
+      // early locks the media stage on a black main tile and hides local share.
+      if (row.id.startsWith("remote:") && tracks.every((t) => t.muted)) return;
+      if (rows.some((existing) => existing.id === row.id)) return;
+      rows.push(row);
+    };
+
+    // Local screencast first while presenting.
     if (localScreenStream) {
-      rows.push({ id: "local-screen", stream: localScreenStream });
+      pushIfLive({
+        id: "local-screen",
+        stream: localScreenStream,
+        label: selfName,
+        kind: "screen",
+      });
     }
-    // Remote presentation next (tdesktop docks other people's screencast).
-    // Previously remote was skipped whenever any local camera/screen was active,
-    // so an active participant screencast never appeared in the dialog.
-    if (remoteVideoStream) {
+    if (localCameraStream) {
+      pushIfLive({
+        id: "local-camera",
+        stream: localCameraStream,
+        label: selfName,
+        kind: "camera",
+      });
+    }
+
+    const resolveRemoteLabel = (endpointId: string, kind: "camera" | "screen") => {
+      for (const row of participants) {
+        if (row.is_self) continue;
+        const screenEp = row.screen_sharing_video_info?.endpoint_id;
+        const camEp = row.video_info?.endpoint_id;
+        if (kind === "screen" && screenEp && screenEp === endpointId) {
+          return (row.title || "").trim() || "Participant";
+        }
+        if (kind === "camera" && camEp && camEp === endpointId) {
+          return (row.title || "").trim() || "Participant";
+        }
+        // Fallback: endpoint may be a synthetic id from roster builder.
+        if (
+          kind === "screen" &&
+          row.screen_sharing_video_info?.source_groups?.length &&
+          (endpointId === `screen-${row.user_id ?? row.chat_id ?? "x"}` ||
+            endpointId.includes(String(row.user_id ?? "")))
+        ) {
+          return (row.title || "").trim() || "Participant";
+        }
+        if (
+          kind === "camera" &&
+          row.video_info?.source_groups?.length &&
+          (endpointId === `cam-${row.user_id ?? row.chat_id ?? "x"}` ||
+            endpointId.includes(String(row.user_id ?? "")))
+        ) {
+          return (row.title || "").trim() || "Participant";
+        }
+      }
+      return kind === "screen" ? "Screen share" : "Camera";
+    };
+
+    if (remoteVideoSources.length > 0) {
+      // Screens first, then cameras — stable browsing order for PiP stack.
+      const ordered = [...remoteVideoSources].sort((a, b) => {
+        if (a.kind === b.kind) return 0;
+        return a.kind === "screen" ? -1 : 1;
+      });
+      for (const source of ordered) {
+        pushIfLive({
+          id: `remote:${source.kind}:${source.endpointId}`,
+          stream: source.stream,
+          label: resolveRemoteLabel(source.endpointId, source.kind),
+          kind: source.kind,
+        });
+      }
+    } else if (remoteVideoStream) {
+      // Legacy merged stream fallback.
       const tracks = remoteVideoStream
         .getVideoTracks()
-        .filter((track) => track.readyState === "live");
+        .filter((track) => track.readyState === "live" && track.enabled);
       if (tracks.length <= 1) {
-        rows.push({ id: "remote", stream: remoteVideoStream });
+        pushIfLive({
+          id: "remote",
+          stream: remoteVideoStream,
+          label: "Participant",
+          kind: "screen",
+        });
       } else {
         for (const [index, track] of tracks.entries()) {
-          rows.push({
+          pushIfLive({
             id: `remote:${track.id || index}`,
             stream: new MediaStream([track]),
+            label: "Participant",
+            kind: "screen",
           });
         }
       }
     }
-    if (localCameraStream) {
-      rows.push({ id: "local-camera", stream: localCameraStream });
-    }
     return rows;
-  }, [localCameraStream, localScreenStream, remoteVideoStream]);
+  }, [
+    localCameraStream,
+    localScreenStream,
+    participants,
+    remoteVideoSources,
+    remoteVideoStream,
+  ]);
+
+  useEffect(() => {
+    if (!visible || mediaSources.length === 0) return;
+    logPageDisplay("messages_voice_media_stage_sources", {
+      count: mediaSources.length,
+      ids: mediaSources.map((row) => row.id),
+      kinds: mediaSources.map((row) => row.kind ?? "unknown"),
+      level: "info",
+    });
+  }, [mediaSources, visible]);
 
   const videoStageActive = Boolean(
-    visible &&
-      !suspendHeavy &&
-      mediaSources.length > 0 &&
-      (videoActive || localScreenStream != null || localCameraStream != null),
+    visible && !suspendHeavy && mediaSources.length > 0,
   );
   const sideBySide =
     Platform.OS === "web" &&
@@ -1334,8 +1415,11 @@ export function MessageChatVoicePopover({
   const videoPaneWidth = sideBySide
     ? Math.max(SIDE_BY_SIDE_VIDEO_MIN_PX, sheetSize.width - rosterPaneWidth)
     : sheetSize.width;
+  const hasScreenShareStage = mediaSources.some((row) => row.kind === "screen");
   const stackedVideoMaxHeight = Math.min(
-    localScreenStream || remoteVideoStream ? 280 : 220,
+    hasScreenShareStage || remoteVideoStream || remoteVideoSources.length > 0
+      ? 280
+      : 220,
     MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
   );
   const handles: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
@@ -1363,17 +1447,30 @@ export function MessageChatVoicePopover({
     stackedVideoMaxHeight,
   ]);
 
-  const displayParticipants = useMemo(
-    // Preserve incoming order — do not re-sort by speaking (tdesktop parity).
+  const displayParticipants = useMemo(() => {
     // Never clear rows while the sheet is open — suspendHeavy racing reopen
     // left the dialog with only the count label and no participant rows.
     // Defer first paint of rows until chrome is interactive (open longtask fix).
-    () =>
-      !rosterPaintReady || (suspendHeavy && !visible)
-        ? []
-        : participants.slice(0, 256),
-    [participants, suspendHeavy, visible, rosterPaintReady],
-  );
+    if (!rosterPaintReady || (suspendHeavy && !visible)) return [];
+    const rows = participants.slice(0, 256);
+    const speakingOf = (row: TelegramChatVoiceParticipant) =>
+      isParticipantSpeaking
+        ? isParticipantSpeaking(row)
+        : Boolean(row.is_speaking);
+    // Speakers float to the top (stable within each group).
+    return [...rows].sort((a, b) => {
+      const aSpeak = speakingOf(a) ? 1 : 0;
+      const bSpeak = speakingOf(b) ? 1 : 0;
+      if (aSpeak !== bSpeak) return bSpeak - aSpeak;
+      return 0;
+    });
+  }, [
+    isParticipantSpeaking,
+    participants,
+    rosterPaintReady,
+    suspendHeavy,
+    visible,
+  ]);
 
   const moreMenuItems = useMemo(
     () => [
@@ -1404,7 +1501,7 @@ export function MessageChatVoicePopover({
         flexDirection: "row",
         alignItems: "center",
         paddingHorizontal: 20,
-        marginBottom: 16,
+        paddingBottom: 16,
         gap: 12,
         zIndex: 10000,
         flexShrink: 0,
@@ -1471,7 +1568,10 @@ export function MessageChatVoicePopover({
         <VoiceWindowChromeButton
           label={t("messages.voiceChat.minimize")}
           hitExtraPx={4}
-          onPress={minimizeSheet}
+          onPress={() => {
+            // Minimize docks to the strip / global preview and keeps audio.
+            requestClose("chrome_minimize");
+          }}
         >
           <VoiceWindowTrayIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
         </VoiceWindowChromeButton>
@@ -1483,11 +1583,14 @@ export function MessageChatVoicePopover({
           <VoiceWindowSizeIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
         </VoiceWindowChromeButton>
         <VoiceWindowChromeButton
-          label={t("common.back")}
+          label={t("messages.voiceChat.controls.drop")}
           hitExtraPx={8}
           testId="close"
           onPress={() => {
-            requestClose("chrome_x");
+            // Close leaves the call entirely (stop hearing).
+            logPageDisplay("messages_voice_dialog_control_click", { action: "close_leave" });
+            requestClose("chrome_x_leave");
+            onDropPress();
           }}
         >
           <VoiceWindowCrossIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
@@ -1499,7 +1602,6 @@ export function MessageChatVoicePopover({
   const renderParticipantList = (_maxHeight?: number) => (
     <View
       style={{
-        paddingHorizontal: 20,
         flex: 1,
         minHeight: 0,
         zIndex: 1,
@@ -1507,7 +1609,17 @@ export function MessageChatVoicePopover({
       }}
       pointerEvents="auto"
     >
-      <ScrollView style={{ flex: 1 }} nestedScrollEnabled>
+      <HspScrollColumn
+        style={{ flex: 1, minHeight: 0 }}
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 16,
+          paddingBottom: 16,
+          flexGrow: 1,
+        }}
+        scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
+        containOverscroll
+      >
         {displayParticipants.length > 0 ? (
           displayParticipants.map((participant, index) => (
             <VoiceParticipantRow
@@ -1524,7 +1636,8 @@ export function MessageChatVoicePopover({
                   ? isParticipantSpeaking(participant)
                   : Boolean(participant.is_speaking)
               }
-              liteName
+              liteName={!rosterPaintReady}
+              localScreenSharing={screenSharing}
             />
           ))
         ) : (
@@ -1532,7 +1645,7 @@ export function MessageChatVoicePopover({
             {participantCountLabel || t("messages.voiceChat.participants")}
           </Text>
         )}
-      </ScrollView>
+      </HspScrollColumn>
     </View>
   );
 
@@ -1578,29 +1691,33 @@ export function MessageChatVoicePopover({
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeDraft, setComposeDraft] = useState("");
   const [composeSending, setComposeSending] = useState(false);
+  const composeSendingRef = useRef(false);
 
   useEffect(() => {
     if (!visible) {
       setComposeOpen(false);
       setComposeDraft("");
       setComposeSending(false);
+      composeSendingRef.current = false;
     }
   }, [visible]);
 
   const submitCompose = useCallback(
     async (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed || !onSendChatMessage || composeSending) return;
+      if (!trimmed || !onSendChatMessage || composeSendingRef.current) return;
+      composeSendingRef.current = true;
       setComposeSending(true);
       try {
         await onSendChatMessage(trimmed);
         setComposeDraft("");
         setComposeOpen(false);
       } finally {
+        composeSendingRef.current = false;
         setComposeSending(false);
       }
     },
-    [composeSending, onSendChatMessage],
+    [onSendChatMessage],
   );
 
   const renderChatOverlay = () => {
@@ -1703,8 +1820,6 @@ export function MessageChatVoicePopover({
     <View
       style={{
         height: 1,
-        marginTop: 16,
-        marginBottom: 16,
         marginHorizontal: DIVIDER_INSET_PX,
         backgroundColor: colors.highlight,
         flexShrink: 0,
@@ -1721,6 +1836,7 @@ export function MessageChatVoicePopover({
         justifyContent: "center",
         gap: CONTROL_CHIP_GAP_PX,
         paddingHorizontal: 20,
+        paddingTop: 16,
         zIndex: 40,
         flexShrink: 0,
         ...(Platform.OS === "web"
@@ -1845,7 +1961,10 @@ export function MessageChatVoicePopover({
             }) => {
               if (e.button != null && e.button !== 0) return;
               e.stopPropagation?.();
-              requestClose("backdrop");
+              logPageDisplay("messages_voice_dialog_control_click", {
+                action: "backdrop_leave",
+              });
+              onDropPress();
             },
             style: {
               position: "absolute",
@@ -1869,10 +1988,13 @@ export function MessageChatVoicePopover({
           <Pressable
             style={[appModalSheetStyles.backdropFill, { zIndex: 0 }]}
             onPress={() => {
-              requestClose("backdrop");
+              logPageDisplay("messages_voice_dialog_control_click", {
+                action: "backdrop_leave",
+              });
+              onDropPress();
             }}
             accessibilityRole="button"
-            accessibilityLabel={t("common.back")}
+            accessibilityLabel={t("messages.voiceChat.controls.drop")}
           />
         )}
       <View
@@ -1972,6 +2094,7 @@ export function MessageChatVoicePopover({
               }}
             >
               {renderHeader()}
+              {renderDivider()}
               {renderParticipantList()}
               {renderChatOverlay()}
               {renderControlsShadow()}
@@ -1983,12 +2106,13 @@ export function MessageChatVoicePopover({
         ) : (
           <>
             {renderHeader()}
+            {renderDivider()}
             <MessageChatVoiceMediaStage
               sources={suspendHeavy ? [] : mediaSources}
               active={videoStageActive}
               maxHeightPx={stackedVideoMaxHeight}
               horizontalInsetPx={20}
-              marginBottomPx={16}
+              marginBottomPx={0}
             />
             {renderParticipantList()}
             {renderChatOverlay()}
@@ -2058,7 +2182,14 @@ export function MessageChatVoicePopover({
   }
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={() => {
+        onDropPress();
+      }}
+    >
       <View
         style={{
           height: windowHeight,

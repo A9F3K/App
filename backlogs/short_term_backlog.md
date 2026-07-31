@@ -1,3 +1,5 @@
+Profile and voice calls
+720p
 Active speakers display delay
 Theme change in settings
 Chat unselected when on other page

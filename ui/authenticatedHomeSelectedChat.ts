@@ -250,6 +250,15 @@ export function focusAuthenticatedHomeMiddleColumnOnHeaderPanel() {
   emit();
 }
 
+/** Return the middle column to the open chat (e.g. from a global voice dock). */
+export function focusAuthenticatedHomeMiddleColumnOnChat() {
+  hydrateFromStorageIfNeeded();
+  if (selectedChat == null) return;
+  if (middleColumnFocus === "chat") return;
+  middleColumnFocus = "chat";
+  emit();
+}
+
 export function clearAuthenticatedHomeSelectedChat() {
   historyLoadChatId = null;
   selectAuthenticatedHomeChat(null);

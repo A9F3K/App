@@ -19,7 +19,7 @@ import type { MessageChatRowData } from "./MessageChatRow";
 type Props = {
   chat: MessageChatRowData;
   colors: ThemeColors;
-  /** Chat pane is the on-screen focus — voice audio only plays while visible. */
+  /** Chat pane is the on-screen focus — used for strip vs global dock placement. */
   visible?: boolean;
 };
 
@@ -364,13 +364,6 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
         marginHorizontal: -columnBleedPx,
       }}
     >
-      <MessageChatHeader
-        chat={chat}
-        colors={colors}
-        showStartVoice={!liveVoiceAvailable && canStart && !voiceJoined}
-        onStartVoice={() => void startVoice()}
-        startVoicePending={startPending}
-      />
       {showVoiceBar ? (
         <MessageChatVoiceBar
           chatId={chat.telegram_chat_id}
@@ -395,6 +388,13 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           suppressStripPressUntilRef={suppressStripPressUntilRef}
         />
       ) : null}
+      <MessageChatHeader
+        chat={chat}
+        colors={colors}
+        showStartVoice={!liveVoiceAvailable && canStart && !voiceJoined}
+        onStartVoice={() => void startVoice()}
+        startVoicePending={startPending}
+      />
       <MessageSubtreeErrorBoundary resetKey={chat.telegram_chat_id}>
         <MessageChatMessageList key={chat.telegram_chat_id} chat={chat} colors={colors} />
       </MessageSubtreeErrorBoundary>

@@ -5,6 +5,7 @@ import { leaveTelegramChatVoice } from "./leaveTelegramChatVoice";
 import {
   TelegramGroupCallWebSession,
   type TelegramRemoteVideoRequest,
+  type TelegramRemoteVideoSource,
 } from "./telegramGroupCallWebSession";
 import { unlockVoiceAutoplay } from "./unlockVoiceAutoplay";
 
@@ -36,6 +37,8 @@ export type TelegramVoiceSession = {
   error: string | null;
   /** Live remote camera / screen-share stream while someone is presenting. */
   remoteVideoStream: MediaStream | null;
+  /** Per-endpoint remote video (camera / screen) for multi-stream UI. */
+  remoteVideoSources: TelegramRemoteVideoSource[];
   localCameraStream: MediaStream | null;
   localScreenStream: MediaStream | null;
   unlockAudio: () => void;
@@ -70,6 +73,7 @@ export function useTelegramVoiceSession({
   const [negotiating, setNegotiating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [remoteVideoStream, setRemoteVideoStream] = useState<MediaStream | null>(null);
+  const [remoteVideoSources, setRemoteVideoSources] = useState<TelegramRemoteVideoSource[]>([]);
   const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const sessionRef = useRef<TelegramGroupCallWebSession | null>(null);
@@ -81,6 +85,7 @@ export function useTelegramVoiceSession({
   const speakingUnsubRef = useRef<(() => void) | null>(null);
   const joinLostUnsubRef = useRef<(() => void) | null>(null);
   const videoUnsubRef = useRef<(() => void) | null>(null);
+  const videoSourcesUnsubRef = useRef<(() => void) | null>(null);
   const localMediaUnsubRef = useRef<(() => void) | null>(null);
 
   const resetLocalUi = useCallback(() => {
@@ -93,6 +98,7 @@ export function useTelegramVoiceSession({
     setScreenSharing(false);
     setLocalSpeaking(false);
     setRemoteVideoStream(null);
+    setRemoteVideoSources([]);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     micActiveRef.current = false;
@@ -106,6 +112,8 @@ export function useTelegramVoiceSession({
     joinLostUnsubRef.current = null;
     videoUnsubRef.current?.();
     videoUnsubRef.current = null;
+    videoSourcesUnsubRef.current?.();
+    videoSourcesUnsubRef.current = null;
     localMediaUnsubRef.current?.();
     localMediaUnsubRef.current = null;
     const wasJoined = Boolean(sessionRef.current?.isJoined);
@@ -122,6 +130,7 @@ export function useTelegramVoiceSession({
       speakingUnsubRef.current?.();
       joinLostUnsubRef.current?.();
       videoUnsubRef.current?.();
+      videoSourcesUnsubRef.current?.();
       localMediaUnsubRef.current?.();
       speakingUnsubRef.current = session.onLocalSpeakingChange((speaking) => {
         setLocalSpeaking(speaking);
@@ -135,6 +144,7 @@ export function useTelegramVoiceSession({
         setScreenSharing(false);
         setLocalSpeaking(false);
         setRemoteVideoStream(null);
+        setRemoteVideoSources([]);
         setLocalCameraStream(null);
         setLocalScreenStream(null);
         micActiveRef.current = false;
@@ -142,6 +152,22 @@ export function useTelegramVoiceSession({
       });
       videoUnsubRef.current = session.onRemoteVideoChange((stream) => {
         setRemoteVideoStream(stream);
+      });
+      videoSourcesUnsubRef.current = session.onRemoteVideoSourcesChange((sources) => {
+        setRemoteVideoSources((prev) => {
+          if (
+            prev.length === sources.length &&
+            prev.every(
+              (row, i) =>
+                row.endpointId === sources[i]?.endpointId &&
+                row.kind === sources[i]?.kind &&
+                row.stream === sources[i]?.stream,
+            )
+          ) {
+            return prev;
+          }
+          return sources;
+        });
       });
       localMediaUnsubRef.current = session.onLocalMediaChange((state) => {
         setCameraActive(state.cameraActive);
@@ -161,6 +187,8 @@ export function useTelegramVoiceSession({
     joinLostUnsubRef.current = null;
     videoUnsubRef.current?.();
     videoUnsubRef.current = null;
+    videoSourcesUnsubRef.current?.();
+    videoSourcesUnsubRef.current = null;
     localMediaUnsubRef.current?.();
     localMediaUnsubRef.current = null;
     sessionRef.current?.dispose();
@@ -172,6 +200,7 @@ export function useTelegramVoiceSession({
     bindSession(session);
     setError(null);
     setRemoteVideoStream(null);
+    setRemoteVideoSources([]);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     setScreenSharing(false);
@@ -199,13 +228,16 @@ export function useTelegramVoiceSession({
     sessionRef.current?.updateGroupCallId(groupCallId);
   }, [groupCallId]);
 
-  // Gate remote audio on dialog visibility — call stays joined, output is muted
-  // while the chat panel is hidden so voice is heard only while in the dialog.
+  // Keep remote audio while joined — including minimized strip / other menus
+  // (Swap/Trade/…). Do NOT disable when joined===false: that raced join SDP
+  // (playback_kick remoteAudioEnabled=false) and tore down WebAudio mid-apply.
+  // Leaving/dispose is the only way to stop hearing.
   useEffect(() => {
     if (Platform.OS !== "web") return;
-    sessionRef.current?.setRemoteAudioEnabled(visible);
-    if (visible) sessionRef.current?.resumeRemoteAudio();
-  }, [visible, joined, mediaConnected]);
+    if (!joined) return;
+    sessionRef.current?.setRemoteAudioEnabled(true);
+    sessionRef.current?.resumeRemoteAudio();
+  }, [joined, mediaConnected]);
 
   useEffect(() => {
     if (!joined || Platform.OS !== "web") return;
@@ -230,12 +262,8 @@ export function useTelegramVoiceSession({
       setJoined(true);
       setMediaConnected(session.isMediaConnected());
       setNegotiating(session.isNegotiating());
-      if (visible) {
-        session.setRemoteAudioEnabled(true);
-        session.resumeRemoteAudio();
-      } else {
-        session.setRemoteAudioEnabled(false);
-      }
+      session.setRemoteAudioEnabled(true);
+      session.resumeRemoteAudio();
       return true;
     }
     if (session.isNegotiating()) {
@@ -248,6 +276,9 @@ export function useTelegramVoiceSession({
     setNegotiating(false);
     setJoining(true);
     setError(null);
+    // Enable sinks before SDP/ontrack — otherwise apply_ok playback_kick runs
+    // with remoteAudioEnabled=false and tears WebAudio down until joined flips.
+    session.setRemoteAudioEnabled(true);
     // Enter listen-only with mic/camera/screen off (parity with muted join).
     micActiveRef.current = false;
     setMicActive(false);
@@ -280,13 +311,11 @@ export function useTelegramVoiceSession({
       setJoined(true);
       setMediaConnected(session.isMediaConnected());
       setNegotiating(session.isNegotiating());
-      session.setRemoteAudioEnabled(Boolean(visible));
+      session.setRemoteAudioEnabled(true);
       // Kick playback again after join_ok — apply_ok already started sinks; this
       // catches late ontrack and reuses the Join-gesture AudioContext (tweb wires
       // WebAudio on track without waiting for another click).
-      if (visible) {
-        session.resumeRemoteAudio();
-      }
+      session.resumeRemoteAudio();
       // Join muted: keep silent outbound RTP until the user unmutes. Auto-mic-on
       // raced the silent sender (usingSilentAudio flipped early) and also
       // contradicted enter-with-mic-off UX.
@@ -302,7 +331,7 @@ export function useTelegramVoiceSession({
       if (joinWatchdog) clearTimeout(joinWatchdog);
       setJoining(false);
     }
-  }, [chatId, groupCallId, visible]);
+  }, [chatId, groupCallId]);
 
   const unlockAudio = useCallback(() => {
     sessionRef.current?.unlockRemoteAudio();
@@ -446,6 +475,7 @@ export function useTelegramVoiceSession({
     negotiating,
     error,
     remoteVideoStream,
+    remoteVideoSources,
     localCameraStream,
     localScreenStream,
     unlockAudio,
