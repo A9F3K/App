@@ -538,17 +538,18 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
     mediaCleared =
       (Boolean(prev?.videoInfo?.endpoint_id) && !nextVideo?.endpoint_id) ||
       (Boolean(prev?.screenInfo?.endpoint_id) && !nextScreen?.endpoint_id);
+    const mutedFromTdlib =
+      participant.is_muted_for_all_users != null
+        ? Boolean(participant.is_muted_for_all_users)
+        : (prev?.isMuted ?? true);
     cached.members.set(key, {
       userId,
       chatId,
       isSpeaking,
       lastSpokeAt,
-      // Mute and speaking are independent indicators (tdesktop parity) — a muted
-      // flag must survive a speaking pulse from recent_speakers.
-      isMuted:
-        participant.is_muted_for_all_users != null
-          ? Boolean(participant.is_muted_for_all_users)
-          : (prev?.isMuted ?? true),
+      // Speaking implies an open mic for chrome. Mute still wins when TDLib
+      // reports muted and not speaking.
+      isMuted: isSpeaking ? false : mutedFromTdlib,
       order,
       videoInfo: nextVideo,
       screenInfo: nextScreen,
@@ -624,6 +625,9 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
         ...prev,
         isSpeaking: true,
         lastSpokeAt: now,
+        // recent_speakers omit mute — open mic while speaking so SSE does not
+        // keep is_muted=true and block green paint on the client.
+        isMuted: false,
       });
       changed = true;
       const lastRefresh = cached.lastSpeakingRefreshAt ?? 0;
@@ -900,10 +904,9 @@ function speakersFromGroupCall(
       // Preserve hold across flaps — rebuilding with lastSpokeAt:undefined made
       // every SSE snapshot report speakingCount=0 a tick after someone spoke.
       lastSpokeAt,
-      // recent_speakers omit mute — default muted (most members are listeners);
-      // a live participant update corrects this. Unmuted-by-default painted every
-      // stub with an open mic, unlike Telegram Desktop.
-      isMuted: true,
+      // recent_speakers omit mute. Default muted for idle stubs; open mic while
+      // TDLib marks them speaking so clients don't remute unmuted roster faces.
+      isMuted: !isSpeaking,
       order: "",
     });
   }
@@ -931,7 +934,9 @@ function applySpeakingOverlay(
       lastSpokeAt: liveSpeaking
         ? now
         : (row.lastSpokeAt ?? speaker?.lastSpokeAt),
-      // Mute is independent from speaking (tdesktop parity).
+      // Open mic chrome while speaking — stubs used to keep isMuted=true and
+      // clients skipped green paint + remuted faces on thin SSE merges.
+      isMuted: liveSpeaking ? false : row.isMuted,
       order: row.order || speaker?.order || "",
     });
   }
@@ -1914,15 +1919,22 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
     for (const [key, row] of collected) {
       const prev = cached.members.get(key);
       if (!prev) continue;
-      if (
+      const lastSpokeAt =
         row.lastSpokeAt != null &&
         (prev.lastSpokeAt == null || row.lastSpokeAt > prev.lastSpokeAt)
+          ? row.lastSpokeAt
+          : prev.lastSpokeAt;
+      if (
+        Boolean(row.isSpeaking) === Boolean(prev.isSpeaking) &&
+        lastSpokeAt === prev.lastSpokeAt
       ) {
-        cached.members.set(key, {
-          ...prev,
-          lastSpokeAt: row.lastSpokeAt,
-        });
+        continue;
       }
+      cached.members.set(key, {
+        ...prev,
+        isSpeaking: Boolean(row.isSpeaking),
+        lastSpokeAt,
+      });
     }
     const hintGap =
       cached.participantCountHint > collected.size ||

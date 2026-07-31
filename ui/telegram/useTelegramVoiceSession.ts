@@ -30,6 +30,8 @@ export type TelegramVoiceSession = {
   cameraActive: boolean;
   screenSharing: boolean;
   localSpeaking: boolean;
+  /** True while mixed remote WebRTC audio has speech energy (green-mic fallback). */
+  remoteSpeaking: boolean;
   joining: boolean;
   joined: boolean;
   mediaConnected: boolean;
@@ -67,6 +69,7 @@ export function useTelegramVoiceSession({
   const [cameraActive, setCameraActive] = useState(false);
   const [screenSharing, setScreenSharing] = useState(false);
   const [localSpeaking, setLocalSpeaking] = useState(false);
+  const [remoteSpeaking, setRemoteSpeaking] = useState(false);
   const [joining, setJoining] = useState(false);
   const [joined, setJoined] = useState(false);
   const [mediaConnected, setMediaConnected] = useState(false);
@@ -83,6 +86,7 @@ export function useTelegramVoiceSession({
   groupCallIdRef.current = groupCallId;
 
   const speakingUnsubRef = useRef<(() => void) | null>(null);
+  const remoteSpeakingUnsubRef = useRef<(() => void) | null>(null);
   const joinLostUnsubRef = useRef<(() => void) | null>(null);
   const videoUnsubRef = useRef<(() => void) | null>(null);
   const videoSourcesUnsubRef = useRef<(() => void) | null>(null);
@@ -97,6 +101,7 @@ export function useTelegramVoiceSession({
     setCameraActive(false);
     setScreenSharing(false);
     setLocalSpeaking(false);
+    setRemoteSpeaking(false);
     setRemoteVideoStream(null);
     setRemoteVideoSources([]);
     setLocalCameraStream(null);
@@ -108,6 +113,8 @@ export function useTelegramVoiceSession({
   const disposeSession = useCallback(() => {
     speakingUnsubRef.current?.();
     speakingUnsubRef.current = null;
+    remoteSpeakingUnsubRef.current?.();
+    remoteSpeakingUnsubRef.current = null;
     joinLostUnsubRef.current?.();
     joinLostUnsubRef.current = null;
     videoUnsubRef.current?.();
@@ -128,12 +135,16 @@ export function useTelegramVoiceSession({
   const bindSession = useCallback(
     (session: TelegramGroupCallWebSession) => {
       speakingUnsubRef.current?.();
+      remoteSpeakingUnsubRef.current?.();
       joinLostUnsubRef.current?.();
       videoUnsubRef.current?.();
       videoSourcesUnsubRef.current?.();
       localMediaUnsubRef.current?.();
       speakingUnsubRef.current = session.onLocalSpeakingChange((speaking) => {
         setLocalSpeaking(speaking);
+      });
+      remoteSpeakingUnsubRef.current = session.onRemoteSpeakingChange((speaking) => {
+        setRemoteSpeaking(speaking);
       });
       joinLostUnsubRef.current = session.onJoinLost(() => {
         setJoined(false);
@@ -143,6 +154,7 @@ export function useTelegramVoiceSession({
         setCameraActive(false);
         setScreenSharing(false);
         setLocalSpeaking(false);
+        setRemoteSpeaking(false);
         setRemoteVideoStream(null);
         setRemoteVideoSources([]);
         setLocalCameraStream(null);
@@ -183,6 +195,8 @@ export function useTelegramVoiceSession({
   const createSessionShell = useCallback(() => {
     speakingUnsubRef.current?.();
     speakingUnsubRef.current = null;
+    remoteSpeakingUnsubRef.current?.();
+    remoteSpeakingUnsubRef.current = null;
     joinLostUnsubRef.current?.();
     joinLostUnsubRef.current = null;
     videoUnsubRef.current?.();
@@ -450,6 +464,8 @@ export function useTelegramVoiceSession({
   const leaveVoice = useCallback(async () => {
     speakingUnsubRef.current?.();
     speakingUnsubRef.current = null;
+    remoteSpeakingUnsubRef.current?.();
+    remoteSpeakingUnsubRef.current = null;
     joinLostUnsubRef.current?.();
     joinLostUnsubRef.current = null;
     videoUnsubRef.current?.();
@@ -469,6 +485,7 @@ export function useTelegramVoiceSession({
     cameraActive,
     screenSharing,
     localSpeaking,
+    remoteSpeaking,
     joining,
     joined,
     mediaConnected,

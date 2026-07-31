@@ -15,8 +15,10 @@ export function VoiceParticipantStateMicIcon({
   color,
   size = 20,
 }: Props) {
-  const fill = speaking ? SPEAKING_FILL : color;
-  if (muted && !speaking) {
+  // Mute always wins: never show green speaking over a muted mic.
+  const showSpeaking = speaking && !muted;
+  const fill = showSpeaking ? SPEAKING_FILL : color;
+  if (muted) {
     return (
       <svg
         width={size}

@@ -212,14 +212,28 @@ function VoiceVideoElement({
   );
 }
 
+/** Inset of minimized thumbs inside the extended (main) video frame. */
+const PIP_INSET_TOP_PX = 12;
+const PIP_INSET_RIGHT_PX = 12;
+/** Gap between stacked minimized thumbs. */
+const PIP_STACK_GAP_PX = 8;
+
 type PipTileProps = {
   source: VoiceMediaStageSource;
   active: boolean;
   onPromote: () => void;
   onHasFramesChange: (id: string, hasFrames: boolean) => void;
+  /** Last thumb in the stack — no bottom gap. */
+  isLast?: boolean;
 };
 
-function PipTile({ source, active, onPromote, onHasFramesChange }: PipTileProps) {
+function PipTile({
+  source,
+  active,
+  onPromote,
+  onHasFramesChange,
+  isLast = false,
+}: PipTileProps) {
   const [hasFrames, setHasFrames] = useState(false);
 
   useEffect(() => {
@@ -238,8 +252,9 @@ function PipTile({ source, active, onPromote, onHasFramesChange }: PipTileProps)
         backgroundColor: "#000000",
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.35)",
+        borderRadius: 6,
         overflow: "hidden",
-        marginBottom: 8,
+        marginBottom: isLast ? 0 : PIP_STACK_GAP_PX,
         opacity: hasFrames ? 1 : 0.35,
       }}
     >
@@ -247,7 +262,8 @@ function PipTile({ source, active, onPromote, onHasFramesChange }: PipTileProps)
         key={`pip:${source.id}`}
         stream={source.stream}
         active={active}
-        objectFit="cover"
+        // Fit the whole stream into the thumb box (letterbox if needed).
+        objectFit="contain"
         accessibilityLabel="Show this video full size"
         onPress={onPromote}
         onHasFramesChange={setHasFrames}
@@ -400,16 +416,20 @@ function MessageChatVoiceMediaStageInner({
       ) : null}
       {pips.length > 0 ? (
         <View
+          pointerEvents="box-none"
           style={
             showStage
               ? {
+                  // Overlay inside the extended main video box — top/right indent.
                   position: "absolute",
-                  top: 10,
-                  right: 10,
-                  width: "28%",
-                  minWidth: 96,
-                  maxWidth: 180,
+                  top: PIP_INSET_TOP_PX,
+                  right: PIP_INSET_RIGHT_PX,
+                  width: "26%",
+                  minWidth: 104,
+                  maxWidth: 168,
+                  maxHeight: "42%",
                   zIndex: 2,
+                  overflow: "hidden",
                 }
               : {
                   position: "absolute",
@@ -420,13 +440,14 @@ function MessageChatVoiceMediaStageInner({
                 }
           }
         >
-          {pips.map((pip) => (
+          {pips.map((pip, index) => (
             <PipTile
               key={`pip-wrap:${pip.id}`}
               source={pip}
               active={active}
               onPromote={() => setMainId(pip.id)}
               onHasFramesChange={() => undefined}
+              isLast={index === pips.length - 1}
             />
           ))}
         </View>

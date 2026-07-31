@@ -373,7 +373,9 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
       style={{
         flexDirection: "row",
         alignItems: "center",
-        minHeight: description ? 48 : 40,
+        // Fixed row height — description fill / title resolve used to change
+        // minHeight 40↔48 and bounce the list while speaking rings fired.
+        minHeight: 48,
         width: "100%",
         marginBottom: isLast ? 0 : 10,
       }}
@@ -385,8 +387,9 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           alignItems: "center",
           justifyContent: "center",
           borderRadius: MESSAGE_AVATAR_PX / 2,
-          borderWidth: speaking ? 2 : 0,
-          borderColor: VOICE_SPEAKING_MIC_COLOR,
+          // Always reserve the ring — toggling borderWidth 0↔2 shifted rows up/down.
+          borderWidth: 2,
+          borderColor: speaking ? VOICE_SPEAKING_MIC_COLOR : "transparent",
           backgroundColor: colors.background,
           overflow: "hidden",
           flexShrink: 0,
@@ -476,9 +479,13 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           }}
         >
           <VoiceParticipantStateMicIcon
-            speaking={speaking}
-            muted={Boolean(participant.is_muted) && !speaking}
-            color={speaking ? VOICE_SPEAKING_MIC_COLOR : colors.primary}
+            speaking={speaking && !participant.is_muted}
+            muted={Boolean(participant.is_muted)}
+            color={
+              speaking && !participant.is_muted
+                ? VOICE_SPEAKING_MIC_COLOR
+                : colors.primary
+            }
             size={20}
           />
         </View>

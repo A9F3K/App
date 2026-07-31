@@ -324,6 +324,11 @@ export type ParsedOfferMediaSection = {
    * differ on new recvonly mids and leave inboundVideoPackets=0.
    */
   codecLines?: string[];
+  /**
+   * Full m-section lines (`m=` … next `m=`), used to preserve the negotiated
+   * audio mid across video-subscribe offers so inbound mix RTP does not reset.
+   */
+  rawLines?: string[];
 };
 
 class SdpBuilder {
@@ -501,6 +506,63 @@ class SdpBuilder {
     this.add("a=fmtp:111 minptime=10;useinbandfec=1");
     this.add("a=rtcp-fb:111 transport-cc");
     this.add("a=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level");
+  }
+
+  /**
+   * Reuse a previously negotiated audio m-section when crafting a video-subscribe
+   * remote offer. Regenerating opus/ssrc/msid via addMainAudioSection used to
+   * reset Chrome's audio receiver (inboundPackets froze after renegotiate).
+   *
+   * `stripSenderSsrcs` is only for a *local offer* template (our outbound SSRCs).
+   * Join/SFU answer templates already carry mix SSRCs — stripping those freezes
+   * inboundPackets and can starve screen/camera RTP on the same BUNDLE.
+   */
+  addPreservedAudioSection(
+    rawLines: string[],
+    transport: TelegramGroupCallTransport,
+    dtlsSetup: "active" | "passive" | "actpass",
+    mid: string,
+    opts?: { includeCandidates?: boolean; stripSenderSsrcs?: boolean },
+  ): boolean {
+    const lines = rawLines.map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0 || !lines[0]!.startsWith("m=audio")) return false;
+    let sawMid = false;
+    let transportPlaced = false;
+    for (const line of lines) {
+      if (
+        line.startsWith("a=ice-ufrag:") ||
+        line.startsWith("a=ice-pwd:") ||
+        line.startsWith("a=fingerprint:") ||
+        line.startsWith("a=setup:") ||
+        line.startsWith("a=candidate:")
+      ) {
+        if (!transportPlaced) {
+          this.addTransport(transport, dtlsSetup, {
+            includeCandidates: opts?.includeCandidates !== false,
+          });
+          transportPlaced = true;
+        }
+        continue;
+      }
+      if (opts?.stripSenderSsrcs) {
+        if (line.startsWith("a=ssrc:") || line.startsWith("a=ssrc-group:")) {
+          continue;
+        }
+      }
+      if (line.startsWith("a=mid:")) {
+        this.add(`a=mid:${mid}`);
+        sawMid = true;
+        continue;
+      }
+      this.add(line);
+    }
+    if (!sawMid) this.add(`a=mid:${mid}`);
+    if (!transportPlaced) {
+      this.addTransport(transport, dtlsSetup, {
+        includeCandidates: opts?.includeCandidates !== false,
+      });
+    }
+    return true;
   }
 
   addMainVideoSection(
@@ -809,11 +871,14 @@ export function parseOfferMediaSections(sdp: string): ParsedOfferMediaSection[] 
         protocol: parts[2],
         formats: parts.slice(3).join(" "),
         codecLines: [],
+        rawLines: [line],
       };
       sections.push(current);
       continue;
     }
     if (!current) continue;
+    current.rawLines = current.rawLines ?? [];
+    if (line) current.rawLines.push(line);
     if (line.startsWith("a=mid:")) {
       current.mid = line.slice("a=mid:".length).trim();
     } else if (line.startsWith("a=sctp-port:")) {
@@ -1039,6 +1104,8 @@ export function groupCallRemoteSubscribeOfferSdp(
     videoPayloadTypes?: TelegramGroupCallPayloadType[];
     videoExtensions?: TelegramGroupCallRtpExtension[];
     audioSourceId?: number | null;
+    /** True only when `localSdp` is our local join offer (client send SSRCs). */
+    stripSenderSsrcs?: boolean;
   },
 ): string {
   const localSections = parseOfferMediaSections(localSdp);
@@ -1047,10 +1114,7 @@ export function groupCallRemoteSubscribeOfferSdp(
     videoExtensions: opts?.videoExtensions,
     bundleOnly: true as const,
   };
-  const audioSource =
-    opts?.audioSourceId != null && Number.isFinite(opts.audioSourceId)
-      ? opts.audioSourceId >>> 0
-      : parsePrimarySsrcFromSdp(localSdp, "audio");
+  const stripSenderSsrcs = Boolean(opts?.stripSenderSsrcs);
 
   // Ensure we have enough video slots beyond main: reuse existing extras, then
   // append new mids (never colliding with an existing mid).
@@ -1103,16 +1167,22 @@ export function groupCallRemoteSubscribeOfferSdp(
     const mid = offerSection.mid || "0";
     if (offerSection.kind === "audio" && !mainAudioDone) {
       mainAudioDone = true;
-      sdp.addMainAudioSection(transport, dtlsSetup, mid, {
-        includeCandidates: !candidatesPlaced,
-      });
-      candidatesPlaced = true;
-      if (audioSource != null && audioSource !== 0) {
-        sdp.add(`a=ssrc:${audioSource} cname:audio${audioSource}`);
-        sdp.add(
-          `a=ssrc:${audioSource} msid:audio${audioSource} audio${audioSource}`,
+      // Preserve SFU mix SSRCs from join/remote answer. Only strip when the
+      // template is our local offer (see stripSenderSsrcs opt).
+      const preserved = Boolean(offerSection.rawLines?.length) &&
+        sdp.addPreservedAudioSection(
+          offerSection.rawLines ?? [],
+          transport,
+          dtlsSetup,
+          mid,
+          { includeCandidates: !candidatesPlaced, stripSenderSsrcs },
         );
+      if (!preserved) {
+        sdp.addMainAudioSection(transport, dtlsSetup, mid, {
+          includeCandidates: !candidatesPlaced,
+        });
       }
+      candidatesPlaced = true;
       continue;
     }
     if (offerSection.kind === "video" && !mainVideoDone) {
