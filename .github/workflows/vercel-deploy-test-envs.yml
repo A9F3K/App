@@ -32,7 +32,8 @@ jobs:
 
       - name: Deploy to Vercel
         # Full remote build (not --prebuilt) so /api serverless routes stay intact.
-        run: npx vercel@38.0.0 deploy --prod --yes --token "$VERCEL_TOKEN"
+        # Pin a modern CLI — API rejects vercel@38 ("requires 47.2.2 or later").
+        run: npx vercel@58.4.4 deploy --prod --yes --token "$VERCEL_TOKEN"
         env:
           VERCEL_ORG_ID: ${{ env.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ env.VERCEL_PROJECT_ID }}
