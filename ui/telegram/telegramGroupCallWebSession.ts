@@ -3600,22 +3600,8 @@ export class TelegramGroupCallWebSession {
         });
         return;
       }
-      // Skip only when no open sheet. Checking for any "closed" node was wrong:
-      // the portal stays mounted with data-voice-dialog="closed" after Close, and
-      // remounts can briefly leave a closed sibling while the live sheet is open —
-      // that skipped setRemoteDescription forever (join_ok, no audio).
-      const sheetOpen =
-        typeof document === "undefined" ||
-        Boolean(document.querySelector('[data-voice-dialog="open"]'));
-      if (!sheetOpen) {
-        logPageDisplay("messages_voice_sdp_answer_skip_sheet_closed", {
-          chatId: this.input.chatId,
-          groupCallId: this.input.groupCallId,
-          level: "warn",
-        });
-        this.markJoinLost("sdp_skipped_sheet_closed");
-        return;
-      }
+      // Apply SDP while still joined even if the sheet is minimized/docked
+      // (data-voice-dialog="closed"). Leaving the call clears this.joined first.
       try {
         logPageDisplay("messages_voice_sdp_answer_apply_start", {
           chatId: this.input.chatId,

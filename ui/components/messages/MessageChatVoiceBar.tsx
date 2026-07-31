@@ -291,32 +291,9 @@ export function MessageChatVoiceBar({
   const leaveVoiceRef = useRef(voiceSession.leaveVoice);
   leaveVoiceRef.current = voiceSession.leaveVoice;
 
-  // Closing the sheet before WebRTC connects must cancel Join — otherwise SDP
-  // finishes after close (logs: close_click → webrtc_join_ok) and the page stays
-  // engaged/gated with no dialog (feels stuck).
-  useEffect(() => {
-    if (popoverOpen) return;
-    if (!joined) return;
-    if (voiceSessionJoinedRef.current) return;
-    let cancelled = false;
-    void (async () => {
-      logPageDisplay("messages_voice_dialog_close_cancel_join", {
-        chatId,
-        joining: voiceSessionJoiningRef.current,
-        negotiating: voiceSessionNegotiatingRef.current,
-      });
-      softPollAbortRef.current?.abort();
-      try {
-        await leaveVoiceRef.current();
-      } catch {
-        /* best-effort */
-      }
-      if (!cancelled) onLeftVoiceRef.current?.();
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [popoverOpen, joined, chatId]);
+  // Minimize/dock only hides the sheet — keep Join/WebRTC going until hangup
+  // (chrome X / strip leave / onDropFromPopover). Canceling join on popoverOpen
+  // false used to drop audio mid-handshake when the user only minimized.
 
   // Join only after the user presses Join — never auto-join on chat preview open.
   // Cap retries so a flaky ICE path cannot re-offer SDP forever and freeze the UI.
@@ -372,16 +349,7 @@ export function MessageChatVoiceBar({
         inFlight = false;
         return;
       }
-      // User closed the sheet during the settle delay — do not start SDP.
-      if (!popoverOpenRef.current) {
-        inFlight = false;
-        logPageDisplay("messages_voice_webrtc_join_aborted_sheet_closed", {
-          chatId,
-          groupCallId,
-        });
-        onLeftVoiceRef.current?.();
-        return;
-      }
+      // Sheet may be minimized/docked — still complete SDP so audio keeps working.
       // Count only real joinListen calls — cancelled settle delays must not
       // exhaust the 3-attempt budget.
       joinAttemptsRef.current += 1;
@@ -3015,9 +2983,10 @@ export function MessageChatVoiceBar({
         )}
       </View>
       ) : null}
+      {/* No strip screencast when the dialog is minimized — stage lives in the popover. */}
       <MessageChatVoiceVideoPlane
         stream={voiceSession.remoteVideoStream}
-        active={Boolean(joined && voiceSession.joined && visible && !popoverOpen && showStrip)}
+        active={false}
       />
       <MessageChatVoicePopover
         mountKey={popoverMountKey}

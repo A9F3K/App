@@ -932,6 +932,8 @@ export function MessageChatVoicePopover({
   // able to receive pointer events while React is busy painting the roster.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const onDropPressRef = useRef(onDropPress);
+  onDropPressRef.current = onDropPress;
   const requestClose = useCallback((source: string) => {
     // pointerdown + click both fire on the native Close button — only act once.
     if (forceClosedRef.current) {
@@ -990,8 +992,16 @@ export function MessageChatVoicePopover({
       const target = e.target as Element | null;
       if (!target || typeof target.closest !== "function") return;
       if (target.closest('[data-voice-chrome="close"]')) {
+        // Capture wins over the chrome <button> — leave the call here too,
+        // otherwise stopPropagation would hide the sheet without hanging up.
         e.stopPropagation();
+        e.preventDefault();
         closeNow("chrome_x_capture");
+        try {
+          onDropPressRef.current();
+        } catch {
+          /* best-effort leave */
+        }
         return;
       }
       if (target.closest('[data-voice-chrome="backdrop"]')) {
@@ -1217,12 +1227,24 @@ export function MessageChatVoicePopover({
         clientY: number;
         pointerId: number;
         button?: number;
+        target?: EventTarget | null;
         preventDefault?: () => void;
         stopPropagation?: () => void;
       };
       currentTarget?: unknown;
     }) => {
       if (e.nativeEvent.button != null && e.nativeEvent.button !== 0) return;
+      // Chrome buttons stopPropagation, but also ignore if a control was hit.
+      const target = e.nativeEvent.target as Element | null;
+      if (
+        target &&
+        typeof target.closest === "function" &&
+        target.closest(
+          '[data-voice-chrome]:not([data-voice-chrome="drag-handle"])',
+        )
+      ) {
+        return;
+      }
       e.nativeEvent.preventDefault?.();
       e.nativeEvent.stopPropagation?.();
       dragRef.current = null;
@@ -1503,7 +1525,9 @@ export function MessageChatVoicePopover({
 
   const renderHeader = () => (
     <View
-      pointerEvents="box-none"
+      // Must be hittable on web so title/empty header space can drag the sheet
+      // (box-none let events fall through to content behind the header).
+      pointerEvents="auto"
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -1517,6 +1541,7 @@ export function MessageChatVoicePopover({
               position: "relative",
               cursor: movingSheet ? "grabbing" : "grab",
               userSelect: "none",
+              touchAction: "none",
             } as object)
           : {}),
       }}
@@ -1575,6 +1600,7 @@ export function MessageChatVoicePopover({
         <VoiceWindowChromeButton
           label={t("messages.voiceChat.minimize")}
           hitExtraPx={4}
+          testId="minimize"
           onPress={() => {
             // Minimize docks to the strip / global preview and keeps audio.
             requestClose("chrome_minimize");
