@@ -1,3 +1,4 @@
+Several streams
 Profile and voice calls
 720p
 Active speakers display delay
