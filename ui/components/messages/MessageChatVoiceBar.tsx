@@ -177,6 +177,8 @@ export function MessageChatVoiceBar({
       ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
     }>
   >([]);
+  /** Soft polls omit source_groups briefly — keep last good only for a short window. */
+  const lastGoodRemoteVideoAtRef = useRef(0);
   participantsRef.current = participants;
   const participantCountRef = useRef(participantCount);
   participantCountRef.current = participantCount;
@@ -1588,12 +1590,14 @@ export function MessageChatVoiceBar({
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") {
       lastGoodRemoteVideoRequestsRef.current = [];
+      lastGoodRemoteVideoAtRef.current = 0;
       setRemoteVideoRequests([]);
       return;
     }
     // Defer publisher renegotiation until after join SDP/ICE settle — running
     // createOffer in the same window as join_ok froze the dialog hard.
     let cancelled = false;
+    let stickyExpireTimer: number | null = null;
     const hasVideoPublishers = participantsRef.current.some(
       (row) => !row.is_self && participantHasVideoPublisher(row),
     );
@@ -1650,7 +1654,10 @@ export function MessageChatVoiceBar({
       });
       const next = requests.slice(0, 8);
       // Soft SSE/poll often omits source_groups after a full roster load —
-      // clearing requests renegotiates to empty and unmaps a live screen.
+      // clearing immediately renegotiates empty and unmaps a live screen.
+      // Cap the sticky window so a stopped share (endpoint left without groups)
+      // cannot keep the stage forever.
+      const SOFT_VIDEO_STICKY_MS = 5_000;
       if (next.length === 0 && lastGoodRemoteVideoRequestsRef.current.length > 0) {
         const stillHasVideoEndpoint = participantsRef.current.some(
           (row) =>
@@ -1660,7 +1667,11 @@ export function MessageChatVoiceBar({
                 row.video_info?.endpoint_id?.trim(),
             ),
         );
-        if (stillHasVideoEndpoint || pendingGroups.length > 0) {
+        const stickyAgeMs = Date.now() - lastGoodRemoteVideoAtRef.current;
+        if (
+          (stillHasVideoEndpoint || pendingGroups.length > 0) &&
+          stickyAgeMs < SOFT_VIDEO_STICKY_MS
+        ) {
           logPageDisplay("messages_voice_remote_video_requests", {
             chatId,
             count: lastGoodRemoteVideoRequestsRef.current.length,
@@ -1671,14 +1682,27 @@ export function MessageChatVoiceBar({
             pendingGroups: pendingGroups.slice(0, 4),
             listed: participantsRef.current.length,
             hint: rosterTotalHintRef.current,
+            stickyAgeMs,
             level: "warn",
             note: "sticky keep last good video requests — soft roster missing source_groups",
           });
+          // Re-run after the sticky window so a stopped share (endpoint left
+          // without groups forever) still clears without waiting on SSE churn.
+          if (stickyExpireTimer != null) window.clearTimeout(stickyExpireTimer);
+          stickyExpireTimer = window.setTimeout(() => {
+            stickyExpireTimer = null;
+            if (!cancelled) applyRequests();
+          }, Math.max(50, SOFT_VIDEO_STICKY_MS - stickyAgeMs + 50));
           return;
         }
       }
+      if (stickyExpireTimer != null) {
+        window.clearTimeout(stickyExpireTimer);
+        stickyExpireTimer = null;
+      }
       if (next.length > 0) {
         lastGoodRemoteVideoRequestsRef.current = next;
+        lastGoodRemoteVideoAtRef.current = Date.now();
       } else {
         lastGoodRemoteVideoRequestsRef.current = [];
       }
@@ -1707,6 +1731,7 @@ export function MessageChatVoiceBar({
       cancelled = true;
       window.clearTimeout(timer);
       window.clearTimeout(retry);
+      if (stickyExpireTimer != null) window.clearTimeout(stickyExpireTimer);
     };
   }, [chatId, remoteVideoSourceKey, setRemoteVideoRequests, voiceJoined]);
 

@@ -54,7 +54,7 @@ function VoiceVideoElement({
   const [hasFrames, setHasFrames] = useState(false);
   const trackKey = stream
     .getVideoTracks()
-    .map((t) => `${t.id}:${t.readyState}`)
+    .map((t) => `${t.id}:${t.readyState}:${t.muted ? "m" : "u"}:${t.enabled ? "e" : "d"}`)
     .join("|");
 
   const attachStream = useCallback((el: HTMLVideoElement | null, next: MediaStream | null, on: boolean) => {
@@ -109,10 +109,15 @@ function VoiceVideoElement({
       window.setTimeout(markFrames, 400);
       window.setTimeout(markFrames, 1200);
     };
+    const onTrackMute = () => {
+      setHasFrames(false);
+    };
 
     for (const track of stream.getVideoTracks()) {
       track.addEventListener("unmute", onTrackUnmute);
-      if (!track.muted) onTrackUnmute();
+      track.addEventListener("mute", onTrackMute);
+      if (track.muted) onTrackMute();
+      else onTrackUnmute();
     }
 
     if (el) {
@@ -152,6 +157,7 @@ function VoiceVideoElement({
       }
       for (const track of stream.getVideoTracks()) {
         track.removeEventListener("unmute", onTrackUnmute);
+        track.removeEventListener("mute", onTrackMute);
       }
       if (el) {
         el.removeEventListener("loadeddata", markFrames);
@@ -281,7 +287,9 @@ function MessageChatVoiceMediaStageInner({
       sources.filter(
         (row) =>
           !streamLooksLikePlaceholderVideo(row.stream) &&
-          row.stream.getVideoTracks().some((t) => t.readyState === "live" && t.enabled),
+          row.stream
+            .getVideoTracks()
+            .some((t) => t.readyState === "live" && t.enabled && !t.muted),
       ),
     [sources],
   );

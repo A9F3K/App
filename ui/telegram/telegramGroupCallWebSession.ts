@@ -497,23 +497,9 @@ export class TelegramGroupCallWebSession {
             sourceIds: g.sourceIds.map((id) => Math.trunc(id)),
           })),
       }));
-    // Soft roster polls often drop source_groups after a good load — clearing
-    // here renegotiates to sections=0 and unmaps a live screencast.
-    if (normalized.length === 0 && this.requestedRemoteVideo.length > 0) {
-      const hasLiveMapped = [...this.remoteVideoByEndpoint.values()].some((stream) =>
-        stream.getVideoTracks().some((t) => t.readyState === "live"),
-      );
-      if (hasLiveMapped) {
-        logPageDisplay("messages_voice_remote_video_sticky_keep", {
-          chatId: this.input.chatId,
-          groupCallId: this.input.groupCallId,
-          kept: this.requestedRemoteVideo.map((r) => r.endpointId),
-          level: "warn",
-          note: "ignored empty request while live video tracks are mapped",
-        });
-        return;
-      }
-    }
+    // Soft roster handling lives in MessageChatVoiceBar (short sticky window).
+    // Do not ignore empty clears here — a stopped share leaves readyState=live
+    // (often muted) and sticky_keep kept the tile on stage forever.
     const nextKey = normalized
       .map(
         (r) =>
@@ -523,6 +509,22 @@ export class TelegramGroupCallWebSession {
       )
       .sort()
       .join("|");
+    const keepEndpoints = new Set(normalized.map((r) => r.endpointId));
+    for (const endpointId of [...this.remoteVideoByEndpoint.keys()]) {
+      if (keepEndpoints.has(endpointId)) continue;
+      const mapped = this.remoteVideoByEndpoint.get(endpointId);
+      if (mapped) {
+        for (const track of mapped.getVideoTracks()) {
+          try {
+            mapped.removeTrack(track);
+          } catch {
+            // ignore
+          }
+        }
+      }
+      this.remoteVideoByEndpoint.delete(endpointId);
+      this.remoteVideoUiByEndpoint.delete(endpointId);
+    }
     this.requestedRemoteVideo = normalized;
     this.notifyVideoListeners();
     this.notifyRemoteVideoSourceListeners();
@@ -795,6 +797,19 @@ export class TelegramGroupCallWebSession {
       this.notifyVideoListeners();
       this.notifyRemoteVideoSourceListeners();
     };
+    // SFU mutes presentation tracks when the peer stops sharing — without this
+    // notify, React kept the last unmuted MediaStream and the stage froze.
+    track.onmute = () => {
+      logPageDisplay("messages_voice_remote_video_mute", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        trackId: track.id,
+        endpointId,
+        level: "info",
+      });
+      this.notifyVideoListeners();
+      this.notifyRemoteVideoSourceListeners();
+    };
     track.onended = () => {
       try {
         stream.removeTrack(track);
@@ -811,6 +826,7 @@ export class TelegramGroupCallWebSession {
           }
           if (endpointStream.getVideoTracks().length === 0) {
             this.remoteVideoByEndpoint.delete(endpointId);
+            this.remoteVideoUiByEndpoint.delete(endpointId);
           }
         }
       }
