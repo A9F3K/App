@@ -201,15 +201,22 @@ export function WelcomeAuthButtons() {
         throw new Error(json?.error || `HTTP_${response.status}`);
       }
       let authUrlHost: string | null = null;
+      let authRedirectUri: string | null = null;
       try {
-        authUrlHost = new URL(json.authUrl).host;
+        const auth = new URL(json.authUrl);
+        authUrlHost = auth.host;
+        authRedirectUri = auth.searchParams.get("redirect_uri");
       } catch {
         authUrlHost = null;
+      }
+      if (!authRedirectUri?.trim()) {
+        throw new Error("auth_url_missing_redirect_uri");
       }
       const openMethod = navigateExternalAuthUrl(json.authUrl);
       navigated = openMethod !== "desktop_oauth_window";
       logPageDisplay(`${cfg.logPrefix}_redirect`, {
         authUrlHost,
+        authRedirectUri,
         openMethod,
         elapsedMs: Date.now() - startedAt,
       });

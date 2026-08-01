@@ -362,13 +362,19 @@ export function MessageChatVoiceBar({
       // Count only real joinListen calls — cancelled settle delays must not
       // exhaust the 3-attempt budget.
       joinAttemptsRef.current += 1;
+      // If self is already in the call with an open mic (Desktop/mobile), do not
+      // remute via listen-only join — that painted Vsevolod's row red/crossed.
+      const selfRow = participantsRef.current.find((row) => row.is_self);
+      const startMuted = !(selfRow && selfRow.is_muted === false);
       logPageDisplay("messages_voice_webrtc_join_attempt", {
         chatId,
         groupCallId,
         attempt: joinAttemptsRef.current,
         popoverOpen: popoverOpenRef.current,
+        startMuted,
+        preserveUnmuted: !startMuted,
       });
-      const ok = await joinListenRef.current();
+      const ok = await joinListenRef.current({ startMuted });
       inFlight = false;
       logPageDisplay(
         ok ? "messages_voice_webrtc_join_ok" : "messages_voice_webrtc_join_fail",
@@ -584,8 +590,8 @@ export function MessageChatVoiceBar({
                 user_id: row.user_id && row.user_id > 0 ? row.user_id : prev.user_id,
                 chat_id: row.chat_id && row.chat_id !== 0 ? row.chat_id : prev.chat_id,
                 is_speaking: Boolean(row.is_speaking || prev.is_speaking),
-                // Speaking ⇒ unmuted. Orderless recent_speakers stubs default
-                // is_muted=true and must not remute a live unmuted roster row.
+                // Speaking ⇒ unmuted. Orderless recent_speakers stubs omit mute —
+                // never remute a live unmuted roster row from a silent stub.
                 is_muted: Boolean(row.is_speaking)
                   ? false
                   : !row.is_muted
@@ -596,6 +602,7 @@ export function MessageChatVoiceBar({
               }
             : {
                 ...row,
+                // New faces from stubs: prefer unmuted when mute is unknown/false.
                 is_muted: Boolean(row.is_speaking) ? false : Boolean(row.is_muted),
               },
         );
@@ -866,8 +873,8 @@ export function MessageChatVoiceBar({
         const merged = prev.map((row) => {
           const inc = nextByKey.get(speakKey(row));
           if (!inc) return row;
-          // Thin recent_speakers stubs default is_muted=true — never remute from
-          // them. Unmute (false) and speaking both open the mic chrome.
+          // Thin recent_speakers stubs omit mute — never remute from them.
+          // Unmute (false) and speaking both open the mic chrome.
           const nextMuted =
             Boolean(inc.is_speaking) || !inc.is_muted ? false : Boolean(row.is_muted);
           const nextTitle = inc.title.trim() || row.title;
@@ -956,9 +963,18 @@ export function MessageChatVoiceBar({
           ) {
             return prevMatch;
           }
+          // Orderless recent_speakers stubs must not remute an open mic. Real
+          // mute updates always carry a participant order string from TDLib.
+          const nextMuted =
+            Boolean(row.is_speaking) || !row.is_muted
+              ? false
+              : !String(row.order ?? "").trim() && prevMatch && !prevMatch.is_muted
+                ? false
+                : Boolean(row.is_muted);
           return {
             ...row,
             is_speaking: false,
+            is_muted: nextMuted,
             title,
             description,
             emoji_status_custom_emoji_id: emoji,
@@ -1128,7 +1144,7 @@ export function MessageChatVoiceBar({
           prevListed,
           hint: countHint,
         });
-        // Thin recent_speakers stubs default is_muted=true — only open mics here
+        // Thin recent_speakers stubs omit mute — only open mics here
         // (unmute / speaking). Never remute an unmuted roster face from stubs.
         const speakKey = participantSpeakKey;
         const byKey = new Map(rows.map((row) => [speakKey(row), row]));
@@ -2765,8 +2781,12 @@ export function MessageChatVoiceBar({
   const unlockThenJoin = useCallback(() => {
     unlockVoiceAutoplay();
     voiceSession.unlockAudio();
-    // Join muted — do not prefetch/getUserMedia here (browser mic light + RTP race).
-    // Mic is acquired only when the user unmutes.
+    // Prefetch mic only when preserving an already-open Telegram mic; otherwise
+    // stay listen-muted (no getUserMedia / mic light until the user unmutes).
+    const selfRow = participantsRef.current.find((row) => row.is_self);
+    if (selfRow && selfRow.is_muted === false) {
+      voiceSession.prefetchMic();
+    }
     onJoin();
   }, [onJoin, voiceSession]);
 

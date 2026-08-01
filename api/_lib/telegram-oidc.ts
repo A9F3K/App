@@ -78,10 +78,14 @@ export function buildTelegramAuthorizeUrl(input: {
   codeChallenge: string;
 }): string {
   const botId = input.clientId.trim();
+  if (!input.redirectUri.trim()) {
+    throw new Error("redirect_uri_empty");
+  }
   const url = new URL(AUTH_URL);
-  // OIDC spec uses client_id; Telegram's authorize UI also requires bot_id (numeric bot id).
+  // Official OIDC: client_id + redirect_uri only. Extra bot_id/origin params can
+  // push Telegram into Login Widget mode; unregistered redirect_uri yields the
+  // plain-text page "redirect_uri required".
   url.searchParams.set("client_id", botId);
-  url.searchParams.set("bot_id", botId);
   url.searchParams.set("redirect_uri", input.redirectUri);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", "openid profile phone");

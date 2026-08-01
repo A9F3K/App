@@ -563,7 +563,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
     const mutedFromTdlib =
       participant.is_muted_for_all_users != null
         ? Boolean(participant.is_muted_for_all_users)
-        : (prev?.isMuted ?? true);
+        : (prev?.isMuted ?? false);
     const volumeLevel =
       participant.volume_level != null
         ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)
@@ -931,9 +931,10 @@ function speakersFromGroupCall(
       // Preserve hold across flaps — rebuilding with lastSpokeAt:undefined made
       // every SSE snapshot report speakingCount=0 a tick after someone spoke.
       lastSpokeAt,
-      // recent_speakers omit mute. Default muted for idle stubs; open mic while
-      // TDLib marks them speaking so clients don't remute unmuted roster faces.
-      isMuted: !isSpeaking,
+      // recent_speakers omit mute. Never invent "muted" from !speaking — that
+      // painted red crossed mics on everyone who had an open mic but was silent.
+      // Speaking still opens the mic; otherwise keep prior mute or assume unmuted.
+      isMuted: isSpeaking ? false : (prev?.isMuted ?? false),
       volumeLevel: prev?.volumeLevel ?? 10000,
       order: "",
     });
@@ -962,8 +963,8 @@ function applySpeakingOverlay(
       lastSpokeAt: liveSpeaking
         ? now
         : (row.lastSpokeAt ?? speaker?.lastSpokeAt),
-      // Open mic chrome while speaking — stubs used to keep isMuted=true and
-      // clients skipped green paint + remuted faces on thin SSE merges.
+      // Open mic chrome while speaking — never invent muted=true from a silent
+      // speaker stub (that left unmuted remotes with a permanent red crossed mic).
       isMuted: liveSpeaking ? false : row.isMuted,
       order: row.order || speaker?.order || "",
     });
@@ -1040,7 +1041,14 @@ function mergeParticipantMaps(
             lastSpokeAt: row.isSpeaking
               ? (row.lastSpokeAt ?? Date.now())
               : (prev.lastSpokeAt ?? row.lastSpokeAt),
-            isMuted: row.isMuted,
+            // Real unmute / speaking always opens. Orderless stubs must not remute
+            // a face that already had an open mic from a full participant load.
+            isMuted:
+              row.isSpeaking || !row.isMuted
+                ? false
+                : !row.order && !prev.isMuted
+                  ? false
+                  : row.isMuted,
             volumeLevel: row.volumeLevel ?? prev.volumeLevel ?? 10000,
             order: row.order || prev.order,
             // Trust TDLib nulls — do not sticky-keep cleared camera/screen.

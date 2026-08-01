@@ -75,7 +75,8 @@ function getNonHttpShellApiBaseUrl(): string | null {
   }
   if (typeof window !== "undefined" && !isHttpPageOrigin()) {
     // Last resort for desktop builds without env at compile time (set EXPO_PUBLIC_API_BASE_URL in CI).
-    return normalizeBase("https://hsbexpo.vercel.app");
+    // Must match a BotFather Web Login Allowed URL / OIDC redirect (hsbexpo is not registered).
+    return normalizeBase("https://program.hyperlinks.space");
   }
   return null;
 }

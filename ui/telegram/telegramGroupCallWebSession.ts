@@ -2426,7 +2426,12 @@ export class TelegramGroupCallWebSession {
     }
   }
 
-  async ensureJoinedListenOnly(): Promise<void> {
+  /**
+   * @param startMuted When true (default), publish silent RTP and mute in TDLib
+   * after SDP. When false, acquire a real mic and leave Telegram unmuted — used
+   * when the account is already in the call with an open mic (e.g. Desktop).
+   */
+  async ensureJoinedListenOnly(startMuted = true): Promise<void> {
     if (this.joined) {
       // Stay put while ICE connects — callers used to rejoin on !mediaConnected
       // and freeze the UI with repeated SDP offers.
@@ -2436,7 +2441,7 @@ export class TelegramGroupCallWebSession {
       await this.joining;
       return;
     }
-    this.joining = this.joinInternal(true);
+    this.joining = this.joinInternal(startMuted);
     try {
       await this.joining;
     } finally {
@@ -3633,6 +3638,14 @@ export class TelegramGroupCallWebSession {
     this.lastTransport = slimTransport;
     this.joined = true;
     this.micEnabled = !startMuted;
+    if (!startMuted) {
+      logPageDisplay("messages_voice_join_preserve_unmuted", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        level: "info",
+        note: "skipped listen-mute — account already unmuted in call",
+      });
+    }
 
     const isWebDriver =
       typeof navigator !== "undefined" &&
@@ -3707,7 +3720,7 @@ export class TelegramGroupCallWebSession {
           // Defer TDLib mute until inbound RTP starts (or a short settle). Muting
           // in the same turn as setRemoteDescription left inboundPackets=0 /
           // remoteMuted forever on some SFU joins while outbound silence still
-          // flowed.
+          // flowed. Skipped when startMuted=false (preserve already-open mic).
           const applyListenMute = async () => {
             if (this.connection !== connection || !this.joined) return;
             const muteResult = await setTelegramChatVoiceMicMuted({

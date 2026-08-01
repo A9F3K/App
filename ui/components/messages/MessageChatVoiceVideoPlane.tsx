@@ -217,6 +217,22 @@ const PIP_INSET_TOP_PX = 12;
 const PIP_INSET_RIGHT_PX = 12;
 /** Gap between stacked minimized thumbs. */
 const PIP_STACK_GAP_PX = 8;
+/** Keep the PiP column inside the main frame without clipping later thumbs. */
+const PIP_STACK_MAX_HEIGHT_PCT = "78%";
+
+function pipStackWidthStyle(pipCount: number): {
+  width: `${number}%`;
+  minWidth: number;
+  maxWidth: number;
+} {
+  if (pipCount >= 3) {
+    return { width: "18%", minWidth: 72, maxWidth: 112 };
+  }
+  if (pipCount >= 2) {
+    return { width: "22%", minWidth: 88, maxWidth: 140 };
+  }
+  return { width: "26%", minWidth: 104, maxWidth: 168 };
+}
 
 type PipTileProps = {
   source: VoiceMediaStageSource;
@@ -225,6 +241,8 @@ type PipTileProps = {
   onHasFramesChange: (id: string, hasFrames: boolean) => void;
   /** Last thumb in the stack — no bottom gap. */
   isLast?: boolean;
+  /** Shrink thumbs when several people stream so the next window stays fully visible. */
+  compact?: boolean;
 };
 
 function PipTile({
@@ -233,6 +251,7 @@ function PipTile({
   onPromote,
   onHasFramesChange,
   isLast = false,
+  compact = false,
 }: PipTileProps) {
   const [hasFrames, setHasFrames] = useState(false);
 
@@ -249,6 +268,7 @@ function PipTile({
       style={{
         width: "100%",
         aspectRatio: 16 / 9,
+        maxHeight: compact ? 64 : undefined,
         backgroundColor: "#000000",
         borderWidth: 1,
         borderColor: "rgba(255,255,255,0.35)",
@@ -424,12 +444,11 @@ function MessageChatVoiceMediaStageInner({
                   position: "absolute",
                   top: PIP_INSET_TOP_PX,
                   right: PIP_INSET_RIGHT_PX,
-                  width: "26%",
-                  minWidth: 104,
-                  maxWidth: 168,
-                  maxHeight: "42%",
+                  ...pipStackWidthStyle(pips.length),
+                  maxHeight: PIP_STACK_MAX_HEIGHT_PCT,
                   zIndex: 2,
-                  overflow: "hidden",
+                  // Scroll if many thumbs still overflow the raised cap.
+                  overflow: "auto" as const,
                 }
               : {
                   position: "absolute",
@@ -448,6 +467,7 @@ function MessageChatVoiceMediaStageInner({
               onPromote={() => setMainId(pip.id)}
               onHasFramesChange={() => undefined}
               isLast={index === pips.length - 1}
+              compact={pips.length >= 2}
             />
           ))}
         </View>

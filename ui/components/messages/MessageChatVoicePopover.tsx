@@ -376,6 +376,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   screenLocallyOff,
   videoLocallyOff,
   onOpenMenu,
+  onSelfMicPress,
 }: {
   participant: TelegramChatVoiceParticipant;
   isLast: boolean;
@@ -392,6 +393,8 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   /** Local hide of their camera — red crossed camera icon. */
   videoLocallyOff?: boolean;
   onOpenMenu?: (anchor: VoiceParticipantMenuAnchor) => void;
+  /** Self row has no peer menu — tap toggles the local mic instead. */
+  onSelfMicPress?: () => void;
 }) {
   const { colorScheme } = useTelegram();
   const { t } = useAppStrings();
@@ -424,7 +427,11 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   const openMenuFromEvent = (event: {
     nativeEvent?: { pageX?: number; pageY?: number; clientX?: number; clientY?: number };
   }) => {
-    if (participant.is_self || !onOpenMenu) return;
+    if (participant.is_self) {
+      onSelfMicPress?.();
+      return;
+    }
+    if (!onOpenMenu) return;
     const ne = event.nativeEvent ?? {};
     const x = Number(ne.pageX ?? ne.clientX ?? 0);
     const y = Number(ne.pageY ?? ne.clientY ?? 0);
@@ -457,7 +464,15 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
         ? ({ "data-voice-participant-row": title } as object)
         : {})}
       testID="voice-participant-row"
-      disabled={participant.is_self || !onOpenMenu}
+      accessibilityRole={participant.is_self ? "button" : undefined}
+      accessibilityLabel={
+        participant.is_self
+          ? micMuted
+            ? "Unmute microphone"
+            : "Mute microphone"
+          : undefined
+      }
+      disabled={participant.is_self ? !onSelfMicPress : !onOpenMenu}
       onPress={(event) => openMenuFromEvent(event)}
       style={{
         flexDirection: "row",
@@ -642,6 +657,16 @@ function VoiceControlChip({
   /** Stable id for capture-phase pointer handlers while React is busy. */
   testId?: string;
 }) {
+  // Dedupe pointerdown + click so a freeze-recovery click does not double-toggle mic.
+  const lastFireAtRef = useRef(0);
+  const firePress = () => {
+    if (disabled || !onPress) return;
+    const now = Date.now();
+    if (now - lastFireAtRef.current < 450) return;
+    lastFireAtRef.current = now;
+    onPress();
+  };
+
   const chipBody =
     variant === "liquid" ? (
       <LiquidGlassShaderUndercover
@@ -685,15 +710,17 @@ function VoiceControlChip({
           button?: number;
         }) => {
           e.stopPropagation?.();
-          if (disabled) return;
+          // Do not preventDefault — that broke RN's touch bank and dropped the
+          // follow-up click backup under main-thread pressure (mic stayed muted).
           if (e.button == null || e.button === 0) {
-            e.preventDefault?.();
-            onPress?.();
+            firePress();
           }
         },
         onClick: (e: { stopPropagation?: () => void; preventDefault?: () => void }) => {
+          // Backup if pointerdown was swallowed by an overlay / frozen frame.
           e.stopPropagation?.();
           e.preventDefault?.();
+          firePress();
         },
         style: {
           width: CONTROL_CHIP_PX,
@@ -1855,6 +1882,7 @@ export function MessageChatVoicePopover({
                       setParticipantMenuAnchor(anchor);
                     }
               }
+              onSelfMicPress={participant.is_self ? () => onMicPress() : undefined}
             />
             );
           })

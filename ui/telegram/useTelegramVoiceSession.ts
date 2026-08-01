@@ -46,8 +46,12 @@ export type TelegramVoiceSession = {
   unlockAudio: () => void;
   /** Start getUserMedia during the Join click (before SDP). */
   prefetchMic: () => void;
-  /** Resolves true when the WebRTC join succeeded (or was already joined). */
-  joinListen: () => Promise<boolean>;
+  /**
+   * Resolves true when the WebRTC join succeeded (or was already joined).
+   * Pass `startMuted: false` when the account is already unmuted in the call
+   * (another client) so web join does not remute and paint a red self mic.
+   */
+  joinListen: (opts?: { startMuted?: boolean }) => Promise<boolean>;
   toggleMic: () => Promise<void>;
   toggleCamera: () => Promise<void>;
   startScreenShare: () => Promise<void>;
@@ -274,10 +278,11 @@ export function useTelegramVoiceSession({
     return () => window.clearInterval(id);
   }, [joined]);
 
-  const joinListen = useCallback(async (): Promise<boolean> => {
+  const joinListen = useCallback(async (opts?: { startMuted?: boolean }): Promise<boolean> => {
     if (Platform.OS !== "web") return false;
     const session = sessionRef.current;
     if (!session) return false;
+    const startMuted = opts?.startMuted !== false;
     if (session.isJoined) {
       setJoined(true);
       setMediaConnected(session.isMediaConnected());
@@ -299,9 +304,10 @@ export function useTelegramVoiceSession({
     // Enable sinks before SDP/ontrack — otherwise apply_ok playback_kick runs
     // with remoteAudioEnabled=false and tears WebAudio down until joined flips.
     session.setRemoteAudioEnabled(true);
-    // Enter listen-only with mic/camera/screen off (parity with muted join).
-    micActiveRef.current = false;
-    setMicActive(false);
+    // Default listen-only: mic/camera/screen off. Preserve-unmuted joins keep
+    // micActive true so self row / chip match Telegram (no remute red X).
+    micActiveRef.current = !startMuted;
+    setMicActive(!startMuted);
     cameraActiveRef.current = false;
     setCameraActive(false);
     setScreenSharing(false);
@@ -311,10 +317,13 @@ export function useTelegramVoiceSession({
       void session.stopScreenShare().catch(() => undefined);
       void session.setCameraEnabled(false).catch(() => undefined);
     }
+    if (!startMuted) {
+      session.prefetchLocalMic();
+    }
     let joinWatchdog: ReturnType<typeof setTimeout> | null = null;
     try {
       const joinedOk = await Promise.race([
-        session.ensureJoinedListenOnly().then(() => true as const),
+        session.ensureJoinedListenOnly(startMuted).then(() => true as const),
         new Promise<false>((resolve) => {
           joinWatchdog = setTimeout(() => resolve(false), 20_000);
         }),
@@ -336,11 +345,9 @@ export function useTelegramVoiceSession({
       // catches late ontrack and reuses the Join-gesture AudioContext (tweb wires
       // WebAudio on track without waiting for another click).
       session.resumeRemoteAudio();
-      // Join muted: keep silent outbound RTP until the user unmutes. Auto-mic-on
-      // raced the silent sender (usingSilentAudio flipped early) and also
-      // contradicted enter-with-mic-off UX.
-      micActiveRef.current = false;
-      setMicActive(false);
+      const enabled = session.isMicEnabled;
+      micActiveRef.current = enabled;
+      setMicActive(enabled);
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "voice_join_failed";

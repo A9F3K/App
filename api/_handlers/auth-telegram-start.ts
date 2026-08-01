@@ -72,28 +72,73 @@ function normalizeRedirectEnvValue(raw: string): string | null {
   return u.toString();
 }
 
-function getRedirectUri(request: AnyRequest): string {
-  const derived = `${getRequestOrigin(request)}${CALLBACK_PATH}`;
+const CALLBACK_PATH = "/api/auth/telegram/callback";
+/** Registered in @BotFather Web Login — Telegram rejects other hosts with "redirect_uri required". */
+const PRIMARY_OIDC_REDIRECT_URI = `https://program.hyperlinks.space${CALLBACK_PATH}`;
+
+/**
+ * BotFather Web Login only accepts pre-registered callback URLs. Telegram's
+ * authorize page returns the misleading plain-text error "redirect_uri required"
+ * for missing *or unregistered* URIs (e.g. hsbexpo.vercel.app / localhost).
+ * Prefer TELEGRAM_OIDC_REDIRECT_URI even when the API Host differs (preview,
+ * Electron fallback, custom domain).
+ */
+function getConfiguredRedirectUri(): string | null {
   const explicitRaw = process.env.TELEGRAM_OIDC_REDIRECT_URI?.trim();
-  if (explicitRaw) {
-    const normalized = normalizeRedirectEnvValue(explicitRaw);
-    const parsed = normalized ? tryParseClientRedirectUri(normalized) : null;
-    if (parsed) {
-      if (new URL(parsed).origin === new URL(derived).origin) {
-        return parsed;
-      }
-      appWarn("[auth-telegram-start]", "env_redirect_origin_mismatch_using_request", {
-        envOrigin: new URL(parsed).origin,
-        requestOrigin: new URL(derived).origin,
+  if (!explicitRaw) return null;
+  const normalized = normalizeRedirectEnvValue(explicitRaw);
+  const parsed = normalized ? tryParseClientRedirectUri(normalized) : null;
+  if (!parsed) {
+    appWarn("[auth-telegram-start]", "invalid_env", { key: "TELEGRAM_OIDC_REDIRECT_URI" });
+    return null;
+  }
+  return parsed;
+}
+
+function hostNeedsPrimaryOidcRedirect(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "hsbexpo.vercel.app" ||
+    hostname.endsWith(".vercel.app")
+  );
+}
+
+function getRedirectUri(request: AnyRequest): string {
+  const configured = getConfiguredRedirectUri();
+  if (configured) {
+    const derived = `${getRequestOrigin(request)}${CALLBACK_PATH}`;
+    if (configured !== derived) {
+      appLogEvent("[auth-telegram-start]", {
+        event: "using_configured_redirect_uri",
+        configuredHost: new URL(configured).host,
+        requestHost: (() => {
+          try {
+            return new URL(derived).host;
+          } catch {
+            return null;
+          }
+        })(),
       });
-    } else {
-      appWarn("[auth-telegram-start]", "invalid_env", { key: "TELEGRAM_OIDC_REDIRECT_URI" });
     }
+    return configured;
+  }
+  const derived = `${getRequestOrigin(request)}${CALLBACK_PATH}`;
+  try {
+    const host = new URL(derived).hostname;
+    if (hostNeedsPrimaryOidcRedirect(host)) {
+      appLogEvent("[auth-telegram-start]", {
+        event: "fallback_primary_oidc_redirect",
+        requestHost: host,
+        redirectHost: new URL(PRIMARY_OIDC_REDIRECT_URI).host,
+      });
+      return PRIMARY_OIDC_REDIRECT_URI;
+    }
+  } catch {
+    // keep derived
   }
   return derived;
 }
-
-const CALLBACK_PATH = "/api/auth/telegram/callback";
 
 /** Absolute callback URL from client (must match authorize + token exchange). */
 function tryParseClientRedirectUri(raw: unknown): string | null {
@@ -150,8 +195,23 @@ function tryParsePageOrigin(raw: unknown): string | null {
 }
 
 function resolveRedirectUri(request: AnyRequest, bodyRedirectUri: unknown, pageOrigin: unknown): string {
+  const configured = getConfiguredRedirectUri();
   const fromClient = tryParseClientRedirectUri(bodyRedirectUri);
   if (fromClient) {
+    // Always canonicalize to the BotFather-registered URI when configured.
+    if (configured) {
+      if (fromClient === configured || new URL(fromClient).origin === new URL(configured).origin) {
+        return configured;
+      }
+      appWarn("[auth-telegram-start]", "client_redirect_ignored_not_configured", {
+        clientHost: new URL(fromClient).host,
+        configuredHost: new URL(configured).host,
+      });
+      return configured;
+    }
+    if (hostNeedsPrimaryOidcRedirect(new URL(fromClient).hostname)) {
+      return PRIMARY_OIDC_REDIRECT_URI;
+    }
     const clientOrigin = new URL(fromClient).origin;
     const serverOrigin = getRequestOrigin(request);
     if (clientOrigin === serverOrigin) {
