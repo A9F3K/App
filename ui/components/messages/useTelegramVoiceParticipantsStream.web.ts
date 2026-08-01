@@ -74,7 +74,15 @@ function parseParticipantsPayload(raw: string): VoiceParticipantsStreamSnapshot 
                   : null,
               is_speaking: isSpeaking,
               is_muted: Boolean(item.is_muted),
+              can_unmute_self:
+                item.can_unmute_self == null ? true : Boolean(item.can_unmute_self),
               is_self: Boolean(item.is_self),
+              order: typeof item.order === "string" ? item.order : "",
+              volume_percent: (() => {
+                const n = Number(item.volume_percent);
+                if (!Number.isFinite(n)) return undefined;
+                return Math.min(200, Math.max(0, Math.round(n)));
+              })(),
               video_info: parseStreamVideoInfo(item.video_info),
               screen_sharing_video_info: parseStreamVideoInfo(item.screen_sharing_video_info),
             };

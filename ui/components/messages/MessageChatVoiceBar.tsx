@@ -178,6 +178,8 @@ export function MessageChatVoiceBar({
   const popoverOpenRef = useRef(false);
   popoverOpenRef.current = Boolean(popoverOpen);
   const participantsRef = useRef(participants);
+  /** From gateway — muted listeners omitted; refuse remuting open remotes. */
+  const hasHiddenListenersRef = useRef(false);
   /** Last SFU video requests with real source_groups — soft roster must not wipe them. */
   const lastGoodRemoteVideoRequestsRef = useRef<
     Array<{
@@ -448,6 +450,7 @@ export function MessageChatVoiceBar({
     setParticipants([]);
     setParticipantMediaPrefs({});
     lastNonZeroVolumeRef.current = {};
+    hasHiddenListenersRef.current = false;
     if (volumeApiTimerRef.current != null) {
       window.clearTimeout(volumeApiTimerRef.current);
       volumeApiTimerRef.current = null;
@@ -796,6 +799,7 @@ export function MessageChatVoiceBar({
           // Never trust server speaking for the local row — join pulses green mic.
           is_speaking: Boolean(micActiveRef.current && localSpeakingRef.current),
           is_muted: !micActiveRef.current,
+          can_unmute_self: true,
           // Local getDisplayMedia owns the self screencast icon — strip TDLib sticky.
           video_info: null,
           screen_sharing_video_info: null,
@@ -817,6 +821,7 @@ export function MessageChatVoiceBar({
             emoji_status_custom_emoji_id: prevSelf?.emoji_status_custom_emoji_id ?? null,
             is_speaking: false,
             is_muted: !micActiveRef.current,
+            can_unmute_self: true,
             is_self: true,
           },
           ...next,
@@ -861,12 +866,21 @@ export function MessageChatVoiceBar({
         next.length > 0 &&
         hint > 0 &&
         hint <= next.length;
+      // Orderless rows are recent_speakers stubs (mute unknown). Treat them as a
+      // soft merge even when listed === hint — otherwise silent stubs remute the
+      // whole roster when they replace a fuller force-reload paint.
+      const incomingLooksOrderless =
+        next.length > 0 &&
+        next.every((row) => !String(row.order ?? "").trim());
       const looksLikeRecentSpeakersOnly =
         !growsRoster &&
         !authoritativeShrink &&
         next.length > 0 &&
-        (hint === 0 || hint > next.length) &&
+        (incomingLooksOrderless ||
+          hint === 0 ||
+          hint > next.length) &&
         (options?.preferMerge ||
+          incomingLooksOrderless ||
           (next.length <= 3 && prev.length > next.length) ||
           (hint > next.length && prev.length >= next.length && prev.length > 0));
       if (looksLikeRecentSpeakersOnly) {
@@ -909,9 +923,18 @@ export function MessageChatVoiceBar({
           return {
             ...row,
             is_muted: nextMuted,
+            can_unmute_self:
+              inc.can_unmute_self == null
+                ? (row.can_unmute_self ?? true)
+                : Boolean(inc.can_unmute_self),
             title: nextTitle,
             description: nextDescription,
             emoji_status_custom_emoji_id: nextEmoji,
+            order: String(inc.order ?? "").trim() || row.order,
+            volume_percent:
+              typeof inc.volume_percent === "number"
+                ? inc.volume_percent
+                : row.volume_percent,
             video_info: nextVideo,
             screen_sharing_video_info: nextScreen,
           };
@@ -953,6 +976,8 @@ export function MessageChatVoiceBar({
             prevMatch.emoji_status_custom_emoji_id === emoji &&
             Boolean(prevMatch.is_muted) === Boolean(row.is_muted) &&
             Boolean(prevMatch.is_self) === Boolean(row.is_self) &&
+            (prevMatch.order ?? "") === (row.order ?? "") &&
+            (prevMatch.volume_percent ?? 100) === (row.volume_percent ?? 100) &&
             (prevMatch.video_info?.endpoint_id ?? "") === (video?.endpoint_id ?? "") &&
             (prevMatch.screen_sharing_video_info?.endpoint_id ?? "") ===
               (screen?.endpoint_id ?? "") &&
@@ -965,19 +990,38 @@ export function MessageChatVoiceBar({
           }
           // Orderless recent_speakers stubs must not remute an open mic. Real
           // mute updates always carry a participant order string from TDLib.
+          // With has_hidden_listeners, muted faces aren't in the visible list —
+          // ordered remutes of already-open remotes are almost always stale
+          // (Сева/замбоеды painted red after a good unmuted first paint).
           const nextMuted =
             Boolean(row.is_speaking) || !row.is_muted
               ? false
-              : !String(row.order ?? "").trim() && prevMatch && !prevMatch.is_muted
+              : prevMatch &&
+                  !prevMatch.is_muted &&
+                  !row.is_self &&
+                  hasHiddenListenersRef.current
                 ? false
-                : Boolean(row.is_muted);
+                : !String(row.order ?? "").trim() &&
+                    prevMatch &&
+                    !prevMatch.is_muted
+                  ? false
+                  : Boolean(row.is_muted);
           return {
             ...row,
             is_speaking: false,
             is_muted: nextMuted,
+            can_unmute_self:
+              row.can_unmute_self == null
+                ? (prevMatch?.can_unmute_self ?? true)
+                : Boolean(row.can_unmute_self),
             title,
             description,
             emoji_status_custom_emoji_id: emoji,
+            order: String(row.order ?? "").trim() || prevMatch?.order,
+            volume_percent:
+              typeof row.volume_percent === "number"
+                ? row.volume_percent
+                : prevMatch?.volume_percent,
             video_info: video,
             screen_sharing_video_info: screen,
           };
@@ -1047,6 +1091,8 @@ export function MessageChatVoiceBar({
           count: nextCount,
           totalHint,
           prevListed: prev.length,
+          mutedCount: next.filter((row) => row.is_muted).length,
+          unmutedCount: next.filter((row) => !row.is_muted).length,
           popoverOpen: popoverOpenRef.current,
           titles: next.slice(0, 6).map((row) => row.title || "?"),
           screens: next
@@ -1453,6 +1499,9 @@ export function MessageChatVoiceBar({
         // Always paint rows when TDLib returned any participants — countHint of 0
         // used to leave the strip empty despite a real self/other roster.
         if (result.participants.length > 0 || live || voiceJoinedRef.current) {
+          if (result.has_hidden_listeners) {
+            hasHiddenListenersRef.current = true;
+          }
           applyRosterRows(result.participants, result.participant_count, {
             preferMerge: result.participant_count > result.participants.length,
           });
@@ -1675,6 +1724,7 @@ export function MessageChatVoiceBar({
           emoji_status_custom_emoji_id: null,
           is_speaking: Boolean(micActiveRef.current && localSpeakingRef.current),
           is_muted: !micActiveRef.current,
+          can_unmute_self: true,
           is_self: true,
         },
         ...prev,
@@ -2196,6 +2246,9 @@ export function MessageChatVoiceBar({
         return { ok: false as const, error: "chat_switched" };
       }
       if (options?.cancelled?.() || !result.ok) return result;
+      if (result.has_hidden_listeners) {
+        hasHiddenListenersRef.current = true;
+      }
       applyRosterRowsRef.current(result.participants, result.participant_count);
       if (result.ok) {
         syncVoicePresence(
@@ -2237,6 +2290,7 @@ export function MessageChatVoiceBar({
         return true;
       }
       if (meta?.hasHiddenListeners && listed >= 1) {
+        hasHiddenListenersRef.current = true;
         postJoinRosterLoadedRef.current = true;
         return true;
       }

@@ -14,9 +14,19 @@ export type TelegramChatVoiceParticipant = {
   emoji_status_custom_emoji_id: string | null;
   is_speaking: boolean;
   is_muted: boolean;
+  /**
+   * TDLib can_unmute_self. Muted + true ⇒ they turned their mic off (secondary).
+   * Muted + false ⇒ admin-muted (red). Default true when omitted.
+   */
+  can_unmute_self?: boolean;
   is_self: boolean;
   /** Local listen volume 0–200% (100 = API level). */
   volume_percent?: number;
+  /**
+   * TDLib participant order. Empty/missing ⇒ recent_speakers stub (mute unknown).
+   * Real mute updates always carry a non-empty order.
+   */
+  order?: string;
   video_info?: TelegramChatVoiceVideoInfo | null;
   screen_sharing_video_info?: TelegramChatVoiceVideoInfo | null;
 };
@@ -145,7 +155,10 @@ export async function fetchTelegramChatVoiceParticipants(
                 : null,
             is_speaking: Boolean(item.is_speaking),
             is_muted: Boolean(item.is_muted),
+            can_unmute_self:
+              item.can_unmute_self == null ? true : Boolean(item.can_unmute_self),
             is_self: Boolean(item.is_self),
+            order: typeof item.order === "string" ? item.order : "",
             volume_percent: (() => {
               const n = Number(item.volume_percent);
               if (!Number.isFinite(n)) return 100;

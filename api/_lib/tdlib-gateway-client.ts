@@ -1293,6 +1293,7 @@ export async function gatewayFetchChatVoiceParticipants(
     emoji_status_custom_emoji_id: string | null;
     is_speaking: boolean;
     is_muted: boolean;
+    can_unmute_self: boolean;
     is_self: boolean;
     video_info: {
       endpoint_id: string;
@@ -1333,7 +1334,10 @@ export async function gatewayFetchChatVoiceParticipants(
         emoji_status_custom_emoji_id?: unknown;
         is_speaking?: unknown;
         is_muted?: unknown;
+        can_unmute_self?: unknown;
         is_self?: unknown;
+        order?: unknown;
+        volume_percent?: unknown;
         video_info?: unknown;
         screen_sharing_video_info?: unknown;
       }>).map((row) => {
@@ -1345,6 +1349,7 @@ export async function gatewayFetchChatVoiceParticipants(
             ? row.emoji_status_custom_emoji_id.trim()
             : null;
         const isSpeaking = Boolean(row.is_speaking);
+        const volumeRaw = Number(row.volume_percent);
         return {
           user_id: Number.isFinite(userId) && userId > 0 ? Math.trunc(userId) : null,
           chat_id:
@@ -1356,7 +1361,13 @@ export async function gatewayFetchChatVoiceParticipants(
           emoji_status_custom_emoji_id: emojiStatus,
           is_speaking: isSpeaking,
           is_muted: Boolean(row.is_muted),
+          can_unmute_self:
+            row.can_unmute_self == null ? true : Boolean(row.can_unmute_self),
           is_self: Boolean(row.is_self),
+          order: typeof row.order === "string" ? row.order : "",
+          volume_percent: Number.isFinite(volumeRaw)
+            ? Math.min(200, Math.max(0, Math.round(volumeRaw)))
+            : undefined,
           // Must forward camera / screencast endpoints — dropping them left the
           // voice dialog unable to renegotiate for remote presentation video.
           video_info: parseGatewayVoiceVideoInfo(row.video_info),

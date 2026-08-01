@@ -386,7 +386,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   liteName?: boolean;
   /** Local getDisplayMedia session — authoritative for self row icon. */
   localScreenSharing?: boolean;
-  /** Volume 0% / local mute — show mic as off even if TDLib says unmuted. */
+  /** Volume 0% / muted for you — crossed red (same as call mute). */
   voiceLocallyOff?: boolean;
   /** Local hide of their screencast — red crossed share icon. */
   screenLocallyOff?: boolean;
@@ -407,8 +407,15 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
     "Participant";
   const description = participant.description.trim();
   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
-  const speaking = isSpeaking && !voiceLocallyOff;
-  const micMuted = Boolean(participant.is_muted) || Boolean(voiceLocallyOff);
+  // Admin mute → red. Local volume 0% (muted for you) → red. User turned their
+  // own mic off (can_unmute_self) → secondary. Open mic → primary.
+  const micAdminMuted =
+    Boolean(participant.is_muted) && participant.can_unmute_self === false;
+  const micLocallyMuted = Boolean(voiceLocallyOff);
+  const micUserOff = Boolean(participant.is_muted) && !micAdminMuted;
+  const micOff = micAdminMuted || micLocallyMuted || micUserOff;
+  const speaking = isSpeaking && !micOff;
+  const micChromeRed = micAdminMuted || micLocallyMuted;
   const openParticipantProfile = () => {
     if (participant.is_self) return;
     const userId = participant.user_id;
@@ -467,7 +474,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
       accessibilityRole={participant.is_self ? "button" : undefined}
       accessibilityLabel={
         participant.is_self
-          ? micMuted
+          ? micOff
             ? "Unmute microphone"
             : "Mute microphone"
           : undefined
@@ -608,7 +615,15 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
         <View
           accessibilityRole="image"
           accessibilityLabel={
-            micMuted ? "Microphone muted" : speaking ? "Speaking" : "Microphone"
+            micLocallyMuted
+              ? "Microphone muted for you"
+              : micAdminMuted
+                ? "Microphone muted"
+                : micUserOff
+                  ? "Microphone turned off"
+                  : speaking
+                    ? "Speaking"
+                    : "Microphone"
           }
           style={{
             width: 28,
@@ -618,14 +633,16 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           }}
         >
           <VoiceParticipantStateMicIcon
-            speaking={speaking && !micMuted}
-            muted={micMuted}
+            speaking={speaking && !micOff}
+            muted={micOff}
             color={
-              micMuted
+              micChromeRed
                 ? VOICE_MUTED_STATUS_COLOR
-                : speaking
-                  ? VOICE_SPEAKING_MIC_COLOR
-                  : colors.primary
+                : micUserOff
+                  ? colors.secondary
+                  : speaking
+                    ? VOICE_SPEAKING_MIC_COLOR
+                    : colors.primary
             }
             size={20}
           />

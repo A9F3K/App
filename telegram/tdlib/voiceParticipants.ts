@@ -24,6 +24,11 @@ export type VoiceParticipantRow = {
   is_speaking: boolean;
   /** True when muted for all users (`is_muted_for_all_users`). */
   is_muted: boolean;
+  /**
+   * TDLib `can_unmute_self`. When muted + true, they turned their own mic off
+   * (secondary chrome). When muted + false, admin-muted (red chrome).
+   */
+  can_unmute_self: boolean;
   is_self: boolean;
   /** Local listen volume 0–200% (TDLib volume_level / 100; ≤1 → 0%). */
   volume_percent?: number;
@@ -247,6 +252,12 @@ type GroupCallParticipantUpdate = {
   participant_id?: { _?: string; user_id?: number; chat_id?: number };
   is_speaking?: boolean;
   is_muted_for_all_users?: boolean;
+  /** Some tdl builds expose camelCase. */
+  isMutedForAllUsers?: boolean;
+  is_hand_raised?: boolean;
+  isHandRaised?: boolean;
+  can_unmute_self?: boolean;
+  canUnmuteSelf?: boolean;
   /** TDLib 1–20000 (10000 = 100%). */
   volume_level?: number;
   order?: string;
@@ -254,11 +265,57 @@ type GroupCallParticipantUpdate = {
   screen_sharing_video_info?: TdParticipantVideoInfo | null;
 };
 
+/** True/false when TDLib sent a mute flag; null when omitted (do not invent). */
+function readMutedForAllUsers(
+  participant: GroupCallParticipantUpdate,
+): boolean | null {
+  const raw =
+    participant.is_muted_for_all_users ?? participant.isMutedForAllUsers;
+  if (raw == null) return null;
+  return Boolean(raw);
+}
+
+function readHandRaised(participant: GroupCallParticipantUpdate): boolean {
+  return Boolean(participant.is_hand_raised ?? participant.isHandRaised);
+}
+
+/** Null when omitted — keep prior; default true for self-mute chrome when unknown. */
+function readCanUnmuteSelf(
+  participant: GroupCallParticipantUpdate,
+): boolean | null {
+  const raw = participant.can_unmute_self ?? participant.canUnmuteSelf;
+  if (raw == null) return null;
+  return Boolean(raw);
+}
+
+/**
+ * Chrome mute for the painted roster. With has_hidden_listeners, TDLib omits
+ * muted listeners from the participant list — only raised-hand muted faces stay
+ * visible. A muted flag on a visible non-hand remote is almost always stale and
+ * painted open-mic people as permanently red.
+ */
+function resolvePaintedMuted(input: {
+  muted: boolean;
+  isSpeaking: boolean;
+  isHandRaised: boolean;
+  hasHiddenListeners: boolean;
+  isPinnedSelf: boolean;
+}): boolean {
+  if (input.isSpeaking) return false;
+  if (!input.muted) return false;
+  if (input.isPinnedSelf) return true;
+  if (input.hasHiddenListeners && !input.isHandRaised) return false;
+  return true;
+}
+
 type CollectedParticipant = {
   userId: number | null;
   chatId: number | null;
   isSpeaking: boolean;
   isMuted: boolean;
+  isHandRaised?: boolean;
+  /** True when they can unmute themselves (self-off vs admin mute). Default true. */
+  canUnmuteSelf?: boolean;
   /** TDLib volume_level 1–20000; default 10000. */
   volumeLevel: number;
   /** TDLib participant order (lexicographic); empty means left. */
@@ -410,6 +467,8 @@ type CallParticipantsCache = {
   revision: number;
   /** Last known TDLib participant_count hint for this call. */
   participantCountHint: number;
+  /** From getGroupCall / updateGroupCall — muted listeners omitted from the list. */
+  hasHiddenListeners?: boolean;
   /**
    * Latest recent_speakers overlay from getGroupCall. Kept separate from
    * `members` (never inserted as roster ghosts) so the SSE snapshot can apply
@@ -513,11 +572,24 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       const prev = cached.members.get(key);
       if (prev) {
         if (prev.isSpeaking) speakingBecameFalse = true;
+        const isHandRaised = readHandRaised(participant);
+        const mutedRaw =
+          readMutedForAllUsers(participant) ?? prev.isMuted;
+        const canUnmuteSelf =
+          readCanUnmuteSelf(participant) ?? prev.canUnmuteSelf ?? true;
         cached.members.set(key, {
           ...prev,
           isSpeaking: false,
           lastSpokeAt: undefined,
-          isMuted: participant.is_muted_for_all_users ?? prev.isMuted,
+          isHandRaised,
+          canUnmuteSelf,
+          isMuted: resolvePaintedMuted({
+            muted: mutedRaw,
+            isSpeaking: false,
+            isHandRaised,
+            hasHiddenListeners: Boolean(cached.hasHiddenListeners),
+            isPinnedSelf: true,
+          }),
           volumeLevel:
             participant.volume_level != null
               ? normalizeVolumeLevel(participant.volume_level, prev.volumeLevel)
@@ -561,9 +633,11 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       (Boolean(prev?.videoInfo?.endpoint_id) && !nextVideo?.endpoint_id) ||
       (Boolean(prev?.screenInfo?.endpoint_id) && !nextScreen?.endpoint_id);
     const mutedFromTdlib =
-      participant.is_muted_for_all_users != null
-        ? Boolean(participant.is_muted_for_all_users)
-        : (prev?.isMuted ?? false);
+      readMutedForAllUsers(participant) ?? (prev?.isMuted ?? false);
+    const isHandRaised = readHandRaised(participant);
+    const canUnmuteSelf =
+      readCanUnmuteSelf(participant) ?? prev?.canUnmuteSelf ?? true;
+    const isPinnedSelf = userId != null && pinnedSelfUserIds.has(userId);
     const volumeLevel =
       participant.volume_level != null
         ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)
@@ -573,9 +647,17 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       chatId,
       isSpeaking,
       lastSpokeAt,
-      // Speaking implies an open mic for chrome. Mute still wins when TDLib
-      // reports muted and not speaking.
-      isMuted: isSpeaking ? false : mutedFromTdlib,
+      isHandRaised,
+      canUnmuteSelf,
+      // Speaking / has_hidden_listeners gate — never leave open-mic remotes red
+      // from a stale is_muted_for_all_users on the visible list.
+      isMuted: resolvePaintedMuted({
+        muted: mutedFromTdlib,
+        isSpeaking,
+        isHandRaised,
+        hasHiddenListeners: Boolean(cached.hasHiddenListeners),
+        isPinnedSelf,
+      }),
       volumeLevel,
       order,
       videoInfo: nextVideo,
@@ -622,6 +704,9 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
   });
   if (groupCall.unique_id != null) {
     cached.uniqueId = String(groupCall.unique_id);
+  }
+  if (groupCall.has_hidden_listeners != null) {
+    cached.hasHiddenListeners = Boolean(groupCall.has_hidden_listeners);
   }
   const speakers = speakersFromGroupCall(groupCall, cached.speakers);
   const countHint = Number(groupCall.participant_count);
@@ -931,10 +1016,11 @@ function speakersFromGroupCall(
       // Preserve hold across flaps — rebuilding with lastSpokeAt:undefined made
       // every SSE snapshot report speakingCount=0 a tick after someone spoke.
       lastSpokeAt,
-      // recent_speakers omit mute. Never invent "muted" from !speaking — that
-      // painted red crossed mics on everyone who had an open mic but was silent.
-      // Speaking still opens the mic; otherwise keep prior mute or assume unmuted.
-      isMuted: isSpeaking ? false : (prev?.isMuted ?? false),
+      // recent_speakers omit mute entirely. Never invent muted from silence, and
+      // never sticky-keep a prior stub mute — that left open-mic faces permanently
+      // red after a bad first paint. Real mute only comes from ordered members.
+      isMuted: false,
+      canUnmuteSelf: prev?.canUnmuteSelf ?? true,
       volumeLevel: prev?.volumeLevel ?? 10000,
       order: "",
     });
@@ -963,9 +1049,10 @@ function applySpeakingOverlay(
       lastSpokeAt: liveSpeaking
         ? now
         : (row.lastSpokeAt ?? speaker?.lastSpokeAt),
-      // Open mic chrome while speaking — never invent muted=true from a silent
-      // speaker stub (that left unmuted remotes with a permanent red crossed mic).
-      isMuted: liveSpeaking ? false : row.isMuted,
+      // Open mic chrome while speaking OR listed in recent_speakers — mute flags
+      // on silent recent speakers were stale under has_hidden_listeners and painted
+      // open-mic remotes permanently red after the first good stub paint.
+      isMuted: liveSpeaking || Boolean(speaker) ? false : row.isMuted,
       order: row.order || speaker?.order || "",
     });
   }
@@ -1049,6 +1136,7 @@ function mergeParticipantMaps(
                 : !row.order && !prev.isMuted
                   ? false
                   : row.isMuted,
+            canUnmuteSelf: row.canUnmuteSelf ?? prev.canUnmuteSelf ?? true,
             volumeLevel: row.volumeLevel ?? prev.volumeLevel ?? 10000,
             order: row.order || prev.order,
             // Trust TDLib nulls — do not sticky-keep cleared camera/screen.
@@ -1350,10 +1438,25 @@ async function loadJoinedParticipants(
       if (userId != null && pinnedSelfUserIds.has(userId)) {
         const prev = map.get(key);
         if (prev) {
+          const isHandRaised = readHandRaised(participant);
+          const mutedRaw =
+            readMutedForAllUsers(participant) ?? prev.isMuted;
+          const canUnmuteSelf =
+            readCanUnmuteSelf(participant) ?? prev.canUnmuteSelf ?? true;
           map.set(key, {
             ...prev,
             isSpeaking: false,
-            isMuted: participant.is_muted_for_all_users ?? prev.isMuted,
+            isHandRaised,
+            canUnmuteSelf,
+            isMuted: resolvePaintedMuted({
+              muted: mutedRaw,
+              isSpeaking: false,
+              isHandRaised,
+              hasHiddenListeners: Boolean(
+                callMembersCache.get(callId)?.hasHiddenListeners,
+              ),
+              isPinnedSelf: true,
+            }),
             volumeLevel:
               participant.volume_level != null
                 ? normalizeVolumeLevel(participant.volume_level, prev.volumeLevel)
@@ -1370,12 +1473,31 @@ async function loadJoinedParticipants(
     const isSpeaking = Boolean(participant.is_speaking);
     const videoInfo = normalizeVideoInfo(participant.video_info);
     const screenInfo = normalizeVideoInfo(participant.screen_sharing_video_info);
+    const mutedFromTdlib = readMutedForAllUsers(participant);
+    const isHandRaised = readHandRaised(participant);
+    const canUnmuteSelf =
+      readCanUnmuteSelf(participant) ?? prev?.canUnmuteSelf ?? true;
+    const isPinnedSelf = userId != null && pinnedSelfUserIds.has(userId);
+    const mutedRaw =
+      mutedFromTdlib ?? prev?.isMuted ?? false;
     map.set(key, {
       userId,
       chatId,
       isSpeaking,
       lastSpokeAt: isSpeaking ? Date.now() : prev?.lastSpokeAt,
-      isMuted: Boolean(participant.is_muted_for_all_users),
+      isHandRaised,
+      canUnmuteSelf,
+      // Missing mute on a load chunk must not invent muted=true; has_hidden_listeners
+      // also clears stale muted flags on visible non-hand remotes.
+      isMuted: resolvePaintedMuted({
+        muted: mutedRaw,
+        isSpeaking,
+        isHandRaised,
+        hasHiddenListeners: Boolean(
+          callMembersCache.get(callId)?.hasHiddenListeners,
+        ),
+        isPinnedSelf,
+      }),
       volumeLevel:
         participant.volume_level != null
           ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)
@@ -1543,6 +1665,12 @@ export async function fetchChatVoiceParticipants(
 
   const participantCountHint = Number(groupCall.participant_count);
   const hasHiddenListeners = Boolean(groupCall.has_hidden_listeners);
+  {
+    const cached = ensureCallCache(callId, {
+      uniqueId: groupCall.unique_id != null ? String(groupCall.unique_id) : undefined,
+    });
+    cached.hasHiddenListeners = hasHiddenListeners;
+  }
 
   // Write the fresh recent_speakers overlay into the shared cache. The SSE
   // snapshot reads only the cache — without this, speaking learned via polling
@@ -1757,6 +1885,7 @@ export async function fetchChatVoiceParticipants(
         chatId: null,
         isSpeaking: false,
         isMuted: true,
+        canUnmuteSelf: true,
         volumeLevel: 10000,
         order: "\uffff",
       });
@@ -1768,6 +1897,7 @@ export async function fetchChatVoiceParticipants(
         chatId: null,
         isSpeaking: collected.get(selfKey)?.isSpeaking ?? false,
         isMuted: collected.get(selfKey)?.isMuted ?? true,
+        canUnmuteSelf: collected.get(selfKey)?.canUnmuteSelf ?? true,
         volumeLevel: collected.get(selfKey)?.volumeLevel ?? 10000,
         order: collected.get(selfKey)?.order || "\uffff",
       };
@@ -1857,6 +1987,13 @@ export async function fetchChatVoiceParticipants(
   const participants: VoiceParticipantRow[] = displayRows.map((row) => {
     const profile = peekParticipantProfile(row.userId, row.chatId);
     const isSelf = selfUserId != null && row.userId === selfUserId;
+    const paintedMuted = resolvePaintedMuted({
+      muted: row.isMuted,
+      isSpeaking: effectiveSpeaking(row, Date.now()),
+      isHandRaised: Boolean(row.isHandRaised),
+      hasHiddenListeners,
+      isPinnedSelf: isSelf,
+    });
     return {
       user_id: row.userId,
       chat_id: row.chatId,
@@ -1864,7 +2001,8 @@ export async function fetchChatVoiceParticipants(
       description: profile.description,
       emoji_status_custom_emoji_id: profile.emoji_status_custom_emoji_id,
       is_speaking: effectiveSpeaking(row, Date.now()),
-      is_muted: row.isMuted,
+      is_muted: paintedMuted,
+      can_unmute_self: row.canUnmuteSelf !== false,
       volume_percent: volumeLevelToPercent(row.volumeLevel ?? 10000),
       is_self: isSelf,
       order: row.order || "",
@@ -1891,6 +2029,7 @@ export async function fetchChatVoiceParticipants(
     stickyHint,
     listedCount,
   );
+  const mutedRows = participants.filter((p) => p.is_muted);
   logGateway("voice_participants_resolved", {
     chatId,
     groupCallId: callId,
@@ -1898,6 +2037,9 @@ export async function fetchChatVoiceParticipants(
     participantCount: resolvedCount,
     tdlibCount: liveTdlibCount > 0 ? liveTdlibCount : null,
     hint: stickyHint,
+    mutedCount: mutedRows.length,
+    unmutedCount: participants.filter((p) => !p.is_muted).length,
+    mutedTitles: mutedRows.map((p) => p.title || "?").slice(0, 8),
     isJoined,
     hasHiddenListeners,
     usedCache: callMembersCache.has(callId),
@@ -2014,14 +2156,22 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
       const key = participantKey(row.userId, row.chatId);
       const profile = key ? profileCache.get(key) : undefined;
       const isSelf = selfUserId != null && row.userId === selfUserId;
+      const speaking = effectiveSpeaking(row, nowMs);
       return {
         user_id: row.userId,
         chat_id: row.chatId,
         title: profile?.title ?? "",
         description: profile?.description ?? "",
         emoji_status_custom_emoji_id: profile?.emoji_status_custom_emoji_id ?? null,
-        is_speaking: effectiveSpeaking(row, nowMs),
-        is_muted: row.isMuted,
+        is_speaking: speaking,
+        is_muted: resolvePaintedMuted({
+          muted: row.isMuted,
+          isSpeaking: speaking,
+          isHandRaised: Boolean(row.isHandRaised),
+          hasHiddenListeners: Boolean(cached.hasHiddenListeners),
+          isPinnedSelf: isSelf,
+        }),
+        can_unmute_self: row.canUnmuteSelf !== false,
         volume_percent: volumeLevelToPercent(row.volumeLevel ?? 10000),
         is_self: isSelf,
         order: row.order || "",
