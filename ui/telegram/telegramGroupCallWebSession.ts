@@ -258,8 +258,8 @@ export class TelegramGroupCallWebSession {
   private screenTrack: MediaStreamTrack | null = null;
   private cameraEnabled = false;
   private screenSharing = false;
-  /** In-dialog stage size used to adapt screen-share encode quality. */
-  private screenShareDisplaySize = { width: 640, height: 360 };
+  /** In-dialog stage size (UI only) — encode quality stays full-resolution. */
+  private screenShareDisplaySize = { width: 1920, height: 1080 };
   private localCameraStream: MediaStream | null = null;
   private localScreenStream: MediaStream | null = null;
   private localMediaListeners = new Set<
@@ -1858,12 +1858,7 @@ export class TelegramGroupCallWebSession {
 
     const displayStream = await navigator.mediaDevices.getDisplayMedia({
       audio: false,
-      video: {
-        // Cap capture intent at 360p — browsers may ignore; encoding still enforces.
-        width: { max: 640, ideal: 640 },
-        height: { max: 360, ideal: 360 },
-        frameRate: { max: 15, ideal: 10 },
-      },
+      video: true,
     });
     const track = displayStream.getVideoTracks()[0];
     if (!track) {
@@ -1871,7 +1866,6 @@ export class TelegramGroupCallWebSession {
       throw new Error("screen_share_unavailable");
     }
     track.enabled = true;
-    await this.constrainScreenShareTrack(track);
 
     try {
       this.presentationJoining = this.joinPresentationConnection(track);
@@ -1901,7 +1895,7 @@ export class TelegramGroupCallWebSession {
     });
   }
 
-  /** Tune encode target from the in-dialog screenshare stage size. */
+  /** Keep stage size for UI metrics — do not downscale encode to the docked preview. */
   setScreenShareDisplaySize(width: number, height: number): void {
     const nextW = Math.max(1, Math.round(width));
     const nextH = Math.max(1, Math.round(height));
@@ -1912,24 +1906,6 @@ export class TelegramGroupCallWebSession {
       return;
     }
     this.screenShareDisplaySize = { width: nextW, height: nextH };
-    if (this.screenSharing && this.screenTrack) {
-      void this.constrainScreenShareTrack(this.screenTrack);
-      void this.applyScreenShareEncoding();
-    }
-  }
-
-  private async constrainScreenShareTrack(track: MediaStreamTrack): Promise<void> {
-    const { width: targetW, height: targetH, maxFramerate } =
-      this.computeScreenShareTargets();
-    try {
-      await track.applyConstraints({
-        width: { max: targetW, ideal: targetW },
-        height: { max: targetH, ideal: targetH },
-        frameRate: { max: maxFramerate, ideal: Math.min(10, maxFramerate) },
-      });
-    } catch {
-      // Screen tracks often reject resolution constraints — encoding still caps.
-    }
   }
 
   private computeScreenShareTargets(): {
@@ -1939,22 +1915,22 @@ export class TelegramGroupCallWebSession {
     maxFramerate: number;
     scaleResolutionDownBy: number;
   } {
-    const dpr =
-      typeof window !== "undefined"
-        ? Math.min(window.devicePixelRatio || 1, 1.5)
-        : 1;
-    const displayW = this.screenShareDisplaySize.width;
-    const displayH = this.screenShareDisplaySize.height;
-    // Never exceed 360p; shrink further when the stage is small.
-    const width = Math.min(640, Math.max(160, Math.round(displayW * dpr)));
-    const height = Math.min(360, Math.max(90, Math.round(displayH * dpr)));
-    const areaRatio = (width * height) / (640 * 360);
-    const maxBitrate = Math.round(120_000 + areaRatio * 380_000);
-    const maxFramerate = width < 320 ? 8 : 12;
     const settings = this.screenTrack?.getSettings?.() ?? {};
-    const srcW = typeof settings.width === "number" && settings.width > 0 ? settings.width : 1920;
-    const scaleResolutionDownBy = Math.max(1, srcW / width);
-    return { width, height, maxBitrate, maxFramerate, scaleResolutionDownBy };
+    const width =
+      typeof settings.width === "number" && settings.width > 0
+        ? settings.width
+        : 1920;
+    const height =
+      typeof settings.height === "number" && settings.height > 0
+        ? settings.height
+        : 1080;
+    return {
+      width,
+      height,
+      maxBitrate: 2_500_000,
+      maxFramerate: 30,
+      scaleResolutionDownBy: 1,
+    };
   }
 
   private async applyScreenShareEncoding(): Promise<void> {
