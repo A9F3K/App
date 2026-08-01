@@ -319,6 +319,18 @@ export class TelegramGroupCallWebSession {
     null;
   private playbackCtx: AudioContext | null = null;
   private playbackSource: MediaStreamAudioSourceNode | null = null;
+  /** Per-listener volume gain between remote mix and speakers (0–2 for 0–200%). */
+  private playbackGain: GainNode | null = null;
+  /** Last applied listen gain (linear). */
+  private playbackGainValue = 1;
+  /**
+   * Participant listen volumes (0–200%) keyed like the roster prefs map.
+   * SFU audio is a single mix — we approximate by ducking the master gain from
+   * speaking participants' volumes (telegram-tt uses per-track GainNodes).
+   */
+  private listenVolumes = new Map<string, number>();
+  private listenSpeakingKeys = new Set<string>();
+  private listenParticipantKeys: string[] = [];
   /** Track-id key for the live WebAudio MediaStreamSource — skip no-op rebuilds. */
   private playbackTrackKey = "";
   /** Rate-limit join-placeholder video skip logs (pull/watchdog used to spam). */
@@ -2390,6 +2402,7 @@ export class TelegramGroupCallWebSession {
     }
     audio.muted = false;
     audio.volume = 1;
+    this.applyListenGain();
     try {
       if (audio.paused) await audio.play();
       logPageDisplay("messages_voice_remote_playback_ok", {
@@ -2903,7 +2916,13 @@ export class TelegramGroupCallWebSession {
     } catch {
       // ignore
     }
+    try {
+      this.playbackGain?.disconnect();
+    } catch {
+      // ignore
+    }
     this.playbackSource = null;
+    this.playbackGain = null;
     this.playbackTrackKey = "";
   }
 
@@ -2915,8 +2934,79 @@ export class TelegramGroupCallWebSession {
       .join("|");
   }
 
+  /** UI 0–200% → linear gain 0–2 (100% = 1). */
+  private static percentToLinearGain(percent: number): number {
+    const p = Math.min(200, Math.max(0, Number(percent) || 0));
+    return p / 100;
+  }
+
   /**
-   * Connect remote audio → AudioContext.destination (telegram-tt hearable path).
+   * Approximate per-participant volume on a mixed SFU track:
+   * - sole remote peer → their volume
+   * - someone speaking → max of speaking peers' volumes (0 if all muted)
+   * - everyone locally muted → silence
+   * - otherwise leave mix at unity
+   */
+  private computeListenGain(): number {
+    const keys = this.listenParticipantKeys;
+    if (keys.length === 0) return 1;
+    const volOf = (key: string) => this.listenVolumes.get(key) ?? 100;
+    if (keys.length === 1) {
+      return TelegramGroupCallWebSession.percentToLinearGain(volOf(keys[0]!));
+    }
+    if (keys.every((key) => volOf(key) <= 0)) return 0;
+    const speaking = [...this.listenSpeakingKeys].filter((key) => keys.includes(key));
+    if (speaking.length > 0) {
+      const audible = speaking.map(volOf).filter((v) => v > 0);
+      if (audible.length === 0) return 0;
+      return TelegramGroupCallWebSession.percentToLinearGain(Math.max(...audible));
+    }
+    return 1;
+  }
+
+  private applyListenGain(): void {
+    const next = this.computeListenGain();
+    this.playbackGainValue = next;
+    if (this.playbackGain) {
+      try {
+        this.playbackGain.gain.value = next;
+      } catch {
+        // ignore
+      }
+    }
+    // HTMLAudioElement.volume is capped at 1 — still honor mute / attenuate.
+    if (this.remoteAudio && this.remotePlaybackSink === "html_audio") {
+      this.remoteAudio.volume = Math.min(1, Math.max(0, next));
+      this.remoteAudio.muted = next <= 0;
+    }
+  }
+
+  /**
+   * Apply local listen volumes for the mixed remote audio track.
+   * Keys must match roster prefs keys; speakingKeys drive ducking while peers talk.
+   */
+  setParticipantListenVolumes(input: {
+    volumes: Record<string, number>;
+    speakingKeys?: string[];
+    participantKeys?: string[];
+  }): void {
+    this.listenVolumes = new Map(
+      Object.entries(input.volumes).map(([key, value]) => [
+        key,
+        Math.min(200, Math.max(0, Math.round(Number(value) || 0))),
+      ]),
+    );
+    this.listenSpeakingKeys = new Set(
+      (input.speakingKeys ?? []).filter((key) => typeof key === "string" && key.length > 0),
+    );
+    this.listenParticipantKeys = (input.participantKeys ?? Object.keys(input.volumes)).filter(
+      (key) => typeof key === "string" && key.length > 0,
+    );
+    this.applyListenGain();
+  }
+
+  /**
+   * Connect remote audio → GainNode → AudioContext.destination (telegram-tt path).
    * Pass force=true after track unmute — Chrome can keep a muted-era source silent.
    */
   private rebuildWebAudioPlayback(force = false): boolean {
@@ -2924,7 +3014,8 @@ export class TelegramGroupCallWebSession {
     const stream = this.remoteStream;
     if (!ctx || !stream || stream.getAudioTracks().length === 0) return false;
     const key = this.remoteAudioTrackKey(stream);
-    if (!force && this.playbackSource && this.playbackTrackKey === key) {
+    if (!force && this.playbackSource && this.playbackGain && this.playbackTrackKey === key) {
+      this.applyListenGain();
       return true;
     }
     try {
@@ -2932,8 +3023,12 @@ export class TelegramGroupCallWebSession {
       // Fresh MediaStream snapshot so createMediaStreamSource sees current tracks.
       const snapshot = new MediaStream(stream.getAudioTracks());
       this.playbackSource = ctx.createMediaStreamSource(snapshot);
-      this.playbackSource.connect(ctx.destination);
+      this.playbackGain = ctx.createGain();
+      this.playbackGain.gain.value = this.playbackGainValue;
+      this.playbackSource.connect(this.playbackGain);
+      this.playbackGain.connect(ctx.destination);
       this.playbackTrackKey = key;
+      this.applyListenGain();
       return true;
     } catch (err) {
       appWarn(
@@ -3030,8 +3125,7 @@ export class TelegramGroupCallWebSession {
       if (audio.srcObject !== stream) {
         audio.srcObject = stream;
       }
-      audio.muted = false;
-      audio.volume = 1;
+      this.applyListenGain();
       try {
         if (audio.paused) await audio.play().catch(() => undefined);
       } catch {
@@ -3101,6 +3195,7 @@ export class TelegramGroupCallWebSession {
     audio.muted = false;
     audio.volume = 1;
     this.remotePlaybackSink = "html_audio";
+    this.applyListenGain();
     try {
       if (audio.paused) {
         await audio.play();

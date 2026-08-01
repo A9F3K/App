@@ -1286,6 +1286,168 @@ export async function getUserAvatarImageForUser(
   return resolved;
 }
 
+export async function getUserProfileForUser(
+  telegramUsername: string,
+  chatId: number,
+  peerUserId: number | null,
+): Promise<
+  | { ok: true; profile: Awaited<ReturnType<typeof import("./userProfile.js").fetchTelegramUserProfile>> }
+  | { ok: false; error: string }
+> {
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    if (peerUserId == null || !Number.isFinite(peerUserId) || peerUserId === 0) {
+      return { ok: false, error: "chat_id_or_user_id_required" };
+    }
+  }
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+  const { fetchTelegramUserProfile } = await import("./userProfile.js");
+  const profile = await fetchTelegramUserProfile(
+    record.client,
+    Math.trunc(chatId),
+    peerUserId != null && Number.isFinite(peerUserId) ? Math.trunc(peerUserId) : null,
+  );
+  return { ok: true, profile };
+}
+
+export async function blockUserForUser(
+  telegramUsername: string,
+  userId: number,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+  const { blockTelegramUser } = await import("./userProfile.js");
+  return blockTelegramUser(record.client, userId);
+}
+
+export async function unblockUserForUser(
+  telegramUsername: string,
+  userId: number,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+  const { unblockTelegramUser } = await import("./userProfile.js");
+  return unblockTelegramUser(record.client, userId);
+}
+
+export async function searchChatLinksForUser(
+  telegramUsername: string,
+  chatId: number,
+  options?: { fromMessageId?: number | null; limit?: number },
+): Promise<
+  | { ok: true; links: Awaited<ReturnType<typeof import("./userProfile.js").searchChatLinks>>["links"]; has_more: boolean }
+  | { ok: false; error: string }
+> {
+  const result = await searchChatMediaForUser(telegramUsername, chatId, "links", options);
+  if (!result.ok) return result;
+  return { ok: true, links: result.items, has_more: result.has_more };
+}
+
+export async function searchChatMediaForUser(
+  telegramUsername: string,
+  chatId: number,
+  kind: import("./userProfile.js").ProfileMediaKind,
+  options?: { fromMessageId?: number | null; limit?: number },
+): Promise<
+  | {
+      ok: true;
+      items: Awaited<ReturnType<typeof import("./userProfile.js").searchChatMedia>>["items"];
+      has_more: boolean;
+    }
+  | { ok: false; error: string }
+> {
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return { ok: false, error: "chat_id_required" };
+  }
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+  const { searchChatMedia } = await import("./userProfile.js");
+  const result = await searchChatMedia(record.client, chatId, kind, options);
+  return { ok: true, ...result };
+}
+
+export async function createPrivateCallForSession(
+  telegramUsername: string,
+  userId: number,
+  options?: { isVideo?: boolean },
+): Promise<
+  | { ok: true; call: import("./privateCall.js").PrivateCallSnapshot }
+  | { ok: false; error: string }
+> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+  const { createPrivateCallForUser } = await import("./privateCall.js");
+  return createPrivateCallForUser(record.client, telegramUsername, userId, options);
+}
+
+export async function getPrivateCallForSession(
+  telegramUsername: string,
+  callId?: number | null,
+): Promise<
+  | { ok: true; call: import("./privateCall.js").PrivateCallSnapshot | null }
+  | { ok: false; error: string }
+> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+  const { refreshPrivateCallForUser, getCachedPrivateCall } = await import("./privateCall.js");
+  const call =
+    (await refreshPrivateCallForUser(record.client, telegramUsername, callId)) ??
+    getCachedPrivateCall(telegramUsername);
+  return { ok: true, call };
+}
+
+export async function discardPrivateCallForSession(
+  telegramUsername: string,
+  callId?: number | null,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+  const { discardPrivateCallForUser } = await import("./privateCall.js");
+  return discardPrivateCallForUser(record.client, telegramUsername, callId);
+}
+
+export async function acceptPrivateCallForSession(
+  telegramUsername: string,
+  callId: number,
+): Promise<
+  | { ok: true; call: import("./privateCall.js").PrivateCallSnapshot }
+  | { ok: false; error: string }
+> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+  const { acceptPrivateCallForUser } = await import("./privateCall.js");
+  return acceptPrivateCallForUser(record.client, telegramUsername, callId);
+}
+
+export async function sendPrivateCallSignalingForSession(
+  telegramUsername: string,
+  callId: number,
+  dataBase64: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready" };
+  }
+  const { sendPrivateCallSignalingData } = await import("./privateCall.js");
+  return sendPrivateCallSignalingData(record.client, callId, dataBase64);
+}
+
 export async function getChatHistoryForUser(
   telegramUsername: string,
   chatId: number,
@@ -1822,6 +1984,33 @@ export async function setChatVoiceMicMutedForUser(
   } catch (err) {
     const message = err instanceof Error ? err.message : "mute_failed";
     return { ok: false, error: message };
+  }
+}
+
+export async function setChatVoiceParticipantVolumeForUser(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  participant: { userId?: number | null; chatId?: number | null },
+  volumePercent: number,
+): Promise<{ ok: boolean; error: string | null; volume_percent: number }> {
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, error: "session_not_ready", volume_percent: volumePercent };
+  }
+
+  try {
+    const { setChatVoiceParticipantVolume } = await import("./voiceVolume.js");
+    return await setChatVoiceParticipantVolume(
+      record.client,
+      chatId,
+      groupCallId,
+      participant,
+      volumePercent,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "volume_failed";
+    return { ok: false, error: message, volume_percent: volumePercent };
   }
 }
 

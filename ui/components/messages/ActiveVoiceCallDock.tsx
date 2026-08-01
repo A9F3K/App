@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import type { ThemeColors } from "../../theme";
@@ -13,21 +14,23 @@ import {
 
 type Props = {
   colors: ThemeColors;
+  /** When true, render inline (home chrome). Default: fixed top portal for all layouts. */
+  inline?: boolean;
 };
 
-export function ActiveVoiceCallDock({ colors }: Props) {
+function DockBar({
+  colors,
+  dock,
+}: {
+  colors: ThemeColors;
+  dock: NonNullable<ReturnType<typeof getActiveVoiceDock>>;
+}) {
   const { t } = useAppStrings();
-  const dock = useSyncExternalStore(
-    subscribeActiveVoiceDock,
-    getActiveVoiceDock,
-    () => null,
-  );
-  if (!dock) return null;
-
   return (
     <View
       style={{
         alignSelf: "stretch",
+        width: "100%",
         height: MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX,
         flexDirection: "row",
         alignItems: "center",
@@ -112,5 +115,36 @@ export function ActiveVoiceCallDock({ colors }: Props) {
         </Text>
       </Pressable>
     </View>
+  );
+}
+
+export function ActiveVoiceCallDock({ colors, inline = false }: Props) {
+  const dock = useSyncExternalStore(
+    subscribeActiveVoiceDock,
+    getActiveVoiceDock,
+    () => null,
+  );
+  if (!dock) return null;
+
+  if (inline || Platform.OS !== "web" || typeof document === "undefined") {
+    return <DockBar colors={colors} dock={dock} />;
+  }
+
+  return createPortal(
+    <View
+      pointerEvents="box-none"
+      style={{
+        position: "fixed" as unknown as "absolute",
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: 9500,
+        elevation: 9500,
+      }}
+      {...({ "data-voice-global-dock": "1" } as object)}
+    >
+      <DockBar colors={colors} dock={dock} />
+    </View>,
+    document.body,
   );
 }

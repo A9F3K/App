@@ -14,6 +14,7 @@ import {
   layout,
   typographyRect15,
   type ThemeColors,
+  type ThemeName,
 } from "../../theme";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { appLocaleToBcp47 } from "../../../locales/appStrings";
@@ -27,6 +28,8 @@ import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { resolveTelegramUserAvatarUrl } from "./resolveTelegramUserAvatarUrl";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
+import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
+import { useProfileSheet } from "../../profile/ProfileContext";
 import {
   MESSAGE_AVATAR_PX,
   MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
@@ -58,6 +61,22 @@ import {
   MessageChatVoiceMoreMenu,
   type VoiceMoreMenuAnchor,
 } from "./MessageChatVoiceMoreMenu";
+import {
+  MessageChatVoiceParticipantMenu,
+  type VoiceParticipantMenuAnchor,
+} from "./MessageChatVoiceParticipantMenu";
+
+export function voiceParticipantPrefsKey(
+  participant: Pick<TelegramChatVoiceParticipant, "user_id" | "chat_id">,
+): string {
+  if (participant.user_id != null && Number.isFinite(participant.user_id)) {
+    return `u:${Math.trunc(participant.user_id)}`;
+  }
+  if (participant.chat_id != null && Number.isFinite(participant.chat_id)) {
+    return `c:${Math.trunc(participant.chat_id)}`;
+  }
+  return "unknown";
+}
 
 const WINDOW_ICON_SIZE_PX = 15;
 const WINDOW_ICON_GAP_PX = 12;
@@ -168,6 +187,7 @@ const SIDE_BY_SIDE_BREAKPOINT_PX =
 const VOICE_SIZE_STORAGE_KEY = "hsp.voiceChatDialog.size.v1";
 const VOICE_OFFSET_STORAGE_KEY = "hsp.voiceChatDialog.offset.v1";
 const VOICE_SPEAKING_MIC_COLOR = "#34C759";
+const VOICE_MUTED_STATUS_COLOR = "#FF1111";
 /** How long an ephemeral chat message stays visible before fading out (ms). */
 const CHAT_MSG_TTL_MS = 6_000;
 
@@ -218,6 +238,28 @@ type Props = {
   chatMessages?: VoiceChatMessage[];
   /** Submit an in-call group message (TDLib sendGroupCallMessage). */
   onSendChatMessage?: (text: string) => void | Promise<void>;
+  /**
+   * Private 1:1 call layout — same header/controls as group voice, peer avatar
+   * in place of the participants roster.
+   */
+  privateCall?: {
+    avatarUrl: string | null;
+    initials: string[];
+    scheme: ThemeName;
+    statusText?: string;
+  } | null;
+  /** Per-participant listen prefs (volume 0–200%, hide video/screen for me). */
+  participantMediaPrefs?: Record<
+    string,
+    { volumePercent: number; muteVideo: boolean; muteScreen: boolean }
+  >;
+  onParticipantVolumeChange?: (
+    participant: TelegramChatVoiceParticipant,
+    volumePercent: number,
+  ) => void;
+  onParticipantToggleMuteVoice?: (participant: TelegramChatVoiceParticipant) => void;
+  onParticipantToggleMuteVideo?: (participant: TelegramChatVoiceParticipant) => void;
+  onParticipantToggleMuteScreen?: (participant: TelegramChatVoiceParticipant) => void;
 };
 
 export type VoiceChatMessage = {
@@ -330,6 +372,10 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   isSpeaking,
   liteName,
   localScreenSharing,
+  voiceLocallyOff,
+  screenLocallyOff,
+  videoLocallyOff,
+  onOpenMenu,
 }: {
   participant: TelegramChatVoiceParticipant;
   isLast: boolean;
@@ -339,8 +385,17 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   liteName?: boolean;
   /** Local getDisplayMedia session — authoritative for self row icon. */
   localScreenSharing?: boolean;
+  /** Volume 0% / local mute — show mic as off even if TDLib says unmuted. */
+  voiceLocallyOff?: boolean;
+  /** Local hide of their screencast — red crossed share icon. */
+  screenLocallyOff?: boolean;
+  /** Local hide of their camera — red crossed camera icon. */
+  videoLocallyOff?: boolean;
+  onOpenMenu?: (anchor: VoiceParticipantMenuAnchor) => void;
 }) {
   const { colorScheme } = useTelegram();
+  const { t } = useAppStrings();
+  const { openProfileSheet } = useProfileSheet();
   const title =
     participant.title.trim() ||
     (participant.is_self ? "You" : "") ||
@@ -349,13 +404,45 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
     "Participant";
   const description = participant.description.trim();
   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
-  const speaking = isSpeaking;
-  const showScreenShareIcon = participant.is_self
-    ? Boolean(localScreenSharing)
-    : Boolean(
-        participant.screen_sharing_video_info?.endpoint_id?.trim() ||
-          (participant.screen_sharing_video_info?.source_groups?.length ?? 0) > 0,
-      );
+  const speaking = isSpeaking && !voiceLocallyOff;
+  const micMuted = Boolean(participant.is_muted) || Boolean(voiceLocallyOff);
+  const openParticipantProfile = () => {
+    if (participant.is_self) return;
+    const userId = participant.user_id;
+    if (userId == null || !Number.isFinite(userId) || userId === 0) return;
+    openProfileSheet({
+      telegram_chat_id:
+        participant.chat_id != null && Number.isFinite(participant.chat_id)
+          ? Math.trunc(participant.chat_id)
+          : 0,
+      title,
+      peer_user_id: Math.trunc(userId),
+      peer_emoji_status_custom_emoji_id: participant.emoji_status_custom_emoji_id,
+      chat_kind: "private",
+    });
+  };
+  const openMenuFromEvent = (event: {
+    nativeEvent?: { pageX?: number; pageY?: number; clientX?: number; clientY?: number };
+  }) => {
+    if (participant.is_self || !onOpenMenu) return;
+    const ne = event.nativeEvent ?? {};
+    const x = Number(ne.pageX ?? ne.clientX ?? 0);
+    const y = Number(ne.pageY ?? ne.clientY ?? 0);
+    onOpenMenu({
+      x: Number.isFinite(x) ? x : 0,
+      y: Number.isFinite(y) ? y : 0,
+    });
+  };
+  const peerScreenSharing = Boolean(
+    participant.screen_sharing_video_info?.endpoint_id?.trim() ||
+      (participant.screen_sharing_video_info?.source_groups?.length ?? 0) > 0,
+  );
+  const showScreenShareActive =
+    participant.is_self
+      ? Boolean(localScreenSharing)
+      : !screenLocallyOff && peerScreenSharing;
+  const showScreenShareMuted = !participant.is_self && Boolean(screenLocallyOff);
+  const showVideoMuted = !participant.is_self && Boolean(videoLocallyOff);
   const textBase = {
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
     fontSize: MESSAGE_FONT_SIZE_PX,
@@ -365,11 +452,13 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   } as const;
 
   return (
-    <View
+    <Pressable
       {...(Platform.OS === "web"
         ? ({ "data-voice-participant-row": title } as object)
         : {})}
       testID="voice-participant-row"
+      disabled={participant.is_self || !onOpenMenu}
+      onPress={(event) => openMenuFromEvent(event)}
       style={{
         flexDirection: "row",
         alignItems: "center",
@@ -380,14 +469,16 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
         marginBottom: isLast ? 0 : 10,
       }}
     >
-      <View
+      <ProfileOpenHitTarget
+        label={t("messages.profile.openA11y")}
+        onPress={openParticipantProfile}
+        disabled={participant.is_self}
         style={{
           width: MESSAGE_AVATAR_PX,
           height: MESSAGE_AVATAR_PX,
           alignItems: "center",
           justifyContent: "center",
           borderRadius: MESSAGE_AVATAR_PX / 2,
-          // Always reserve the ring — toggling borderWidth 0↔2 shifted rows up/down.
           borderWidth: 2,
           borderColor: speaking ? VOICE_SPEAKING_MIC_COLOR : "transparent",
           backgroundColor: colors.background,
@@ -405,7 +496,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           // open (see MessageChatAvatarImage), which left letter fallbacks forever.
           fetchPriority="high"
         />
-      </View>
+      </ProfileOpenHitTarget>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />
       <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>
         <SpecialTelegramUserName
@@ -450,7 +541,24 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           flexShrink: 0,
         }}
       >
-        {showScreenShareIcon ? (
+        {showScreenShareMuted ? (
+          <View
+            accessibilityRole="image"
+            accessibilityLabel="Screen sharing muted"
+            style={{
+              width: 28,
+              height: 28,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <VoiceScreenShareIcon
+              color={VOICE_MUTED_STATUS_COLOR}
+              size={18}
+              muted
+            />
+          </View>
+        ) : showScreenShareActive ? (
           <View
             accessibilityRole="image"
             accessibilityLabel="Screen sharing"
@@ -468,9 +576,25 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
             />
           </View>
         ) : null}
+        {showVideoMuted ? (
+          <View
+            accessibilityRole="image"
+            accessibilityLabel="Video muted"
+            style={{
+              width: 28,
+              height: 28,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <VoiceCameraIcon color={VOICE_MUTED_STATUS_COLOR} size={18} muted />
+          </View>
+        ) : null}
         <View
           accessibilityRole="image"
-          accessibilityLabel={speaking ? "Speaking" : "Microphone"}
+          accessibilityLabel={
+            micMuted ? "Microphone muted" : speaking ? "Speaking" : "Microphone"
+          }
           style={{
             width: 28,
             height: 28,
@@ -479,18 +603,20 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           }}
         >
           <VoiceParticipantStateMicIcon
-            speaking={speaking && !participant.is_muted}
-            muted={Boolean(participant.is_muted)}
+            speaking={speaking && !micMuted}
+            muted={micMuted}
             color={
-              speaking && !participant.is_muted
-                ? VOICE_SPEAKING_MIC_COLOR
-                : colors.primary
+              micMuted
+                ? VOICE_MUTED_STATUS_COLOR
+                : speaking
+                  ? VOICE_SPEAKING_MIC_COLOR
+                  : colors.primary
             }
             size={20}
           />
         </View>
       </View>
-    </View>
+    </Pressable>
   );
 });
 
@@ -759,25 +885,37 @@ export function MessageChatVoicePopover({
   onScreenShareDisplaySize,
   chatMessages = [],
   onSendChatMessage,
+  privateCall = null,
+  participantMediaPrefs = {},
+  onParticipantVolumeChange,
+  onParticipantToggleMuteVoice,
+  onParticipantToggleMuteVideo,
+  onParticipantToggleMuteScreen,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
   const chatTitle = title.trim() || t("messages.voiceChat.active");
+  const isPrivateCall = privateCall != null;
   // Prefer the strip's TDLib-backed count when the painted roster is still thin
   // (listed=5 while participant_count=6 hid the screencaster and under-labeled).
   const totalParticipantCount = Math.max(
     participants.length,
     Number.isFinite(participantCount) ? Math.max(0, Math.trunc(participantCount!)) : 0,
   );
-  const participantCountLabel =
-    totalParticipantCount > 0
+  const participantCountLabel = isPrivateCall
+    ? privateCall.statusText?.trim() || t("messages.privateCall.calling")
+    : totalParticipantCount > 0
       ? tf("messages.chatMemberCount.participants", {
           count: totalParticipantCount.toLocaleString(appLocaleToBcp47(locale)),
         })
       : "";
   const [moreMenuAnchor, setMoreMenuAnchor] = useState<VoiceMoreMenuAnchor | null>(null);
+  const [participantMenuAnchor, setParticipantMenuAnchor] =
+    useState<VoiceParticipantMenuAnchor | null>(null);
+  const [participantMenuTarget, setParticipantMenuTarget] =
+    useState<TelegramChatVoiceParticipant | null>(null);
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(() =>
     Platform.OS === "web" && typeof document !== "undefined" ? document.body : null,
   );
@@ -1632,7 +1770,34 @@ export function MessageChatVoicePopover({
     </View>
   );
 
-  const renderParticipantList = (_maxHeight?: number) => (
+  const renderParticipantList = (_maxHeight?: number) => {
+    if (isPrivateCall && privateCall) {
+      return (
+        <View
+          style={{
+            flex: 1,
+            minHeight: 0,
+            zIndex: 1,
+            alignItems: "center",
+            justifyContent: "center",
+            paddingHorizontal: 20,
+            paddingVertical: 24,
+          }}
+          pointerEvents="auto"
+        >
+          <MessageChatAvatarSlot
+            iconUrl={privateCall.avatarUrl}
+            initials={privateCall.initials}
+            sizePx={140}
+            colors={colors}
+            scheme={privateCall.scheme}
+            loadEnabled
+            fetchPriority="high"
+          />
+        </View>
+      );
+    }
+    return (
     <View
       style={{
         flex: 1,
@@ -1654,7 +1819,15 @@ export function MessageChatVoicePopover({
         containOverscroll
       >
         {displayParticipants.length > 0 ? (
-          displayParticipants.map((participant, index) => (
+          displayParticipants.map((participant, index) => {
+            const prefsKey = voiceParticipantPrefsKey(participant);
+            const prefs = participantMediaPrefs[prefsKey];
+            const volumePercent =
+              prefs?.volumePercent ??
+              (typeof participant.volume_percent === "number"
+                ? participant.volume_percent
+                : 100);
+            return (
             <VoiceParticipantRow
               key={
                 participant.user_id != null
@@ -1671,8 +1844,20 @@ export function MessageChatVoicePopover({
               }
               liteName={!rosterPaintReady}
               localScreenSharing={screenSharing}
+              voiceLocallyOff={volumePercent <= 0}
+              screenLocallyOff={Boolean(prefs?.muteScreen)}
+              videoLocallyOff={Boolean(prefs?.muteVideo)}
+              onOpenMenu={
+                participant.is_self || !onParticipantVolumeChange
+                  ? undefined
+                  : (anchor) => {
+                      setParticipantMenuTarget(participant);
+                      setParticipantMenuAnchor(anchor);
+                    }
+              }
             />
-          ))
+            );
+          })
         ) : (
           <Text style={[typographyRect15, { color: colors.secondary }]}>
             {participantCountLabel || t("messages.voiceChat.participants")}
@@ -1680,7 +1865,8 @@ export function MessageChatVoicePopover({
         )}
       </HspScrollColumn>
     </View>
-  );
+    );
+  };
 
   const [visibleMsgIds, setVisibleMsgIds] = useState<Set<string>>(new Set());
   const msgTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -2163,6 +2349,60 @@ export function MessageChatVoicePopover({
         items={moreMenuItems}
         onClose={() => setMoreMenuAnchor(null)}
       />
+      {(() => {
+        if (!participantMenuTarget) return null;
+        const prefsKey = voiceParticipantPrefsKey(participantMenuTarget);
+        const prefs = participantMediaPrefs[prefsKey];
+        const volumePercent =
+          prefs?.volumePercent ??
+          (typeof participantMenuTarget.volume_percent === "number"
+            ? participantMenuTarget.volume_percent
+            : 100);
+        const hasVideo = Boolean(
+          participantMenuTarget.video_info?.endpoint_id?.trim() ||
+            (participantMenuTarget.video_info?.source_groups?.length ?? 0) > 0,
+        );
+        const hasScreen = Boolean(
+          participantMenuTarget.screen_sharing_video_info?.endpoint_id?.trim() ||
+            (participantMenuTarget.screen_sharing_video_info?.source_groups?.length ?? 0) >
+              0,
+        );
+        const muteVideo = Boolean(prefs?.muteVideo);
+        const muteScreen = Boolean(prefs?.muteScreen);
+        // Listen preference — mute is allowed before they publish (preemptive).
+        const voiceOn = volumePercent > 0;
+        const videoOn = !muteVideo;
+        const screenOn = !muteScreen;
+        return (
+          <MessageChatVoiceParticipantMenu
+            visible={participantMenuAnchor != null}
+            anchor={participantMenuAnchor}
+            colors={colors}
+            volumePercent={volumePercent}
+            voiceOn={voiceOn}
+            videoOn={videoOn}
+            screenOn={screenOn}
+            videoAvailable={hasVideo}
+            screenAvailable={hasScreen}
+            onClose={() => {
+              setParticipantMenuAnchor(null);
+              setParticipantMenuTarget(null);
+            }}
+            onVolumeChange={(percent) => {
+              onParticipantVolumeChange?.(participantMenuTarget, percent);
+            }}
+            onToggleVoice={() => {
+              onParticipantToggleMuteVoice?.(participantMenuTarget);
+            }}
+            onToggleVideo={() => {
+              onParticipantToggleMuteVideo?.(participantMenuTarget);
+            }}
+            onToggleScreen={() => {
+              onParticipantToggleMuteScreen?.(participantMenuTarget);
+            }}
+          />
+        );
+      })()}
     </View>
   );
 

@@ -4,6 +4,7 @@ import { Platform, View } from "react-native";
 import { normalizeTelegramGroupCallId } from "../../../shared/telegramGroupCallSdp";
 import { layout, type ThemeColors } from "../../theme";
 import { patchAuthenticatedHomeSelectedChatVoice } from "../../authenticatedHomeSelectedChat";
+import { useProfileSheet } from "../../profile/ProfileContext";
 import { unlockVoiceAutoplay } from "../../telegram/unlockVoiceAutoplay";
 import { startTelegramChatVoice } from "../../telegram/startTelegramChatVoice";
 import { fetchTelegramChatVoiceParticipants } from "../../telegram/fetchTelegramChatVoiceParticipants";
@@ -51,6 +52,7 @@ function resolveGroupCallId(
 /** Wide-layout chat pane (middle column). */
 export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const columnBleedPx = layout.contentSideInsetPx;
+  const { openProfileSheet } = useProfileSheet();
   const liveVoiceAvailable = isLiveVoiceChat(chat);
   const canStart = canStartVoiceChat(chat);
   const [voiceJoined, setVoiceJoined] = useState(false);
@@ -394,6 +396,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
         showStartVoice={!liveVoiceAvailable && canStart && !voiceJoined}
         onStartVoice={() => void startVoice()}
         startVoicePending={startPending}
+        onOpenProfile={() => openProfileSheet(chat)}
       />
       <MessageSubtreeErrorBoundary resetKey={chat.telegram_chat_id}>
         <MessageChatMessageList key={chat.telegram_chat_id} chat={chat} colors={colors} />

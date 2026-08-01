@@ -399,6 +399,12 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
       ingestGroupCallUpdate(update);
       return;
     }
+    if (type === "updateCall" || type === "updateNewCallSignalingData") {
+      void import("./privateCall.js").then(({ applyPrivateCallUpdate }) => {
+        applyPrivateCallUpdate(record.telegramUsername, update);
+      });
+      return;
+    }
     if (type === "updateNewGroupCallMessage") {
       ingestNewGroupCallMessage(update, {
         telegramUsername: record.telegramUsername,

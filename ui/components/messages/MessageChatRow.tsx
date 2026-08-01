@@ -1,6 +1,7 @@
 import type { FormattedTextSegment } from "../../../shared/formattedTextSegments";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Platform, Text, View } from "react-native";
+import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import { TELEGRAM_THREAD_NO_AVATAR } from "../../../shared/telegramThreadConstants";
 import { resolveTelegramDisplayName } from "../../../shared/telegramDisplayName";
 import { useAppStrings } from "../../../locales/AppStringsContext";
@@ -111,6 +112,7 @@ export function MessageChatRow({
   colors,
   timePendingLabel,
   onPress,
+  onAvatarPress,
   onPrefetch,
 }: {
   item: MessageChatRowData;
@@ -119,9 +121,11 @@ export function MessageChatRow({
   colors: ThemeColors;
   timePendingLabel: string;
   onPress?: () => void;
+  /** Opens peer/chat profile without selecting the row when provided. */
+  onAvatarPress?: () => void;
   onPrefetch?: () => void;
 }) {
-  const { locale } = useAppStrings();
+  const { locale, t } = useAppStrings();
   const title = item.title.trim();
   const preview = formatMessageChatListPreview(item, locale);
   const subtitle = preview.text;
@@ -234,36 +238,75 @@ export function MessageChatRow({
           overflow: "visible",
         }}
       >
-        <MessageChatAvatarSlot
-          iconUrl={showAvatarImage ? iconUrl : null}
-          initials={avatarInitials}
-          sizePx={MESSAGE_AVATAR_PX}
-          colors={colors}
-          scheme={colorScheme}
-          loadEnabled={avatarFetchEnabled}
-          fetchPriority={isActive ? "high" : "normal"}
-          borderColor={hasActiveVoice ? MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR : undefined}
-          activeVoiceRing={hasActiveVoice}
-          onLoad={() => {
-            logPageDisplay("messages_avatar_load_ok", {
-              ...chatLogFields({
-                chatId: item.telegram_chat_id,
-                peerUserId: item.peer_user_id,
-                title: item.title,
-              }),
-            });
-          }}
-          onError={(error) => {
-            logPageDisplay("messages_avatar_load_error", {
-              ...chatLogFields({
-                chatId: item.telegram_chat_id,
-                peerUserId: item.peer_user_id,
-                title: item.title,
-              }),
-              error: error ?? "unknown_avatar_error",
-            });
-          }}
-        />
+        {onAvatarPress ? (
+          <ProfileOpenHitTarget
+            label={t("messages.profile.openA11y")}
+            onPress={onAvatarPress}
+            style={{ width: MESSAGE_AVATAR_PX, height: MESSAGE_AVATAR_PX }}
+          >
+            <MessageChatAvatarSlot
+              iconUrl={showAvatarImage ? iconUrl : null}
+              initials={avatarInitials}
+              sizePx={MESSAGE_AVATAR_PX}
+              colors={colors}
+              scheme={colorScheme}
+              loadEnabled={avatarFetchEnabled}
+              fetchPriority={isActive ? "high" : "normal"}
+              borderColor={hasActiveVoice ? MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR : undefined}
+              activeVoiceRing={hasActiveVoice}
+              onLoad={() => {
+                logPageDisplay("messages_avatar_load_ok", {
+                  ...chatLogFields({
+                    chatId: item.telegram_chat_id,
+                    peerUserId: item.peer_user_id,
+                    title: item.title,
+                  }),
+                });
+              }}
+              onError={(error) => {
+                logPageDisplay("messages_avatar_load_error", {
+                  ...chatLogFields({
+                    chatId: item.telegram_chat_id,
+                    peerUserId: item.peer_user_id,
+                    title: item.title,
+                  }),
+                  error: error ?? "unknown_avatar_error",
+                });
+              }}
+            />
+          </ProfileOpenHitTarget>
+        ) : (
+          <MessageChatAvatarSlot
+            iconUrl={showAvatarImage ? iconUrl : null}
+            initials={avatarInitials}
+            sizePx={MESSAGE_AVATAR_PX}
+            colors={colors}
+            scheme={colorScheme}
+            loadEnabled={avatarFetchEnabled}
+            fetchPriority={isActive ? "high" : "normal"}
+            borderColor={hasActiveVoice ? MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR : undefined}
+            activeVoiceRing={hasActiveVoice}
+            onLoad={() => {
+              logPageDisplay("messages_avatar_load_ok", {
+                ...chatLogFields({
+                  chatId: item.telegram_chat_id,
+                  peerUserId: item.peer_user_id,
+                  title: item.title,
+                }),
+              });
+            }}
+            onError={(error) => {
+              logPageDisplay("messages_avatar_load_error", {
+                ...chatLogFields({
+                  chatId: item.telegram_chat_id,
+                  peerUserId: item.peer_user_id,
+                  title: item.title,
+                }),
+                error: error ?? "unknown_avatar_error",
+              });
+            }}
+          />
+        )}
       </View>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />
       <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>

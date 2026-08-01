@@ -180,12 +180,23 @@ export function VoiceMoreIcon({ color, size = 20 }: IconProps) {
   );
 }
 
-/** Screen-share / presentation control (monitor with arrow). */
+/** Screen-share / presentation control (monitor with arrow). Pass muted for off glyph. */
 export function VoiceScreenShareIcon({
   color,
   size = 20,
   active = false,
-}: IconProps & { active?: boolean }) {
+  muted = false,
+}: IconProps & { active?: boolean; muted?: boolean }) {
+  if (muted) {
+    return (
+      <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <Path
+          d="M21.19 21.19L2.81 2.81 1.39 4.22 3 5.83V15c0 1.1.9 2 2 2h4v2h8v-2h.17l3.61 3.61 1.41-1.42zM5 15V7.83l7.77 7.77H5zM20.97 15.5l-.47-.47V5H8.83l2 2H19v8.17l1.97 1.97c.5-.28.83-.81.83-1.4V5c0-1.1-.9-2-2-2H6.83l2 2h11.14z"
+          fill={color}
+        />
+      </Svg>
+    );
+  }
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Path

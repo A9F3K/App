@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Platform, Pressable, Text, View, type GestureResponderEvent, type TextLayoutEvent } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
+import { useProfileSheet } from "../../profile/ProfileContext";
 import { typographyRect15 } from "../../theme";
 import type { ThemeColors } from "../../theme";
 import { useTelegram } from "../Telegram";
 import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
+import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { MessageChatBubbleBody } from "./MessageChatBubbleBody";
 import { formatMessageChatBubbleTime } from "./formatMessageChatBubbleTime";
@@ -134,6 +136,7 @@ export function MessageChatMessageRow({
   contentActive = true,
 }: Props) {
   const { t } = useAppStrings();
+  const { openProfileSheet } = useProfileSheet();
   const iconUrl = resolveTelegramThreadAvatarUrl(chat, item, chatKind);
   const avatarInitials = useMemo(() => {
     const name =
@@ -165,6 +168,34 @@ export function MessageChatMessageRow({
   });
   const isProxyAvatar = Boolean(iconUrl?.includes("/api/telegram-messages-avatar"));
   const avatarFetchEnabled = !isProxyAvatar || rowInView;
+  const senderTitle =
+    chatKind === "channel"
+      ? chat.title
+      : resolveMessageSenderDisplayName(
+          item.sender_name || chat.title,
+          item.sender_user_id,
+          chat.telegram_chat_id,
+        );
+  const profilePeerUserId =
+    chatKind === "private"
+      ? (chat.peer_user_id ?? item.sender_user_id ?? null)
+      : (item.sender_user_id ?? null);
+  const openSenderProfile = () => {
+    openProfileSheet({
+      telegram_chat_id: chat.telegram_chat_id,
+      title: senderTitle,
+      peer_user_id: profilePeerUserId,
+      peer_username: chat.peer_username ?? null,
+      chat_username: chat.chat_username ?? null,
+      chat_kind: chat.chat_kind ?? chatKind,
+      avatar_url: chat.avatar_url,
+      peer_emoji_status_custom_emoji_id:
+        item.sender_emoji_status_custom_emoji_id ??
+        chat.peer_emoji_status_custom_emoji_id ??
+        null,
+      peer_is_bot: chat.peer_is_bot,
+    });
+  };
 
   const bubbleMaxWidth = Math.max(
     0,
@@ -508,7 +539,9 @@ export function MessageChatMessageRow({
         alignSelf: "stretch",
       }}
     >
-      <View
+      <ProfileOpenHitTarget
+        label={t("messages.profile.openA11y")}
+        onPress={openSenderProfile}
         style={{
           width: MESSAGE_BUBBLE_AVATAR_PX,
           height: MESSAGE_BUBBLE_AVATAR_PX,
@@ -526,7 +559,7 @@ export function MessageChatMessageRow({
           loadEnabled={avatarFetchEnabled}
           fetchPriority="high"
         />
-      </View>
+      </ProfileOpenHitTarget>
       <View style={{ width: MESSAGE_BUBBLE_AVATAR_GAP_PX }} />
         <View
           ref={bubblePressableRef}

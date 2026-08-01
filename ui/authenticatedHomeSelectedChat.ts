@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { normalizeTelegramGroupCallId } from "../shared/telegramGroupCallSdp";
 import type { MessageChatRowData } from "./components/messages/MessageChatRow";
+import { saveChatScrollPosition } from "./messageChatScrollCache";
 
 const STORAGE_KEY = "hyperlinks_authenticated_home_selected_chat_v1";
 
@@ -224,14 +225,17 @@ export function selectAuthenticatedHomeChat(chat: MessageChatRowData | null) {
 }
 
 /** Select chat and start (or restart) paginated history load for that chat. */
-export function openAuthenticatedHomeChatHistory(chat: MessageChatRowData) {
+export function openAuthenticatedHomeChatHistory(
+  chat: MessageChatRowData,
+  options?: { forceReload?: boolean },
+) {
   hydrateFromStorageIfNeeded();
   const sameChatAlreadyOpen =
     historyLoadChatId === chat.telegram_chat_id && historyLoadGeneration > 0;
   selectedChat = chat;
   middleColumnFocus = "chat";
   writeStoredChat(chat);
-  if (sameChatAlreadyOpen) {
+  if (sameChatAlreadyOpen && !options?.forceReload) {
     syncHistoryLoadSnapshot();
     emit();
     return;
@@ -240,6 +244,26 @@ export function openAuthenticatedHomeChatHistory(chat: MessageChatRowData) {
   historyLoadGeneration += 1;
   syncHistoryLoadSnapshot();
   emit();
+}
+
+/** Open chat history centered on a specific message (e.g. profile links jump). */
+export function openAuthenticatedHomeChatHistoryAtMessage(
+  chat: MessageChatRowData,
+  messageId: number,
+) {
+  const id = Math.trunc(Number(messageId));
+  if (!Number.isFinite(id) || id <= 0) {
+    openAuthenticatedHomeChatHistory(chat);
+    return;
+  }
+  saveChatScrollPosition(chat.telegram_chat_id, {
+    distanceFromBottom: 0,
+    contentH: 0,
+    followingBottom: false,
+    anchorMessageId: id,
+    anchorOffsetFromViewportTop: 72,
+  });
+  openAuthenticatedHomeChatHistory(chat, { forceReload: true });
 }
 
 /** Show header menu panels (swap/smart/…) in the wide middle column. */

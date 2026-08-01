@@ -22,7 +22,6 @@ import { AuthenticatedHomeLeftNavStrip } from "../components/AuthenticatedHomeLe
 import { AuthenticatedHomeFeedPanel } from "../components/AuthenticatedHomeFeedPanel";
 import { AuthenticatedHomeMessagesPanel } from "../components/AuthenticatedHomeMessagesPanel";
 import { MessageChatPanel } from "../components/messages/MessageChatPanel";
-import { ActiveVoiceCallDock } from "../components/messages/ActiveVoiceCallDock";
 import { MessageChatOlderHistoryLoadLine } from "../components/messages/MessageChatOlderHistoryLoadLine";
 import {
   isChatListBottomLoaderActive,
@@ -1553,7 +1552,6 @@ export function HomeAuthenticatedScreen() {
   const homeCompactMainBlock = (
     <>
       {homeHeaderRow}
-      <ActiveVoiceCallDock colors={colors} />
       {homeLeftNavStrip}
       <View style={homeMainColumnInsetStyle}>{homeMainColumnBlocks}</View>
     </>
@@ -1688,7 +1686,7 @@ export function HomeAuthenticatedScreen() {
   return (
     <AuthenticatedHomeChrome
       header={isWideHome ? homeHeaderRow : null}
-      belowHeader={isWideHome ? <ActiveVoiceCallDock colors={colors} /> : null}
+      belowHeader={null}
       edgePadding={isWideHome}
     >
       <AuthenticatedHomeSplitBody

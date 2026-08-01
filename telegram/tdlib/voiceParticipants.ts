@@ -25,6 +25,8 @@ export type VoiceParticipantRow = {
   /** True when muted for all users (`is_muted_for_all_users`). */
   is_muted: boolean;
   is_self: boolean;
+  /** Local listen volume 0–200% (TDLib volume_level / 100; ≤1 → 0%). */
+  volume_percent?: number;
   /** TDLib lexicographic order — higher sorts first (Telegram Desktop). */
   order?: string;
   /** Camera video source groups when the participant streams video. */
@@ -245,6 +247,8 @@ type GroupCallParticipantUpdate = {
   participant_id?: { _?: string; user_id?: number; chat_id?: number };
   is_speaking?: boolean;
   is_muted_for_all_users?: boolean;
+  /** TDLib 1–20000 (10000 = 100%). */
+  volume_level?: number;
   order?: string;
   video_info?: TdParticipantVideoInfo | null;
   screen_sharing_video_info?: TdParticipantVideoInfo | null;
@@ -255,6 +259,8 @@ type CollectedParticipant = {
   chatId: number | null;
   isSpeaking: boolean;
   isMuted: boolean;
+  /** TDLib volume_level 1–20000; default 10000. */
+  volumeLevel: number;
   /** TDLib participant order (lexicographic); empty means left. */
   order: string;
   /** Last time speaking was reported true — short hold vs flapping updates. */
@@ -262,6 +268,18 @@ type CollectedParticipant = {
   videoInfo?: VoiceParticipantVideoInfo | null;
   screenInfo?: VoiceParticipantVideoInfo | null;
 };
+
+function normalizeVolumeLevel(raw: unknown, fallback = 10000): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  if (n <= 1) return 1;
+  return Math.min(20000, Math.max(1, Math.trunc(n)));
+}
+
+function volumeLevelToPercent(level: number): number {
+  if (!Number.isFinite(level) || level <= 1) return 0;
+  return Math.min(200, Math.max(0, Math.round(level / 100)));
+}
 
 /** tdesktop keeps speaking painted ~1s past the last level; keep hold short so
  * green mics clear when people stop (2.5s looked "stuck after load"). */
@@ -500,6 +518,10 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
           isSpeaking: false,
           lastSpokeAt: undefined,
           isMuted: participant.is_muted_for_all_users ?? prev.isMuted,
+          volumeLevel:
+            participant.volume_level != null
+              ? normalizeVolumeLevel(participant.volume_level, prev.volumeLevel)
+              : prev.volumeLevel,
           order: prev.order || "0",
         });
       }
@@ -542,6 +564,10 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       participant.is_muted_for_all_users != null
         ? Boolean(participant.is_muted_for_all_users)
         : (prev?.isMuted ?? true);
+    const volumeLevel =
+      participant.volume_level != null
+        ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)
+        : (prev?.volumeLevel ?? 10000);
     cached.members.set(key, {
       userId,
       chatId,
@@ -550,6 +576,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       // Speaking implies an open mic for chrome. Mute still wins when TDLib
       // reports muted and not speaking.
       isMuted: isSpeaking ? false : mutedFromTdlib,
+      volumeLevel,
       order,
       videoInfo: nextVideo,
       screenInfo: nextScreen,
@@ -907,6 +934,7 @@ function speakersFromGroupCall(
       // recent_speakers omit mute. Default muted for idle stubs; open mic while
       // TDLib marks them speaking so clients don't remute unmuted roster faces.
       isMuted: !isSpeaking,
+      volumeLevel: prev?.volumeLevel ?? 10000,
       order: "",
     });
   }
@@ -1013,12 +1041,13 @@ function mergeParticipantMaps(
               ? (row.lastSpokeAt ?? Date.now())
               : (prev.lastSpokeAt ?? row.lastSpokeAt),
             isMuted: row.isMuted,
+            volumeLevel: row.volumeLevel ?? prev.volumeLevel ?? 10000,
             order: row.order || prev.order,
             // Trust TDLib nulls — do not sticky-keep cleared camera/screen.
             videoInfo: row.videoInfo,
             screenInfo: row.screenInfo,
           }
-        : { ...row },
+        : { ...row, volumeLevel: row.volumeLevel ?? 10000 },
     );
   }
   return next;
@@ -1317,6 +1346,10 @@ async function loadJoinedParticipants(
             ...prev,
             isSpeaking: false,
             isMuted: participant.is_muted_for_all_users ?? prev.isMuted,
+            volumeLevel:
+              participant.volume_level != null
+                ? normalizeVolumeLevel(participant.volume_level, prev.volumeLevel)
+                : prev.volumeLevel,
             order: prev.order || "0",
           });
         }
@@ -1335,6 +1368,10 @@ async function loadJoinedParticipants(
       isSpeaking,
       lastSpokeAt: isSpeaking ? Date.now() : prev?.lastSpokeAt,
       isMuted: Boolean(participant.is_muted_for_all_users),
+      volumeLevel:
+        participant.volume_level != null
+          ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)
+          : (prev?.volumeLevel ?? 10000),
       order,
       // Trust TDLib nulls — do not sticky-keep cleared camera/screen.
       videoInfo,
@@ -1712,6 +1749,7 @@ export async function fetchChatVoiceParticipants(
         chatId: null,
         isSpeaking: false,
         isMuted: true,
+        volumeLevel: 10000,
         order: "\uffff",
       });
     }
@@ -1722,6 +1760,7 @@ export async function fetchChatVoiceParticipants(
         chatId: null,
         isSpeaking: collected.get(selfKey)?.isSpeaking ?? false,
         isMuted: collected.get(selfKey)?.isMuted ?? true,
+        volumeLevel: collected.get(selfKey)?.volumeLevel ?? 10000,
         order: collected.get(selfKey)?.order || "\uffff",
       };
       if (cached) {
@@ -1818,6 +1857,7 @@ export async function fetchChatVoiceParticipants(
       emoji_status_custom_emoji_id: profile.emoji_status_custom_emoji_id,
       is_speaking: effectiveSpeaking(row, Date.now()),
       is_muted: row.isMuted,
+      volume_percent: volumeLevelToPercent(row.volumeLevel ?? 10000),
       is_self: isSelf,
       order: row.order || "",
       // Never paint self camera/screen from TDLib — this client's local
@@ -1974,6 +2014,7 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
         emoji_status_custom_emoji_id: profile?.emoji_status_custom_emoji_id ?? null,
         is_speaking: effectiveSpeaking(row, nowMs),
         is_muted: row.isMuted,
+        volume_percent: volumeLevelToPercent(row.volumeLevel ?? 10000),
         is_self: isSelf,
         order: row.order || "",
         video_info: isSelf ? null : (row.videoInfo ?? null),

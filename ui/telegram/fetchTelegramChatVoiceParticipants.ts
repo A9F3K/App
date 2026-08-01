@@ -15,6 +15,8 @@ export type TelegramChatVoiceParticipant = {
   is_speaking: boolean;
   is_muted: boolean;
   is_self: boolean;
+  /** Local listen volume 0–200% (100 = API level). */
+  volume_percent?: number;
   video_info?: TelegramChatVoiceVideoInfo | null;
   screen_sharing_video_info?: TelegramChatVoiceVideoInfo | null;
 };
@@ -144,6 +146,11 @@ export async function fetchTelegramChatVoiceParticipants(
             is_speaking: Boolean(item.is_speaking),
             is_muted: Boolean(item.is_muted),
             is_self: Boolean(item.is_self),
+            volume_percent: (() => {
+              const n = Number(item.volume_percent);
+              if (!Number.isFinite(n)) return 100;
+              return Math.min(200, Math.max(0, Math.round(n)));
+            })(),
             video_info: parseVideoInfo(item.video_info),
             screen_sharing_video_info: parseVideoInfo(item.screen_sharing_video_info),
           };

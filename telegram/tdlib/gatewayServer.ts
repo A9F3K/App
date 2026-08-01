@@ -17,6 +17,16 @@ import {
   getTelegramEmojiForUser,
   getMessageMediaForUser,
   getUserAvatarImageForUser,
+  getUserProfileForUser,
+  blockUserForUser,
+  unblockUserForUser,
+  searchChatLinksForUser,
+  searchChatMediaForUser,
+  createPrivateCallForSession,
+  getPrivateCallForSession,
+  discardPrivateCallForSession,
+  acceptPrivateCallForSession,
+  sendPrivateCallSignalingForSession,
   getConnectAttempt,
   getLiveChatList,
   getLiveChatListRevision,
@@ -47,6 +57,7 @@ import {
   sendChatVoiceCallMessageForUser,
   startChatVoiceForUser,
   setChatVoiceMicMutedForUser,
+  setChatVoiceParticipantVolumeForUser,
   setChatVoiceParticipantSpeakingForUser,
   getChatVoiceParticipantsForUser,
   editChatMessageForUser,
@@ -620,6 +631,50 @@ export function startTdlibGatewayServer(): http.Server {
           sendJson(res, result.ok ? 200 : 503, {
             ok: result.ok,
             error: result.error,
+          });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chat/voice/participant-volume") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            chatId?: number;
+            groupCallId?: number;
+            userId?: number | null;
+            peerChatId?: number | null;
+            volumePercent?: number;
+          };
+          const telegramUsername = (body.telegramUsername || "").trim();
+          const chatId = Number(body.chatId);
+          const groupCallId = normalizeTelegramGroupCallId(body.groupCallId);
+          const volumePercent = Number(body.volumePercent);
+          if (!telegramUsername || !Number.isFinite(chatId) || !Number.isFinite(volumePercent)) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const started = Date.now();
+          const result = await setChatVoiceParticipantVolumeForUser(
+            telegramUsername,
+            chatId,
+            groupCallId,
+            {
+              userId: body.userId != null ? Number(body.userId) : null,
+              chatId: body.peerChatId != null ? Number(body.peerChatId) : null,
+            },
+            volumePercent,
+          );
+          logGateway("chat_voice_participant_volume", {
+            telegramUsername,
+            chatId,
+            ok: result.ok,
+            error: result.error,
+            volume_percent: result.volume_percent,
+            ms: Date.now() - started,
+          });
+          sendJson(res, result.ok ? 200 : 503, {
+            ok: result.ok,
+            error: result.error,
+            volume_percent: result.volume_percent,
           });
           return;
         }
@@ -1290,6 +1345,305 @@ export function startTdlibGatewayServer(): http.Server {
           res.setHeader("Content-Type", avatar.mime);
           res.setHeader("Cache-Control", "public, max-age=86400");
           res.end(avatar.data);
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/user/profile") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const chatIdRaw = url.searchParams.get("chatId");
+          const chatId =
+            chatIdRaw != null && chatIdRaw.trim() !== "" ? Number(chatIdRaw) : 0;
+          const peerUserIdRaw = url.searchParams.get("userId");
+          const peerUserId =
+            peerUserIdRaw != null && peerUserIdRaw.trim() !== ""
+              ? Number(peerUserIdRaw)
+              : null;
+          const hasChat = Number.isFinite(chatId) && chatId !== 0;
+          const hasUser =
+            peerUserId != null && Number.isFinite(peerUserId) && peerUserId !== 0;
+          if (!telegramUsername || (!hasChat && !hasUser)) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const started = Date.now();
+          const result = await getUserProfileForUser(
+            telegramUsername,
+            hasChat ? chatId : 0,
+            hasUser ? peerUserId : null,
+          );
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          logGateway("user_profile_ok", {
+            telegramUsername,
+            chatId,
+            userId: safeTelegramUserIdForLog(peerUserId) ?? null,
+            ms: Date.now() - started,
+          });
+          sendJson(res, 200, { ok: true, profile: result.profile });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/user/block") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            userId?: number;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          const userId = Number(body.userId);
+          if (!telegramUsername || !Number.isFinite(userId) || userId === 0) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const result = await blockUserForUser(telegramUsername, userId);
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/user/unblock") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            userId?: number;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          const userId = Number(body.userId);
+          if (!telegramUsername || !Number.isFinite(userId) || userId === 0) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const result = await unblockUserForUser(telegramUsername, userId);
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/chat/links") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const chatId = Number(url.searchParams.get("chatId"));
+          const fromMessageIdRaw = url.searchParams.get("fromMessageId");
+          const fromMessageId =
+            fromMessageIdRaw != null && fromMessageIdRaw.trim() !== ""
+              ? Number(fromMessageIdRaw)
+              : null;
+          const limitRaw = url.searchParams.get("limit");
+          const limit =
+            limitRaw != null && limitRaw.trim() !== "" ? Number(limitRaw) : 30;
+          if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const result = await searchChatLinksForUser(telegramUsername, chatId, {
+            fromMessageId:
+              fromMessageId != null && Number.isFinite(fromMessageId) ? fromMessageId : null,
+            limit: Number.isFinite(limit) ? limit : 30,
+          });
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, {
+            ok: true,
+            links: result.links,
+            has_more: result.has_more,
+          });
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/chat/media") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const chatId = Number(url.searchParams.get("chatId"));
+          const kindRaw = (url.searchParams.get("kind") || "").trim();
+          const kind =
+            kindRaw === "marked" ||
+            kindRaw === "images" ||
+            kindRaw === "photos" ||
+            kindRaw === "links" ||
+            kindRaw === "gifs"
+              ? kindRaw
+              : null;
+          const fromMessageIdRaw = url.searchParams.get("fromMessageId");
+          const fromMessageId =
+            fromMessageIdRaw != null && fromMessageIdRaw.trim() !== ""
+              ? Number(fromMessageIdRaw)
+              : null;
+          const limitRaw = url.searchParams.get("limit");
+          const limit =
+            limitRaw != null && limitRaw.trim() !== "" ? Number(limitRaw) : 30;
+          if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0 || !kind) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const result = await searchChatMediaForUser(telegramUsername, chatId, kind, {
+            fromMessageId:
+              fromMessageId != null && Number.isFinite(fromMessageId) ? fromMessageId : null,
+            limit: Number.isFinite(limit) ? limit : 30,
+          });
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, {
+            ok: true,
+            items: result.items,
+            has_more: result.has_more,
+          });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/call/create") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            userId?: number;
+            isVideo?: boolean;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          const userId = Number(body.userId);
+          if (!telegramUsername || !Number.isFinite(userId) || userId === 0) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const result = await createPrivateCallForSession(telegramUsername, userId, {
+            isVideo: Boolean(body.isVideo),
+          });
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true, call: result.call });
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/call/status") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const callIdRaw = url.searchParams.get("callId");
+          const callId =
+            callIdRaw != null && callIdRaw.trim() !== "" ? Number(callIdRaw) : null;
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const result = await getPrivateCallForSession(
+            telegramUsername,
+            callId != null && Number.isFinite(callId) ? callId : null,
+          );
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true, call: result.call });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/call/discard") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            callId?: number;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          const callId = Number(body.callId);
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const result = await discardPrivateCallForSession(
+            telegramUsername,
+            Number.isFinite(callId) && callId > 0 ? callId : null,
+          );
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/call/accept") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            callId?: number;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          const callId = Number(body.callId);
+          if (!telegramUsername || !Number.isFinite(callId) || callId <= 0) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const result = await acceptPrivateCallForSession(telegramUsername, callId);
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true, call: result.call });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/call/signaling") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            callId?: number;
+            data?: string;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          const callId = Number(body.callId);
+          const data = typeof body.data === "string" ? body.data : "";
+          if (!telegramUsername || !Number.isFinite(callId) || callId <= 0 || !data) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const result = await sendPrivateCallSignalingForSession(
+            telegramUsername,
+            callId,
+            data,
+          );
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
+              ok: false,
+              error: result.error,
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true });
           return;
         }
 

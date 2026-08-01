@@ -922,6 +922,39 @@ export async function gatewaySetChatVoiceMicMuted(
   return { ok: true, error: null };
 }
 
+export async function gatewaySetChatVoiceParticipantVolume(
+  telegramUsername: string,
+  chatId: number,
+  groupCallId: number | null | undefined,
+  participant: { userId?: number | null; peerChatId?: number | null },
+  volumePercent: number,
+): Promise<{ ok: boolean; error: string | null; volume_percent: number }> {
+  const callId = normalizeTelegramGroupCallId(groupCallId);
+  const { response, json } = await gatewayFetch("/v1/chat/voice/participant-volume", {
+    method: "POST",
+    body: JSON.stringify({
+      telegramUsername,
+      chatId,
+      ...(callId != null ? { groupCallId: callId } : {}),
+      userId: participant.userId ?? null,
+      peerChatId: participant.peerChatId ?? null,
+      volumePercent,
+    }),
+  });
+  const volume_percent =
+    typeof json.volume_percent === "number" && Number.isFinite(json.volume_percent)
+      ? Math.min(200, Math.max(0, Math.round(json.volume_percent)))
+      : Math.min(200, Math.max(0, Math.round(volumePercent)));
+  if (!response.ok || !json.ok) {
+    return {
+      ok: false,
+      error: typeof json.error === "string" ? json.error : "volume_failed",
+      volume_percent,
+    };
+  }
+  return { ok: true, error: null, volume_percent };
+}
+
 export async function gatewaySetChatVoiceParticipantSpeaking(
   telegramUsername: string,
   chatId: number,
@@ -1611,6 +1644,321 @@ export async function gatewayFetchUserAvatar(
       userId,
     });
     return null;
+  }
+}
+
+export type GatewayUserProfile = {
+  user_id: number | null;
+  chat_id: number;
+  title: string;
+  username: string | null;
+  bio: string | null;
+  phone_number: string | null;
+  status_text: string | null;
+  is_bot: boolean;
+  emoji_status_custom_emoji_id: string | null;
+  music: { artist: string; title: string } | null;
+  channel: {
+    chat_id: number;
+    title: string;
+    subtitle: string | null;
+  } | null;
+  media: {
+    marked: number;
+    images: number;
+    photos: number;
+    links: number;
+    gifs: number;
+  };
+};
+
+export async function gatewayFetchUserProfile(
+  telegramUsername: string,
+  chatId: number,
+  peerUserId: number | null,
+): Promise<{ ok: true; profile: GatewayUserProfile } | { ok: false; error: string }> {
+  const params = new URLSearchParams({ telegramUsername });
+  if (Number.isFinite(chatId) && chatId !== 0) {
+    params.set("chatId", String(Math.trunc(chatId)));
+  }
+  if (peerUserId != null && Number.isFinite(peerUserId) && peerUserId !== 0) {
+    params.set("userId", String(Math.trunc(peerUserId)));
+  }
+  try {
+    const { response, json } = await gatewayFetch(`/v1/user/profile?${params.toString()}`, {
+      method: "GET",
+    });
+    if (!response.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: typeof json.error === "string" ? json.error : "profile_unavailable",
+      };
+    }
+    const profile = json.profile;
+    if (!profile || typeof profile !== "object") {
+      return { ok: false, error: "profile_unavailable" };
+    }
+    return { ok: true, profile: profile as GatewayUserProfile };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewayBlockUser(
+  telegramUsername: string,
+  userId: number,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { response, json } = await gatewayFetch("/v1/user/block", {
+      method: "POST",
+      body: JSON.stringify({ telegramUsername, userId: Math.trunc(userId) }),
+    });
+    return {
+      ok: response.ok && json.ok !== false,
+      error: typeof json.error === "string" ? json.error : undefined,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewayUnblockUser(
+  telegramUsername: string,
+  userId: number,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { response, json } = await gatewayFetch("/v1/user/unblock", {
+      method: "POST",
+      body: JSON.stringify({ telegramUsername, userId: Math.trunc(userId) }),
+    });
+    return {
+      ok: response.ok && json.ok !== false,
+      error: typeof json.error === "string" ? json.error : undefined,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export type GatewayChatMediaKind = "marked" | "images" | "photos" | "links" | "gifs";
+
+export type GatewayChatMediaItem = {
+  telegram_message_id: number;
+  date: string | null;
+  text: string;
+  url: string;
+  kind: GatewayChatMediaKind;
+  sender_name: string;
+};
+
+export type GatewayChatLinkItem = GatewayChatMediaItem;
+
+export async function gatewaySearchChatLinks(
+  telegramUsername: string,
+  chatId: number,
+  options?: { fromMessageId?: number | null; limit?: number },
+): Promise<
+  | { ok: true; links: GatewayChatLinkItem[]; has_more: boolean }
+  | { ok: false; error: string }
+> {
+  const result = await gatewaySearchChatMedia(telegramUsername, chatId, "links", options);
+  if (!result.ok) return result;
+  return { ok: true, links: result.items, has_more: result.has_more };
+}
+
+export async function gatewaySearchChatMedia(
+  telegramUsername: string,
+  chatId: number,
+  kind: GatewayChatMediaKind,
+  options?: { fromMessageId?: number | null; limit?: number },
+): Promise<
+  | { ok: true; items: GatewayChatMediaItem[]; has_more: boolean }
+  | { ok: false; error: string }
+> {
+  const params = new URLSearchParams({
+    telegramUsername,
+    chatId: String(Math.trunc(chatId)),
+    kind,
+  });
+  if (
+    options?.fromMessageId != null &&
+    Number.isFinite(options.fromMessageId) &&
+    options.fromMessageId! > 0
+  ) {
+    params.set("fromMessageId", String(Math.trunc(options.fromMessageId!)));
+  }
+  if (options?.limit != null && Number.isFinite(options.limit)) {
+    params.set("limit", String(Math.trunc(options.limit)));
+  }
+  try {
+    const { response, json } = await gatewayFetch(`/v1/chat/media?${params.toString()}`, {
+      method: "GET",
+    });
+    if (!response.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: typeof json.error === "string" ? json.error : "media_unavailable",
+      };
+    }
+    const items = Array.isArray(json.items) ? (json.items as GatewayChatMediaItem[]) : [];
+    return { ok: true, items, has_more: Boolean(json.has_more) };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export type GatewayPrivateCallPhase =
+  | "idle"
+  | "dialing"
+  | "ringing"
+  | "exchanging"
+  | "ready"
+  | "hanging_up"
+  | "discarded"
+  | "error";
+
+export type GatewayPrivateCallSnapshot = {
+  call_id: number;
+  user_id: number;
+  is_outgoing: boolean;
+  is_video: boolean;
+  phase: GatewayPrivateCallPhase;
+  error: string | null;
+  emojis: string[];
+  has_encryption_key?: boolean;
+  server_count?: number;
+};
+
+export async function gatewayCreatePrivateCall(
+  telegramUsername: string,
+  userId: number,
+  options?: { isVideo?: boolean },
+): Promise<
+  | { ok: true; call: GatewayPrivateCallSnapshot }
+  | { ok: false; error: string }
+> {
+  try {
+    const { response, json } = await gatewayFetch("/v1/call/create", {
+      method: "POST",
+      body: JSON.stringify({
+        telegramUsername,
+        userId: Math.trunc(userId),
+        isVideo: Boolean(options?.isVideo),
+      }),
+    });
+    if (!response.ok || json.ok === false || !json.call) {
+      return {
+        ok: false,
+        error: typeof json.error === "string" ? json.error : "create_call_failed",
+      };
+    }
+    return { ok: true, call: json.call as GatewayPrivateCallSnapshot };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewayGetPrivateCall(
+  telegramUsername: string,
+  callId?: number | null,
+): Promise<
+  | { ok: true; call: GatewayPrivateCallSnapshot | null }
+  | { ok: false; error: string }
+> {
+  const params = new URLSearchParams({ telegramUsername });
+  if (callId != null && Number.isFinite(callId) && callId > 0) {
+    params.set("callId", String(Math.trunc(callId)));
+  }
+  try {
+    const { response, json } = await gatewayFetch(`/v1/call/status?${params.toString()}`, {
+      method: "GET",
+    });
+    if (!response.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: typeof json.error === "string" ? json.error : "call_status_unavailable",
+      };
+    }
+    return {
+      ok: true,
+      call: (json.call as GatewayPrivateCallSnapshot | null) ?? null,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewayDiscardPrivateCall(
+  telegramUsername: string,
+  callId?: number | null,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { response, json } = await gatewayFetch("/v1/call/discard", {
+      method: "POST",
+      body: JSON.stringify({
+        telegramUsername,
+        callId:
+          callId != null && Number.isFinite(callId) && callId > 0
+            ? Math.trunc(callId)
+            : undefined,
+      }),
+    });
+    return {
+      ok: response.ok && json.ok !== false,
+      error: typeof json.error === "string" ? json.error : undefined,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewayAcceptPrivateCall(
+  telegramUsername: string,
+  callId: number,
+): Promise<
+  | { ok: true; call: GatewayPrivateCallSnapshot }
+  | { ok: false; error: string }
+> {
+  try {
+    const { response, json } = await gatewayFetch("/v1/call/accept", {
+      method: "POST",
+      body: JSON.stringify({
+        telegramUsername,
+        callId: Math.trunc(callId),
+      }),
+    });
+    if (!response.ok || json.ok === false || !json.call) {
+      return {
+        ok: false,
+        error: typeof json.error === "string" ? json.error : "accept_call_failed",
+      };
+    }
+    return { ok: true, call: json.call as GatewayPrivateCallSnapshot };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewaySendPrivateCallSignaling(
+  telegramUsername: string,
+  callId: number,
+  dataBase64: string,
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const { response, json } = await gatewayFetch("/v1/call/signaling", {
+      method: "POST",
+      body: JSON.stringify({
+        telegramUsername,
+        callId: Math.trunc(callId),
+        data: dataBase64,
+      }),
+    });
+    return {
+      ok: response.ok && json.ok !== false,
+      error: typeof json.error === "string" ? json.error : undefined,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
   }
 }
 

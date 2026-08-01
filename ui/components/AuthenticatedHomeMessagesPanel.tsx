@@ -5,6 +5,7 @@ import { normalizeFormattedTextSegments, type FormattedTextSegment } from "../..
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp";
 import { useAuth } from "../../auth/AuthContext";
 import { useAppStrings } from "../../locales/AppStringsContext";
+import { useProfileSheet } from "../profile/ProfileContext";
 import { logPageDisplay, firstChatListLogFields, chatLogFields } from "../pageDisplayLog";
 import { layout, type ThemeColors } from "../theme";
 import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConnectionContext";
@@ -430,6 +431,7 @@ const CHAT_LIST_STREAM_ENABLED = typeof EventSource !== "undefined";
 
 export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Props) {
   const { t } = useAppStrings();
+  const { openProfileSheet } = useProfileSheet();
   const { authReady, isAuthenticated } = useAuth();
   const { isTelegramMessagesConnected, refreshStatus } = useTelegramMessagesConnection();
   const [chats, setChats] = useState<MessageChatRowData[]>([]);
@@ -1460,6 +1462,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
               colors={colors}
               timePendingLabel={t("feed.timePending")}
               onPress={chatSelectionEnabled ? () => handleChatPress(item) : undefined}
+              onAvatarPress={() => openProfileSheet(item)}
               onPrefetch={() => handleRowPrefetch(item)}
             />
           </View>

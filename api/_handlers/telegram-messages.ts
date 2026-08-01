@@ -8,7 +8,7 @@ import { applyAuthApiCors, authApiPreflightResponse } from "../_lib/auth-cors.js
 import { telegramUsernameFromSessionCookie } from "../_lib/session-auth.js";
 import { appLog, safeTelegramUserIdForLog, telegramUserIdLogField } from "../../shared/appLog.js";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
-import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayOpenChatMessagesStream, gatewayOpenVoiceParticipantsStream, gatewayOpenVoiceCallMessagesStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayDeleteChatMessages,   gatewayJoinChatVoice, gatewaySetChatVoiceMicMuted, gatewaySetChatVoiceParticipantSpeaking, gatewayStartChatVoice, gatewayLeaveChatVoice, gatewayStartChatVoiceScreenShare, gatewayEndChatVoiceScreenShare, gatewaySendChatVoiceCallMessage, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
+import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFetchUserProfile, gatewayBlockUser, gatewayUnblockUser, gatewaySearchChatLinks, gatewaySearchChatMedia, gatewayCreatePrivateCall, gatewayGetPrivateCall, gatewayDiscardPrivateCall, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayOpenChatMessagesStream, gatewayOpenVoiceParticipantsStream, gatewayOpenVoiceCallMessagesStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayDeleteChatMessages,   gatewayJoinChatVoice, gatewaySetChatVoiceMicMuted, gatewaySetChatVoiceParticipantVolume, gatewaySetChatVoiceParticipantSpeaking, gatewayStartChatVoice, gatewayLeaveChatVoice, gatewayStartChatVoiceScreenShare, gatewayEndChatVoiceScreenShare, gatewaySendChatVoiceCallMessage, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
 
 type NodeRes = {
   status: (code: number) => void;
@@ -982,6 +982,372 @@ export async function telegramMessagesAvatarHandler(
   return new Response(new Uint8Array(avatar.data), { status: 200, headers });
 }
 
+export async function telegramMessagesProfileHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected" }, 403);
+  }
+
+  const url = requestUrl(request);
+  const chatId = parseOptionalIdParam(url, "chat_id");
+  const userId = parseOptionalIdParam(url, "user_id");
+  if (chatId == null && userId == null) {
+    return finishJson(request, res, { ok: false, error: "chat_id_or_user_id_required" }, 400);
+  }
+
+  const result = await gatewayFetchUserProfile(userOrRes, chatId ?? 0, userId);
+  if (!result.ok) {
+    const status = result.error === "session_not_ready" ? 503 : 400;
+    return finishJson(request, res, { ok: false, error: result.error }, status);
+  }
+  return finishJson(request, res, { ok: true, profile: result.profile });
+}
+
+export async function telegramMessagesBlockHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected" }, 403);
+  }
+
+  let body: { user_id?: number; userId?: number } = {};
+  try {
+    body = await parseRequestBody<{ user_id?: number; userId?: number }>(request);
+  } catch {
+    body = {};
+  }
+  const userId = Number(body.user_id ?? body.userId);
+  if (!Number.isFinite(userId) || userId === 0) {
+    return finishJson(request, res, { ok: false, error: "user_id_required" }, 400);
+  }
+
+  const result = await gatewayBlockUser(userOrRes, userId);
+  if (!result.ok) {
+    const status = result.error === "session_not_ready" ? 503 : 400;
+    return finishJson(request, res, { ok: false, error: result.error ?? "block_failed" }, status);
+  }
+  return finishJson(request, res, { ok: true });
+}
+
+export async function telegramMessagesUnblockHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected" }, 403);
+  }
+
+  let body: { user_id?: number; userId?: number } = {};
+  try {
+    body = await parseRequestBody<{ user_id?: number; userId?: number }>(request);
+  } catch {
+    body = {};
+  }
+  const userId = Number(body.user_id ?? body.userId);
+  if (!Number.isFinite(userId) || userId === 0) {
+    return finishJson(request, res, { ok: false, error: "user_id_required" }, 400);
+  }
+
+  const result = await gatewayUnblockUser(userOrRes, userId);
+  if (!result.ok) {
+    const status = result.error === "session_not_ready" ? 503 : 400;
+    return finishJson(request, res, { ok: false, error: result.error ?? "unblock_failed" }, status);
+  }
+  return finishJson(request, res, { ok: true });
+}
+
+export async function telegramMessagesLinksHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected" }, 403);
+  }
+
+  const url = requestUrl(request);
+  const chatId = parseOptionalIdParam(url, "chat_id");
+  const fromMessageId = parseOptionalIdParam(url, "from_message_id");
+  const limitRaw = url.searchParams.get("limit");
+  const limit = limitRaw != null && limitRaw.trim() !== "" ? Number(limitRaw) : 30;
+  if (chatId == null) {
+    return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
+  }
+
+  const result = await gatewaySearchChatLinks(userOrRes, chatId, {
+    fromMessageId,
+    limit: Number.isFinite(limit) ? limit : 30,
+  });
+  if (!result.ok) {
+    const status = result.error === "session_not_ready" ? 503 : 400;
+    return finishJson(request, res, { ok: false, error: result.error }, status);
+  }
+  return finishJson(request, res, {
+    ok: true,
+    links: result.links,
+    has_more: result.has_more,
+  });
+}
+
+export async function telegramMessagesProfileMediaHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected" }, 403);
+  }
+
+  const url = requestUrl(request);
+  const chatId = parseOptionalIdParam(url, "chat_id");
+  const kindRaw = (url.searchParams.get("kind") || "").trim();
+  const kind =
+    kindRaw === "marked" ||
+    kindRaw === "images" ||
+    kindRaw === "photos" ||
+    kindRaw === "links" ||
+    kindRaw === "gifs"
+      ? kindRaw
+      : null;
+  const fromMessageId = parseOptionalIdParam(url, "from_message_id");
+  const limitRaw = url.searchParams.get("limit");
+  const limit = limitRaw != null && limitRaw.trim() !== "" ? Number(limitRaw) : 30;
+  if (chatId == null || !kind) {
+    return finishJson(request, res, { ok: false, error: "chat_id_and_kind_required" }, 400);
+  }
+
+  const result = await gatewaySearchChatMedia(userOrRes, chatId, kind, {
+    fromMessageId,
+    limit: Number.isFinite(limit) ? limit : 30,
+  });
+  if (!result.ok) {
+    const status = result.error === "session_not_ready" ? 503 : 400;
+    return finishJson(request, res, { ok: false, error: result.error }, status);
+  }
+  return finishJson(request, res, {
+    ok: true,
+    items: result.items,
+    has_more: result.has_more,
+  });
+}
+
+export async function telegramMessagesCallCreateHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected" }, 403);
+  }
+
+  let body: { user_id?: number; userId?: number; is_video?: boolean; isVideo?: boolean } = {};
+  try {
+    body = await parseRequestBody(request);
+  } catch {
+    body = {};
+  }
+  const userId = Number(body.user_id ?? body.userId);
+  if (!Number.isFinite(userId) || userId === 0) {
+    return finishJson(request, res, { ok: false, error: "user_id_required" }, 400);
+  }
+  const result = await gatewayCreatePrivateCall(userOrRes, userId, {
+    isVideo: Boolean(body.is_video ?? body.isVideo),
+  });
+  if (!result.ok) {
+    const status = result.error === "session_not_ready" ? 503 : 400;
+    return finishJson(request, res, { ok: false, error: result.error }, status);
+  }
+  return finishJson(request, res, { ok: true, call: result.call });
+}
+
+export async function telegramMessagesCallStatusHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected" }, 403);
+  }
+
+  const url = requestUrl(request);
+  const callId = parseOptionalIdParam(url, "call_id");
+  const result = await gatewayGetPrivateCall(userOrRes, callId);
+  if (!result.ok) {
+    const status = result.error === "session_not_ready" ? 503 : 400;
+    return finishJson(request, res, { ok: false, error: result.error }, status);
+  }
+  return finishJson(request, res, { ok: true, call: result.call });
+}
+
+export async function telegramMessagesCallDiscardHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected" }, 403);
+  }
+
+  let body: { call_id?: number; callId?: number } = {};
+  try {
+    body = await parseRequestBody(request);
+  } catch {
+    body = {};
+  }
+  const callId = Number(body.call_id ?? body.callId);
+  const result = await gatewayDiscardPrivateCall(
+    userOrRes,
+    Number.isFinite(callId) && callId > 0 ? callId : null,
+  );
+  if (!result.ok) {
+    const status = result.error === "session_not_ready" ? 503 : 400;
+    return finishJson(request, res, { ok: false, error: result.error ?? "discard_failed" }, status);
+  }
+  return finishJson(request, res, { ok: true });
+}
+
 export async function telegramMessagesHistoryHandler(
   request: AnyRequest,
   res?: NodeRes,
@@ -1501,6 +1867,90 @@ export async function telegramMessagesVoiceMuteHandler(
   }
 
   return finishJson(request, res, { ok: true }, 200);
+}
+
+export async function telegramMessagesVoiceParticipantVolumeHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
+  }
+
+  const body = await parseRequestBody<{
+    chat_id?: unknown;
+    group_call_id?: unknown;
+    user_id?: unknown;
+    peer_chat_id?: unknown;
+    volume_percent?: unknown;
+  }>(request);
+
+  const chatId = Number(body.chat_id);
+  const groupCallId = normalizeTelegramGroupCallId(body.group_call_id);
+  const volumePercent = Number(body.volume_percent);
+  const userId =
+    body.user_id != null && body.user_id !== "" ? Number(body.user_id) : null;
+  const peerChatId =
+    body.peer_chat_id != null && body.peer_chat_id !== ""
+      ? Number(body.peer_chat_id)
+      : null;
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
+  }
+  if (!Number.isFinite(volumePercent)) {
+    return finishJson(request, res, { ok: false, error: "volume_percent_required" }, 400);
+  }
+
+  const started = Date.now();
+  const result = await gatewaySetChatVoiceParticipantVolume(
+    userOrRes,
+    chatId,
+    groupCallId,
+    { userId, peerChatId },
+    volumePercent,
+  );
+  logTelegramMessagesApi("messages_voice_participant_volume", {
+    telegramUsername: userOrRes,
+    chatId,
+    ok: result.ok,
+    error: result.error,
+    volume_percent: result.volume_percent,
+    elapsedMs: Date.now() - started,
+  });
+
+  if (!result.ok) {
+    return finishJson(
+      request,
+      res,
+      { ok: false, error: result.error, volume_percent: result.volume_percent },
+      result.error === "session_not_ready" ? 503 : 502,
+    );
+  }
+
+  return finishJson(
+    request,
+    res,
+    { ok: true, volume_percent: result.volume_percent },
+    200,
+  );
 }
 
 export async function telegramMessagesVoiceSpeakingHandler(

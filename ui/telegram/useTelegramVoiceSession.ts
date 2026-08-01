@@ -54,6 +54,12 @@ export type TelegramVoiceSession = {
   stopScreenShare: () => Promise<void>;
   /** Subscribe to remote camera / screencast publishers from the roster. */
   setRemoteVideoRequests: (requests: TelegramRemoteVideoRequest[]) => void;
+  /** Local WebAudio listen volumes for the mixed remote track (0–200%). */
+  setParticipantListenVolumes: (input: {
+    volumes: Record<string, number>;
+    speakingKeys?: string[];
+    participantKeys?: string[];
+  }) => void;
   leaveVoice: () => Promise<
     Awaited<ReturnType<typeof leaveTelegramChatVoice>>
   >;
@@ -457,6 +463,17 @@ export function useTelegramVoiceSession({
     sessionRef.current?.setRequestedRemoteVideos(requests);
   }, []);
 
+  const setParticipantListenVolumes = useCallback(
+    (input: {
+      volumes: Record<string, number>;
+      speakingKeys?: string[];
+      participantKeys?: string[];
+    }) => {
+      sessionRef.current?.setParticipantListenVolumes(input);
+    },
+    [],
+  );
+
   const setScreenShareDisplaySize = useCallback((width: number, height: number) => {
     sessionRef.current?.setScreenShareDisplaySize(width, height);
   }, []);
@@ -503,6 +520,7 @@ export function useTelegramVoiceSession({
     startScreenShare,
     stopScreenShare,
     setRemoteVideoRequests,
+    setParticipantListenVolumes,
     setScreenShareDisplaySize,
     leaveVoice,
   };

@@ -25,8 +25,9 @@ import {
   MessageChatLeaveVoiceIcon,
   MessageChatMicIcon,
 } from "./MessageChatVoiceIcons";
-import { MessageChatVoicePopover, type VoiceChatMessage } from "./MessageChatVoicePopover";
+import { MessageChatVoicePopover, type VoiceChatMessage, voiceParticipantPrefsKey } from "./MessageChatVoicePopover";
 import { MessageChatVoiceVideoPlane } from "./MessageChatVoiceVideoPlane";
+import { setTelegramChatVoiceParticipantVolume } from "../../telegram/setTelegramChatVoiceParticipantVolume";
 import {
   useTelegramVoiceParticipantsStream,
   type VoiceParticipantsStreamSnapshot,
@@ -128,6 +129,14 @@ export function MessageChatVoiceBar({
   const { isTelegramMessagesConnected } = useTelegramMessagesConnection();
   const [leaving, setLeaving] = useState(false);
   const [participants, setParticipants] = useState<TelegramChatVoiceParticipant[]>([]);
+  /** Local listen volume + hide video/screen for me (per participant). */
+  const [participantMediaPrefs, setParticipantMediaPrefs] = useState<
+    Record<string, { volumePercent: number; muteVideo: boolean; muteScreen: boolean }>
+  >({});
+  const participantMediaPrefsRef = useRef(participantMediaPrefs);
+  participantMediaPrefsRef.current = participantMediaPrefs;
+  const lastNonZeroVolumeRef = useRef<Record<string, number>>({});
+  const volumeApiTimerRef = useRef<number | null>(null);
   /** Listed row count — always matches dialog roster / strip avatars. */
   const [participantCount, setParticipantCount] = useState(0);
   /** TDLib total hint (may exceed loaded rows until force reload). */
@@ -431,6 +440,12 @@ export function MessageChatVoiceBar({
 
   useEffect(() => {
     setParticipants([]);
+    setParticipantMediaPrefs({});
+    lastNonZeroVolumeRef.current = {};
+    if (volumeApiTimerRef.current != null) {
+      window.clearTimeout(volumeApiTimerRef.current);
+      volumeApiTimerRef.current = null;
+    }
     setParticipantCount(0);
     setRosterCountHint(0);
     rosterTotalHintRef.current = 0;
@@ -1788,16 +1803,23 @@ export function MessageChatVoiceBar({
 
   // Ask the SFU for any remote camera / screencast publishers listed in the roster.
   const setRemoteVideoRequests = voiceSession.setRemoteVideoRequests;
+  const setParticipantListenVolumes = voiceSession.setParticipantListenVolumes;
   const voiceJoined = voiceSession.joined;
   const remoteVideoSourceKey = useMemo(() => {
-    return participants
-      .filter((row) => !row.is_self)
-      .map(
-        (row) =>
-          `${row.user_id ?? row.chat_id}:${voiceVideoInfoSignature(row.video_info)}:${voiceVideoInfoSignature(row.screen_sharing_video_info)}`,
-      )
-      .join("|");
-  }, [participants]);
+    const muteSig = Object.entries(participantMediaPrefs)
+      .map(([key, prefs]) => `${key}:${prefs.muteVideo ? 1 : 0}:${prefs.muteScreen ? 1 : 0}`)
+      .sort()
+      .join(",");
+    return (
+      participants
+        .filter((row) => !row.is_self)
+        .map(
+          (row) =>
+            `${row.user_id ?? row.chat_id}:${voiceVideoInfoSignature(row.video_info)}:${voiceVideoInfoSignature(row.screen_sharing_video_info)}`,
+        )
+        .join("|") + `|mute:${muteSig}`
+    );
+  }, [participants, participantMediaPrefs]);
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") {
       lastGoodRemoteVideoRequestsRef.current = [];
@@ -1823,8 +1845,9 @@ export function MessageChatVoiceBar({
         [];
       for (const row of participantsRef.current) {
         if (row.is_self) continue;
+        const prefs = participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
         const screen = row.screen_sharing_video_info;
-        if (screen?.source_groups?.length) {
+        if (screen?.source_groups?.length && !prefs?.muteScreen) {
           requests.push({
             endpointId: screen.endpoint_id || `screen-${row.user_id ?? row.chat_id ?? "x"}`,
             kind: "screen",
@@ -1833,7 +1856,7 @@ export function MessageChatVoiceBar({
               sourceIds: g.source_ids,
             })),
           });
-        } else if (screen?.endpoint_id?.trim()) {
+        } else if (screen?.endpoint_id?.trim() && !prefs?.muteScreen) {
           pendingGroups.push({
             user: row.title || String(row.user_id ?? row.chat_id ?? "?"),
             kind: "screen",
@@ -1841,7 +1864,7 @@ export function MessageChatVoiceBar({
           });
         }
         const camera = row.video_info;
-        if (camera?.source_groups?.length) {
+        if (camera?.source_groups?.length && !prefs?.muteVideo) {
           requests.push({
             endpointId: camera.endpoint_id || `cam-${row.user_id ?? row.chat_id ?? "x"}`,
             kind: "camera",
@@ -1850,7 +1873,7 @@ export function MessageChatVoiceBar({
               sourceIds: g.source_ids,
             })),
           });
-        } else if (camera?.endpoint_id?.trim()) {
+        } else if (camera?.endpoint_id?.trim() && !prefs?.muteVideo) {
           pendingGroups.push({
             user: row.title || String(row.user_id ?? row.chat_id ?? "?"),
             kind: "camera",
@@ -1962,14 +1985,153 @@ export function MessageChatVoiceBar({
   const resolveParticipantSpeaking = useCallback(
     (row: TelegramChatVoiceParticipant) => {
       if (row.is_muted) return false;
+      const prefs = participantMediaPrefs[voiceParticipantPrefsKey(row)];
+      const volume =
+        prefs?.volumePercent ??
+        (typeof row.volume_percent === "number" ? row.volume_percent : 100);
+      if (volume <= 0) return false;
       return Boolean(
         speakingByKey[canonicalSpeakKey(row)] ||
           speakingByKey[participantSpeakKey(row)] ||
           row.is_speaking,
       );
     },
-    [canonicalSpeakKey, participantSpeakKey, speakingByKey],
+    [canonicalSpeakKey, participantMediaPrefs, participantSpeakKey, speakingByKey],
   );
+
+  const ensureParticipantPrefs = useCallback(
+    (participant: TelegramChatVoiceParticipant) => {
+      const key = voiceParticipantPrefsKey(participant);
+      const existing = participantMediaPrefsRef.current[key];
+      if (existing) return { key, prefs: existing };
+      const volumePercent =
+        typeof participant.volume_percent === "number" ? participant.volume_percent : 100;
+      const prefs = { volumePercent, muteVideo: false, muteScreen: false };
+      return { key, prefs };
+    },
+    [],
+  );
+
+  const onParticipantVolumeChange = useCallback(
+    (participant: TelegramChatVoiceParticipant, volumePercent: number) => {
+      const { key, prefs } = ensureParticipantPrefs(participant);
+      const nextPercent = Math.min(200, Math.max(0, Math.round(volumePercent)));
+      if (nextPercent > 0) lastNonZeroVolumeRef.current[key] = nextPercent;
+      setParticipantMediaPrefs((prev) => ({
+        ...prev,
+        [key]: { ...prefs, ...prev[key], volumePercent: nextPercent },
+      }));
+      // Debounce TDLib writes — slider fires every tick; local gain updates immediately
+      // via the participantMediaPrefs → setParticipantListenVolumes effect.
+      if (volumeApiTimerRef.current != null) {
+        window.clearTimeout(volumeApiTimerRef.current);
+      }
+      volumeApiTimerRef.current = window.setTimeout(() => {
+        volumeApiTimerRef.current = null;
+        void setTelegramChatVoiceParticipantVolume({
+          chatId,
+          groupCallId,
+          userId: participant.user_id,
+          peerChatId: participant.chat_id,
+          volumePercent: nextPercent,
+        }).then((result) => {
+          if (!result.ok) {
+            appWarn("[voice-participant-volume]", result.error, {
+              chatId,
+              groupCallId,
+              userId: participant.user_id,
+            });
+            return;
+          }
+          setParticipantMediaPrefs((prev) => ({
+            ...prev,
+            [key]: {
+              ...(prev[key] ?? prefs),
+              volumePercent: result.volume_percent,
+            },
+          }));
+          if (result.volume_percent > 0) {
+            lastNonZeroVolumeRef.current[key] = result.volume_percent;
+          }
+        });
+      }, 120);
+    },
+    [chatId, ensureParticipantPrefs, groupCallId],
+  );
+
+  const onParticipantToggleMuteVoice = useCallback(
+    (participant: TelegramChatVoiceParticipant) => {
+      const { key, prefs } = ensureParticipantPrefs(participant);
+      const current =
+        participantMediaPrefsRef.current[key]?.volumePercent ?? prefs.volumePercent;
+      const next = current > 0 ? 0 : lastNonZeroVolumeRef.current[key] || 100;
+      onParticipantVolumeChange(participant, next);
+    },
+    [ensureParticipantPrefs, onParticipantVolumeChange],
+  );
+
+  const onParticipantToggleMuteVideo = useCallback(
+    (participant: TelegramChatVoiceParticipant) => {
+      const { key, prefs } = ensureParticipantPrefs(participant);
+      setParticipantMediaPrefs((prev) => {
+        const cur = prev[key] ?? prefs;
+        return { ...prev, [key]: { ...cur, muteVideo: !cur.muteVideo } };
+      });
+    },
+    [ensureParticipantPrefs],
+  );
+
+  const onParticipantToggleMuteScreen = useCallback(
+    (participant: TelegramChatVoiceParticipant) => {
+      const { key, prefs } = ensureParticipantPrefs(participant);
+      setParticipantMediaPrefs((prev) => {
+        const cur = prev[key] ?? prefs;
+        return { ...prev, [key]: { ...cur, muteScreen: !cur.muteScreen } };
+      });
+    },
+    [ensureParticipantPrefs],
+  );
+
+  // Push local listen volumes into the WebRTC mix GainNode (TDLib alone does not
+  // attenuate our SFU audio track).
+  useEffect(() => {
+    if (!voiceJoined || Platform.OS !== "web") return;
+    const volumes: Record<string, number> = {};
+    const participantKeys: string[] = [];
+    const speakingKeys: string[] = [];
+    for (const row of participants) {
+      if (row.is_self) continue;
+      const key = voiceParticipantPrefsKey(row);
+      participantKeys.push(key);
+      const prefs = participantMediaPrefs[key];
+      const volumePercent =
+        prefs?.volumePercent ??
+        (typeof row.volume_percent === "number" ? row.volume_percent : 100);
+      volumes[key] = volumePercent;
+      // Include volume-0 peers who are speaking so we can silence the mix when
+      // only muted listeners would otherwise be heard.
+      const peerSpeaking = Boolean(
+        !row.is_muted &&
+          (speakingByKey[canonicalSpeakKey(row)] ||
+            speakingByKey[participantSpeakKey(row)] ||
+            row.is_speaking),
+      );
+      if (peerSpeaking) speakingKeys.push(key);
+    }
+    setParticipantListenVolumes({
+      volumes,
+      speakingKeys,
+      participantKeys,
+    });
+  }, [
+    voiceJoined,
+    participants,
+    participantMediaPrefs,
+    speakingByKey,
+    canonicalSpeakKey,
+    participantSpeakKey,
+    setParticipantListenVolumes,
+  ]);
 
   // Opening the sheet: paint first, then load roster. Do NOT wait for WebRTC
   // `joined` — that delayed the first reload until after SDP and left the sheet
@@ -2733,10 +2895,21 @@ export function MessageChatVoiceBar({
   const onLeaveRefForDock = useRef(onLeave);
   onLeaveRefForDock.current = onLeave;
 
-  // When the messages column is hidden (Swap/Trade/…) but we are still in the
-  // call, publish a global dock so the preview stays at the top of that page.
+  // When the sheet is minimized (or the messages column is hidden) but we are
+  // still in the call, publish a global dock so Swap/Trade/… and 2-column home
+  // keep a live preview — not only the 3-column chat layout.
   useEffect(() => {
-    if (!joined || !voiceSession.joined || visible) {
+    if (!joined || !voiceSession.joined) {
+      setActiveVoiceDock(null);
+      return;
+    }
+    if (popoverOpen) {
+      setActiveVoiceDock(null);
+      return;
+    }
+    // In-chat strip covers the focused messages column; publish dock whenever
+    // that column is not focused OR whenever the strip is not shown.
+    if (visible && showStrip) {
       setActiveVoiceDock(null);
       return;
     }
@@ -2760,6 +2933,8 @@ export function MessageChatVoiceBar({
   }, [
     chatId,
     joined,
+    popoverOpen,
+    showStrip,
     title,
     totalParticipantCount,
     visible,
@@ -3016,6 +3191,11 @@ export function MessageChatVoiceBar({
         onScreenShareDisplaySize={voiceSession.setScreenShareDisplaySize}
         chatMessages={voiceChatMessages}
         onSendChatMessage={onSendVoiceChatMessage}
+        participantMediaPrefs={participantMediaPrefs}
+        onParticipantVolumeChange={onParticipantVolumeChange}
+        onParticipantToggleMuteVoice={onParticipantToggleMuteVoice}
+        onParticipantToggleMuteVideo={onParticipantToggleMuteVideo}
+        onParticipantToggleMuteScreen={onParticipantToggleMuteScreen}
       />
     </>
   );
