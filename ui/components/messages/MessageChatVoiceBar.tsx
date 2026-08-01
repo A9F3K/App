@@ -462,9 +462,17 @@ export function MessageChatVoiceBar({
     setPresenceConfirmed(false);
     softPollAbortRef.current?.abort();
     speakingHoldUntilRef.current.clear();
+    lastTdlibSpeakingAtRef.current.clear();
+    mixCarrySpeakingKeysRef.current.clear();
+    recentSpeakerFaceKeysRef.current.clear();
+    mixSilentSinceRef.current = 0;
     if (speakingHoldTimerRef.current) {
       clearTimeout(speakingHoldTimerRef.current);
       speakingHoldTimerRef.current = null;
+    }
+    if (mixSpeakingExtendTimerRef.current) {
+      clearInterval(mixSpeakingExtendTimerRef.current);
+      mixSpeakingExtendTimerRef.current = null;
     }
     // Only reset on chat change — groupCallId often fills in after the first poll
     // and must not wipe presence (that remounted WebRTC/SSE in a tight loop).
@@ -475,6 +483,10 @@ export function MessageChatVoiceBar({
       if (speakingHoldTimerRef.current) {
         clearTimeout(speakingHoldTimerRef.current);
         speakingHoldTimerRef.current = null;
+      }
+      if (mixSpeakingExtendTimerRef.current) {
+        clearInterval(mixSpeakingExtendTimerRef.current);
+        mixSpeakingExtendTimerRef.current = null;
       }
       if (speakingRafRef.current != null && typeof window !== "undefined") {
         window.clearTimeout(speakingRafRef.current);
@@ -518,7 +530,21 @@ export function MessageChatVoiceBar({
   const streamRevisionRef = useRef(0);
   /** Hold only matters for poll fallback — SSE speaking updates are already live. */
   const speakingHoldUntilRef = useRef(new Map<string, number>());
+  /** Last time TDLib/SSE marked this key speaking — mix RMS can extend that hold. */
+  const lastTdlibSpeakingAtRef = useRef(new Map<string, number>());
+  /**
+   * While inbound mix energy stays up, keep these roster keys green even after
+   * SSE speakingCount drops to 0 (common right after WebRTC join).
+   */
+  const mixCarrySpeakingKeysRef = useRef(new Set<string>());
+  /**
+   * Faces from pre-join / thin recent_speakers SSE. TDLib often never sets
+   * is_speaking for listeners; mix RMS can still light these known faces.
+   */
+  const recentSpeakerFaceKeysRef = useRef(new Set<string>());
+  const mixSilentSinceRef = useRef(0);
   const speakingHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mixSpeakingExtendTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   /** Coalesce speaking setState to one rAF — Telegram Web toggles CSS, not React storms. */
   const pendingSpeakingMapRef = useRef<Record<string, true> | null>(null);
   const speakingRafRef = useRef<number | null>(null);
@@ -563,12 +589,43 @@ export function MessageChatVoiceBar({
     [],
   );
 
+  /** Remember recent_speakers faces so mix RMS can light them when TDLib is_speaking stays 0. */
+  const seedRecentSpeakerFaces = useCallback(
+    (
+      rows: TelegramChatVoiceParticipant[],
+      options?: { force?: boolean; countHint?: number },
+    ) => {
+      const joinedLocally = voiceJoinedRef.current;
+      const hint = Math.max(0, options?.countHint ?? rosterTotalHintRef.current);
+      const thin =
+        Boolean(options?.force) ||
+        !joinedLocally ||
+        (hint > 0 && rows.length > 0 && rows.length < hint) ||
+        (rows.length > 0 && rows.length <= 3);
+      if (!thin) return;
+      for (const row of rows) {
+        if (row.is_self) continue;
+        const keys = [canonicalSpeakKey(row), participantSpeakKey(row)];
+        const title = row.title.trim();
+        if (title) keys.push(`t:${title}`);
+        for (const key of keys) {
+          if (key === "self") continue;
+          recentSpeakerFaceKeysRef.current.add(key);
+          // Also prime mix carry so post-join energy has somewhere to land.
+          mixCarrySpeakingKeysRef.current.add(key);
+        }
+      }
+    },
+    [canonicalSpeakKey, participantSpeakKey],
+  );
+
   const applySpeakingMap = useCallback(
     (rows: TelegramChatVoiceParticipant[]) => {
       // Speaking glow lives in speakingByKey so membership rows stay referentially
-      // stable (tdesktop / Telegram Web parity). Keep hold short so mics clear.
+      // stable (tdesktop / Telegram Web parity). Hold matches gateway so SSE
+      // flaps do not drop green before mix RMS can extend recent speakers.
       const now = Date.now();
-      const holdMs = 3_200;
+      const holdMs = 8_000;
       let soonestExpiry = 0;
       const next: Record<string, true> = {};
       const joinedLocally = voiceJoinedRef.current;
@@ -592,14 +649,15 @@ export function MessageChatVoiceBar({
                 description: row.description || prev.description,
                 user_id: row.user_id && row.user_id > 0 ? row.user_id : prev.user_id,
                 chat_id: row.chat_id && row.chat_id !== 0 ? row.chat_id : prev.chat_id,
-                is_speaking: Boolean(row.is_speaking || prev.is_speaking),
+                is_speaking: Boolean(row.is_speaking),
                 // Speaking ⇒ unmuted. Orderless recent_speakers stubs omit mute —
                 // never remute a live unmuted roster row from a silent stub.
+                // Do NOT sticky-keep prev.is_speaking — that left greens after mute.
                 is_muted: Boolean(row.is_speaking)
                   ? false
-                  : !row.is_muted
-                    ? false
-                    : Boolean(prev.is_muted),
+                  : !String(row.order ?? "").trim()
+                    ? Boolean(prev.is_muted)
+                    : Boolean(row.is_muted),
                 // Keep roster is_self — thin speaking stubs must not promote others to self.
                 is_self: prev.is_self,
               }
@@ -616,8 +674,13 @@ export function MessageChatVoiceBar({
           canonicalSpeakKey(row),
           participantSpeakKey(row),
         ]);
+        const title = row.title.trim();
+        if (title) keys.add(`t:${title}`);
         for (const speakKey of keys) {
           speakingHoldUntilRef.current.set(speakKey, now + holdMs);
+          lastTdlibSpeakingAtRef.current.set(speakKey, now);
+          mixCarrySpeakingKeysRef.current.add(speakKey);
+          recentSpeakerFaceKeysRef.current.add(speakKey);
           next[speakKey] = true;
         }
       };
@@ -651,23 +714,10 @@ export function MessageChatVoiceBar({
           continue;
         }
         if (row.is_muted) {
-          // Thin SSE remutes speakers (stubs default muted=true). While inbound
-          // mix has energy, keep any live speaking hold and reopen that mic —
-          // wiping here left Сева grey after join despite remote_speaking=true.
-          const until = Math.max(
-            speakingHoldUntilRef.current.get(key) ?? 0,
-            speakingHoldUntilRef.current.get(rosterKey) ?? 0,
-          );
-          if (remoteSpeakingRef.current && until > now) {
-            next[key] = true;
-            if (rosterKey !== key) next[rosterKey] = true;
-            unmuteKeys.add(key);
-            unmuteKeys.add(rosterKey);
-            if (soonestExpiry === 0 || until < soonestExpiry) soonestExpiry = until;
-          } else if (!remoteSpeakingRef.current) {
-            speakingHoldUntilRef.current.delete(key);
-            if (rosterKey !== key) speakingHoldUntilRef.current.delete(rosterKey);
-          }
+          // Muted + not speaking: clear green holds. Mix energy must not reopen
+          // muted mics (everyone-muted calls looked unmuted/green).
+          speakingHoldUntilRef.current.delete(key);
+          if (rosterKey !== key) speakingHoldUntilRef.current.delete(rosterKey);
           continue;
         }
         const until = Math.max(
@@ -807,6 +857,8 @@ export function MessageChatVoiceBar({
       });
       // Speaking map updates separately — never rebuild membership for a mic pulse.
       applySpeakingMap(withLocalSpeaking);
+      // Thin / pre-join payloads are recent_speakers — remember faces for mix paint.
+      seedRecentSpeakerFaces(withLocalSpeaking, { countHint });
 
       const prev = participantsRef.current;
       let next = withLocalSpeaking;
@@ -887,10 +939,13 @@ export function MessageChatVoiceBar({
         const merged = prev.map((row) => {
           const inc = nextByKey.get(speakKey(row));
           if (!inc) return row;
-          // Thin recent_speakers stubs omit mute — never remute from them.
-          // Unmute (false) and speaking both open the mic chrome.
-          const nextMuted =
-            Boolean(inc.is_speaking) || !inc.is_muted ? false : Boolean(row.is_muted);
+          // Thin recent_speakers stubs omit mute — never remute OR unmute from them
+          // unless they are actively speaking (open mic while talking).
+          const nextMuted = Boolean(inc.is_speaking)
+            ? false
+            : !String(inc.order ?? "").trim()
+              ? Boolean(row.is_muted)
+              : Boolean(inc.is_muted);
           const nextTitle = inc.title.trim() || row.title;
           const nextDescription = inc.description || row.description;
           const nextEmoji =
@@ -989,23 +1044,13 @@ export function MessageChatVoiceBar({
             return prevMatch;
           }
           // Orderless recent_speakers stubs must not remute an open mic. Real
-          // mute updates always carry a participant order string from TDLib.
-          // With has_hidden_listeners, muted faces aren't in the visible list —
-          // ordered remutes of already-open remotes are almost always stale
-          // (Сева/замбоеды painted red after a good unmuted first paint).
-          const nextMuted =
-            Boolean(row.is_speaking) || !row.is_muted
+          // mute updates always carry a participant order string from TDLib —
+          // trust those so everyone-muted calls show muted chrome.
+          const nextMuted = Boolean(row.is_speaking)
+            ? false
+            : !String(row.order ?? "").trim() && prevMatch && !prevMatch.is_muted
               ? false
-              : prevMatch &&
-                  !prevMatch.is_muted &&
-                  !row.is_self &&
-                  hasHiddenListenersRef.current
-                ? false
-                : !String(row.order ?? "").trim() &&
-                    prevMatch &&
-                    !prevMatch.is_muted
-                  ? false
-                  : Boolean(row.is_muted);
+              : Boolean(row.is_muted);
           return {
             ...row,
             is_speaking: false,
@@ -1121,7 +1166,7 @@ export function MessageChatVoiceBar({
         setRosterCountHint(totalHint);
       }
     },
-    [applySpeakingMap, chatId, participantSpeakKey, participantsEqual],
+    [applySpeakingMap, chatId, participantSpeakKey, participantsEqual, seedRecentSpeakerFaces],
   );
 
   const pendingStreamSnapRef = useRef<VoiceParticipantsStreamSnapshot | null>(null);
@@ -1190,8 +1235,8 @@ export function MessageChatVoiceBar({
           prevListed,
           hint: countHint,
         });
-        // Thin recent_speakers stubs omit mute — only open mics here
-        // (unmute / speaking). Never remute an unmuted roster face from stubs.
+        // Thin recent_speakers stubs omit mute — only open mics when speaking.
+        // Never unmute a muted roster face from a silent stub.
         const speakKey = participantSpeakKey;
         const byKey = new Map(rows.map((row) => [speakKey(row), row]));
         setParticipants((prev) => {
@@ -1199,8 +1244,7 @@ export function MessageChatVoiceBar({
           const next = prev.map((row) => {
             if (row.is_self) return row;
             const inc = byKey.get(speakKey(row));
-            if (!inc) return row;
-            if (!(Boolean(inc.is_speaking) || !inc.is_muted)) return row;
+            if (!inc || !inc.is_speaking) return row;
             if (!row.is_muted) return row;
             changed = true;
             return { ...row, is_muted: false };
@@ -1262,6 +1306,9 @@ export function MessageChatVoiceBar({
       streamRevisionRef.current = Math.max(streamRevisionRef.current, snapshot.revision);
       // Speaking must update immediately (green mics). Membership thrash is throttled.
       applySpeakingMap(snapshot.participants);
+      seedRecentSpeakerFaces(snapshot.participants, {
+        countHint: snapshot.participant_count,
+      });
       pendingStreamSnapRef.current = snapshot;
       const listed = participantsRef.current.length;
       const hint = Math.max(rosterTotalHintRef.current, snapshot.participant_count);
@@ -1322,7 +1369,7 @@ export function MessageChatVoiceBar({
         flushPendingStreamSnap();
       }, minMs - sinceLast);
     },
-    [applySpeakingMap, cancelStreamRosterFlush, flushPendingStreamSnap],
+    [applySpeakingMap, cancelStreamRosterFlush, flushPendingStreamSnap, seedRecentSpeakerFaces],
   );
 
   useEffect(() => {
@@ -1567,102 +1614,131 @@ export function MessageChatVoiceBar({
     }
   }, [joined, voiceSession.localSpeaking, voiceSession.micActive]);
 
-  // Mix RMS is not per-participant identity. When TDLib speaking flaps to 0 while
-  // inbound audio is live (common after WebRTC join), paint unmuted remotes only.
-  // Never paint muted faces; never fall back to the whole roster.
-  useEffect(() => {
-    if (!joined || !voiceSession.remoteSpeaking) return;
+  // Mix RMS is not per-participant identity. Use it only to:
+  // 1) keep green on people TDLib recently marked speaking (SSE often drops to
+  //    speakingCount=0 after join while audio continues),
+  // 2) attribute audio when exactly one remote is unmuted.
+  // Never paint the whole unmuted roster green from the mix.
+  const MIX_SPEAKING_GRACE_MS = 120_000;
+  const MIX_SPEAKING_HOLD_MS = 2_400;
+  const extendMixSpeakingHolds = useCallback(() => {
+    if (!voiceJoinedRef.current || !remoteSpeakingRef.current) return;
+    mixSilentSinceRef.current = 0;
     const roster = participantsRef.current;
     const remotes = roster.filter(
       (row) => !row.is_self && canonicalSpeakKey(row) !== "self",
     );
-    let unmutedRemotes = remotes.filter((row) => !row.is_muted);
-    // Stale mute after join: if mix has energy but every remote looks muted,
-    // reopen mics that still have a speaking hold from the strip / prior SSE.
-    if (unmutedRemotes.length === 0 && remotes.length > 0) {
-      const nowHold = Date.now();
-      const held = remotes.filter((row) => {
-        const key = canonicalSpeakKey(row);
-        const rosterKey = participantSpeakKey(row);
+    if (remotes.length === 0) return;
+    const now = Date.now();
+    const graceMs = MIX_SPEAKING_GRACE_MS;
+    const holdMs = MIX_SPEAKING_HOLD_MS;
+    const rowKeys = (row: TelegramChatVoiceParticipant) => {
+      const keys = [canonicalSpeakKey(row), participantSpeakKey(row)];
+      const title = row.title.trim();
+      if (title) keys.push(`t:${title}`);
+      return keys;
+    };
+    const isRecentSpeaker = (row: TelegramChatVoiceParticipant) => {
+      const keys = rowKeys(row);
+      return keys.some((key) => {
+        const seen = lastTdlibSpeakingAtRef.current.get(key) ?? 0;
+        const until = speakingHoldUntilRef.current.get(key) ?? 0;
         return (
-          (speakingHoldUntilRef.current.get(key) ?? 0) > nowHold ||
-          (speakingHoldUntilRef.current.get(rosterKey) ?? 0) > nowHold ||
-          Boolean(speakingByKeyRef.current[key]) ||
-          Boolean(speakingByKeyRef.current[rosterKey])
+          mixCarrySpeakingKeysRef.current.has(key) ||
+          recentSpeakerFaceKeysRef.current.has(key) ||
+          (seen > 0 && now - seen < graceMs) ||
+          until > now ||
+          Boolean(speakingByKeyRef.current[key])
         );
       });
-      if (held.length > 0) {
-        setParticipants((prev) => {
-          let changed = false;
-          const next = prev.map((row) => {
-            if (!row.is_muted || row.is_self) return row;
-            const key = canonicalSpeakKey(row);
-            const rosterKey = participantSpeakKey(row);
-            if (
-              !held.some(
-                (h) =>
-                  canonicalSpeakKey(h) === key || participantSpeakKey(h) === rosterKey,
-              )
-            ) {
-              return row;
-            }
-            changed = true;
-            return { ...row, is_muted: false };
-          });
-          return changed ? next : prev;
-        });
-        unmutedRemotes = held;
-      } else if (remotes.length === 1) {
-        // Solo remote + live mix ⇒ that person is the speaker (tdesktop-ish).
-        const only = remotes[0];
-        setParticipants((prev) =>
-          prev.map((row) =>
-            row.is_self || !row.is_muted
-              ? row
-              : canonicalSpeakKey(row) === canonicalSpeakKey(only)
-                ? { ...row, is_muted: false }
-                : row,
-          ),
-        );
-        unmutedRemotes = [only];
-      } else {
-        logPageDisplay("messages_voice_remote_speaking_no_unmuted", {
+    };
+    // Seed carry set from whoever is already painted / recently TDLib-marked.
+    if (mixCarrySpeakingKeysRef.current.size === 0) {
+      for (const row of remotes) {
+        if (!isRecentSpeaker(row)) continue;
+        for (const key of rowKeys(row)) mixCarrySpeakingKeysRef.current.add(key);
+      }
+      for (const key of Object.keys(speakingByKeyRef.current)) {
+        mixCarrySpeakingKeysRef.current.add(key);
+      }
+    }
+    let targets = remotes.filter((row) => !row.is_muted && isRecentSpeaker(row));
+    // Never reopen muted mics from mix energy — when the call is all-muted the
+    // UI must show muted chrome, not green/open.
+    if (targets.length === 0) {
+      const unmutedRemotes = remotes.filter((row) => !row.is_muted);
+      if (unmutedRemotes.length === 1) {
+        targets = unmutedRemotes;
+      } else if (unmutedRemotes.length === 0) {
+        logPageDisplay("messages_voice_roster_speaking_skip", {
           chatId,
+          unmutedCount: 0,
+          recentFaces: recentSpeakerFaceKeysRef.current.size,
+          carry: mixCarrySpeakingKeysRef.current.size,
           listed: roster.length,
-          remotes: remotes.length,
-          popoverOpen: popoverOpenRef.current,
+          source: "remote_audio_all_muted",
+          level: "info",
+        });
+        return;
+      } else if (
+        recentSpeakerFaceKeysRef.current.size === 0 &&
+        mixCarrySpeakingKeysRef.current.size === 0
+      ) {
+        // Audible mix + no TDLib identity + no strip seed. Cap at 3 open mics.
+        const seedRows = unmutedRemotes.slice(0, 3);
+        for (const row of seedRows) {
+          for (const key of rowKeys(row)) {
+            recentSpeakerFaceKeysRef.current.add(key);
+            mixCarrySpeakingKeysRef.current.add(key);
+          }
+        }
+        targets = seedRows;
+        logPageDisplay("messages_voice_roster_speaking_seed", {
+          chatId,
+          unmutedCount: unmutedRemotes.length,
+          seeded: seedRows.length,
+          listed: roster.length,
+          source: "remote_audio_no_tdlib_cap3",
           level: "warn",
-          note: "mix audio live but all remotes is_muted — cannot attribute speaker",
+        });
+      } else {
+        logPageDisplay("messages_voice_roster_speaking_skip", {
+          chatId,
+          unmutedCount: unmutedRemotes.length,
+          recentFaces: recentSpeakerFaceKeysRef.current.size,
+          carry: mixCarrySpeakingKeysRef.current.size,
+          listed: roster.length,
+          source: "remote_audio_no_targets",
+          level: "warn",
         });
         return;
       }
     }
-    const tdlibSpeakingLive = unmutedRemotes.some(
-      (row) =>
-        speakingByKeyRef.current[canonicalSpeakKey(row)] ||
-        speakingByKeyRef.current[participantSpeakKey(row)] ||
-        row.is_speaking,
-    );
-    // Multiple unmuted faces: only fill when TDLib currently marks nobody.
-    if (unmutedRemotes.length > 1 && tdlibSpeakingLive) return;
-    const targets = unmutedRemotes;
-    const now = Date.now();
-    const holdMs = 2_200;
     for (const row of targets) {
-      const keys = [canonicalSpeakKey(row), participantSpeakKey(row)];
-      for (const key of keys) {
+      for (const key of rowKeys(row)) {
         speakingHoldUntilRef.current.set(key, now + holdMs);
+        mixCarrySpeakingKeysRef.current.add(key);
+        if (!lastTdlibSpeakingAtRef.current.has(key)) {
+          lastTdlibSpeakingAtRef.current.set(key, now);
+        }
       }
     }
     setSpeakingByKey((prev) => {
       let changed = false;
       const next = { ...prev };
       for (const row of targets) {
-        for (const key of [canonicalSpeakKey(row), participantSpeakKey(row)]) {
+        for (const key of rowKeys(row)) {
           if (!next[key]) {
             next[key] = true;
             changed = true;
           }
+        }
+      }
+      for (const key of Object.keys(prev)) {
+        const until = speakingHoldUntilRef.current.get(key) ?? 0;
+        if (until > now && !next[key]) {
+          next[key] = true;
+          changed = true;
         }
       }
       if (!changed) return prev;
@@ -1674,7 +1750,7 @@ export function MessageChatVoiceBar({
         listed: roster.length,
         applyMs: 0,
         popoverOpen: popoverOpenRef.current,
-        source: "remote_audio_level_unmuted_only",
+        source: "remote_audio_level_recent_or_solo",
       });
       return next;
     });
@@ -1683,6 +1759,8 @@ export function MessageChatVoiceBar({
     }
     speakingHoldTimerRef.current = setTimeout(() => {
       speakingHoldTimerRef.current = null;
+      // Interval keeps extending while mix is live; only clear when silence holds.
+      if (remoteSpeakingRef.current && voiceJoinedRef.current) return;
       const expired = Date.now();
       setSpeakingByKey((prev) => {
         let changed = false;
@@ -1699,7 +1777,93 @@ export function MessageChatVoiceBar({
         return changed ? next : prev;
       });
     }, holdMs + 50);
-  }, [canonicalSpeakKey, chatId, joined, participantSpeakKey, voiceSession.remoteSpeaking]);
+  }, [canonicalSpeakKey, chatId, participantSpeakKey]);
+
+  // On join, re-seed mix carry from the last TDLib speaking pulse (often seen on
+  // the strip before WebRTC connects). Without this, a pre-join silence wipe or
+  // a long open→join gap left carry empty while mix energy had nowhere to land.
+  useEffect(() => {
+    if (!joined) return;
+    const now = Date.now();
+    for (const [key, seen] of lastTdlibSpeakingAtRef.current.entries()) {
+      if (seen > 0 && now - seen < MIX_SPEAKING_GRACE_MS) {
+        mixCarrySpeakingKeysRef.current.add(key);
+      }
+    }
+    for (const key of Object.keys(speakingByKeyRef.current)) {
+      mixCarrySpeakingKeysRef.current.add(key);
+    }
+    // Strip faces before join are TDLib recent_speakers — keep them as mix targets
+    // even when is_speaking never pulsed (common for listen-only joins).
+    for (const key of recentSpeakerFaceKeysRef.current) {
+      mixCarrySpeakingKeysRef.current.add(key);
+    }
+  }, [joined]);
+
+  useEffect(() => {
+    if (mixSpeakingExtendTimerRef.current != null) {
+      clearInterval(mixSpeakingExtendTimerRef.current);
+      mixSpeakingExtendTimerRef.current = null;
+    }
+    if (!joined || !voiceSession.remoteSpeaking) {
+      if (!voiceSession.remoteSpeaking) {
+        if (mixSilentSinceRef.current === 0) mixSilentSinceRef.current = Date.now();
+      }
+      // Only clear carry after real post-join mix silence. Clearing while the
+      // strip is preview-only wiped the TDLib pulse before the user joined, so
+      // greens never returned once WebRTC heard people talking.
+      const silenceClearTimer =
+        joined &&
+        !voiceSession.remoteSpeaking &&
+        typeof window !== "undefined"
+          ? window.setTimeout(() => {
+              if (voiceJoinedRef.current && !remoteSpeakingRef.current) {
+                mixCarrySpeakingKeysRef.current.clear();
+              }
+            }, 750)
+          : null;
+      // Mix went quiet — expire holds on schedule (do not wipe immediately; flaps).
+      const now = Date.now();
+      let soonest = 0;
+      for (const until of speakingHoldUntilRef.current.values()) {
+        if (until > now && (soonest === 0 || until < soonest)) soonest = until;
+      }
+      if (soonest > now) {
+        if (speakingHoldTimerRef.current != null) {
+          clearTimeout(speakingHoldTimerRef.current);
+        }
+        speakingHoldTimerRef.current = setTimeout(() => {
+          speakingHoldTimerRef.current = null;
+          const expired = Date.now();
+          setSpeakingByKey((prev) => {
+            let changed = false;
+            const next = { ...prev };
+            for (const [key, until] of speakingHoldUntilRef.current.entries()) {
+              if (until <= expired) {
+                speakingHoldUntilRef.current.delete(key);
+                if (next[key]) {
+                  delete next[key];
+                  changed = true;
+                }
+              }
+            }
+            return changed ? next : prev;
+          });
+        }, soonest - now + 16);
+      }
+      return () => {
+        if (silenceClearTimer != null) window.clearTimeout(silenceClearTimer);
+      };
+    }
+    extendMixSpeakingHolds();
+    mixSpeakingExtendTimerRef.current = setInterval(extendMixSpeakingHolds, 900);
+    return () => {
+      if (mixSpeakingExtendTimerRef.current != null) {
+        clearInterval(mixSpeakingExtendTimerRef.current);
+        mixSpeakingExtendTimerRef.current = null;
+      }
+    };
+  }, [extendMixSpeakingHolds, joined, voiceSession.remoteSpeaking]);
 
   // As soon as we join locally, show self immediately — don't wait for the first
   // poll (solo muted calls often come back empty until TDLib catches up).

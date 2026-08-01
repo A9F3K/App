@@ -289,10 +289,10 @@ function readCanUnmuteSelf(
 }
 
 /**
- * Chrome mute for the painted roster. With has_hidden_listeners, TDLib omits
- * muted listeners from the participant list — only raised-hand muted faces stay
- * visible. A muted flag on a visible non-hand remote is almost always stale and
- * painted open-mic people as permanently red.
+ * Chrome mute for the painted roster. Trust TDLib's mute flag except while the
+ * person is actively speaking (open-mic + green). Do NOT clear mute for
+ * has_hidden_listeners — that left every self-muted face looking unmuted when
+ * the whole call went silent.
  */
 function resolvePaintedMuted(input: {
   muted: boolean;
@@ -302,10 +302,10 @@ function resolvePaintedMuted(input: {
   isPinnedSelf: boolean;
 }): boolean {
   if (input.isSpeaking) return false;
-  if (!input.muted) return false;
-  if (input.isPinnedSelf) return true;
-  if (input.hasHiddenListeners && !input.isHandRaised) return false;
-  return true;
+  void input.isHandRaised;
+  void input.hasHiddenListeners;
+  void input.isPinnedSelf;
+  return Boolean(input.muted);
 }
 
 type CollectedParticipant = {
@@ -338,9 +338,11 @@ function volumeLevelToPercent(level: number): number {
   return Math.min(200, Math.max(0, Math.round(level / 100)));
 }
 
-/** tdesktop keeps speaking painted ~1s past the last level; keep hold short so
- * green mics clear when people stop (2.5s looked "stuck after load"). */
-const SPEAKING_HOLD_MS = 2_400;
+/** tdesktop keeps speaking painted ~1s past the last level. After join TDLib
+ * often stops pulsing is_speaking while audio continues — hold long enough for
+ * the next pulse / client mix-RMS extend of recent speakers; still clears when
+ * silence outlasts the hold. */
+const SPEAKING_HOLD_MS = 8_000;
 
 function effectiveSpeaking(row: CollectedParticipant, now: number): boolean {
   if (row.isSpeaking) return true;
@@ -610,10 +612,23 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
     const prev = cached.members.get(key);
     const videoInfo = normalizeVideoInfo(participant.video_info);
     const screenInfo = normalizeVideoInfo(participant.screen_sharing_video_info);
-    // Roster/order-sync updates often carry is_speaking=false while the person is
-    // mid-sentence (speaking arrived via recent_speakers). Keep a short hold so
-    // green mics don't get wiped by every unrelated participant update.
-    const lastSpokeAt = isSpeaking ? now : prev?.lastSpokeAt;
+    const mutedFromTdlib =
+      readMutedForAllUsers(participant) ?? (prev?.isMuted ?? false);
+    const isHandRaised = readHandRaised(participant);
+    const canUnmuteSelf =
+      readCanUnmuteSelf(participant) ?? prev?.canUnmuteSelf ?? true;
+    const isPinnedSelf = userId != null && pinnedSelfUserIds.has(userId);
+    const volumeLevel =
+      participant.volume_level != null
+        ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)
+        : (prev?.volumeLevel ?? 10000);
+    // Muting clears the speaking hold immediately — otherwise SPEAKING_HOLD_MS
+    // kept green/open-mic chrome after everyone turned their mics off.
+    const lastSpokeAt = isSpeaking
+      ? now
+      : mutedFromTdlib
+        ? undefined
+        : prev?.lastSpokeAt;
     const effPrev = prev != null && effectiveSpeaking(prev, now);
     const effNext =
       isSpeaking || (lastSpokeAt != null && now - lastSpokeAt < SPEAKING_HOLD_MS);
@@ -632,16 +647,6 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
     mediaCleared =
       (Boolean(prev?.videoInfo?.endpoint_id) && !nextVideo?.endpoint_id) ||
       (Boolean(prev?.screenInfo?.endpoint_id) && !nextScreen?.endpoint_id);
-    const mutedFromTdlib =
-      readMutedForAllUsers(participant) ?? (prev?.isMuted ?? false);
-    const isHandRaised = readHandRaised(participant);
-    const canUnmuteSelf =
-      readCanUnmuteSelf(participant) ?? prev?.canUnmuteSelf ?? true;
-    const isPinnedSelf = userId != null && pinnedSelfUserIds.has(userId);
-    const volumeLevel =
-      participant.volume_level != null
-        ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)
-        : (prev?.volumeLevel ?? 10000);
     cached.members.set(key, {
       userId,
       chatId,
@@ -649,8 +654,6 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       lastSpokeAt,
       isHandRaised,
       canUnmuteSelf,
-      // Speaking / has_hidden_listeners gate — never leave open-mic remotes red
-      // from a stale is_muted_for_all_users on the visible list.
       isMuted: resolvePaintedMuted({
         muted: mutedFromTdlib,
         isSpeaking,
@@ -709,6 +712,7 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
     cached.hasHiddenListeners = Boolean(groupCall.has_hidden_listeners);
   }
   const speakers = speakersFromGroupCall(groupCall, cached.speakers);
+  const prevSpeakersSnapshot = cached.speakers;
   const countHint = Number(groupCall.participant_count);
   if (Number.isFinite(countHint) && countHint >= 0) {
     const nextHint = Math.trunc(countHint);
@@ -728,24 +732,39 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
       continue;
     }
     const isSpeaking = Boolean(speaker.isSpeaking);
+    const newlyListed = prevSpeakersSnapshot?.get(key) == null;
     // recent_speakers flaps false while people are mid-sentence. Promote true;
     // on false only drop the live flag and let lastSpokeAt hold expire — never
     // refresh lastSpokeAt to `now` (that pinned speakingCount forever / to 0).
-    if (isSpeaking) {
-      if (!prev.isSpeaking) speakingBecameTrue = true;
-      cached.members.set(key, {
-        ...prev,
-        isSpeaking: true,
-        lastSpokeAt: now,
-        // recent_speakers omit mute — open mic while speaking so SSE does not
-        // keep is_muted=true and block green paint on the client.
-        isMuted: false,
-      });
-      changed = true;
-      const lastRefresh = cached.lastSpeakingRefreshAt ?? 0;
-      if (now - lastRefresh >= 900) {
-        cached.lastSpeakingRefreshAt = now;
-        speakingRefresh = true;
+    // Newly listed faces (Telegram rotated the list) also pulse — listen-only
+    // clients often never see is_speaking=true.
+    if (isSpeaking || newlyListed) {
+      if (isSpeaking) {
+        if (!prev.isSpeaking) speakingBecameTrue = true;
+        cached.members.set(key, {
+          ...prev,
+          isSpeaking: true,
+          lastSpokeAt: now,
+          isMuted: false,
+        });
+        changed = true;
+        const lastRefresh = cached.lastSpeakingRefreshAt ?? 0;
+        if (now - lastRefresh >= 900) {
+          cached.lastSpeakingRefreshAt = now;
+          speakingRefresh = true;
+        }
+        continue;
+      }
+      // newlyListed without is_speaking: pulse hold only for open-mic faces.
+      // Muted people entering recent_speakers must stay muted/grey.
+      if (!prev.isMuted && !effectiveSpeaking(prev, now)) {
+        speakingBecameTrue = true;
+        cached.members.set(key, {
+          ...prev,
+          isSpeaking: false,
+          lastSpokeAt: now,
+        });
+        changed = true;
       }
       continue;
     }
@@ -764,7 +783,7 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
   // sends no updateGroupCallParticipant, so the members map is often self-only —
   // the stream must fall back to these stubs (like the poll path) or the dialog
   // shows one grey row while the header counts 5.
-  const prevSpeakers = cached.speakers;
+  const prevSpeakers = prevSpeakersSnapshot;
   let speakersChanged = (prevSpeakers?.size ?? 0) !== speakers.size;
   for (const [key, speaker] of speakers) {
     const prev = prevSpeakers?.get(key);
@@ -1005,9 +1024,8 @@ function speakersFromGroupCall(
       speaker.is_speaking ?? (speaker as { isSpeaking?: boolean }).isSpeaking,
     );
     const prev = prevSpeakers?.get(key);
-    // Only pulse lastSpokeAt when TDLib says speaking — inventing `now` for every
-    // recent_speakers row (is_speaking=false) painted the whole roster green for
-    // SPEAKING_HOLD_MS after every soft poll / join load.
+    // Only pulse lastSpokeAt when TDLib says speaking. Newly-listed silent faces
+    // must not invent a speaking hold — that painted muted calls green/open-mic.
     const lastSpokeAt = isSpeaking ? now : prev?.lastSpokeAt;
     map.set(key, {
       userId,
@@ -1024,6 +1042,16 @@ function speakersFromGroupCall(
       volumeLevel: prev?.volumeLevel ?? 10000,
       order: "",
     });
+  }
+  // Empty recent_speakers mid-call is often a flap (esp. right after join). Keep
+  // prior stubs that are still inside the speaking hold so SSE speakingCount
+  // does not drop to 0 for a full silence window while people are mid-sentence.
+  if (map.size === 0 && prevSpeakers && prevSpeakers.size > 0) {
+    for (const [key, prev] of prevSpeakers) {
+      if (effectiveSpeaking(prev, now)) {
+        map.set(key, { ...prev, isSpeaking: false });
+      }
+    }
   }
   return map;
 }
@@ -1049,10 +1077,9 @@ function applySpeakingOverlay(
       lastSpokeAt: liveSpeaking
         ? now
         : (row.lastSpokeAt ?? speaker?.lastSpokeAt),
-      // Open mic chrome while speaking OR listed in recent_speakers — mute flags
-      // on silent recent speakers were stale under has_hidden_listeners and painted
-      // open-mic remotes permanently red after the first good stub paint.
-      isMuted: liveSpeaking || Boolean(speaker) ? false : row.isMuted,
+      // Open mic only while actively speaking. Mere presence in recent_speakers
+      // used to force isMuted=false so a silent/muted call looked all-unmuted.
+      isMuted: liveSpeaking ? false : row.isMuted,
       order: row.order || speaker?.order || "",
     });
   }

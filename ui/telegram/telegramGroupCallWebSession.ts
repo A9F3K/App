@@ -353,6 +353,8 @@ export class TelegramGroupCallWebSession {
   private remoteSpeakingTimer: ReturnType<typeof setInterval> | null = null;
   private remoteSpeakingAnalyser: AnalyserNode | null = null;
   private remoteSpeakingSource: MediaStreamAudioSourceNode | null = null;
+  /** Cloned from the live remote track so HTML <audio> playback cannot starve the meter. */
+  private remoteSpeakingTrack: MediaStreamTrack | null = null;
   /** Consecutive low-RMS samples while unmuted — triggers HTML-audio fallback. */
   private remoteSilenceTicks = 0;
   private remotePlaybackSink: "webaudio" | "html_audio" = "webaudio";
@@ -2289,7 +2291,7 @@ export class TelegramGroupCallWebSession {
     }
   }
 
-  private stopRemoteSpeakingMonitor(): void {
+  private stopRemoteSpeakingMonitor(options?: { keepSpeaking?: boolean }): void {
     if (this.remoteSpeakingTimer != null) {
       clearInterval(this.remoteSpeakingTimer);
       this.remoteSpeakingTimer = null;
@@ -2305,7 +2307,13 @@ export class TelegramGroupCallWebSession {
     }
     this.remoteSpeakingSource = null;
     this.remoteSpeakingAnalyser = null;
-    if (this.remoteSpeaking) this.setRemoteSpeaking(false);
+    try {
+      this.remoteSpeakingTrack?.stop();
+    } catch {
+      // ignore
+    }
+    this.remoteSpeakingTrack = null;
+    if (this.remoteSpeaking && !options?.keepSpeaking) this.setRemoteSpeaking(false);
   }
 
   /** Level-meter the mixed remote track so green mics work when SSE speaking stays 0. */
@@ -2319,22 +2327,39 @@ export class TelegramGroupCallWebSession {
     try {
       const ctx = this.ensurePlaybackContext() ?? new AudioContext();
       if (!this.playbackCtx) this.playbackCtx = ctx;
-      const snapshot = new MediaStream([track]);
+      // Clone so HTML <audio> + WebAudio playback do not leave the meter silent
+      // (Chrome often starves a shared MediaStreamSource after sink flips).
+      let meterTrack: MediaStreamTrack = track;
+      try {
+        meterTrack = track.clone();
+        meterTrack.enabled = true;
+        this.remoteSpeakingTrack = meterTrack;
+      } catch {
+        this.remoteSpeakingTrack = null;
+        meterTrack = track;
+      }
+      const snapshot = new MediaStream([meterTrack]);
       const source = ctx.createMediaStreamSource(snapshot);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.55;
+      analyser.smoothingTimeConstant = 0.4;
       source.connect(analyser);
       // Do not connect analyser → destination (playback already has its own graph).
       this.remoteSpeakingSource = source;
       this.remoteSpeakingAnalyser = analyser;
       this.remoteSilenceTicks = 0;
       const data = new Uint8Array(analyser.frequencyBinCount);
-      const ON_RMS = 0.015;
-      const OFF_RMS = 0.008;
+      const ON_RMS = 0.01;
+      const OFF_RMS = 0.005;
       const MIN_FLIP_MS = 180;
+      /** Require sustained silence before clearing — brief dips were flapping
+       * remoteSpeaking every 200ms and tore down the mix→green extend interval. */
+      const OFF_HOLD_TICKS = 8;
       let lastFlipAt = 0;
       let speaking = this.remoteSpeaking;
+      let offHoldTicks = 0;
+      let lastRmsLogAt = 0;
+      let peakRms = 0;
 
       const sample = () => {
         if (!this.joined || !this.remoteSpeakingAnalyser) return;
@@ -2343,6 +2368,8 @@ export class TelegramGroupCallWebSession {
           .some((t) => t.readyState === "live" && !t.muted);
         if (!live) {
           this.remoteSilenceTicks = 0;
+          peakRms = 0;
+          offHoldTicks = 0;
           if (speaking) {
             speaking = false;
             lastFlipAt = Date.now();
@@ -2357,10 +2384,31 @@ export class TelegramGroupCallWebSession {
           sum += centered * centered;
         }
         const rms = Math.sqrt(sum / data.length);
+        if (rms > peakRms) peakRms = rms;
         const now = Date.now();
+        if (now - lastRmsLogAt >= 4_000) {
+          lastRmsLogAt = now;
+          logPageDisplay("messages_voice_remote_rms", {
+            chatId: this.input.chatId,
+            groupCallId: this.input.groupCallId,
+            rms: Number(rms.toFixed(4)),
+            peakRms: Number(peakRms.toFixed(4)),
+            speaking,
+            sink: this.remotePlaybackSink,
+            level: "info",
+          });
+          peakRms = rms;
+        }
         let next = speaking;
-        if (!speaking && rms >= ON_RMS) next = true;
-        else if (speaking && rms <= OFF_RMS) next = false;
+        if (rms >= ON_RMS) {
+          offHoldTicks = 0;
+          if (!speaking) next = true;
+        } else if (rms <= OFF_RMS) {
+          offHoldTicks += 1;
+          if (speaking && offHoldTicks >= OFF_HOLD_TICKS) next = false;
+        } else {
+          offHoldTicks = 0;
+        }
         if (next !== speaking && now - lastFlipAt >= MIN_FLIP_MS) {
           speaking = next;
           lastFlipAt = now;
@@ -2423,6 +2471,12 @@ export class TelegramGroupCallWebSession {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
       });
+    }
+    // Rebuild the meter on a fresh clone after the sink flip — the prior
+    // MediaStreamSource often stays at RMS=0 while HTML audio is hearable.
+    this.stopRemoteSpeakingMonitor({ keepSpeaking: true });
+    if (stream.getAudioTracks().some((t) => t.readyState === "live" && !t.muted)) {
+      this.startRemoteSpeakingMonitor();
     }
   }
 
