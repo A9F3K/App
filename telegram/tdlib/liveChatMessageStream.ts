@@ -6,7 +6,8 @@ import {
 } from "./liveChatMessageRevisionNotify.js";
 
 const STREAM_HEARTBEAT_MS = 25_000;
-const STREAM_MAX_MS = 55_000;
+/** Direct browser SSE — no Vercel 60s cap; still recycle so clients remint cleanly. */
+const STREAM_MAX_MS = 600_000;
 
 function writeSse(res: http.ServerResponse, event: string, data: object): void {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);

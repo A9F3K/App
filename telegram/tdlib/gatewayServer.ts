@@ -10,6 +10,11 @@ import { serveVoiceParticipantsStream } from "./voiceParticipantsStream.js";
 import { serveVoiceCallMessagesStream } from "./voiceCallMessagesStream.js";
 import { buildChatListSyncStatus } from "./chatListSyncState.js";
 import {
+  gatewayStreamKindForPath,
+  verifyStreamTicket,
+  type StreamTicketPayload,
+} from "./streamTicket.js";
+import {
   disconnectUserSession,
   gatewayHealth,
   getChatAvatarImageForUser,
@@ -41,6 +46,7 @@ import {
   RESYNC_RESTORE_SESSION_WAIT_MS,
   searchChatsForUser,
   searchContactsForUser,
+  searchMessagesChatIdsForUser,
   focusChatForUser,
   viewChatInboxMessagesForUser,
   startConnectAttempt,
@@ -98,6 +104,47 @@ function authorized(req: http.IncomingMessage): boolean {
   return typeof header === "string" && header === secret;
 }
 
+function applyGatewayBrowserCors(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const origin = req.headers.origin;
+  if (typeof origin === "string" && origin.trim()) {
+    res.setHeader("Access-Control-Allow-Origin", origin.trim());
+    res.setHeader("Vary", "Origin");
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function authorizeStreamRequest(
+  req: http.IncomingMessage,
+  url: URL,
+  pathname: string,
+): { ok: true; via: "secret" | "ticket"; ticket: StreamTicketPayload | null } | { ok: false } {
+  if (authorized(req)) {
+    return { ok: true, via: "secret", ticket: null };
+  }
+  const streamKind = gatewayStreamKindForPath(pathname);
+  if (!streamKind) return { ok: false };
+  const token = (url.searchParams.get("streamTicket") || "").trim();
+  if (!token) return { ok: false };
+  const chatIdRaw = Number(url.searchParams.get("chatId"));
+  const chatId =
+    Number.isFinite(chatIdRaw) && chatIdRaw !== 0 ? Math.trunc(chatIdRaw) : null;
+  const groupCallIdRaw = Number(url.searchParams.get("groupCallId"));
+  const groupCallId =
+    Number.isFinite(groupCallIdRaw) && groupCallIdRaw > 0
+      ? Math.trunc(groupCallIdRaw)
+      : null;
+  const ticket = verifyStreamTicket(token, {
+    stream: streamKind,
+    chatId: streamKind === "chats" ? null : chatId,
+    groupCallId,
+  });
+  if (!ticket) return { ok: false };
+  return { ok: true, via: "ticket", ticket };
+}
+
 function liveChatPeerUserIdForLog(telegramUsername: string, chatId: number): number | undefined {
   const row = getLiveChatList(telegramUsername)?.find((c) => c.telegram_chat_id === chatId);
   return safeTelegramUserIdForLog(row?.peer_user_id);
@@ -113,6 +160,13 @@ export function startTdlibGatewayServer(): http.Server {
         }
         const url = new URL(req.url, "http://127.0.0.1");
         const pathname = url.pathname;
+
+        if (req.method === "OPTIONS") {
+          applyGatewayBrowserCors(req, res);
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
 
         if (req.method === "GET" && (pathname === "/" || pathname === "/v1/health")) {
           const persistedUsernames = listPersistedSessionUsernames();
@@ -133,10 +187,14 @@ export function startTdlibGatewayServer(): http.Server {
           return;
         }
 
-        if (!authorized(req)) {
+        const streamAuth = authorizeStreamRequest(req, url, pathname);
+        if (!streamAuth.ok) {
           logGateway("unauthorized", { method: req.method, path: pathname });
           sendJson(res, 401, { ok: false, error: "unauthorized" });
           return;
+        }
+        if (streamAuth.via === "ticket") {
+          applyGatewayBrowserCors(req, res);
         }
 
         if (req.method === "GET" && pathname === "/v1/connect/persisted") {
@@ -250,6 +308,57 @@ export function startTdlibGatewayServer(): http.Server {
           return;
         }
 
+        if (req.method === "GET" && pathname === "/v1/chats/search") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const query = (url.searchParams.get("query") || "").trim();
+          if (!telegramUsername || !query) {
+            sendJson(res, 400, { ok: false, error: "username_and_query_required" });
+            return;
+          }
+          const [contacts, chats, messageChatIds] = await Promise.all([
+            searchContactsForUser(telegramUsername, query),
+            searchChatsForUser(telegramUsername, query),
+            searchMessagesChatIdsForUser(telegramUsername, query),
+          ]);
+          const chatIds = new Set<number>();
+          const peerUserIds = new Set<number>();
+          for (const row of chats) {
+            if (Number.isFinite(row.chatId) && row.chatId !== 0) chatIds.add(Math.trunc(row.chatId));
+            if (row.peerUserId != null && Number.isFinite(row.peerUserId) && row.peerUserId !== 0) {
+              peerUserIds.add(Math.trunc(row.peerUserId));
+            }
+          }
+          for (const row of contacts) {
+            if (row.chatId != null && Number.isFinite(row.chatId) && row.chatId !== 0) {
+              chatIds.add(Math.trunc(row.chatId));
+            }
+            if (Number.isFinite(row.userId) && row.userId !== 0) {
+              peerUserIds.add(Math.trunc(row.userId));
+            }
+          }
+          for (const chatId of messageChatIds) {
+            if (Number.isFinite(chatId) && chatId !== 0) chatIds.add(Math.trunc(chatId));
+          }
+          logGateway("chats_search_served", {
+            telegramUsername,
+            query,
+            contactCount: contacts.length,
+            chatCount: chats.length,
+            messageChatCount: messageChatIds.length,
+            chatIdCount: chatIds.size,
+            peerUserIdCount: peerUserIds.size,
+          });
+          sendJson(res, 200, {
+            ok: true,
+            chatIds: [...chatIds],
+            peerUserIds: [...peerUserIds],
+            contacts,
+            chats,
+            messageChatIds,
+          });
+          return;
+        }
+
         if (req.method === "GET" && pathname === "/v1/chats/list") {
           const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
           if (!telegramUsername) {
@@ -327,7 +436,11 @@ export function startTdlibGatewayServer(): http.Server {
         }
 
         if (req.method === "GET" && pathname === "/v1/chats/stream") {
-          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const telegramUsername = (
+            streamAuth.ticket?.sub ||
+            url.searchParams.get("telegramUsername") ||
+            ""
+          ).trim();
           if (!telegramUsername) {
             sendJson(res, 400, { ok: false, error: "username_required" });
             return;
@@ -347,10 +460,21 @@ export function startTdlibGatewayServer(): http.Server {
         }
 
         if (req.method === "GET" && pathname === "/v1/chat/messages/stream") {
-          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const telegramUsername = (
+            streamAuth.ticket?.sub ||
+            url.searchParams.get("telegramUsername") ||
+            ""
+          ).trim();
           const chatId = Number(url.searchParams.get("chatId"));
           if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          if (
+            streamAuth.ticket?.chatId != null &&
+            streamAuth.ticket.chatId !== Math.trunc(chatId)
+          ) {
+            sendJson(res, 403, { ok: false, error: "ticket_chat_mismatch" });
             return;
           }
           const sinceRevisionRaw = url.searchParams.get("sinceRevision");
@@ -1015,11 +1139,22 @@ export function startTdlibGatewayServer(): http.Server {
         }
 
         if (req.method === "GET" && pathname === "/v1/chat/voice/participants/stream") {
-          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const telegramUsername = (
+            streamAuth.ticket?.sub ||
+            url.searchParams.get("telegramUsername") ||
+            ""
+          ).trim();
           const chatId = Number(url.searchParams.get("chatId"));
           const groupCallId = normalizeTelegramGroupCallId(url.searchParams.get("groupCallId"));
           if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          if (
+            streamAuth.ticket?.chatId != null &&
+            streamAuth.ticket.chatId !== Math.trunc(chatId)
+          ) {
+            sendJson(res, 403, { ok: false, error: "ticket_chat_mismatch" });
             return;
           }
           const sinceRevisionRaw = url.searchParams.get("sinceRevision");
@@ -1063,11 +1198,22 @@ export function startTdlibGatewayServer(): http.Server {
         }
 
         if (req.method === "GET" && pathname === "/v1/chat/voice/messages/stream") {
-          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const telegramUsername = (
+            streamAuth.ticket?.sub ||
+            url.searchParams.get("telegramUsername") ||
+            ""
+          ).trim();
           const chatId = Number(url.searchParams.get("chatId"));
           const groupCallId = normalizeTelegramGroupCallId(url.searchParams.get("groupCallId"));
           if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          if (
+            streamAuth.ticket?.chatId != null &&
+            streamAuth.ticket.chatId !== Math.trunc(chatId)
+          ) {
+            sendJson(res, 403, { ok: false, error: "ticket_chat_mismatch" });
             return;
           }
           const sinceRevisionRaw = url.searchParams.get("sinceRevision");

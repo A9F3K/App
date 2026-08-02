@@ -38,6 +38,7 @@ export type FetchTelegramChatVoiceParticipantsResult =
       participant_count: number;
       has_active_voice_chat: boolean;
       voice_chat_group_call_id: number | null;
+      voice_chat_is_joined: boolean;
       voice_resolve_source: string;
       loaded_all_participants: boolean;
       has_hidden_listeners: boolean;
@@ -128,6 +129,7 @@ export async function fetchTelegramChatVoiceParticipants(
     participant_count?: number;
     has_active_voice_chat?: boolean;
     voice_chat_group_call_id?: unknown;
+    voice_chat_is_joined?: boolean;
     voice_resolve_source?: string;
     loaded_all_participants?: boolean;
     has_hidden_listeners?: boolean;
@@ -174,13 +176,22 @@ export async function fetchTelegramChatVoiceParticipants(
   const rawCount = Number.isFinite(Number(json.participant_count))
     ? Number(json.participant_count)
     : participants.length;
+  // TDLib getChat often reports participant_count=0 while still returning rows.
+  const participantCount = Math.max(rawCount, participants.length);
+  const voiceJoined =
+    Boolean(json.voice_chat_is_joined) || participants.some((row) => row.is_self);
+  // Defense in depth: empty bound group calls must not paint as live even if a
+  // stale gateway still sets has_active_voice_chat from is_active alone.
+  const hasActiveVoiceChat =
+    Boolean(json.has_active_voice_chat) &&
+    (participantCount > 0 || participants.length > 0 || voiceJoined);
   return {
     ok: true,
     participants,
-    // TDLib getChat often reports participant_count=0 while still returning rows.
-    participant_count: Math.max(rawCount, participants.length),
-    has_active_voice_chat: Boolean(json.has_active_voice_chat) || voiceCallId != null,
+    participant_count: participantCount,
+    has_active_voice_chat: hasActiveVoiceChat,
     voice_chat_group_call_id: voiceCallId,
+    voice_chat_is_joined: voiceJoined,
     voice_resolve_source:
       typeof json.voice_resolve_source === "string" ? json.voice_resolve_source : "none",
     loaded_all_participants: Boolean(json.loaded_all_participants),

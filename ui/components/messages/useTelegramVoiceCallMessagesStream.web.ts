@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
-import { buildApiUrl } from "../../../api/_base";
 import { logPageDisplay } from "../../pageDisplayLog";
+import { resolveTelegramLiveStreamUrl } from "../../telegram/resolveTelegramLiveStreamUrl";
 import {
   parseTelegramVoiceCallMessage,
   type TelegramVoiceCallMessage,
@@ -18,7 +18,7 @@ type Options = {
 const STREAM_RECONNECT_MS = 3_000;
 
 /**
- * SSE for TDLib updateNewGroupCallMessage — in-call ephemeral chat overlays.
+ * SSE for TDLib updateNewGroupCallMessage — prefers direct gateway; falls back to Vercel proxy.
  */
 export function useTelegramVoiceCallMessagesStream({
   enabled,
@@ -42,87 +42,103 @@ export function useTelegramVoiceCallMessagesStream({
     let closed = false;
     let es: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let mintAbort: AbortController | null = null;
 
     const open = () => {
       if (closed) return;
-      const params = new URLSearchParams({
+      es?.close();
+      mintAbort?.abort();
+      mintAbort = new AbortController();
+
+      const proxyParams = new URLSearchParams({
         chat_id: String(Math.trunc(chatId)),
       });
       if (groupCallId != null && groupCallId > 0) {
-        params.set("group_call_id", String(groupCallId));
+        proxyParams.set("group_call_id", String(groupCallId));
       }
       const since = getSinceRevisionRef.current();
       if (since != null && since > 0) {
-        params.set("since_revision", String(since));
+        proxyParams.set("since_revision", String(since));
       }
-      const url = buildApiUrl(
-        `/api/telegram-messages-voice-call-messages-stream?${params.toString()}`,
-      );
-      es = new EventSource(url, { withCredentials: true });
+      const proxyPath = `/api/telegram-messages-voice-call-messages-stream?${proxyParams.toString()}`;
 
-      es.addEventListener("ready", (event) => {
-        try {
-          const data = JSON.parse((event as MessageEvent).data) as {
-            revision?: number;
-            messages?: unknown;
-          };
-          const revision = Number(data.revision);
-          const messages = Array.isArray(data.messages)
-            ? data.messages
-                .map((row) => parseTelegramVoiceCallMessage(row))
-                .filter((row): row is TelegramVoiceCallMessage => row != null)
-            : [];
-          onReadyRef.current(
-            messages,
-            Number.isFinite(revision) && revision >= 0 ? revision : 0,
-          );
-        } catch {
-          /* ignore malformed */
-        }
-      });
-
-      es.addEventListener("call_message", (event) => {
-        try {
-          const data = JSON.parse((event as MessageEvent).data) as {
-            revision?: number;
-            message?: unknown;
-          };
-          const row = parseTelegramVoiceCallMessage(data.message);
-          if (!row) return;
-          const revision = Number(data.revision);
-          onMessageRef.current(
-            row,
-            Number.isFinite(revision) && revision >= 0 ? revision : 0,
-          );
-        } catch {
-          /* ignore malformed */
-        }
-      });
-
-      es.addEventListener("reconnect", () => {
-        es?.close();
-        es = null;
+      void resolveTelegramLiveStreamUrl({
+        stream: "voice_messages",
+        proxyPath,
+        chatId,
+        groupCallId,
+        sinceRevision: since,
+        signal: mintAbort.signal,
+      }).then(({ url, mode }) => {
         if (closed) return;
-        reconnectTimer = setTimeout(open, STREAM_RECONNECT_MS);
-      });
+        es = new EventSource(url);
 
-      es.onerror = () => {
-        es?.close();
-        es = null;
-        if (closed) return;
-        reconnectTimer = setTimeout(open, STREAM_RECONNECT_MS);
-        logPageDisplay("messages_voice_call_messages_stream_error", {
-          chatId,
-          groupCallId,
-          level: "warn",
+        es.addEventListener("ready", (event) => {
+          try {
+            const data = JSON.parse((event as MessageEvent).data) as {
+              revision?: number;
+              messages?: unknown;
+            };
+            const revision = Number(data.revision);
+            const messages = Array.isArray(data.messages)
+              ? data.messages
+                  .map((row) => parseTelegramVoiceCallMessage(row))
+                  .filter((row): row is TelegramVoiceCallMessage => row != null)
+              : [];
+            onReadyRef.current(
+              messages,
+              Number.isFinite(revision) && revision >= 0 ? revision : 0,
+            );
+          } catch {
+            /* ignore malformed */
+          }
         });
-      };
+
+        es.addEventListener("call_message", (event) => {
+          try {
+            const data = JSON.parse((event as MessageEvent).data) as {
+              revision?: number;
+              message?: unknown;
+            };
+            const row = parseTelegramVoiceCallMessage(data.message);
+            if (!row) return;
+            const revision = Number(data.revision);
+            onMessageRef.current(
+              row,
+              Number.isFinite(revision) && revision >= 0 ? revision : 0,
+            );
+          } catch {
+            /* ignore malformed */
+          }
+        });
+
+        es.addEventListener("reconnect", () => {
+          es?.close();
+          es = null;
+          if (closed) return;
+          reconnectTimer = setTimeout(open, STREAM_RECONNECT_MS);
+        });
+
+        es.onerror = () => {
+          es?.close();
+          es = null;
+          if (closed) return;
+          reconnectTimer = setTimeout(open, STREAM_RECONNECT_MS);
+          logPageDisplay("messages_voice_call_messages_stream_error", {
+            chatId,
+            groupCallId,
+            mode,
+            level: "warn",
+          });
+        };
+      });
     };
 
     open();
 
     return () => {
       closed = true;
+      mintAbort?.abort();
       if (reconnectTimer) clearTimeout(reconnectTimer);
       es?.close();
     };

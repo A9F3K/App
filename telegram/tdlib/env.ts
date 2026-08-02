@@ -31,6 +31,21 @@ export function getGatewayBaseUrl(): string {
   return `http://127.0.0.1:${getGatewayPort()}`;
 }
 
+/**
+ * Public HTTPS origin browsers use for direct SSE.
+ * Prefer `TDLIB_GATEWAY_PUBLIC_URL` when the internal URL differs; else reuse
+ * `TDLIB_GATEWAY_URL` when it is already a browser-reachable https origin.
+ */
+export function getGatewayPublicBaseUrl(): string | null {
+  const publicUrl = (process.env.TDLIB_GATEWAY_PUBLIC_URL || "").trim().replace(/\/$/, "");
+  if (publicUrl) return publicUrl;
+  const base = getGatewayBaseUrl();
+  if (/^https:\/\//i.test(base)) return base;
+  // Local gateway is fine for local web (and EventSource to localhost).
+  if (/^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(base)) return base;
+  return null;
+}
+
 export function getTelegramApiCredentials(): { apiId: number; apiHash: string } | null {
   const apiIdRaw = (process.env.TELEGRAM_API_ID || "").trim();
   const apiHash = (process.env.TELEGRAM_API_HASH || "").trim();

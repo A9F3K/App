@@ -8,7 +8,14 @@ import { applyAuthApiCors, authApiPreflightResponse } from "../_lib/auth-cors.js
 import { telegramUsernameFromSessionCookie } from "../_lib/session-auth.js";
 import { appLog, safeTelegramUserIdForLog, telegramUserIdLogField } from "../../shared/appLog.js";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
-import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFetchUserProfile, gatewayBlockUser, gatewayUnblockUser, gatewaySearchChatLinks, gatewaySearchChatMedia, gatewayCreatePrivateCall, gatewayGetPrivateCall, gatewayDiscardPrivateCall, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayOpenChatMessagesStream, gatewayOpenVoiceParticipantsStream, gatewayOpenVoiceCallMessagesStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayDeleteChatMessages,   gatewayJoinChatVoice, gatewaySetChatVoiceMicMuted, gatewaySetChatVoiceParticipantVolume, gatewaySetChatVoiceParticipantSpeaking, gatewayStartChatVoice, gatewayLeaveChatVoice, gatewayStartChatVoiceScreenShare, gatewayEndChatVoiceScreenShare, gatewaySendChatVoiceCallMessage, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
+import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFetchUserProfile, gatewayBlockUser, gatewayUnblockUser, gatewaySearchChatLinks, gatewaySearchChatMedia, gatewayCreatePrivateCall, gatewayGetPrivateCall, gatewayDiscardPrivateCall, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayOpenChatMessagesStream, gatewayOpenVoiceParticipantsStream, gatewayOpenVoiceCallMessagesStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayDeleteChatMessages,   gatewayJoinChatVoice, gatewaySetChatVoiceMicMuted, gatewaySetChatVoiceParticipantVolume, gatewaySetChatVoiceParticipantSpeaking, gatewayStartChatVoice, gatewayLeaveChatVoice, gatewayStartChatVoiceScreenShare, gatewayEndChatVoiceScreenShare, gatewaySendChatVoiceCallMessage, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewaySearchChats, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
+import { getGatewayPublicBaseUrl } from "../../telegram/tdlib/env.js";
+import {
+  gatewayStreamPathForKind,
+  isGatewayStreamKind,
+  mintStreamTicket,
+  type GatewayStreamKind,
+} from "../../telegram/tdlib/streamTicket.js";
 
 type NodeRes = {
   status: (code: number) => void;
@@ -246,6 +253,7 @@ function mapLiveChats(live: { chats: Record<string, unknown>[]; revision: number
     })(),
     has_active_voice_chat: Boolean(row.has_active_voice_chat),
     voice_chat_group_call_id: normalizeTelegramGroupCallId(row.voice_chat_group_call_id),
+    voice_chat_is_joined: Boolean(row.voice_chat_is_joined),
     pending_deleted_message_ids: Array.isArray(row.pending_deleted_message_ids)
       ? row.pending_deleted_message_ids
           .map((id) => Number(id))
@@ -2637,6 +2645,7 @@ export async function telegramMessagesVoiceParticipantsHandler(
       participant_count: result.participant_count,
       has_active_voice_chat: result.has_active_voice_chat,
       voice_chat_group_call_id: result.voice_chat_group_call_id,
+      voice_chat_is_joined: Boolean(result.voice_chat_is_joined),
       voice_resolve_source: result.voice_resolve_source,
       loaded_all_participants: Boolean(result.loaded_all_participants),
       has_hidden_listeners: Boolean(result.has_hidden_listeners),
@@ -2746,6 +2755,174 @@ export async function telegramMessagesResolveChatHandler(
     request,
     res,
     { ok: true, chat: mapResolvedChatRow(result.chat) },
+    200,
+  );
+}
+
+export async function telegramMessagesSearchHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
+  }
+
+  const url = requestUrl(request);
+  const query = (url.searchParams.get("query") || "").trim();
+  if (!query) {
+    return finishJson(request, res, { ok: true, chatIds: [], peerUserIds: [] }, 200);
+  }
+
+  const started = Date.now();
+  const result = await gatewaySearchChats(userOrRes, query);
+  logTelegramMessagesApi("messages_search", {
+    telegramUsername: userOrRes,
+    query,
+    ok: !result.error,
+    chatIdCount: result.chatIds.length,
+    peerUserIdCount: result.peerUserIds.length,
+    error: result.error,
+    elapsedMs: Date.now() - started,
+  });
+
+  if (result.error) {
+    return finishJson(
+      request,
+      res,
+      {
+        ok: false,
+        error: result.error,
+        chatIds: [],
+        peerUserIds: [],
+      },
+      result.error === "session_not_ready" || result.error === "session_restoring" ? 503 : 502,
+    );
+  }
+
+  return finishJson(
+    request,
+    res,
+    { ok: true, chatIds: result.chatIds, peerUserIds: result.peerUserIds },
+    200,
+  );
+}
+
+/** Mint a short-lived ticket so the browser can open SSE directly on the gateway. */
+export async function telegramMessagesStreamTicketHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return;
+    }
+    return userOrRes;
+  }
+
+  const connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    return finishJson(request, res, { ok: false, error: "not_connected", connected: false }, 403);
+  }
+
+  const gatewayBaseUrl = getGatewayPublicBaseUrl();
+  if (!gatewayBaseUrl) {
+    return finishJson(request, res, { ok: false, error: "gateway_public_url_unavailable" }, 503);
+  }
+
+  const url = requestUrl(request);
+  const streamRaw = (url.searchParams.get("stream") || "").trim();
+  if (!isGatewayStreamKind(streamRaw)) {
+    return finishJson(request, res, { ok: false, error: "invalid_stream" }, 400);
+  }
+  const stream = streamRaw as GatewayStreamKind;
+  const chatIdRaw = Number(url.searchParams.get("chat_id"));
+  const chatId =
+    Number.isFinite(chatIdRaw) && chatIdRaw !== 0 ? Math.trunc(chatIdRaw) : null;
+  const groupCallIdRaw = Number(url.searchParams.get("group_call_id"));
+  const groupCallId =
+    Number.isFinite(groupCallIdRaw) && groupCallIdRaw > 0
+      ? Math.trunc(groupCallIdRaw)
+      : null;
+
+  if (
+    (stream === "history" ||
+      stream === "voice_participants" ||
+      stream === "voice_messages") &&
+    (chatId == null || chatId === 0)
+  ) {
+    return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
+  }
+
+  const minted = mintStreamTicket({
+    telegramUsername: userOrRes,
+    stream,
+    chatId,
+    groupCallId,
+  });
+  const path = gatewayStreamPathForKind(stream);
+  const params = new URLSearchParams({
+    telegramUsername: userOrRes,
+    streamTicket: minted.token,
+  });
+  if (chatId != null) params.set("chatId", String(chatId));
+  if (groupCallId != null) params.set("groupCallId", String(groupCallId));
+  const sinceRevisionRaw = url.searchParams.get("since_revision");
+  if (sinceRevisionRaw != null && sinceRevisionRaw.trim() !== "") {
+    const sinceRevision = Number(sinceRevisionRaw);
+    if (Number.isFinite(sinceRevision) && sinceRevision > 0) {
+      params.set("sinceRevision", String(Math.trunc(sinceRevision)));
+    }
+  }
+
+  const streamUrl = `${gatewayBaseUrl}${path}?${params.toString()}`;
+  logTelegramMessagesApi("messages_stream_ticket", {
+    telegramUsername: userOrRes,
+    stream,
+    chatId,
+    groupCallId,
+    expiresAt: minted.expiresAt,
+  });
+
+  return finishJson(
+    request,
+    res,
+    {
+      ok: true,
+      stream,
+      gatewayBaseUrl,
+      path,
+      token: minted.token,
+      expiresAt: minted.expiresAt,
+      url: streamUrl,
+    },
     200,
   );
 }

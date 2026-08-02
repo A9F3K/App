@@ -2,6 +2,14 @@
 export const MESSAGE_CHAT_HEADER_STRIP_HEIGHT_PX = 55;
 /** Active voice-chat strip under the open-chat header. */
 export const MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX = 44;
+/** Chat-list search field — same height as the voice-strip Join button. */
+export const MESSAGE_CHAT_LIST_SEARCH_FIELD_HEIGHT_PX = 30;
+/** @deprecated Strip band retired; field sits flush with list top/bottom insets. */
+export const MESSAGE_CHAT_LIST_SEARCH_STRIP_HEIGHT_PX = MESSAGE_CHAT_LIST_SEARCH_FIELD_HEIGHT_PX;
+/** Gap above search (to divider). */
+export const MESSAGE_CHAT_LIST_SEARCH_VERTICAL_INSET_PX = 10;
+/** Gap below search (to first chat hover top). */
+export const MESSAGE_CHAT_LIST_SEARCH_MARGIN_BELOW_PX = 5;
 /** Overlapping participant avatars in the voice strip. */
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_PX = 28;
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX = 10;
@@ -478,6 +486,21 @@ export function isAtLoadedChatTail(
 export const LIST_TOP_INSET_PX = 15;
 export const LIST_ROW_GAP_PX = 15;
 export const LIST_BOTTOM_INSET_PX = 15;
+/** Gap under the search field before the first chat hover top edge. */
+export function chatListSearchMarginBelowPx(_widePressHighlight?: boolean): number {
+  return MESSAGE_CHAT_LIST_SEARCH_MARGIN_BELOW_PX;
+}
+
+export function chatListSearchBlockHeightPx(widePressHighlight?: boolean): number {
+  return MESSAGE_CHAT_LIST_SEARCH_FIELD_HEIGHT_PX + chatListSearchMarginBelowPx(widePressHighlight);
+}
+
+/**
+ * @deprecated Use {@link chatListSearchBlockHeightPx}.
+ * Search strip + gap before the first chat row.
+ */
+export const MESSAGE_CHAT_LIST_SEARCH_BLOCK_HEIGHT_PX =
+  MESSAGE_CHAT_LIST_SEARCH_FIELD_HEIGHT_PX + LIST_ROW_GAP_PX;
 /** Wide-layout row press highlight: padding above/below the 40px row content. */
 export const LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX = 7.5;
 

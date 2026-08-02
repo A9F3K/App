@@ -183,12 +183,11 @@ export async function sendChatVoiceCallMessage(
         can_send_messages?: boolean;
         are_messages_allowed?: boolean;
       };
-      if (!groupCall.is_joined && !groupCall.need_rejoin) {
-        return { ok: false, error: "GROUPCALL_JOIN_MISSING", message: null };
-      }
       if (groupCall.are_messages_allowed === false || groupCall.can_send_messages === false) {
         return { ok: false, error: "messages_not_allowed", message: null };
       }
+      // Do not hard-fail on !is_joined here — getGroupCall can lag while WebRTC
+      // is still live. sendGroupCallMessage is the source of truth.
     } catch {
       // Fall through — getGroupCall can race during join.
     }

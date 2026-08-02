@@ -64,6 +64,7 @@ export type TelegramVoiceSession = {
     speakingKeys?: string[];
     participantKeys?: string[];
   }) => void;
+  setScreenShareDisplaySize: (width: number, height: number) => void;
   leaveVoice: () => Promise<
     Awaited<ReturnType<typeof leaveTelegramChatVoice>>
   >;

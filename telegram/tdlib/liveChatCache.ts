@@ -71,6 +71,8 @@ export type LiveChatRow = {
   has_active_voice_chat: boolean;
   /** TDLib `video_chat.group_call_id` when active; otherwise null. */
   voice_chat_group_call_id: number | null;
+  /** True when this account is joined to the active voice chat. */
+  voice_chat_is_joined?: boolean;
   /** Recent deleted message ids for open-chat UI removal (ephemeral). */
   pending_deleted_message_ids?: number[];
   /** Monotonic version bumped on each update (for client diffing). */
@@ -359,7 +361,24 @@ export function patchLiveChatFromTdlib(
     ...lastMessageListRowMetaFromChat(chat, getLiveChatSelfUserId(telegramUsername)),
       is_pinned: isChatPinnedInMainList(chat),
       pin_order: mainListOrderKey(chat),
-      ...voiceChatFromTdChat(chat),
+      ...(() => {
+        // Metadata never paints live (see voiceChatFromTdChat). Only keep the
+        // joined flag across getChat upserts for the same bound call — spectator
+        // "live" must be re-verified via getGroupCall (verifyAndPatchVideoChat /
+        // syncChats). Sticky spectator live made empty leftovers look active forever.
+        const voice = voiceChatFromTdChat(chat);
+        const nextCallId = voice.voice_chat_group_call_id;
+        const sameBound =
+          nextCallId != null &&
+          existing?.voice_chat_group_call_id != null &&
+          nextCallId === existing.voice_chat_group_call_id;
+        const stillJoined = sameBound && Boolean(existing?.voice_chat_is_joined);
+        return {
+          voice_chat_group_call_id: nextCallId,
+          has_active_voice_chat: stillJoined,
+          voice_chat_is_joined: stillJoined,
+        };
+      })(),
       list_tier: existing?.list_tier ?? chatListTier(chat),
     };
   return upsertLiveChatRow(telegramUsername, row);
@@ -420,6 +439,7 @@ export function patchLiveChatReadInbox(
     pin_order: existing.pin_order,
     has_active_voice_chat: existing.has_active_voice_chat ?? false,
     voice_chat_group_call_id: existing.voice_chat_group_call_id ?? null,
+    voice_chat_is_joined: existing.voice_chat_is_joined ?? false,
     list_tier: existing.list_tier,
   });
 }
@@ -473,6 +493,7 @@ export function patchLiveChatAction(
     pin_order: existing.pin_order,
     has_active_voice_chat: existing.has_active_voice_chat ?? false,
     voice_chat_group_call_id: existing.voice_chat_group_call_id ?? null,
+    voice_chat_is_joined: existing.voice_chat_is_joined ?? false,
     list_tier: existing.list_tier,
   });
 }
@@ -518,6 +539,7 @@ export function patchLiveChatPresence(
       pin_order: row.pin_order,
       has_active_voice_chat: row.has_active_voice_chat ?? false,
       voice_chat_group_call_id: row.voice_chat_group_call_id ?? null,
+      voice_chat_is_joined: row.voice_chat_is_joined ?? false,
       list_tier: row.list_tier,
     });
   }
@@ -567,6 +589,7 @@ export function patchLiveChatEmojiStatus(
       pin_order: row.pin_order,
       has_active_voice_chat: row.has_active_voice_chat ?? false,
       voice_chat_group_call_id: row.voice_chat_group_call_id ?? null,
+      voice_chat_is_joined: row.voice_chat_is_joined ?? false,
       list_tier: row.list_tier,
     });
   }
@@ -614,6 +637,7 @@ export function patchLiveChatChatEmojiStatus(
     pin_order: existing.pin_order,
     has_active_voice_chat: existing.has_active_voice_chat ?? false,
     voice_chat_group_call_id: existing.voice_chat_group_call_id ?? null,
+    voice_chat_is_joined: existing.voice_chat_is_joined ?? false,
     list_tier: existing.list_tier,
   });
 }
@@ -667,6 +691,7 @@ export function applyLiveMessageUpdate(
     pin_order: existing?.pin_order ?? "0",
     has_active_voice_chat: existing?.has_active_voice_chat ?? false,
     voice_chat_group_call_id: existing?.voice_chat_group_call_id ?? null,
+    voice_chat_is_joined: existing?.voice_chat_is_joined ?? false,
     list_tier: existing?.list_tier ?? "positioned",
   };
   return upsertLiveChatRow(telegramUsername, row);
@@ -717,6 +742,7 @@ export function patchLiveChatMemberMeta(
     pin_order: existing.pin_order,
     has_active_voice_chat: existing.has_active_voice_chat ?? false,
     voice_chat_group_call_id: existing.voice_chat_group_call_id ?? null,
+    voice_chat_is_joined: existing.voice_chat_is_joined ?? false,
     list_tier: existing.list_tier,
   });
 }
@@ -728,15 +754,20 @@ export function patchLiveChatVideoChat(
   input: {
     has_active_voice_chat: boolean;
     voice_chat_group_call_id: number | null;
+    voice_chat_is_joined?: boolean;
   },
 ): LiveChatRow | null {
   const cache = caches.get(telegramUsername);
   if (!cache) return null;
   const existing = cache.chats.get(chatId);
   if (!existing) return null;
+  const nextJoined = input.has_active_voice_chat
+    ? Boolean(input.voice_chat_is_joined ?? existing.voice_chat_is_joined)
+    : false;
   if (
     existing.has_active_voice_chat === input.has_active_voice_chat &&
-    existing.voice_chat_group_call_id === input.voice_chat_group_call_id
+    existing.voice_chat_group_call_id === input.voice_chat_group_call_id &&
+    Boolean(existing.voice_chat_is_joined) === nextJoined
   ) {
     return existing;
   }
@@ -772,6 +803,7 @@ export function patchLiveChatVideoChat(
     pin_order: existing.pin_order,
     has_active_voice_chat: input.has_active_voice_chat,
     voice_chat_group_call_id: input.voice_chat_group_call_id,
+    voice_chat_is_joined: nextJoined,
     list_tier: existing.list_tier,
   });
 }

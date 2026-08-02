@@ -110,6 +110,7 @@ function readStoredChat(): MessageChatRowData | null {
         is_pinned: Boolean(row.is_pinned),
         has_active_voice_chat: Boolean(row.has_active_voice_chat),
         voice_chat_group_call_id: normalizeTelegramGroupCallId(row.voice_chat_group_call_id),
+        voice_chat_is_joined: Boolean(row.voice_chat_is_joined),
         peer_is_bot: Boolean(row.peer_is_bot),
         pending_deleted_message_ids: Array.isArray(row.pending_deleted_message_ids)
           ? row.pending_deleted_message_ids
@@ -210,6 +211,7 @@ export function selectAuthenticatedHomeChat(chat: MessageChatRowData | null) {
     selectedChat.last_read_inbox_message_id === chat.last_read_inbox_message_id &&
     selectedChat.has_active_voice_chat === chat.has_active_voice_chat &&
     selectedChat.voice_chat_group_call_id === chat.voice_chat_group_call_id &&
+    Boolean(selectedChat.voice_chat_is_joined) === Boolean(chat.voice_chat_is_joined) &&
     (Array.isArray(selectedChat.pending_deleted_message_ids)
       ? selectedChat.pending_deleted_message_ids.join(",")
       : "") ===
@@ -354,25 +356,71 @@ export function patchAuthenticatedHomeSelectedChatVoice(
   meta: {
     has_active_voice_chat: boolean;
     voice_chat_group_call_id: number | null;
+    voice_chat_is_joined?: boolean;
   },
 ): void {
   hydrateFromStorageIfNeeded();
   // In-flight polls/SSE from the previous chat must not rewrite the newly
   // selected chat's call id (logs: stream_connect groupCallId=10 then 6 then 10).
-  if (selectedChat?.telegram_chat_id !== chatId) return;
+  if (selectedChat?.telegram_chat_id !== chatId) {
+    noteClientVoiceIntent(chatId, meta);
+    emitChatVoiceMeta({ chatId, ...meta });
+    return;
+  }
+  const nextJoined = meta.has_active_voice_chat
+    ? Boolean(meta.voice_chat_is_joined ?? selectedChat.voice_chat_is_joined)
+    : false;
+  noteClientVoiceIntent(chatId, meta);
   if (
     selectedChat.has_active_voice_chat === meta.has_active_voice_chat &&
-    selectedChat.voice_chat_group_call_id === meta.voice_chat_group_call_id
+    selectedChat.voice_chat_group_call_id === meta.voice_chat_group_call_id &&
+    Boolean(selectedChat.voice_chat_is_joined) === nextJoined
   ) {
+    emitChatVoiceMeta({
+      chatId,
+      has_active_voice_chat: meta.has_active_voice_chat,
+      voice_chat_group_call_id: meta.voice_chat_group_call_id,
+      voice_chat_is_joined: nextJoined,
+    });
     return;
   }
   selectedChat = {
     ...selectedChat,
     has_active_voice_chat: meta.has_active_voice_chat,
     voice_chat_group_call_id: meta.voice_chat_group_call_id,
+    voice_chat_is_joined: nextJoined,
   };
   writeStoredChat(selectedChat);
   emit();
+  emitChatVoiceMeta({
+    chatId,
+    has_active_voice_chat: meta.has_active_voice_chat,
+    voice_chat_group_call_id: meta.voice_chat_group_call_id,
+    voice_chat_is_joined: nextJoined,
+  });
+}
+
+export type ChatVoiceMetaPatch = {
+  chatId: number;
+  has_active_voice_chat: boolean;
+  voice_chat_group_call_id: number | null;
+  voice_chat_is_joined?: boolean;
+};
+
+const chatVoiceMetaListeners = new Set<(patch: ChatVoiceMetaPatch) => void>();
+
+function emitChatVoiceMeta(patch: ChatVoiceMetaPatch): void {
+  for (const listener of chatVoiceMetaListeners) {
+    listener(patch);
+  }
+}
+
+/** Chat-list rows subscribe so voice probes can clear rings without waiting for poll. */
+export function subscribeChatVoiceMeta(listener: (patch: ChatVoiceMetaPatch) => void): () => void {
+  chatVoiceMetaListeners.add(listener);
+  return () => {
+    chatVoiceMetaListeners.delete(listener);
+  };
 }
 
 /** Refresh open chat header meta after history load or live list sync. */
@@ -480,15 +528,85 @@ export function bumpAuthenticatedHomeSelectedChatScrollBelowUnread(delta: number
   bumpAuthenticatedHomeSelectedChatUnread(delta);
 }
 
+/** Recent client probe/clear for a chat — poll must not immediately undo it. */
+const CLIENT_VOICE_INTENT_TTL_MS = 45_000;
+const clientVoiceIntentByChatId = new Map<
+  number,
+  { active: boolean; callId: number; at: number }
+>();
+
+/** Record an explicit client voice paint (probe, soft-poll, leave, join). */
+export function noteClientVoiceIntent(
+  chatId: number,
+  meta: {
+    has_active_voice_chat: boolean;
+    voice_chat_group_call_id: number | null;
+  },
+): void {
+  if (!Number.isFinite(chatId) || chatId === 0) return;
+  const callId = Math.max(0, Math.trunc(Number(meta.voice_chat_group_call_id) || 0));
+  clientVoiceIntentByChatId.set(chatId, {
+    active: Boolean(meta.has_active_voice_chat),
+    callId,
+    at: Date.now(),
+  });
+}
+
+/**
+ * Soft poll / SSE may clear a leftover TDLib group call locally. Prefer that
+ * intentional clear over a later poll reasserting the same bound call as live.
+ * Also prefer a recent client "live" probe over a poll that still reports false
+ * (list verify lags getGroupCall participants). Never block false→true for a
+ * different call id — that hid real rings after chats start inactive.
+ */
+export function preferClientClearedVoiceFields(
+  prev: MessageChatRowData | null | undefined,
+  next: MessageChatRowData,
+): Pick<
+  MessageChatRowData,
+  "has_active_voice_chat" | "voice_chat_group_call_id" | "voice_chat_is_joined"
+> {
+  const nextCallId = Math.max(0, Math.trunc(Number(next.voice_chat_group_call_id) || 0));
+  const nextActive = Boolean(next.has_active_voice_chat);
+  const intent = clientVoiceIntentByChatId.get(next.telegram_chat_id);
+  if (
+    intent != null &&
+    Date.now() - intent.at < CLIENT_VOICE_INTENT_TTL_MS &&
+    intent.callId > 0 &&
+    intent.callId === nextCallId
+  ) {
+    return {
+      has_active_voice_chat: intent.active,
+      voice_chat_group_call_id: intent.callId,
+      voice_chat_is_joined: intent.active
+        ? Boolean(next.voice_chat_is_joined || prev?.voice_chat_is_joined)
+        : false,
+    };
+  }
+  return {
+    has_active_voice_chat: nextActive,
+    voice_chat_group_call_id: nextCallId,
+    voice_chat_is_joined: Boolean(next.voice_chat_is_joined),
+  };
+}
+
+export function mergeChatRowVoicePreferClientClear(
+  prev: MessageChatRowData | null | undefined,
+  next: MessageChatRowData,
+): MessageChatRowData {
+  return { ...next, ...preferClientClearedVoiceFields(prev, next) };
+}
+
 /** Refresh stored selection when poll updates the same chat row. */
 export function syncAuthenticatedHomeSelectedChat(chats: readonly MessageChatRowData[]) {
   hydrateFromStorageIfNeeded();
   if (selectedChat == null) return;
-  const fresh = chats.find((c) => c.telegram_chat_id === selectedChat!.telegram_chat_id);
-  if (!fresh) {
+  const freshRaw = chats.find((c) => c.telegram_chat_id === selectedChat!.telegram_chat_id);
+  if (!freshRaw) {
     // Poll responses can be partial while the gateway resyncs; keep the open chat selected.
     return;
   }
+  const fresh = mergeChatRowVoicePreferClientClear(selectedChat, freshRaw);
   if (
     fresh.title !== selectedChat.title ||
     fresh.subtitle !== selectedChat.subtitle ||
@@ -510,6 +628,7 @@ export function syncAuthenticatedHomeSelectedChat(chats: readonly MessageChatRow
     fresh.chat_action_expires_at !== selectedChat.chat_action_expires_at ||
     fresh.has_active_voice_chat !== selectedChat.has_active_voice_chat ||
     fresh.voice_chat_group_call_id !== selectedChat.voice_chat_group_call_id ||
+    Boolean(fresh.voice_chat_is_joined) !== Boolean(selectedChat.voice_chat_is_joined) ||
     (Array.isArray(fresh.pending_deleted_message_ids)
       ? fresh.pending_deleted_message_ids.join(",")
       : "") !==

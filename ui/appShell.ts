@@ -15,7 +15,14 @@ export function hasWelcomeBrowserAuthContext(): boolean {
 }
 
 export type DesktopOAuthBridge = {
-  openOAuthUrl: (authUrl: string, apiOrigin: string) => Promise<{ ok: boolean; error?: string | null }>;
+  openOAuthUrl: (
+    authUrl: string,
+    apiOrigin: string,
+  ) => Promise<{
+    ok: boolean;
+    error?: string | null;
+    sessionToken?: string | null;
+  }>;
 };
 
 declare global {

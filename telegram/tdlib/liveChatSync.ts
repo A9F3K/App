@@ -8,10 +8,58 @@ import { chatActionFromTdlib, presenceFromTdlibStatus, isGenericMessagePreviewLa
 import { shouldIncludeChatInList } from "./chatListFilter.js";
 import { emojiStatusCustomIdFromUser, parseEmojiStatusCustomId } from "./emojiStatus.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
-import { ingestGroupCallParticipantUpdate, ingestGroupCallUpdate } from "./voiceParticipants.js";
+import { ingestGroupCallParticipantUpdate, ingestGroupCallUpdate, verifyGroupCallLiveState } from "./voiceParticipants.js";
 import { ingestNewGroupCallMessage } from "./voiceCallMessages.js";
 
 const CHAT_REFRESH_DEBOUNCE_MS = 800;
+
+/** Confirm chat.video_chat against getGroupCall before painting rings / strip. */
+async function verifyAndPatchVideoChat(
+  record: LiveSyncRecord,
+  chatId: number,
+  candidate: {
+    has_active_voice_chat: boolean;
+    voice_chat_group_call_id: number | null;
+  },
+): Promise<void> {
+  if (candidate.voice_chat_group_call_id == null) {
+    patchLiveChatVideoChat(record.telegramUsername, chatId, {
+      has_active_voice_chat: false,
+      voice_chat_group_call_id: null,
+      voice_chat_is_joined: false,
+    });
+    return;
+  }
+  // Bound id with unknown/false has_participants still needs getGroupCall —
+  // otherwise empty leftover calls never clear after a prior live patch.
+  const client = record.client;
+  if (!client) {
+    if (!candidate.has_active_voice_chat) {
+      patchLiveChatVideoChat(record.telegramUsername, chatId, {
+        has_active_voice_chat: false,
+        voice_chat_group_call_id: candidate.voice_chat_group_call_id,
+        voice_chat_is_joined: false,
+      });
+    }
+    return;
+  }
+  const state = await verifyGroupCallLiveState(
+    client,
+    candidate.voice_chat_group_call_id,
+  );
+  patchLiveChatVideoChat(record.telegramUsername, chatId, {
+    has_active_voice_chat: state.live,
+    // Keep bound id when empty so Start voice can target the leftover call.
+    voice_chat_group_call_id: candidate.voice_chat_group_call_id,
+    voice_chat_is_joined: state.live && state.isJoined,
+  });
+  if (!state.live) {
+    logLiveSync(record, "live_chat_video_chat_cleared_inactive", {
+      chatId,
+      groupCallId: candidate.voice_chat_group_call_id,
+    });
+  }
+}
 
 const LIVE_UPDATE_TYPES = new Set([
   "updateNewMessage",
@@ -330,7 +378,17 @@ async function applyLiveUpdate(record: LiveSyncRecord, update: Record<string, un
             ? (update.videoChat as TdChat["video_chat"])
             : undefined,
     });
-    patchLiveChatVideoChat(record.telegramUsername, chatId, voice);
+    // Always verify when a group_call_id is bound — unknown has_participants
+    // must not paint, and empty leftovers must clear prior live patches.
+    if (voice.voice_chat_group_call_id == null) {
+      patchLiveChatVideoChat(record.telegramUsername, chatId, {
+        has_active_voice_chat: false,
+        voice_chat_group_call_id: null,
+        voice_chat_is_joined: false,
+      });
+    } else {
+      await verifyAndPatchVideoChat(record, chatId, voice);
+    }
     logLiveSync(record, "live_chat_video_chat_applied", {
       chatId,
       hasActiveVoiceChat: voice.has_active_voice_chat,
@@ -346,6 +404,16 @@ async function applyLiveUpdate(record: LiveSyncRecord, update: Record<string, un
   try {
     const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
     patchLiveChatFromTdlib(record.telegramUsername, chat, { last_message: chat.last_message ?? null });
+    const voice = voiceChatFromTdChat(chat);
+    if (voice.voice_chat_group_call_id != null) {
+      await verifyAndPatchVideoChat(record, chatId, voice);
+    } else {
+      patchLiveChatVideoChat(record.telegramUsername, chatId, {
+        has_active_voice_chat: false,
+        voice_chat_group_call_id: null,
+        voice_chat_is_joined: false,
+      });
+    }
     if (
       type === "updateMessageEdited" ||
       type === "updateMessageContent" ||

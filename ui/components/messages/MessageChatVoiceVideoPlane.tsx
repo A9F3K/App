@@ -2,13 +2,18 @@ import { createElement, memo, useCallback, useEffect, useMemo, useRef, useState 
 import { Platform, Pressable, Text, View } from "react-native";
 import { WEB_UI_SANS_STACK } from "../../fonts";
 import { MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX } from "./messageListLayout";
+import { VoiceParticipantStateMicIcon } from "./MessageChatVoiceParticipantMicIcon";
 
 export type VoiceMediaStageSource = {
   id: string;
   stream: MediaStream;
-  /** Shown on the full (main) tile only. */
+  /** Shown on mosaic / focus tiles. */
   label?: string;
   kind?: "camera" | "screen";
+  /** Mic off for everyone (or local mute chrome). */
+  muted?: boolean;
+  /** Green border + green mic when speaking. */
+  speaking?: boolean;
 };
 
 type PlaneProps = {
@@ -19,6 +24,10 @@ type PlaneProps = {
   accessibilityLabel?: string;
   onHasFramesChange?: (hasFrames: boolean) => void;
 };
+
+const SPEAKING_BORDER = "#34C759";
+const TILE_GAP_PX = 6;
+const TILE_RADIUS_PX = 8;
 
 /** Tiny canvas / SFU placeholder tracks must not become a black PiP overlay. */
 export function streamLooksLikePlaceholderVideo(stream: MediaStream): boolean {
@@ -98,7 +107,6 @@ function VoiceVideoElement({
     const markFrames = () => {
       const video = videoRef.current;
       if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) return;
-      // Treat 2×2 silent canvas as non-content so it never paints a black tile.
       if (video.videoWidth <= 4 && video.videoHeight <= 4) return;
       setHasFrames(true);
     };
@@ -127,8 +135,6 @@ function VoiceVideoElement({
       markFrames();
     }
 
-    // WebRTC often reports videoWidth only after several decoded frames —
-    // short timeouts alone left the stage at 1×1 despite inbound RTP.
     const poll = window.setInterval(markFrames, 250);
     const stopPoll = window.setTimeout(() => window.clearInterval(poll), 20_000);
 
@@ -171,8 +177,6 @@ function VoiceVideoElement({
     return null;
   }
 
-  // Always size the <video> to the tile — a 1×1 element never decodes frames
-  // (inbound RTP present, media stage stuck invisible). Opacity gates paint.
   const videoNode = createElement("video", {
     ref: setVideoNode,
     autoPlay: true,
@@ -203,91 +207,232 @@ function VoiceVideoElement({
   }
 
   return (
-    <View
-      accessibilityLabel={accessibilityLabel}
-      style={{ width: "100%", height: "100%" }}
-    >
+    <View accessibilityLabel={accessibilityLabel} style={{ width: "100%", height: "100%" }}>
       {videoNode}
     </View>
   );
 }
 
-/** Inset of minimized thumbs inside the extended (main) video frame. */
-const PIP_INSET_TOP_PX = 12;
-const PIP_INSET_RIGHT_PX = 12;
-/** Gap between stacked minimized thumbs. */
-const PIP_STACK_GAP_PX = 8;
-/** Keep the PiP column inside the main frame without clipping later thumbs. */
-const PIP_STACK_MAX_HEIGHT_PCT = "78%";
-
-function pipStackWidthStyle(pipCount: number): {
-  width: `${number}%`;
-  minWidth: number;
-  maxWidth: number;
-} {
-  if (pipCount >= 3) {
-    return { width: "18%", minWidth: 72, maxWidth: 112 };
+/**
+ * Thin: singleton rows prefer the top (1+2 for three).
+ * Wide: singleton rows prefer the bottom (2+1 for three).
+ */
+export function mosaicRowSizes(count: number, wide: boolean): number[] {
+  if (count <= 0) return [];
+  if (count === 1) return [1];
+  if (count === 2) return wide ? [2] : [1, 1];
+  if (count === 3) return wide ? [2, 1] : [1, 2];
+  const rows: number[] = [];
+  let remaining = count;
+  while (remaining > 0) {
+    if (remaining === 3) {
+      if (wide) {
+        rows.push(2, 1);
+      } else {
+        rows.push(1, 2);
+      }
+      break;
+    }
+    const take = Math.min(2, remaining);
+    rows.push(take);
+    remaining -= take;
   }
-  if (pipCount >= 2) {
-    return { width: "22%", minWidth: 88, maxWidth: 140 };
-  }
-  return { width: "26%", minWidth: 104, maxWidth: 168 };
+  return rows;
 }
 
-type PipTileProps = {
+type TileChromeProps = {
   source: VoiceMediaStageSource;
   active: boolean;
-  onPromote: () => void;
-  onHasFramesChange: (id: string, hasFrames: boolean) => void;
-  /** Last thumb in the stack — no bottom gap. */
-  isLast?: boolean;
-  /** Shrink thumbs when several people stream so the next window stays fully visible. */
+  speaking: boolean;
+  onPress?: () => void;
+  accessibilityLabel?: string;
+  /** Compact chrome for sidebar thumbs. */
   compact?: boolean;
 };
 
-function PipTile({
+function MediaTile({
   source,
   active,
-  onPromote,
-  onHasFramesChange,
-  isLast = false,
+  speaking,
+  onPress,
+  accessibilityLabel,
   compact = false,
-}: PipTileProps) {
-  const [hasFrames, setHasFrames] = useState(false);
+}: TileChromeProps) {
+  const muted = Boolean(source.muted);
+  const label = (source.label || "").trim();
+  const micSize = compact ? 14 : 18;
 
-  useEffect(() => {
-    onHasFramesChange(source.id, hasFrames);
-  }, [hasFrames, onHasFramesChange, source.id]);
+  const body = (
+    <>
+      <VoiceVideoElement
+        key={`tile:${source.id}`}
+        stream={source.stream}
+        active={active}
+        objectFit="contain"
+      />
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          paddingHorizontal: compact ? 6 : 8,
+          paddingVertical: compact ? 4 : 6,
+          backgroundColor: "rgba(0,0,0,0.55)",
+          gap: 6,
+        }}
+      >
+        <Text
+          numberOfLines={1}
+          style={{
+            flex: 1,
+            minWidth: 0,
+            color: "#ffffff",
+            fontSize: compact ? 11 : 13,
+            lineHeight: compact ? 14 : 16,
+            fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : undefined,
+          }}
+        >
+          {label || " "}
+        </Text>
+        <VoiceParticipantStateMicIcon
+          speaking={speaking && !muted}
+          muted={muted}
+          color={muted ? "#FF1111" : speaking ? SPEAKING_BORDER : "#ffffff"}
+          size={micSize}
+        />
+      </View>
+    </>
+  );
 
-  useEffect(() => {
-    setHasFrames(false);
-  }, [source.id, source.stream]);
+  const shellStyle = {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 0,
+    backgroundColor: "#000000",
+    borderRadius: TILE_RADIUS_PX,
+    overflow: "hidden" as const,
+    borderWidth: speaking ? 2 : 1,
+    borderColor: speaking ? SPEAKING_BORDER : "rgba(255,255,255,0.12)",
+    position: "relative" as const,
+  };
 
+  if (onPress) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={accessibilityLabel}
+        onPress={onPress}
+        style={shellStyle}
+      >
+        {body}
+      </Pressable>
+    );
+  }
+
+  return (
+    <View accessibilityLabel={accessibilityLabel} style={shellStyle}>
+      {body}
+    </View>
+  );
+}
+
+type MosaicProps = {
+  sources: VoiceMediaStageSource[];
+  active: boolean;
+  wide: boolean;
+  onSelect: (id: string) => void;
+};
+
+function MosaicGrid({ sources, active, wide, onSelect }: MosaicProps) {
+  const rows = mosaicRowSizes(sources.length, wide);
+  let cursor = 0;
+  const rowSources = rows.map((size) => {
+    const slice = sources.slice(cursor, cursor + size);
+    cursor += size;
+    return slice;
+  });
+
+  return (
+    <View style={{ flex: 1, minHeight: 0, width: "100%", gap: TILE_GAP_PX }}>
+      {rowSources.map((row, rowIndex) => (
+        <View
+          key={`mosaic-row:${rowIndex}`}
+          style={{
+            flex: 1,
+            minHeight: 0,
+            flexDirection: "row",
+            gap: TILE_GAP_PX,
+          }}
+        >
+          {row.map((source) => (
+            <MediaTile
+              key={`mosaic:${source.id}`}
+              source={source}
+              active={active}
+              speaking={Boolean(source.speaking) && !source.muted}
+              onPress={() => onSelect(source.id)}
+              accessibilityLabel={
+                source.label
+                  ? `Expand ${source.label}`
+                  : "Expand screen share"
+              }
+            />
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+export type VoiceMediaPipColumnProps = {
+  sources: VoiceMediaStageSource[];
+  active: boolean;
+  onSelect: (id: string) => void;
+};
+
+/** Right-column thumbs when a wide-stage tile is expanded. */
+export function MessageChatVoiceMediaPipColumn({
+  sources,
+  active,
+  onSelect,
+}: VoiceMediaPipColumnProps) {
+  if (Platform.OS !== "web" || !active || sources.length === 0) return null;
   return (
     <View
       style={{
-        width: "100%",
-        aspectRatio: 16 / 9,
-        maxHeight: compact ? 64 : undefined,
-        backgroundColor: "#000000",
-        borderWidth: 1,
-        borderColor: "rgba(255,255,255,0.35)",
-        borderRadius: 6,
+        paddingHorizontal: 12,
+        paddingBottom: 8,
+        gap: TILE_GAP_PX,
+        maxHeight: 220,
         overflow: "hidden",
-        marginBottom: isLast ? 0 : PIP_STACK_GAP_PX,
-        opacity: hasFrames ? 1 : 0.35,
       }}
     >
-      <VoiceVideoElement
-        key={`pip:${source.id}`}
-        stream={source.stream}
-        active={active}
-        // Fit the whole stream into the thumb box (letterbox if needed).
-        objectFit="contain"
-        accessibilityLabel="Show this video full size"
-        onPress={onPromote}
-        onHasFramesChange={setHasFrames}
-      />
+      {sources.map((source) => (
+        <View
+          key={`sidebar-pip:${source.id}`}
+          style={{
+            width: "100%",
+            aspectRatio: 16 / 9,
+            maxHeight: 100,
+          }}
+        >
+          <MediaTile
+            source={source}
+            active={active}
+            speaking={Boolean(source.speaking) && !source.muted}
+            compact
+            onPress={() => onSelect(source.id)}
+            accessibilityLabel={
+              source.label ? `Show ${source.label}` : "Show this screen share"
+            }
+          />
+        </View>
+      ))}
     </View>
   );
 }
@@ -298,14 +443,28 @@ type StageProps = {
   maxHeightPx?: number;
   horizontalInsetPx?: number;
   marginBottomPx?: number;
-  /** Fill the parent height (side-by-side voice dialog) instead of 16:9 stack. */
+  /** Fill the parent height (side-by-side voice dialog) instead of capped stack. */
   fillHeight?: boolean;
+  /**
+   * Wide sheet (video docked left of roster). Thin = stacked mosaic like pic 1.
+   * Wide mosaic = pic 2; wide + focusedId = pic 3 main pane.
+   */
+  wideLayout?: boolean;
+  /** Controlled focus — null = mosaic gallery. */
+  focusedId?: string | null;
+  onFocusedIdChange?: (id: string | null) => void;
+  /**
+   * When focused on a wide sheet, hide in-pane PiPs so the parent can render
+   * them in the roster column (Discord-style).
+   */
+  externalPips?: boolean;
 };
 
 /**
- * Main + PiP stage for camera / screen-share.
- * Multiple live sources: one full tile + clickable minimized thumbs (promote on press).
- * Name label only on the full tile.
+ * Screenshare / camera stage:
+ * - Thin: combined mosaic (1+2 for three).
+ * - Wide unfocused: mosaic (2+1 for three).
+ * - Wide focused: one large tile; other thumbs via external pip column.
  */
 function MessageChatVoiceMediaStageInner({
   sources,
@@ -314,9 +473,20 @@ function MessageChatVoiceMediaStageInner({
   horizontalInsetPx = 0,
   marginBottomPx = 0,
   fillHeight = false,
+  wideLayout = false,
+  focusedId: focusedIdProp,
+  onFocusedIdChange,
+  externalPips = false,
 }: StageProps) {
-  const [mainId, setMainId] = useState<string | null>(null);
-  const [mainHasFrames, setMainHasFrames] = useState(false);
+  const [focusedIdState, setFocusedIdState] = useState<string | null>(null);
+  const focusedId = focusedIdProp !== undefined ? focusedIdProp : focusedIdState;
+  const setFocusedId = useCallback(
+    (id: string | null) => {
+      onFocusedIdChange?.(id);
+      if (focusedIdProp === undefined) setFocusedIdState(id);
+    },
+    [focusedIdProp, onFocusedIdChange],
+  );
 
   const liveSources = useMemo(
     () =>
@@ -334,164 +504,118 @@ function MessageChatVoiceMediaStageInner({
 
   useEffect(() => {
     if (liveSources.length === 0) {
-      setMainId(null);
+      setFocusedId(null);
       return;
     }
-    setMainId((prev) => {
-      // Local screencast must win — remote muted placeholders used to stick as
-      // main and keep the whole stage at 1×1 (PiPs never paint without main frames).
-      const localScreen = liveSources.find((row) => row.id === "local-screen");
-      if (localScreen) return localScreen.id;
-      const localCam = liveSources.find((row) => row.id === "local-camera");
-      if (localCam && (!prev || prev.startsWith("remote:"))) return localCam.id;
-      if (prev && liveSources.some((row) => row.id === prev)) return prev;
-      const screen = liveSources.find((row) => row.kind === "screen");
-      return screen?.id ?? liveSources[0]!.id;
-    });
-  }, [liveSources, sourceKey]);
-
-  useEffect(() => {
-    setMainHasFrames(false);
-  }, [sourceKey, mainId]);
+    if (focusedId && !liveSources.some((row) => row.id === focusedId)) {
+      setFocusedId(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-validate on roster churn
+  }, [sourceKey]);
 
   if (Platform.OS !== "web" || !active || liveSources.length === 0) return null;
 
-  const main =
-    liveSources.find((row) => row.id === mainId) ?? liveSources[0]!;
-  const pips = liveSources.filter((row) => row.id !== main.id);
-  // Show the stage as soon as we have live unmuted tracks — waiting for
-  // videoWidth left a black 1×1 hole despite inboundVideoPackets > 0.
-  const mainExpectsFrames = main.stream
-    .getVideoTracks()
-    .some((t) => t.readyState === "live" && t.enabled && !t.muted);
-  const showStage = mainHasFrames || mainExpectsFrames;
+  const allowFocus = wideLayout;
+  const focused =
+    allowFocus && focusedId
+      ? liveSources.find((row) => row.id === focusedId) ?? null
+      : null;
+  const showFocus = Boolean(focused);
+  const pips = focused ? liveSources.filter((row) => row.id !== focused.id) : [];
+
+  const shellStyle = fillHeight
+    ? {
+        flex: 1,
+        alignSelf: "stretch" as const,
+        width: "100%" as const,
+        minHeight: 120,
+        paddingHorizontal: horizontalInsetPx,
+        marginBottom: marginBottomPx,
+        overflow: "hidden" as const,
+      }
+    : {
+        alignSelf: "stretch" as const,
+        width: "100%" as const,
+        paddingHorizontal: horizontalInsetPx,
+        marginBottom: marginBottomPx,
+        height: maxHeightPx,
+        maxHeight: maxHeightPx,
+        overflow: "hidden" as const,
+      };
 
   return (
-    <View
-      style={
-        fillHeight
-          ? {
-              flex: 1,
-              alignSelf: "stretch",
-              width: "100%",
-              minHeight: showStage ? 120 : 0,
-              paddingHorizontal: horizontalInsetPx,
-              marginBottom: marginBottomPx,
-              backgroundColor: "#000000",
-              overflow: "hidden",
-              position: "relative",
-              opacity: showStage ? 1 : 0,
+    <View style={shellStyle}>
+      {showFocus && focused ? (
+        <View style={{ flex: 1, minHeight: 0, width: "100%", position: "relative" }}>
+          <MediaTile
+            source={focused}
+            active={active}
+            speaking={Boolean(focused.speaking) && !focused.muted}
+            onPress={() => setFocusedId(null)}
+            accessibilityLabel={
+              focused.label
+                ? `${focused.label} — tap to show all shares`
+                : "Tap to show all screen shares"
             }
-          : {
-              alignSelf: "stretch",
-              width: "100%",
-              paddingHorizontal: horizontalInsetPx,
-              marginBottom: marginBottomPx,
-              aspectRatio: 16 / 9,
-              maxHeight: maxHeightPx,
-              backgroundColor: "#000000",
-              overflow: "hidden",
-              position: "relative",
-              opacity: showStage ? 1 : 0,
-              // Keep layout space once RTP is live so decoding is not 1×1.
-              ...(showStage ? null : { height: 0, marginBottom: 0, maxHeight: 0 }),
-            }
-      }
-    >
-      <VoiceVideoElement
-        key={`main:${main.id}`}
-        stream={main.stream}
-        active={active}
-        objectFit="contain"
-        accessibilityLabel={main.label ? `${main.label} video` : "Voice chat video"}
-        onHasFramesChange={setMainHasFrames}
-      />
-      {showStage && main.label ? (
-        <View
-          pointerEvents="none"
-          style={{
-            position: "absolute",
-            left: 10,
-            bottom: 10,
-            maxWidth: "70%",
-            paddingHorizontal: 8,
-            paddingVertical: 4,
-            borderRadius: 4,
-            backgroundColor: "rgba(0,0,0,0.55)",
-            zIndex: 3,
+          />
+          {!externalPips && pips.length > 0 ? (
+            <View
+              pointerEvents="box-none"
+              style={{
+                position: "absolute",
+                top: 10,
+                right: 10,
+                width: "22%",
+                minWidth: 88,
+                maxWidth: 140,
+                maxHeight: "78%",
+                zIndex: 2,
+                gap: TILE_GAP_PX,
+                overflow: "auto" as const,
+              }}
+            >
+              {pips.map((pip) => (
+                <View
+                  key={`focus-pip:${pip.id}`}
+                  style={{ width: "100%", aspectRatio: 16 / 9 }}
+                >
+                  <MediaTile
+                    source={pip}
+                    active={active}
+                    speaking={Boolean(pip.speaking) && !pip.muted}
+                    compact
+                    onPress={() => setFocusedId(pip.id)}
+                    accessibilityLabel={
+                      pip.label ? `Show ${pip.label}` : "Show this screen share"
+                    }
+                  />
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </View>
+      ) : (
+        <MosaicGrid
+          sources={liveSources}
+          active={active}
+          wide={wideLayout}
+          onSelect={(id) => {
+            if (allowFocus) setFocusedId(id);
           }}
-        >
-          <Text
-            numberOfLines={1}
-            style={{
-              color: "#ffffff",
-              fontSize: 13,
-              lineHeight: 16,
-              fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : undefined,
-            }}
-          >
-            {main.label}
-          </Text>
-        </View>
-      ) : null}
-      {pips.length > 0 ? (
-        <View
-          pointerEvents="box-none"
-          style={
-            showStage
-              ? {
-                  // Overlay inside the extended main video box — top/right indent.
-                  position: "absolute",
-                  top: PIP_INSET_TOP_PX,
-                  right: PIP_INSET_RIGHT_PX,
-                  ...pipStackWidthStyle(pips.length),
-                  maxHeight: PIP_STACK_MAX_HEIGHT_PCT,
-                  zIndex: 2,
-                  // Scroll if many thumbs still overflow the raised cap.
-                  overflow: "auto" as const,
-                }
-              : {
-                  position: "absolute",
-                  width: 1,
-                  height: 1,
-                  opacity: 0,
-                  overflow: "hidden",
-                }
-          }
-        >
-          {pips.map((pip, index) => (
-            <PipTile
-              key={`pip-wrap:${pip.id}`}
-              source={pip}
-              active={active}
-              onPromote={() => setMainId(pip.id)}
-              onHasFramesChange={() => undefined}
-              isLast={index === pips.length - 1}
-              compact={pips.length >= 2}
-            />
-          ))}
-        </View>
-      ) : null}
+        />
+      )}
     </View>
   );
 }
 
 type LegacyProps = {
   stream: MediaStream | null;
-  /** When false (left call / panel hidden), hide the plane. */
   active: boolean;
-  /** Override max height (e.g. tighter fit inside the voice dialog). */
   maxHeightPx?: number;
-  /** Horizontal inset when embedded in the dialog (default 0 = full-bleed under bar). */
   horizontalInsetPx?: number;
-  /** Bottom margin under the plane. */
   marginBottomPx?: number;
 };
 
-/**
- * Remote camera / screen-share plane (muted video element — audio uses the session sink).
- * Used under the voice strip and inside the voice dialog.
- */
 function MessageChatVoiceVideoPlaneInner({
   stream,
   active,
@@ -531,3 +655,4 @@ function MessageChatVoiceVideoPlaneInner({
 
 export const MessageChatVoiceVideoPlane = memo(MessageChatVoiceVideoPlaneInner);
 export const MessageChatVoiceMediaStage = memo(MessageChatVoiceMediaStageInner);
+export const MessageChatVoiceMediaPipColumnMemo = memo(MessageChatVoiceMediaPipColumn);

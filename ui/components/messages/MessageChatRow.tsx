@@ -42,7 +42,7 @@ import {
   MESSAGE_CHAT_CHECKMARK_SIZE_PX,
   MESSAGE_CHAT_READ_CHECK_COLOR,
 } from "./messageChatLayout";
-import { MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR } from "./MessageChatAvatarSlot";
+import { MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR, MESSAGE_CHAT_JOINED_VOICE_RING_COLOR } from "./MessageChatAvatarSlot";
 
 const LIST_ROW_CHECKMARK_SIZE_PX = Math.max(11, MESSAGE_CHAT_CHECKMARK_SIZE_PX - 2);
 /** Gap between type glyph and title — keep tight like emoji status spacing. */
@@ -95,6 +95,8 @@ export type MessageChatRowData = {
   /** Active Telegram voice/video chat on this chat. */
   has_active_voice_chat?: boolean;
   voice_chat_group_call_id?: number | null;
+  /** This account is joined to the active voice chat (green ring). */
+  voice_chat_is_joined?: boolean;
   /** Private peer is a Telegram bot (userTypeBot). */
   peer_is_bot?: boolean;
   /** Message ids recently deleted — open chat should drop them immediately. */
@@ -169,6 +171,12 @@ export function MessageChatRow({
   const isProxyAvatar = Boolean(iconUrl?.includes("/api/telegram-messages-avatar"));
   const avatarFetchEnabled = !isProxyAvatar || avatarLoadEnabled;
   const hasActiveVoice = Boolean(item.has_active_voice_chat);
+  const isJoinedVoice = hasActiveVoice && Boolean(item.voice_chat_is_joined);
+  const voiceRingColor = isJoinedVoice
+    ? MESSAGE_CHAT_JOINED_VOICE_RING_COLOR
+    : hasActiveVoice
+      ? MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR
+      : undefined;
   const peerIsBot =
     Boolean(item.peer_is_bot) ||
     (item.chat_kind === "private" &&
@@ -252,8 +260,9 @@ export function MessageChatRow({
               scheme={colorScheme}
               loadEnabled={avatarFetchEnabled}
               fetchPriority={isActive ? "high" : "normal"}
-              borderColor={hasActiveVoice ? MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR : undefined}
+              borderColor={voiceRingColor}
               activeVoiceRing={hasActiveVoice}
+              joinedVoiceRing={isJoinedVoice}
               onLoad={() => {
                 logPageDisplay("messages_avatar_load_ok", {
                   ...chatLogFields({
@@ -284,8 +293,9 @@ export function MessageChatRow({
             scheme={colorScheme}
             loadEnabled={avatarFetchEnabled}
             fetchPriority={isActive ? "high" : "normal"}
-            borderColor={hasActiveVoice ? MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR : undefined}
+            borderColor={voiceRingColor}
             activeVoiceRing={hasActiveVoice}
+            joinedVoiceRing={isJoinedVoice}
             onLoad={() => {
               logPageDisplay("messages_avatar_load_ok", {
                 ...chatLogFields({

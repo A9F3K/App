@@ -19,10 +19,14 @@ import { useWelcomeEmailAuth } from "../welcome/WelcomeEmailAuthContext";
 import { useTelegram } from "./Telegram";
 import { isActuallyInTelegram } from "./telegramWebApp";
 import { getApiBaseUrl } from "../../api/_base";
-import { navigateExternalAuthUrl } from "../openExternalUrl";
+import { openExternalAuthUrl } from "../openExternalUrl";
 import { logPageDisplay } from "../pageDisplayLog";
 import { appError } from "../../shared/appLog";
 import { isDesktopAppShell } from "../appShell";
+import {
+  dispatchAuthSessionUpdated,
+  setDesktopSessionToken,
+} from "../../auth/desktopSessionToken";
 
 const BUTTON_HEIGHT = 40;
 const BUTTON_GAP = 20;
@@ -117,7 +121,7 @@ export function WelcomeAuthButtons() {
   const router = useRouter();
   const { signIn } = useAuth();
   const colors = useColors();
-  const { t } = useAppStrings();
+  const { t, tf } = useAppStrings();
   const { colorScheme, isInTelegram, triggerHaptic } = useTelegram();
   const { openEmailCodeSheet } = useWelcomeEmailAuth();
   const [browserOAuthPending, setBrowserOAuthPending] = useState<BrowserOAuthProvider | null>(null);
@@ -212,14 +216,30 @@ export function WelcomeAuthButtons() {
       if (!authRedirectUri?.trim()) {
         throw new Error("auth_url_missing_redirect_uri");
       }
-      const openMethod = navigateExternalAuthUrl(json.authUrl);
+      const openResult = await openExternalAuthUrl(json.authUrl);
+      const openMethod = openResult.method;
       navigated = openMethod !== "desktop_oauth_window";
       logPageDisplay(`${cfg.logPrefix}_redirect`, {
         authUrlHost,
         authRedirectUri,
         openMethod,
+        desktopOk: openResult.ok ?? null,
+        hasSessionToken: Boolean(openResult.sessionToken),
+        desktopError: openResult.error ?? null,
         elapsedMs: Date.now() - startedAt,
       });
+      if (openMethod === "desktop_oauth_window") {
+        if (openResult.sessionToken) {
+          setDesktopSessionToken(openResult.sessionToken);
+          dispatchAuthSessionUpdated();
+          signIn();
+        } else if (openResult.error && openResult.error !== "oauth_window_closed") {
+          Alert.alert(
+            alertTitle,
+            tf("welcome.auth.telegramCallbackError", { reason: openResult.error }),
+          );
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       appError("[welcome]", `${provider}_auth_start_failed`, { message }, error);

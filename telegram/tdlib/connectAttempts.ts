@@ -23,9 +23,10 @@ import {
 import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, sendChatTextMessage, sendChatPhotoMessage, editChatTextMessage, deleteChatMessages, viewChatInboxMessagesUpTo } from "./chatHistory.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
 import { isPositionedComplete } from "./chatListSyncState.js";
-import { getLiveChatList, getLiveChatListRevision, patchLiveChatVideoChat } from "./liveChatCache.js";
+import { getLiveChatList, getLiveChatListRevision, patchLiveChatMemberMeta, patchLiveChatVideoChat } from "./liveChatCache.js";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
-import { voiceChatFromTdChat, type TdChat } from "./chatPreview.js";
+import { type TdChat } from "./chatPreview.js";
+import { verifyGroupCallLiveState } from "./voiceParticipants.js";
 
 export type ConnectAuthMethod = "qr" | "phone";
 
@@ -1028,6 +1029,43 @@ export async function searchChatsForUser(
   return [...collected.values()];
 }
 
+/** Global message search — returns distinct chat ids with matching message text. */
+export async function searchMessagesChatIdsForUser(
+  telegramUsername: string,
+  query: string,
+): Promise<number[]> {
+  const record = await requireReadySession(telegramUsername, 90_000);
+  if (!record) return [];
+
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+
+  const collected = new Set<number>();
+  for (const chatList of [{ _: "chatListMain" as const }, { _: "chatListArchive" as const }]) {
+    try {
+      const result = (await record.client.invoke({
+        _: "searchMessages",
+        chat_list: chatList,
+        query: trimmed,
+        offset_date: 0,
+        offset_chat_id: 0,
+        offset_message_id: 0,
+        limit: 40,
+        filter: { _: "searchMessagesFilterEmpty" },
+        min_date: 0,
+        max_date: 0,
+      })) as { messages?: Array<{ chat_id?: number }> };
+      for (const message of result.messages ?? []) {
+        const chatId = typeof message.chat_id === "number" ? message.chat_id : 0;
+        if (Number.isFinite(chatId) && chatId !== 0) collected.add(Math.trunc(chatId));
+      }
+    } catch {
+      /* skip list */
+    }
+  }
+  return [...collected];
+}
+
 export async function searchContactsForUser(
   telegramUsername: string,
   query: string,
@@ -1513,9 +1551,21 @@ export async function getChatHistoryForUser(
           )
         : await fetchChatHistory(record.client, chatId, limit, beforeMessageId);
     const memberCount =
-      typeof liveRow?.member_count === "number" && liveRow.member_count > 0
-        ? liveRow.member_count
-        : result.member_count;
+      typeof result.member_count === "number" && result.member_count > 0
+        ? result.member_count
+        : typeof liveRow?.member_count === "number" && liveRow.member_count > 0
+          ? liveRow.member_count
+          : null;
+    if (
+      memberCount != null &&
+      memberCount > 0 &&
+      (liveRow?.member_count == null || liveRow.member_count !== memberCount)
+    ) {
+      patchLiveChatMemberMeta(telegramUsername, chatId, {
+        member_count: memberCount,
+        chat_kind: liveRow?.chat_kind ?? result.chat_kind,
+      });
+    }
     return {
       chat_kind: liveRow?.chat_kind ?? result.chat_kind,
       self_user_id: result.self_user_id,
@@ -1774,9 +1824,11 @@ export async function focusChatForUser(
     const resolved = await resolveBoundGroupCallId(record.client, chatId, null, {
       allowHistoryProbe: true,
     });
-    if (resolved.voice.has_active_voice_chat) {
-      patchLiveChatVideoChat(telegramUsername, chatId, resolved.voice);
-    }
+    // Always patch — including inactive clears — so stale rings / Join strip die.
+    patchLiveChatVideoChat(telegramUsername, chatId, {
+      ...resolved.voice,
+      voice_chat_is_joined: false,
+    });
     logGateway("chat_focus_video_chat", {
       telegramUsername,
       chatId,
@@ -1899,6 +1951,7 @@ export async function getChatVoiceParticipantsForUser(
   }>;
   has_active_voice_chat: boolean;
   voice_chat_group_call_id: number | null;
+  voice_chat_is_joined: boolean;
   voice_resolve_source: string;
 }> {
   // Presence polls every ~0.8–2s. Do not block 30s on restore — that piles up
@@ -1912,6 +1965,7 @@ export async function getChatVoiceParticipantsForUser(
       participants: [],
       has_active_voice_chat: false,
       voice_chat_group_call_id: null,
+      voice_chat_is_joined: false,
       voice_resolve_source: "none",
     };
   }
@@ -1924,6 +1978,7 @@ export async function getChatVoiceParticipantsForUser(
     patchLiveChatVideoChat(telegramUsername, chatId, {
       has_active_voice_chat: result.has_active_voice_chat,
       voice_chat_group_call_id: result.voice_chat_group_call_id,
+      voice_chat_is_joined: Boolean(result.voice_chat_is_joined),
     });
     return result;
   } catch (err) {
@@ -1935,6 +1990,7 @@ export async function getChatVoiceParticipantsForUser(
       participants: [],
       has_active_voice_chat: false,
       voice_chat_group_call_id: null,
+      voice_chat_is_joined: false,
       voice_resolve_source: "none",
     };
   }
@@ -2219,14 +2275,20 @@ export async function leaveChatVoiceForUser(
       });
     }
 
-    const chat = (await record.client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
-    const voice = voiceChatFromTdChat(chat);
+    // Re-check live after leave — getChat metadata alone can still look "bound"
+    // while participant_count=0 (false rings / Join strip).
+    const verified = await verifyGroupCallLiveState(record.client, callId);
+    const voice = {
+      has_active_voice_chat: verified.live,
+      voice_chat_group_call_id: callId,
+      voice_chat_is_joined: verified.isJoined,
+    };
     patchLiveChatVideoChat(telegramUsername, chatId, voice);
     return {
       ok: true,
       error: null,
-      has_active_voice_chat: voice.has_active_voice_chat,
-      voice_chat_group_call_id: voice.voice_chat_group_call_id,
+      has_active_voice_chat: verified.live,
+      voice_chat_group_call_id: callId,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : "leave_failed";

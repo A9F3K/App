@@ -11,8 +11,10 @@ import { layout, type ThemeColors } from "../theme";
 import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConnectionContext";
 import {
   clearAuthenticatedHomeSelectedChat,
+  mergeChatRowVoicePreferClientClear,
   openAuthenticatedHomeChatHistory,
   resolveAuthenticatedHomeOpenChatUnread,
+  subscribeChatVoiceMeta,
   syncAuthenticatedHomeSelectedChat,
   useAuthenticatedHomeSelectedChat,
 } from "../authenticatedHomeSelectedChat";
@@ -20,6 +22,7 @@ import { prefetchChatHistory, prefetchChatHistoryPriority, prefetchVisibleChatNe
 import { unlockVoiceAutoplay } from "../telegram/unlockVoiceAutoplay";
 import { getCachedChatHistory } from "../messageChatHistoryCache";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
+import { MessageChatListSearchField } from "./messages/MessageChatListSearchField";
 import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
 import {
   setChatListSyncStatus,
@@ -38,13 +41,62 @@ import {
   resolveChatListVirtualWindow,
   sortChatRowsTierAware,
 } from "./messages/chatListVirtualWindow";
-import { MESSAGE_ROW_HEIGHT_PX, chatListRowStridePx, chatListShellTopInsetPx, homeListShellStyle } from "./messages/messageListLayout";
+import {
+  MESSAGE_ROW_HEIGHT_PX,
+  chatListRowStridePx,
+  chatListSearchBlockHeightPx,
+  chatListSearchMarginBelowPx,
+  homeListShellStyle,
+  MESSAGE_CHAT_LIST_SEARCH_VERTICAL_INSET_PX,
+} from "./messages/messageListLayout";
 import {
   isVoiceDialogUiOpen,
   subscribeVoiceDialogUiOpen,
 } from "./messages/voiceDialogUiGate";
 import { telegramEmojiDebug } from "./messages/telegramEmojiDebug";
 import { useTelegramMessagesChatListStream } from "./messages/useTelegramMessagesChatListStream";
+import { fetchTelegramChatListSearch } from "../telegram/fetchTelegramChatListSearch";
+
+function normalizeSearchNeedle(raw: string): string {
+  return raw.trim().toLowerCase().replace(/^@+/, "");
+}
+
+function chatMatchesLocalSearch(row: MessageChatRowData, needle: string): boolean {
+  if (!needle) return true;
+  const fields = [
+    row.title,
+    row.subtitle,
+    row.peer_username,
+    row.chat_username,
+  ];
+  for (const field of fields) {
+    if (typeof field !== "string" || !field.trim()) continue;
+    if (normalizeSearchNeedle(field).includes(needle)) return true;
+  }
+  if (Array.isArray(row.subtitle_segments)) {
+    for (const segment of row.subtitle_segments) {
+      if (segment && typeof segment.text === "string" && segment.text.trim()) {
+        if (normalizeSearchNeedle(segment.text).includes(needle)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function chatSearchRank(row: MessageChatRowData, needle: string, serverHit: boolean): number {
+  if (!needle) return 0;
+  const title = normalizeSearchNeedle(row.title || "");
+  const peer = normalizeSearchNeedle(row.peer_username || "");
+  const chatUser = normalizeSearchNeedle(row.chat_username || "");
+  const subtitle = normalizeSearchNeedle(row.subtitle || "");
+  if (title.startsWith(needle)) return 0;
+  if (peer.startsWith(needle) || chatUser.startsWith(needle)) return 1;
+  if (title.includes(needle)) return 2;
+  if (peer.includes(needle) || chatUser.includes(needle)) return 3;
+  if (subtitle.includes(needle)) return 4;
+  if (serverHit) return 5;
+  return 6;
+}
 
 type Props = {
   colors: ThemeColors;
@@ -179,6 +231,7 @@ function normalizeChat(raw: unknown): MessageChatRowData | null {
         : null,
     has_active_voice_chat: Boolean(row.has_active_voice_chat),
     voice_chat_group_call_id: normalizeTelegramGroupCallId(row.voice_chat_group_call_id),
+    voice_chat_is_joined: Boolean(row.voice_chat_is_joined),
     peer_is_bot: Boolean(row.peer_is_bot),
     pending_deleted_message_ids: (() => {
       if (!Array.isArray(row.pending_deleted_message_ids)) return null;
@@ -255,6 +308,7 @@ function chatsChanged(prev: MessageChatRowData[], next: MessageChatRowData[]): b
       a.list_tier !== b.list_tier ||
       Boolean(a.has_active_voice_chat) !== Boolean(b.has_active_voice_chat) ||
       a.voice_chat_group_call_id !== b.voice_chat_group_call_id ||
+      Boolean(a.voice_chat_is_joined) !== Boolean(b.voice_chat_is_joined) ||
       Boolean(a.peer_is_bot) !== Boolean(b.peer_is_bot)
     ) {
       return true;
@@ -298,6 +352,7 @@ function reuseChatRowIfEqual(
     prev.list_tier === next.list_tier &&
     Boolean(prev.has_active_voice_chat) === Boolean(next.has_active_voice_chat) &&
     prev.voice_chat_group_call_id === next.voice_chat_group_call_id &&
+    Boolean(prev.voice_chat_is_joined) === Boolean(next.voice_chat_is_joined) &&
     Boolean(prev.peer_is_bot) === Boolean(next.peer_is_bot)
   ) {
     return prev;
@@ -318,12 +373,15 @@ function applyOpenChatUnreadToRows(
       : null;
   let changed = false;
   const next = rows.map((row) => {
+    const prevRow = prevById?.get(row.telegram_chat_id);
+    const withVoice = mergeChatRowVoicePreferClientClear(prevRow, row);
     const unread = resolveAuthenticatedHomeOpenChatUnread(
-      row.unread_count,
-      row.telegram_chat_id,
+      withVoice.unread_count,
+      withVoice.telegram_chat_id,
     );
-    const withUnread = unread === row.unread_count ? row : { ...row, unread_count: unread };
-    const reused = reuseChatRowIfEqual(prevById?.get(withUnread.telegram_chat_id), withUnread);
+    const withUnread =
+      unread === withVoice.unread_count ? withVoice : { ...withVoice, unread_count: unread };
+    const reused = reuseChatRowIfEqual(prevRow, withUnread);
     if (reused !== row) changed = true;
     return reused;
   });
@@ -371,12 +429,15 @@ function mergeChatRows(
       const next = prev.map((row) => {
         const fresh = byId.get(row.telegram_chat_id);
         if (!fresh) return row;
+        const withVoice = mergeChatRowVoicePreferClientClear(row, fresh);
         const unread = resolveAuthenticatedHomeOpenChatUnread(
-          fresh.unread_count,
-          fresh.telegram_chat_id,
+          withVoice.unread_count,
+          withVoice.telegram_chat_id,
         );
         const merged =
-          unread === fresh.unread_count ? fresh : { ...fresh, unread_count: unread };
+          unread === withVoice.unread_count
+            ? withVoice
+            : { ...withVoice, unread_count: unread };
         const reused = reuseChatRowIfEqual(row, merged);
         if (reused !== row) changed = true;
         return reused;
@@ -393,12 +454,15 @@ function mergeChatRows(
   for (const row of prev) {
     const fresh = byId.get(row.telegram_chat_id);
     if (fresh) {
+      const withVoice = mergeChatRowVoicePreferClientClear(row, fresh);
       const unread = resolveAuthenticatedHomeOpenChatUnread(
-        fresh.unread_count,
-        fresh.telegram_chat_id,
+        withVoice.unread_count,
+        withVoice.telegram_chat_id,
       );
       const withUnread =
-        unread === fresh.unread_count ? fresh : { ...fresh, unread_count: unread };
+        unread === withVoice.unread_count
+          ? withVoice
+          : { ...withVoice, unread_count: unread };
       merged.push(reuseChatRowIfEqual(row, withUnread));
     } else if (resolveChatListTier(row) !== "unpositioned") {
       merged.push(row);
@@ -444,6 +508,9 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
    */
   const [listBootstrapPending, setListBootstrapPending] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [chatListSearchQuery, setChatListSearchQuery] = useState("");
+  const [remoteSearchChatIds, setRemoteSearchChatIds] = useState<number[]>([]);
+  const [remoteSearchPeerUserIds, setRemoteSearchPeerUserIds] = useState<number[]>([]);
   const selectedChat = useAuthenticatedHomeSelectedChat();
   const selectedChatId = selectedChat?.telegram_chat_id ?? null;
   const selectedChatRef = useRef(selectedChat);
@@ -462,6 +529,36 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       ),
     );
   }, [selectedChat, selectedChat?.unread_count, selectedChatId]);
+
+  useEffect(() => {
+    return subscribeChatVoiceMeta((patch) => {
+      setChats((prev) => {
+        let changed = false;
+        const next = prev.map((row) => {
+          if (row.telegram_chat_id !== patch.chatId) return row;
+          const nextJoined = patch.has_active_voice_chat
+            ? Boolean(patch.voice_chat_is_joined ?? row.voice_chat_is_joined)
+            : false;
+          if (
+            Boolean(row.has_active_voice_chat) === patch.has_active_voice_chat &&
+            row.voice_chat_group_call_id === patch.voice_chat_group_call_id &&
+            Boolean(row.voice_chat_is_joined) === nextJoined
+          ) {
+            return row;
+          }
+          changed = true;
+          return {
+            ...row,
+            has_active_voice_chat: patch.has_active_voice_chat,
+            voice_chat_group_call_id: patch.voice_chat_group_call_id,
+            voice_chat_is_joined: nextJoined,
+          };
+        });
+        return changed ? next : prev;
+      });
+    });
+  }, []);
+
   const { width: windowWidth } = useWindowDimensions();
   const wideListChrome = windowWidth > layout.authenticatedHome.firstBreakpoint;
   const chatSelectionEnabled = wideListChrome;
@@ -1204,9 +1301,80 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   }, [chatSelectionEnabled]);
 
   const sortedChats = useMemo(() => sortChatRowsTierAware(chats), [chats]);
+  const searchNeedle = useMemo(
+    () => normalizeSearchNeedle(chatListSearchQuery),
+    [chatListSearchQuery],
+  );
+  const remoteSearchChatIdSet = useMemo(
+    () => new Set(remoteSearchChatIds),
+    [remoteSearchChatIds],
+  );
+  const remoteSearchPeerUserIdSet = useMemo(
+    () => new Set(remoteSearchPeerUserIds),
+    [remoteSearchPeerUserIds],
+  );
+
+  useEffect(() => {
+    if (!isTelegramMessagesConnected || !searchNeedle) {
+      setRemoteSearchChatIds([]);
+      setRemoteSearchPeerUserIds([]);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      void fetchTelegramChatListSearch(chatListSearchQuery, controller.signal).then((result) => {
+        if (controller.signal.aborted) return;
+        if (!result.ok) return;
+        setRemoteSearchChatIds(result.chatIds);
+        setRemoteSearchPeerUserIds(result.peerUserIds);
+      });
+    }, 220);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [chatListSearchQuery, isTelegramMessagesConnected, searchNeedle]);
+
+  const displayChats = useMemo(() => {
+    if (!searchNeedle) return sortedChats;
+    const matched = sortedChats.filter((row) => {
+      if (chatMatchesLocalSearch(row, searchNeedle)) return true;
+      if (remoteSearchChatIdSet.has(row.telegram_chat_id)) return true;
+      if (
+        row.peer_user_id != null &&
+        Number.isFinite(row.peer_user_id) &&
+        remoteSearchPeerUserIdSet.has(Math.trunc(row.peer_user_id))
+      ) {
+        return true;
+      }
+      return false;
+    });
+    return matched
+      .map((row, index) => ({
+        row,
+        index,
+        rank: chatSearchRank(
+          row,
+          searchNeedle,
+          remoteSearchChatIdSet.has(row.telegram_chat_id) ||
+            (row.peer_user_id != null &&
+              remoteSearchPeerUserIdSet.has(Math.trunc(row.peer_user_id))),
+        ),
+      }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map((entry) => entry.row);
+  }, [
+    remoteSearchChatIdSet,
+    remoteSearchPeerUserIdSet,
+    searchNeedle,
+    sortedChats,
+  ]);
+
   const cachedChatCount = chatListSync?.cachedCount ?? chats.length;
   const chatListRowStride = chatListRowStridePx(wideListChrome);
-  const chatListShellTopInset = chatListShellTopInsetPx(wideListChrome);
+  const chatListSearchMarginBelow = chatListSearchMarginBelowPx(wideListChrome);
+  const chatListShellTopInset =
+    MESSAGE_CHAT_LIST_SEARCH_VERTICAL_INSET_PX + chatListSearchBlockHeightPx(wideListChrome);
 
   useEffect(() => {
     return subscribeChatListScrollMetrics(() => {
@@ -1221,7 +1389,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const chatListScrollMetrics = getChatListScrollMetrics();
   const chatListEffectiveLayoutH =
     chatListScrollMetrics.layoutH > 0 ? chatListScrollMetrics.layoutH : 480;
-  const chatListVirtualTotalCount = sortedChats.length;
+  const chatListVirtualTotalCount = displayChats.length;
   const chatListVirtualWindow = useMemo(() => {
     const next = resolveChatListVirtualWindow(chatListVirtualTotalCount, {
       scrollY: chatListScrollMetrics.scrollY,
@@ -1278,7 +1446,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       scrollY: chatListScrollMetrics.scrollY,
       layoutH: chatListEffectiveLayoutH,
       totalCount: chatListVirtualTotalCount,
-      loadedCount: sortedChats.length,
+      loadedCount: displayChats.length,
       rowStridePx: chatListRowStride,
     });
   }, [
@@ -1291,7 +1459,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     chatListVirtualWindow.endIndex,
     chatListVirtualWindow.startIndex,
     chatListVirtualWindow.topSpacerPx,
-    sortedChats.length,
+    displayChats.length,
   ]);
 
   useEffect(() => {
@@ -1332,22 +1500,26 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     (positionedComplete || (!syncInProgress && !needsPositionedPage)) && tier3Available;
   const mayHaveMoreOnServer = needsPositionedPage || needsTier3Page;
   const showBottomLoader =
-    syncInProgress ||
-    tier3InProgress ||
-    (chatListAtBottomRef.current && mayHaveMoreOnServer);
+    !searchNeedle &&
+    (syncInProgress ||
+      tier3InProgress ||
+      (chatListAtBottomRef.current && mayHaveMoreOnServer));
 
-  const firstTier3Index = sortedChats.findIndex(
+  const firstTier3Index = displayChats.findIndex(
     (row) => resolveChatListTier(row) === "unpositioned",
   );
   const showTier3Divider =
-    positionedComplete && tier3Available && firstTier3Index >= 0;
+    !searchNeedle &&
+    positionedComplete &&
+    tier3Available &&
+    firstTier3Index >= 0;
 
   const visibleChats = chatListVirtualWindow.enabled
-    ? sortedChats.slice(
-        Math.min(chatListVirtualWindow.startIndex, sortedChats.length),
-        Math.min(sortedChats.length, chatListVirtualWindow.endIndex + 1),
+    ? displayChats.slice(
+        Math.min(chatListVirtualWindow.startIndex, displayChats.length),
+        Math.min(displayChats.length, chatListVirtualWindow.endIndex + 1),
       )
-    : sortedChats;
+    : displayChats;
   const visibleChatStartIndex = chatListVirtualWindow.enabled
     ? chatListVirtualWindow.startIndex
     : 0;
@@ -1391,15 +1563,23 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   }, [chatListSync?.inProgress]);
 
   useEffect(() => {
+    if (searchNeedle) return;
     if (!chatListAtBottomRef.current) return;
     if (isVoiceDialogUiOpen()) return;
     if (mayHaveMoreOnServer) {
       void requestLoadMoreChats(needsPositionedPage ? "positioned" : "unpositioned");
     }
-  }, [mayHaveMoreOnServer, needsPositionedPage, requestLoadMoreChats, sortedChats.length]);
+  }, [
+    mayHaveMoreOnServer,
+    needsPositionedPage,
+    requestLoadMoreChats,
+    displayChats.length,
+    searchNeedle,
+  ]);
 
   const handleChatListNearBottom = useCallback(() => {
     chatListAtBottomRef.current = true;
+    if (searchNeedle) return;
     if (isVoiceDialogUiOpen()) return;
     void loadChatsRef.current({
       silent: true,
@@ -1416,6 +1596,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     needsPositionedPage,
     needsTier3Page,
     requestLoadMoreChats,
+    searchNeedle,
   ]);
 
   useEffect(() => {
@@ -1457,7 +1638,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
             ) : null}
             <MessageChatRow
               item={item}
-              isLast={absoluteIndex === sortedChats.length - 1 && !showBottomLoader}
+              isLast={absoluteIndex === displayChats.length - 1 && !showBottomLoader}
               isActive={chatSelectionEnabled && selectedChatId === item.telegram_chat_id}
               colors={colors}
               timePendingLabel={t("feed.timePending")}
@@ -1472,13 +1653,26 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         <View style={{ height: chatListVirtualWindow.bottomSpacerPx }} />
       ) : null}
       <ChatListBottomSentinel
-        enabled={sortedChats.length > 0}
+        enabled={!searchNeedle && sortedChats.length > 0}
         onNearBottom={handleChatListNearBottom}
       />
     </>
   );
 
-  const listShellStyle = homeListShellStyle(wideListChrome);
+  const listShellStyle = {
+    ...homeListShellStyle(wideListChrome),
+    paddingTop: MESSAGE_CHAT_LIST_SEARCH_VERTICAL_INSET_PX,
+  };
+
+  const searchField = (
+    <MessageChatListSearchField
+      value={chatListSearchQuery}
+      onChangeText={setChatListSearchQuery}
+      placeholder={t("messages.search.placeholder")}
+      clearAccessibilityLabel={t("messages.search.clear")}
+      marginBottomPx={chatListSearchMarginBelow}
+    />
+  );
 
   if (!isTelegramMessagesConnected) {
     return (
@@ -1526,9 +1720,26 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     );
   }
 
+  const searchEmpty =
+    searchNeedle.length > 0 && displayChats.length === 0 ? (
+      <Text
+        style={{
+          textAlign: "center",
+          color: colors.secondary,
+          fontSize: 15,
+          lineHeight: 20,
+          paddingVertical: 16,
+        }}
+      >
+        {t("messages.search.noResults")}
+      </Text>
+    ) : null;
+
   const list = (
     <View style={{ width: "100%", alignSelf: "stretch" }} pointerEvents="box-none">
       <View style={listShellStyle} pointerEvents="box-none">
+        {searchField}
+        {searchEmpty}
         {renderChatRows(visibleChats, visibleChatStartIndex)}
       </View>
     </View>
@@ -1544,6 +1755,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       contentContainerStyle={{ ...listShellStyle, flexGrow: 1 }}
       onScrollBeginDrag={handleClearSelection}
     >
+      {searchField}
+      {searchEmpty}
       {renderChatRows(visibleChats, visibleChatStartIndex)}
       <Pressable style={{ flexGrow: 1, minHeight: 1 }} onPress={handleClearSelection} />
     </ScrollView>

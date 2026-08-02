@@ -66,6 +66,14 @@
       "destination": "/api/telegram-messages-resolve-chat"
     },
     {
+      "source": "/api/telegram/messages/search",
+      "destination": "/api/telegram-messages-search"
+    },
+    {
+      "source": "/api/telegram/messages/stream-ticket",
+      "destination": "/api/telegram-messages-stream-ticket"
+    },
+    {
       "source": "/api/telegram/mtproto/connect/start",
       "destination": "/api/telegram-mtproto-connect-start"
     },

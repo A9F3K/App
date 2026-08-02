@@ -1306,6 +1306,7 @@ export async function gatewayFetchChatVoiceParticipants(
   }>;
   has_active_voice_chat: boolean;
   voice_chat_group_call_id: number | null;
+  voice_chat_is_joined: boolean;
   voice_resolve_source: string;
   loaded_all_participants: boolean;
   has_hidden_listeners: boolean;
@@ -1379,7 +1380,10 @@ export async function gatewayFetchChatVoiceParticipants(
     : [];
   const participantCount = Number(json.participant_count);
   const voiceCallId = normalizeTelegramGroupCallId(json.voice_chat_group_call_id);
-  const hasActive = Boolean(json.has_active_voice_chat) || voiceCallId != null;
+  const hasActive = Boolean(json.has_active_voice_chat);
+  const isJoined =
+    hasActive &&
+    (Boolean(json.voice_chat_is_joined) || participants.some((row) => row.is_self));
   const resolveSource =
     typeof json.voice_resolve_source === "string" ? json.voice_resolve_source : "none";
   const loadedAllParticipants = Boolean(json.loaded_all_participants);
@@ -1392,6 +1396,7 @@ export async function gatewayFetchChatVoiceParticipants(
       participants: [],
       has_active_voice_chat: false,
       voice_chat_group_call_id: null,
+      voice_chat_is_joined: false,
       voice_resolve_source: "none",
       loaded_all_participants: false,
       has_hidden_listeners: false,
@@ -1406,7 +1411,8 @@ export async function gatewayFetchChatVoiceParticipants(
         : participants.length,
     participants,
     has_active_voice_chat: hasActive,
-    voice_chat_group_call_id: voiceCallId,
+    voice_chat_group_call_id: hasActive ? voiceCallId : null,
+    voice_chat_is_joined: isJoined,
     voice_resolve_source: resolveSource,
     loaded_all_participants: loadedAllParticipants,
     has_hidden_listeners: hasHiddenListeners,
@@ -2027,6 +2033,49 @@ export async function gatewayDisconnect(telegramUsername: string): Promise<{ ok:
     return { ok: response.ok && json.ok !== false, error: typeof json.error === "string" ? json.error : undefined };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewaySearchChats(
+  telegramUsername: string,
+  query: string,
+): Promise<{ chatIds: number[]; peerUserIds: number[]; error?: string }> {
+  const trimmed = query.trim();
+  if (!trimmed) return { chatIds: [], peerUserIds: [] };
+  const params = new URLSearchParams({
+    telegramUsername,
+    query: trimmed,
+  });
+  try {
+    const { response, json } = await gatewayFetch(`/v1/chats/search?${params.toString()}`, {
+      method: "GET",
+    });
+    if (!response.ok || json.ok === false) {
+      return {
+        chatIds: [],
+        peerUserIds: [],
+        error: typeof json.error === "string" ? json.error : "search_failed",
+      };
+    }
+    const chatIds = Array.isArray(json.chatIds)
+      ? json.chatIds
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id !== 0)
+          .map((id) => Math.trunc(id))
+      : [];
+    const peerUserIds = Array.isArray(json.peerUserIds)
+      ? json.peerUserIds
+          .map((id) => Number(id))
+          .filter((id) => Number.isFinite(id) && id !== 0)
+          .map((id) => Math.trunc(id))
+      : [];
+    return { chatIds, peerUserIds };
+  } catch (err) {
+    return {
+      chatIds: [],
+      peerUserIds: [],
+      error: err instanceof Error ? err.message : "gateway_unreachable",
+    };
   }
 }
 

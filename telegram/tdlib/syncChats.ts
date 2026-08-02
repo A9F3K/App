@@ -24,6 +24,7 @@ import {
   type TdChat,
   voiceChatFromTdChat,
 } from "./chatPreview.js";
+import { verifyGroupCallLiveState } from "./voiceParticipants.js";
 import {
   patchLiveChatEmojiStatus,
   patchLiveChatFromTdlib,
@@ -974,11 +975,33 @@ async function buildLiveRowsForChats(
       ...lastMessageListRowMetaFromChat(chat, myUserId),
       is_pinned: isChatPinnedInMainList(chat),
       pin_order: mainListOrderKey(chat),
+      // Bound id only from metadata; live paint via verify pass below.
       ...voiceChatFromTdChat(chat),
       list_tier: chatListTier(chat),
     });
   }
-  return liveRows;
+
+  // Verify bound group calls before painting list rings. Metadata alone must not
+  // set has_active_voice_chat (stale empty leftovers keep a group_call_id).
+  return mapWithConcurrency(liveRows, PREVIEW_SYNC_CONCURRENCY, async (row) => {
+    const callId = row.voice_chat_group_call_id;
+    if (typeof callId !== "number" || !Number.isFinite(callId) || callId <= 0) {
+      return row;
+    }
+    const state = await verifyGroupCallLiveState(client, callId);
+    if (!state.live) {
+      return {
+        ...row,
+        has_active_voice_chat: false,
+        voice_chat_is_joined: false,
+      };
+    }
+    return {
+      ...row,
+      has_active_voice_chat: true,
+      voice_chat_is_joined: state.isJoined,
+    };
+  });
 }
 
 /** Load remaining positioned main-list chats in small TDLib pages (non-blocking). */

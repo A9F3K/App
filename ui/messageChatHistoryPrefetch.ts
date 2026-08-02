@@ -376,7 +376,15 @@ export async function loadOpenChatHistoryFirstPage(
       isChatHistoryCacheFresh(chatId) &&
       isChatHistoryCacheAnchorMatch(chatId, anchorSpec)
     ) {
-      return toPageResult(cached);
+      const needsMemberCount =
+        cached.memberCount == null &&
+        cached.chatKind != null &&
+        cached.chatKind !== "private";
+      if (!needsMemberCount) {
+        return toPageResult(cached);
+      }
+      // Group/channel cache without member_count — refetch so the header can show
+      // participants (TDLib FullInfo). Keep falling through to the shared load.
     }
     return await startSharedLoad(chatId, peerUserId ?? null, spec);
   } finally {

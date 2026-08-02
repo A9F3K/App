@@ -313,10 +313,24 @@ export class TelegramGroupCallWebSession {
   /** Wait for PC connected before first video renegotiate (protects audio m-line). */
   private pendingVideoRenegotiateOnConnect = false;
   private videoRenegotiateConnectListener: (() => void) | null = null;
-  /** True once mixed audio unmuted (or we timed out waiting) — then video SDP is safe. */
+  /** True once mixed audio unmuted *and* settle timer fired — then video SDP is safe. */
   private remoteAudioSettledForVideo = false;
   private pendingVideoRenegotiateOnAudio: ReturnType<typeof setTimeout> | null =
     null;
+  /** After video SDP freezes mix RTP, skip further full renegotiates (constraints only). */
+  private remoteAudioStalledAfterVideo = false;
+  /** One auto rejoin after video SDP kills mix audio (per join session). */
+  private audioRecoverAfterVideoDone = false;
+  private audioRecoverInFlight = false;
+  /**
+   * Full remote video SDP (extra m-lines / remote_offer) can freeze the mixed
+   * audio m-line on Colibri. Off until roster screen requests arrive (or
+   * {@link setRemoteVideoSdpEnabled}); sticky-blocked after a stall recover so
+   * VoiceBar cannot re-open the gate on the same join.
+   */
+  private remoteVideoSdpSubscribeEnabled = false;
+  /** Sticky for the PeerConnection lifetime after mix RTP died on video SDP. */
+  private remoteVideoSdpBlockedAfterStall = false;
   private playbackCtx: AudioContext | null = null;
   private playbackSource: MediaStreamAudioSourceNode | null = null;
   /** Per-listener volume gain between remote mix and speakers (0–2 for 0–200%). */
@@ -523,8 +537,53 @@ export class TelegramGroupCallWebSession {
   }
 
   /**
+   * When true, roster video requests may renegotiate SDP (risks killing mix
+   * audio). Default false until screen requests arrive; sticky-blocked after
+   * a stall recover for this join.
+   */
+  setRemoteVideoSdpEnabled(enabled: boolean): void {
+    const next = Boolean(enabled);
+    if (
+      next &&
+      (this.remoteVideoSdpBlockedAfterStall || this.remoteAudioStalledAfterVideo)
+    ) {
+      logPageDisplay("messages_voice_remote_video_sdp_gate", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        enabled: false,
+        requested: this.requestedRemoteVideo.length,
+        level: "warn",
+        note: "refuse video SDP — mix stalled earlier this join; audio-only",
+      });
+      return;
+    }
+    if (next === this.remoteVideoSdpSubscribeEnabled) return;
+    this.remoteVideoSdpSubscribeEnabled = next;
+    logPageDisplay("messages_voice_remote_video_sdp_gate", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      enabled: next,
+      requested: this.requestedRemoteVideo.length,
+      level: "info",
+      note: next
+        ? "video SDP subscribe allowed — may stall mix audio"
+        : "video SDP blocked — audio-only join",
+    });
+    if (
+      next &&
+      this.joined &&
+      this.requestedRemoteVideo.length > 0 &&
+      !this.remoteAudioStalledAfterVideo
+    ) {
+      this.lastAppliedRemoteVideoKey = "";
+      this.queueRemoteVideoRenegotiation();
+    }
+  }
+
+  /**
    * Ask the SFU to deliver the given participant videos. Triggers a WebRTC
-   * renegotiation that declares each publisher's SSRC groups in the answer.
+   * renegotiation that declares each publisher's SSRC groups in the answer
+   * only when {@link setRemoteVideoSdpEnabled} is true.
    */
   setRequestedRemoteVideos(requests: TelegramRemoteVideoRequest[]): void {
     const normalized = requests
@@ -571,6 +630,15 @@ export class TelegramGroupCallWebSession {
     this.requestedRemoteVideo = normalized;
     this.notifyVideoListeners();
     this.notifyRemoteVideoSourceListeners();
+    // Roster screen requests opt into video SDP (unless this join already stalled).
+    if (
+      normalized.length > 0 &&
+      !this.remoteVideoSdpSubscribeEnabled &&
+      !this.remoteVideoSdpBlockedAfterStall &&
+      !this.remoteAudioStalledAfterVideo
+    ) {
+      this.setRemoteVideoSdpEnabled(true);
+    }
     if (nextKey === this.lastAppliedRemoteVideoKey) return;
     // Same endpoints already slotted — roster SSRC churn / join kicks used to
     // re-renegotiate and zero inboundVideoPackets before the SFU could forward.
@@ -596,15 +664,51 @@ export class TelegramGroupCallWebSession {
       });
       return;
     }
+    // Further full video SDP after mix RTP stalled — constraints only.
+    // Also skip SDP when the audio-protect gate is off (default).
+    if (
+      (this.remoteAudioStalledAfterVideo ||
+        this.remoteVideoSdpBlockedAfterStall ||
+        !this.remoteVideoSdpSubscribeEnabled) &&
+      normalized.length > 0
+    ) {
+      for (let i = 0; i < this.videoRecvSlots.length; i += 1) {
+        const slot = this.videoRecvSlots[i];
+        if (slot) slot.endpointId = nextEndpoints[i] ?? null;
+      }
+      while (this.videoRecvSlots.length < nextEndpoints.length) {
+        this.videoRecvSlots.push({
+          transceiver: null,
+          endpointId: nextEndpoints[this.videoRecvSlots.length] ?? null,
+        });
+      }
+      this.lastAppliedRemoteVideoKey = nextKey;
+      this.lastAppliedRemoteVideoEndpoints = nextEndpoints;
+      this.sendReceiverVideoConstraints();
+      logPageDisplay("messages_voice_remote_video_skip_renegotiate", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        endpoints: nextEndpoints,
+        level:
+          this.remoteAudioStalledAfterVideo || this.remoteVideoSdpBlockedAfterStall
+            ? "warn"
+            : "info",
+        note: this.remoteVideoSdpBlockedAfterStall
+          ? "sticky block after mix stall — constraints only"
+          : this.remoteAudioStalledAfterVideo
+            ? "audio stalled after prior video SDP — constraints only"
+            : "video SDP disabled — protect mix audio (constraints only)",
+      });
+      return;
+    }
     // Clearing publishers: Colibri constraints alone — a full remote_offer with
     // sections=0 mid-call reset receivers and left inboundAudio=0 / remoteMuted
     // forever while speakers still lit up in TDLib.
+    // Keep slots + lastApplied endpoints so a brief roster flicker (same camera
+    // back) hits hasSlotted and skips a second full renegotiate that used to
+    // rebuild from remote_offer and stall mix RTP at inboundPackets=32.
     if (normalized.length === 0 && prevRequested.length > 0) {
-      for (const slot of this.videoRecvSlots) {
-        slot.endpointId = null;
-      }
       this.lastAppliedRemoteVideoKey = nextKey;
-      this.lastAppliedRemoteVideoEndpoints = [];
       this.sendReceiverVideoConstraints();
       logPageDisplay("messages_voice_remote_video_clear_constraints_only", {
         chatId: this.input.chatId,
@@ -938,30 +1042,44 @@ export class TelegramGroupCallWebSession {
     }
   }
 
+  /**
+   * Start (or restart) the post-unmute settle timer. Do NOT flip
+   * `remoteAudioSettledForVideo` until the timer fires — otherwise kickRemoteVideo
+   * / roster updates see the flag early and renegotiate immediately, freezing
+   * inbound mix RTP (inboundPackets stuck while video floods).
+   */
   private markRemoteAudioSettledForVideo(): void {
-    if (this.remoteAudioSettledForVideo) return;
-    this.remoteAudioSettledForVideo = true;
-    this.clearVideoRenegotiateAudioWait();
-    // Immediately renegotiating video on first unmute froze inboundAudio
-    // (packets stuck at ~11 while video RTP flooded). Give the mix a beat.
-    if (this.requestedRemoteVideo.length > 0 && this.joined && typeof window !== "undefined") {
-      logPageDisplay("messages_voice_remote_video_audio_settle", {
-        chatId: this.input.chatId,
-        groupCallId: this.input.groupCallId,
-        count: this.requestedRemoteVideo.length,
-        settleMs: 2_500,
-        level: "info",
-        note: "defer first video SDP until mixed audio RTP stays healthy",
-      });
-      window.setTimeout(() => {
-        if (!this.joined || this.requestedRemoteVideo.length === 0) return;
-        this.queueRemoteVideoRenegotiation();
-      }, 2_500);
+    if (!this.remoteVideoSdpSubscribeEnabled || this.remoteVideoSdpBlockedAfterStall) {
       return;
     }
-    if (this.requestedRemoteVideo.length > 0 && this.joined) {
-      this.queueRemoteVideoRenegotiation();
+    if (this.remoteAudioSettledForVideo) return;
+    if (typeof window === "undefined") {
+      this.remoteAudioSettledForVideo = true;
+      if (this.requestedRemoteVideo.length > 0 && this.joined) {
+        this.queueRemoteVideoRenegotiation();
+      }
+      return;
     }
+    // Convert an unmute-wait (8s) into a settle delay from this unmute.
+    if (this.pendingVideoRenegotiateOnAudio != null) {
+      clearTimeout(this.pendingVideoRenegotiateOnAudio);
+      this.pendingVideoRenegotiateOnAudio = null;
+    }
+    const settleMs = 4_000;
+    logPageDisplay("messages_voice_remote_video_audio_settle", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      count: this.requestedRemoteVideo.length,
+      settleMs,
+      level: "info",
+      note: "defer first video SDP until mixed audio RTP stays healthy",
+    });
+    this.pendingVideoRenegotiateOnAudio = setTimeout(() => {
+      this.pendingVideoRenegotiateOnAudio = null;
+      this.remoteAudioSettledForVideo = true;
+      if (!this.joined || this.requestedRemoteVideo.length === 0) return;
+      this.queueRemoteVideoRenegotiation();
+    }, settleMs);
   }
 
   private isRemoteAudioUnmuted(): boolean {
@@ -971,6 +1089,28 @@ export class TelegramGroupCallWebSession {
   }
 
   private queueRemoteVideoRenegotiation(): void {
+    if (
+      !this.remoteVideoSdpSubscribeEnabled ||
+      this.remoteVideoSdpBlockedAfterStall
+    ) {
+      if (this.requestedRemoteVideo.length > 0) {
+        this.sendReceiverVideoConstraints();
+        logPageDisplay("messages_voice_remote_video_sdp_blocked", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          count: this.requestedRemoteVideo.length,
+          level: "info",
+          note: this.remoteVideoSdpBlockedAfterStall
+            ? "skip video SDP — sticky block after prior mix stall"
+            : "skip video SDP renegotiate to keep inbound mix audio alive",
+        });
+      }
+      return;
+    }
+    if (this.remoteAudioStalledAfterVideo) {
+      this.sendReceiverVideoConstraints();
+      return;
+    }
     const connection = this.connection;
     // Renegotiating video while DTLS is still connecting left inboundAudio=0
     // and constraints_skip (data channel not open). Wait for PC connected.
@@ -1016,14 +1156,15 @@ export class TelegramGroupCallWebSession {
       }
       return;
     }
-    // First video subscribe right after PC connected starved mixed audio
-    // (inboundPackets=0, remoteMuted forever while TDLib speaking lit).
-    if (
-      this.requestedRemoteVideo.length > 0 &&
-      !this.remoteAudioSettledForVideo &&
-      !this.isRemoteAudioUnmuted()
-    ) {
-      if (this.pendingVideoRenegotiateOnAudio == null && typeof window !== "undefined") {
+    // First video subscribe before mix audio is healthy starved inbound RTP
+    // (packets stuck ~20–32 while video flooded; remote_rms stayed 0).
+    if (this.requestedRemoteVideo.length > 0 && !this.remoteAudioSettledForVideo) {
+      if (this.isRemoteAudioUnmuted()) {
+        this.markRemoteAudioSettledForVideo();
+      } else if (
+        this.pendingVideoRenegotiateOnAudio == null &&
+        typeof window !== "undefined"
+      ) {
         logPageDisplay("messages_voice_remote_video_wait_audio", {
           chatId: this.input.chatId,
           groupCallId: this.input.groupCallId,
@@ -1040,10 +1181,6 @@ export class TelegramGroupCallWebSession {
         }, 8_000);
       }
       return;
-    }
-    if (this.isRemoteAudioUnmuted()) {
-      this.remoteAudioSettledForVideo = true;
-      this.clearVideoRenegotiateAudioWait();
     }
     // Colibri only forwards screen/camera after ReceiverVideoConstraints on an
     // open SCTP channel. Renegotiating while DC is still connecting attached
@@ -1324,25 +1461,24 @@ export class TelegramGroupCallWebSession {
       outboundPackets: 0,
     };
     try {
-      // Prefer last remote *offer* (post-subscribe layout). Else prefer the join
-      // *answer* (SFU mix SSRCs). Local join *offer* is last resort — its a=ssrc
-      // lines are ours and must be stripped when reused as a remote offer.
+      // Always prefer the join *answer* (SFU mix SSRCs). After the first video
+      // subscribe, remoteDescription is our crafted offer — reusing it as the
+      // audio template froze inboundPackets while video kept growing.
       const remote = connection.remoteDescription;
       const audioBase:
         | "remote_offer"
         | "join_answer"
         | "remote_answer"
-        | "local_description" =
-        remote?.type === "offer"
+        | "local_description" = this.joinAnswerSdp
+        ? "join_answer"
+        : remote?.type === "offer"
           ? "remote_offer"
-          : this.joinAnswerSdp
-            ? "join_answer"
-            : remote?.type === "answer"
-              ? "remote_answer"
-              : "local_description";
+          : remote?.type === "answer"
+            ? "remote_answer"
+            : "local_description";
       const localSdp =
-        (remote?.type === "offer" ? remote.sdp : null) ||
         this.joinAnswerSdp ||
+        (remote?.type === "offer" ? remote.sdp : null) ||
         (remote?.type === "answer" ? remote.sdp : null) ||
         connection.localDescription?.sdp ||
         remote?.sdp ||
@@ -1459,6 +1595,7 @@ export class TelegramGroupCallWebSession {
               stats.inboundPackets <= inboundBefore.inboundPackets &&
               stats.outboundPackets > inboundBefore.outboundPackets + 5;
             if (audioStalled) {
+              this.remoteAudioStalledAfterVideo = true;
               logPageDisplay("messages_voice_remote_audio_stalled_after_video", {
                 chatId: this.input.chatId,
                 groupCallId: this.input.groupCallId,
@@ -1469,6 +1606,7 @@ export class TelegramGroupCallWebSession {
                 level: "error",
                 note: "mix RTP did not grow after video SDP — audio m-line likely broken",
               });
+              void this.recoverAudioOnlyAfterVideoStall();
             }
             if (stats.inboundPackets > inboundBefore.inboundPackets) {
               this.queueRemotePlayback("post-video-audio-check");
@@ -1642,6 +1780,9 @@ export class TelegramGroupCallWebSession {
     // Tear down media so ensureJoinedListenOnly can open a fresh PeerConnection.
     // Do not remove the remote <audio> shell — unlock gestures still need it.
     this.stopSpeakingMonitor();
+    this.stopRemoteSpeakingMonitor();
+    this.clearPlaybackWatchdog();
+    this.teardownWebAudioPlayback();
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
       this.localStream = null;
@@ -1667,9 +1808,21 @@ export class TelegramGroupCallWebSession {
       this.remoteAudio.srcObject = null;
     }
     const wasJoined = this.joined;
+    const connection = this.connection;
+    this.connection = null;
+    this.dataChannel = null;
+    if (connection) {
+      try {
+        connection.close();
+      } catch {
+        // ignore
+      }
+    }
     this.clearVideoRenegotiateConnectWait();
     this.clearVideoRenegotiateAudioWait();
     this.remoteAudioSettledForVideo = false;
+    this.remoteAudioStalledAfterVideo = false;
+    this.remoteVideoSdpSubscribeEnabled = false;
     this.joined = false;
     this.micEnabled = false;
     this.lastTransport = null;
@@ -1694,6 +1847,52 @@ export class TelegramGroupCallWebSession {
       } catch {
         // ignore
       }
+    }
+  }
+
+  /**
+   * Video SDP broke the mix m-line — drop video subscribe and rejoin listen-only
+   * so inbound audio RTP can flow again.
+   */
+  private async recoverAudioOnlyAfterVideoStall(): Promise<void> {
+    if (this.audioRecoverAfterVideoDone || this.audioRecoverInFlight) return;
+    if (!this.joined && !this.connection) return;
+    this.audioRecoverInFlight = true;
+    this.audioRecoverAfterVideoDone = true;
+    this.remoteVideoSdpSubscribeEnabled = false;
+    // Survives markJoinLost + joinInternal so roster cannot re-enable video SDP.
+    this.remoteVideoSdpBlockedAfterStall = true;
+    this.requestedRemoteVideo = [];
+    const startMuted = !this.micEnabled;
+    logPageDisplay("messages_voice_audio_recover_start", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      startMuted,
+      level: "warn",
+      note: "rejoin without video SDP after mix RTP stall",
+    });
+    try {
+      this.markJoinLost("audio_stalled_after_video", { silent: true });
+      this.remoteAudioEnabled = true;
+      unlockVoiceAutoplay();
+      await this.ensureJoinedListenOnly(startMuted);
+      this.resumeRemoteAudio();
+      logPageDisplay("messages_voice_audio_recover_ok", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        ice: this.connection?.iceConnectionState ?? "none",
+        conn: this.connection?.connectionState ?? "none",
+        level: "info",
+      });
+    } catch (err) {
+      logPageDisplay("messages_voice_audio_recover_fail", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        error: err instanceof Error ? err.message : String(err),
+        level: "error",
+      });
+    } finally {
+      this.audioRecoverInFlight = false;
     }
   }
 
@@ -2415,7 +2614,13 @@ export class TelegramGroupCallWebSession {
           this.setRemoteSpeaking(speaking);
         }
         // WebAudio sink can stay silent after muted-era latch — flip to HTML audio.
-        if (this.remotePlaybackSink === "webaudio" && rms < OFF_RMS && !speaking) {
+        // Skip when mix RTP already stalled (HTML cannot revive a broken m-line).
+        if (
+          this.remotePlaybackSink === "webaudio" &&
+          rms < OFF_RMS &&
+          !speaking &&
+          !this.remoteAudioStalledAfterVideo
+        ) {
           this.remoteSilenceTicks += 1;
           if (this.remoteSilenceTicks >= 20) {
             this.remoteSilenceTicks = 0;
@@ -2745,15 +2950,36 @@ export class TelegramGroupCallWebSession {
             err.includes("GROUPCALL_INVALID") ||
             err.includes("GROUPCALL_SSRC_DUPLICATE_SIMULTANEOUS"));
         if (needsRejoin) {
-          this.markJoinLost(err, { silent: true });
-          await new Promise<void>((resolve) => setTimeout(resolve, 0));
-          await this.joinInternal(isMuted);
-          if (!isMuted) {
-            await this.ensureLocalMic({ publish: true, enabled: true });
-            if (this.audioTrack) this.audioTrack.enabled = true;
-            this.micEnabled = true;
+          const pc = this.connection;
+          const mediaLive =
+            pc != null &&
+            (pc.connectionState === "connected" ||
+              pc.iceConnectionState === "connected" ||
+              pc.iceConnectionState === "completed");
+          if (mediaLive) {
+            // Tear+rejoin while PC is live destroyed inbound audio and left
+            // call-message send on GROUPCALL_JOIN_MISSING after a gateway blip.
+            this.speakingSyncBlockedUntil = Date.now() + 8_000;
+            logPageDisplay("messages_voice_mic_join_missing_soft", {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              error: err,
+              conn: pc?.connectionState ?? "none",
+              ice: pc?.iceConnectionState ?? "none",
+              level: "warn",
+              note: "keep WebRTC; skip tear-rejoin on transient JOIN_MISSING",
+            });
+          } else {
+            this.markJoinLost(err, { silent: true });
+            await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            await this.joinInternal(isMuted);
+            if (!isMuted) {
+              await this.ensureLocalMic({ publish: true, enabled: true });
+              if (this.audioTrack) this.audioTrack.enabled = true;
+              this.micEnabled = true;
+            }
+            this.resumeRemoteAudio();
           }
-          this.resumeRemoteAudio();
         } else if (
           typeof err === "string" &&
           /Can't unmute user/i.test(err)
@@ -2834,7 +3060,29 @@ export class TelegramGroupCallWebSession {
             err.includes("GROUPCALL_FORBIDDEN") ||
             err.includes("GROUPCALL_INVALID"))
         ) {
-          this.markJoinLost(err);
+          // Soft-fail while WebRTC is still up — gateway 502 / getGroupCall races
+          // used to markJoinLost and then call-message send failed with the same
+          // error even though the PC was still connected.
+          const pc = this.connection;
+          const mediaLive =
+            pc != null &&
+            (pc.connectionState === "connected" ||
+              pc.iceConnectionState === "connected" ||
+              pc.iceConnectionState === "completed");
+          this.speakingSyncBlockedUntil = Date.now() + 8_000;
+          if (mediaLive) {
+            logPageDisplay("messages_voice_speaking_join_missing_soft", {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              error: err,
+              conn: pc?.connectionState ?? "none",
+              ice: pc?.iceConnectionState ?? "none",
+              level: "warn",
+              note: "keep joined; block speaking sync briefly",
+            });
+          } else {
+            this.markJoinLost(err);
+          }
         }
       }
     } catch (err) {
@@ -3017,7 +3265,11 @@ export class TelegramGroupCallWebSession {
     const speaking = [...this.listenSpeakingKeys].filter((key) => keys.includes(key));
     if (speaking.length > 0) {
       const audible = speaking.map(volOf).filter((v) => v > 0);
-      if (audible.length === 0) return 0;
+      if (audible.length === 0) {
+        // Speaking map can mark peers the user muted for themselves — never
+        // silence the whole SFU mix while other remotes are still audible.
+        return 1;
+      }
       return TelegramGroupCallWebSession.percentToLinearGain(Math.max(...audible));
     }
     return 1;
@@ -3377,6 +3629,8 @@ export class TelegramGroupCallWebSession {
     if (this.joined || typeof RTCPeerConnection === "undefined") {
       return;
     }
+    this.audioRecoverAfterVideoDone = false;
+    this.audioRecoverInFlight = false;
 
     // Resume autoplay/silent AudioContext in the Join turn before we create the
     // outbound silence track — suspended ctx → no RTP → inboundAudio=0.
@@ -4126,6 +4380,11 @@ export class TelegramGroupCallWebSession {
     this.clearVideoRenegotiateConnectWait();
     this.clearVideoRenegotiateAudioWait();
     this.remoteAudioSettledForVideo = false;
+    this.remoteAudioStalledAfterVideo = false;
+    this.remoteVideoSdpSubscribeEnabled = false;
+    this.remoteVideoSdpBlockedAfterStall = false;
+    this.audioRecoverAfterVideoDone = false;
+    this.audioRecoverInFlight = false;
     this.remoteAudioEnabled = false;
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());

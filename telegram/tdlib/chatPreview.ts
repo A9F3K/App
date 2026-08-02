@@ -107,11 +107,11 @@ export function readTdVideoChat(
 }
 
 /**
- * Active Telegram voice/video chat attached to a chat, if any.
- *
- * TDLib docs: non-zero `group_call_id` means an active video chat exists.
- * `has_participants` is a hint, but it can stay false with hidden listeners /
- * brief sync races — requiring it hid live Desktop calls from the web UI.
+ * Bound voice/video call id from chat metadata only.
+ * Never paints `has_active_voice_chat` from TDLib chat.video_chat — leftovers stay
+ * `is_active` / `has_participants` with participant_count=0 (kapibara groupCallId=10).
+ * Live rings/strip require getGroupCall via verifyGroupCallLiveState (list sync +
+ * updateChatVideoChat).
  */
 export function voiceChatFromTdChat(chat: TdChat): {
   has_active_voice_chat: boolean;
@@ -122,7 +122,7 @@ export function voiceChatFromTdChat(chat: TdChat): {
     return { has_active_voice_chat: false, voice_chat_group_call_id: null };
   }
   return {
-    has_active_voice_chat: true,
+    has_active_voice_chat: false,
     voice_chat_group_call_id: groupCallId,
   };
 }
@@ -257,23 +257,48 @@ export async function memberCountFromChat(client: Client, chat: TdChat): Promise
     if (type === "chatTypeBasicGroup") {
       const basicGroupId = chat.type?.basic_group_id;
       if (typeof basicGroupId !== "number") return null;
+      // Full info carries the authoritative count; getBasicGroup alone is often 0/stale.
+      try {
+        const full = (await client.invoke({
+          _: "getBasicGroupFullInfo",
+          basic_group_id: basicGroupId,
+        })) as { member_count?: number };
+        if (typeof full.member_count === "number" && full.member_count > 0) {
+          return Math.trunc(full.member_count);
+        }
+      } catch {
+        /* fall through to lightweight getBasicGroup */
+      }
       const group = (await client.invoke({
         _: "getBasicGroup",
         basic_group_id: basicGroupId,
       })) as { member_count?: number };
       const count = group.member_count;
-      return typeof count === "number" && count > 0 ? count : null;
+      return typeof count === "number" && count > 0 ? Math.trunc(count) : null;
     }
 
     if (type === "chatTypeSupergroup" || type === "chatTypeChannel") {
       const supergroupId = chat.type?.supergroup_id;
       if (typeof supergroupId !== "number") return null;
+      // getSupergroup.member_count is 0 unless the chat arrived via public search etc.
+      // Open/header counts must use getSupergroupFullInfo (Telegram desktop path).
+      try {
+        const full = (await client.invoke({
+          _: "getSupergroupFullInfo",
+          supergroup_id: supergroupId,
+        })) as { member_count?: number };
+        if (typeof full.member_count === "number" && full.member_count > 0) {
+          return Math.trunc(full.member_count);
+        }
+      } catch {
+        /* fall through to lightweight getSupergroup */
+      }
       const group = (await client.invoke({
         _: "getSupergroup",
         supergroup_id: supergroupId,
       })) as { member_count?: number };
       const count = group.member_count;
-      return typeof count === "number" && count > 0 ? count : null;
+      return typeof count === "number" && count > 0 ? Math.trunc(count) : null;
     }
   } catch {
     return null;

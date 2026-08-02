@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
-import { buildApiUrl } from "../../../api/_base";
 import { logPageDisplay } from "../../pageDisplayLog";
 import type { TelegramChatVoiceParticipant } from "../../telegram/fetchTelegramChatVoiceParticipants";
+import { resolveTelegramLiveStreamUrl } from "../../telegram/resolveTelegramLiveStreamUrl";
 import type { VoiceParticipantsStreamSnapshot } from "./useTelegramVoiceParticipantsStream";
 
 type Options = {
@@ -104,7 +104,7 @@ function parseParticipantsPayload(raw: string): VoiceParticipantsStreamSnapshot 
   }
 }
 
-/** SSE push from gateway — speaking/roster updates without hot polling. */
+/** SSE push — prefers direct gateway; falls back to Vercel proxy. */
 export function useTelegramVoiceParticipantsStream(options: Options): void {
   const { enabled, chatId, groupCallId, getSinceRevision, onParticipants, onStreamActiveChange } =
     options;
@@ -133,6 +133,7 @@ export function useTelegramVoiceParticipantsStream(options: Options): void {
     let cancelled = false;
     let eventSource: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let mintAbort: AbortController | null = null;
     let streamActive = false;
 
     const setActive = (active: boolean) => {
@@ -144,73 +145,86 @@ export function useTelegramVoiceParticipantsStream(options: Options): void {
     const connect = () => {
       if (cancelled) return;
       eventSource?.close();
+      mintAbort?.abort();
+      mintAbort = new AbortController();
       setActive(false);
 
-      const params = new URLSearchParams({ chat_id: String(Math.trunc(chatId)) });
+      const proxyParams = new URLSearchParams({ chat_id: String(Math.trunc(chatId)) });
       if (groupCallId != null && groupCallId > 0) {
-        params.set("group_call_id", String(Math.trunc(groupCallId)));
+        proxyParams.set("group_call_id", String(Math.trunc(groupCallId)));
       }
       const sinceRevision = getSinceRevisionRef.current();
       if (sinceRevision != null && sinceRevision > 0) {
-        params.set("since_revision", String(sinceRevision));
+        proxyParams.set("since_revision", String(sinceRevision));
       }
-      const url = buildApiUrl(
-        `/api/telegram-messages-voice-participants-stream?${params.toString()}`,
-      );
+      const proxyPath = `/api/telegram-messages-voice-participants-stream?${proxyParams.toString()}`;
 
-      eventSource = new EventSource(url);
-      logPageDisplay("messages_voice_participants_stream_connect", {
+      void resolveTelegramLiveStreamUrl({
+        stream: "voice_participants",
+        proxyPath,
         chatId,
         groupCallId,
-        sinceRevision: sinceRevision ?? null,
-      });
-
-      const applyEvent = (event: Event) => {
-        const snap = parseParticipantsPayload((event as MessageEvent).data);
-        if (!snap) return;
-        setActive(true);
-        onParticipantsRef.current(snap);
-      };
-
-      eventSource.addEventListener("ready", (event) => {
-        applyEvent(event);
-        logPageDisplay("messages_voice_participants_stream_ready", {
+        sinceRevision,
+        signal: mintAbort.signal,
+      }).then(({ url, mode }) => {
+        if (cancelled) return;
+        eventSource = new EventSource(url);
+        logPageDisplay("messages_voice_participants_stream_connect", {
           chatId,
           groupCallId,
-          dataChars: String((event as MessageEvent).data ?? "").length,
+          sinceRevision: sinceRevision ?? null,
+          mode,
         });
-      });
 
-      eventSource.addEventListener("participants", (event) => {
-        const snap = parseParticipantsPayload((event as MessageEvent).data);
-        if (!snap) return;
-        setActive(true);
-        const speakingCount = snap.participants.filter((p) => p.is_speaking).length;
-        if (speakingCount > 0) {
-          logPageDisplay("messages_voice_participants_speaking", {
+        const applyEvent = (event: Event) => {
+          const snap = parseParticipantsPayload((event as MessageEvent).data);
+          if (!snap) return;
+          setActive(true);
+          onParticipantsRef.current(snap);
+        };
+
+        eventSource.addEventListener("ready", (event) => {
+          applyEvent(event);
+          logPageDisplay("messages_voice_participants_stream_ready", {
             chatId,
-            groupCallId: snap.group_call_id,
-            speakingCount,
-            revision: snap.revision,
+            groupCallId,
+            dataChars: String((event as MessageEvent).data ?? "").length,
+            mode,
           });
-        }
-        onParticipantsRef.current(snap);
-      });
+        });
 
-      eventSource.onerror = () => {
-        eventSource?.close();
-        eventSource = null;
-        setActive(false);
-        if (cancelled) return;
-        if (reconnectTimer != null) clearTimeout(reconnectTimer);
-        reconnectTimer = setTimeout(connect, STREAM_RECONNECT_MS);
-      };
+        eventSource.addEventListener("participants", (event) => {
+          const snap = parseParticipantsPayload((event as MessageEvent).data);
+          if (!snap) return;
+          setActive(true);
+          const speakingCount = snap.participants.filter((p) => p.is_speaking).length;
+          if (speakingCount > 0) {
+            logPageDisplay("messages_voice_participants_speaking", {
+              chatId,
+              groupCallId: snap.group_call_id,
+              speakingCount,
+              revision: snap.revision,
+            });
+          }
+          onParticipantsRef.current(snap);
+        });
+
+        eventSource.onerror = () => {
+          eventSource?.close();
+          eventSource = null;
+          setActive(false);
+          if (cancelled) return;
+          if (reconnectTimer != null) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(connect, STREAM_RECONNECT_MS);
+        };
+      });
     };
 
     connect();
 
     return () => {
       cancelled = true;
+      mintAbort?.abort();
       if (reconnectTimer != null) clearTimeout(reconnectTimer);
       eventSource?.close();
       setActive(false);

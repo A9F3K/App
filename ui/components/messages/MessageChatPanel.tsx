@@ -16,6 +16,7 @@ import { MessageChatVoiceBar } from "./MessageChatVoiceBar";
 import { MessageSubtreeErrorBoundary } from "./MessageSubtreeErrorBoundary";
 import { isVoiceDialogUiOpen, setVoiceDialogUiOpen } from "./voiceDialogUiGate";
 import type { MessageChatRowData } from "./MessageChatRow";
+import { isGroupLikeChatRow } from "./isGroupLikeChatRow";
 
 type Props = {
   chat: MessageChatRowData;
@@ -32,7 +33,10 @@ function isLiveVoiceChat(chat: MessageChatRowData): boolean {
 /** Groups / supergroups / channels can host a bound voice chat (not private DMs). */
 function canStartVoiceChat(chat: MessageChatRowData): boolean {
   const kind = chat.chat_kind;
-  return kind === "group" || kind === "supergroup" || kind === "channel";
+  if (kind === "group" || kind === "supergroup" || kind === "channel") return true;
+  // chat_kind is often missing on list rows — match subheader/member-count heuristics.
+  if (kind === "private") return false;
+  return isGroupLikeChatRow(chat);
 }
 
 function resolveGroupCallId(
@@ -59,6 +63,11 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const [voicePopoverOpen, setVoicePopoverOpen] = useState(false);
   /** True from Join/Start until Leave — covers the deferred WebRTC arm window. */
   const [voiceEngaged, setVoiceEngaged] = useState(false);
+  /**
+   * VoiceBar confirmed speakers/participants (or joined). Chat-list can keep a
+   * stale has_active_voice_chat; until this is true, show Start not Join-only.
+   */
+  const [voicePresenceConfirmed, setVoicePresenceConfirmed] = useState(false);
   const [startPending, setStartPending] = useState(false);
   const [startedCallId, setStartedCallId] = useState<number | null>(null);
   /** After an explicit leave, do not auto-listen again until the user rejoins or opens another chat. */
@@ -74,7 +83,11 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const voiceJoinedRef = useRef(false);
   voiceJoinedRef.current = voiceJoined;
   const groupCallId = resolveGroupCallId(chat, startedCallId);
-  const showVoiceBar = liveVoiceAvailable || voiceJoined;
+  // Mount Join strip only after probe/SSE confirms speakers (or user joined).
+  // Do not require chat.has_active_voice_chat — list poll often lags / stays
+  // false, and AND-ing it with presenceConfirmed caused a remount loop when
+  // VoiceBar's mount effect cleared the confirmed bit.
+  const showVoiceBar = voicePresenceConfirmed || voiceJoined;
 
   const clearJoinArmTimer = useCallback(() => {
     if (joinArmTimerRef.current != null) {
@@ -101,6 +114,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     setStartPending(false);
     setStartedCallId(null);
     setVoiceEngaged(false);
+    setVoicePresenceConfirmed(false);
     // tdesktop parity: opening a chat with a live call shows the bar + roster but
     // does NOT connect audio. The user must press Join (or open the popover) to
     // hear the call. Prevents remote voice leaking in just from loading the chat.
@@ -108,6 +122,9 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   }, [chat.telegram_chat_id, clearJoinArmTimer]);
 
   useEffect(() => {
+    // Drop a Start-voice call id once the list/probe no longer advertises live.
+    // Do not clear voicePresenceConfirmed here — that raced with probe patches
+    // and unmounted VoiceBar while a real call was still live.
     if (!liveVoiceAvailable && !voiceJoined) {
       setStartedCallId(null);
     }
@@ -142,16 +159,16 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   }, []);
 
   // TDLib chat-list sync can miss video_chat OR keep a stale flag after the call
-  // ends. Probe sparingly — VoiceBar SSE/poll owns presence once the bar is live.
+  // ends. Probe to clear rings / show Start — including when canStart is false
+  // but the list still paints live (otherwise VoiceBar stays gated off forever).
+  // VoiceBar SSE/poll owns presence once joined.
   useEffect(() => {
-    if (!canStart || voiceJoined || !visible || voicePopoverOpen) return;
-    // Already know the call is live — strip/SSE refresh presence. getChat every
-    // 20s stacked with chat-list polls (20–33s) and starved voice WebRTC
-    // (logs: message-voice-detect get_chat loop + chats_poll elapsedMs=32973).
-    if (liveVoiceAvailable) return;
+    if (voiceJoined || !visible || voicePopoverOpen) return;
+    if (!canStart && !liveVoiceAvailable) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const intervalMs = 12_000;
+    // Stale "active" flags need a fast first check; idle chats can poll slower.
+    const intervalMs = liveVoiceAvailable ? 4_000 : 12_000;
 
     const probeChatId = chat.telegram_chat_id;
     const probe = async () => {
@@ -159,21 +176,28 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       const result = await fetchTelegramChatVoiceParticipants(probeChatId);
       if (cancelled || !result.ok || isVoiceDialogUiOpen()) return;
       if (chat.telegram_chat_id !== probeChatId) return;
-      const nonSelf = result.participants.filter((row) => !row.is_self);
-      const hasSelf = result.participants.some((row) => row.is_self);
-      // Self-only is live when this account is already in the call elsewhere.
+      // Server may still advertise a bound empty call — require participants or
+      // joined self. Do not trust has_hidden_listeners alone (stale leftovers).
       const live =
         Boolean(result.has_active_voice_chat) &&
-        (result.participant_count > 0 || nonSelf.length > 0 || hasSelf);
+        (result.participant_count > 0 ||
+          result.participants.length > 0 ||
+          Boolean(result.voice_chat_is_joined));
+      const joined = live && Boolean(result.voice_chat_is_joined);
       patchAuthenticatedHomeSelectedChatVoice(probeChatId, {
         has_active_voice_chat: live,
-        voice_chat_group_call_id: live ? result.voice_chat_group_call_id : null,
+        // Keep bound id when clearing live so Start voice can reuse it.
+        voice_chat_group_call_id:
+          result.voice_chat_group_call_id ?? chat.voice_chat_group_call_id ?? null,
+        voice_chat_is_joined: joined,
       });
+      setVoicePresenceConfirmed(live);
       if (!live) return;
       appWarn("[message-voice-detect]", result.voice_resolve_source, {
         chatId: probeChatId,
         groupCallId: result.voice_chat_group_call_id,
         participantCount: result.participant_count,
+        isJoined: joined,
       });
     };
 
@@ -198,6 +222,15 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     voiceJoined,
     voicePopoverOpen,
   ]);
+
+  useEffect(() => {
+    if (!voiceJoined) return;
+    patchAuthenticatedHomeSelectedChatVoice(chat.telegram_chat_id, {
+      has_active_voice_chat: true,
+      voice_chat_group_call_id: groupCallId,
+      voice_chat_is_joined: true,
+    });
+  }, [chat.telegram_chat_id, groupCallId, voiceJoined]);
 
   const openVoicePopover = useCallback(() => {
     const now = Date.now();
@@ -298,7 +331,10 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   }, [armDeferredJoin, clearJoinArmTimer, groupCallId, liveVoiceAvailable, openVoicePopover]);
 
   const startVoice = useCallback(async () => {
-    if (liveVoiceAvailable || startPending || !canStart) return;
+    // Confirmed live presence (or in-flight start) must not allow a second Start.
+    if (voicePresenceConfirmed || startPending || !canStart) {
+      return;
+    }
     const startChatId = chat.telegram_chat_id;
     setStartPending(true);
     userLeftVoiceRef.current = false;
@@ -339,9 +375,9 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     canStart,
     chat.telegram_chat_id,
     clearJoinArmTimer,
-    liveVoiceAvailable,
     openVoicePopover,
     startPending,
+    voicePresenceConfirmed,
   ]);
 
   const leaveVoiceUi = useCallback(() => {
@@ -387,13 +423,16 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           }}
           onClosePopover={closeVoicePopover}
           onLeftVoice={leaveVoiceUi}
+          onPresenceConfirmedChange={setVoicePresenceConfirmed}
           suppressStripPressUntilRef={suppressStripPressUntilRef}
         />
       ) : null}
       <MessageChatHeader
         chat={chat}
         colors={colors}
-        showStartVoice={!liveVoiceAvailable && canStart && !voiceJoined}
+        showStartVoice={
+          !voiceJoined && canStart && !voicePresenceConfirmed
+        }
         onStartVoice={() => void startVoice()}
         startVoicePending={startPending}
         onOpenProfile={() => openProfileSheet(chat)}

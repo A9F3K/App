@@ -51,6 +51,7 @@ import {
 } from "./MessageChatVoiceControlIcons";
 import { VoiceParticipantStateMicIcon } from "./MessageChatVoiceParticipantMicIcon";
 import {
+  MessageChatVoiceMediaPipColumn,
   MessageChatVoiceMediaStage,
   streamLooksLikePlaceholderVideo,
   type VoiceMediaStageSource,
@@ -960,6 +961,8 @@ export function MessageChatVoicePopover({
     useState<VoiceParticipantMenuAnchor | null>(null);
   const [participantMenuTarget, setParticipantMenuTarget] =
     useState<TelegramChatVoiceParticipant | null>(null);
+  /** Wide-stage expand: null = mosaic gallery (pic 2); set = focused tile (pic 3). */
+  const [focusedMediaId, setFocusedMediaId] = useState<string | null>(null);
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(() =>
     Platform.OS === "web" && typeof document !== "undefined" ? document.body : null,
   );
@@ -1488,6 +1491,25 @@ export function MessageChatVoicePopover({
     const self = participants.find((row) => row.is_self);
     const selfName = (self?.title || "").trim() || "You";
 
+    const tileChromeFor = (participant: TelegramChatVoiceParticipant | undefined) => {
+      if (!participant) return { muted: false, speaking: false };
+      const prefs = participantMediaPrefs[voiceParticipantPrefsKey(participant)];
+      const volumePercent =
+        prefs?.volumePercent ??
+        (typeof participant.volume_percent === "number"
+          ? participant.volume_percent
+          : 100);
+      const adminMuted =
+        Boolean(participant.is_muted) && participant.can_unmute_self === false;
+      const userOff = Boolean(participant.is_muted) && !adminMuted;
+      const locallyOff = !participant.is_self && volumePercent <= 0;
+      const muted = adminMuted || userOff || locallyOff;
+      const speakingRaw = isParticipantSpeaking
+        ? isParticipantSpeaking(participant)
+        : Boolean(participant.is_speaking);
+      return { muted, speaking: speakingRaw && !muted };
+    };
+
     const pushIfLive = (row: VoiceMediaStageSource) => {
       if (streamLooksLikePlaceholderVideo(row.stream)) return;
       const tracks = row.stream
@@ -1503,41 +1525,45 @@ export function MessageChatVoicePopover({
 
     // Local screencast first while presenting.
     if (localScreenStream) {
+      const chrome = tileChromeFor(self);
       pushIfLive({
         id: "local-screen",
         stream: localScreenStream,
         label: selfName,
         kind: "screen",
+        muted: chrome.muted,
+        speaking: chrome.speaking,
       });
     }
     if (localCameraStream) {
+      const chrome = tileChromeFor(self);
       pushIfLive({
         id: "local-camera",
         stream: localCameraStream,
         label: selfName,
         kind: "camera",
+        muted: chrome.muted,
+        speaking: chrome.speaking,
       });
     }
 
-    const resolveRemoteLabel = (endpointId: string, kind: "camera" | "screen") => {
+    const resolveRemoteParticipant = (
+      endpointId: string,
+      kind: "camera" | "screen",
+    ): TelegramChatVoiceParticipant | undefined => {
       for (const row of participants) {
         if (row.is_self) continue;
         const screenEp = row.screen_sharing_video_info?.endpoint_id;
         const camEp = row.video_info?.endpoint_id;
-        if (kind === "screen" && screenEp && screenEp === endpointId) {
-          return (row.title || "").trim() || "Participant";
-        }
-        if (kind === "camera" && camEp && camEp === endpointId) {
-          return (row.title || "").trim() || "Participant";
-        }
-        // Fallback: endpoint may be a synthetic id from roster builder.
+        if (kind === "screen" && screenEp && screenEp === endpointId) return row;
+        if (kind === "camera" && camEp && camEp === endpointId) return row;
         if (
           kind === "screen" &&
           row.screen_sharing_video_info?.source_groups?.length &&
           (endpointId === `screen-${row.user_id ?? row.chat_id ?? "x"}` ||
             endpointId.includes(String(row.user_id ?? "")))
         ) {
-          return (row.title || "").trim() || "Participant";
+          return row;
         }
         if (
           kind === "camera" &&
@@ -1545,24 +1571,28 @@ export function MessageChatVoicePopover({
           (endpointId === `cam-${row.user_id ?? row.chat_id ?? "x"}` ||
             endpointId.includes(String(row.user_id ?? "")))
         ) {
-          return (row.title || "").trim() || "Participant";
+          return row;
         }
       }
-      return kind === "screen" ? "Screen share" : "Camera";
+      return undefined;
     };
 
     if (remoteVideoSources.length > 0) {
-      // Screens first, then cameras — stable browsing order for PiP stack.
+      // Screens first, then cameras — stable browsing order for mosaic / pips.
       const ordered = [...remoteVideoSources].sort((a, b) => {
         if (a.kind === b.kind) return 0;
         return a.kind === "screen" ? -1 : 1;
       });
       for (const source of ordered) {
+        const participant = resolveRemoteParticipant(source.endpointId, source.kind);
+        const chrome = tileChromeFor(participant);
         pushIfLive({
           id: `remote:${source.kind}:${source.endpointId}`,
           stream: source.stream,
-          label: resolveRemoteLabel(source.endpointId, source.kind),
+          label: (participant?.title || "").trim() || (source.kind === "screen" ? "Screen share" : "Camera"),
           kind: source.kind,
+          muted: chrome.muted,
+          speaking: chrome.speaking,
         });
       }
     } else if (remoteVideoStream) {
@@ -1590,8 +1620,10 @@ export function MessageChatVoicePopover({
     }
     return rows;
   }, [
+    isParticipantSpeaking,
     localCameraStream,
     localScreenStream,
+    participantMediaPrefs,
     participants,
     remoteVideoSources,
     remoteVideoStream,
@@ -1627,13 +1659,42 @@ export function MessageChatVoicePopover({
     ? Math.max(SIDE_BY_SIDE_VIDEO_MIN_PX, sheetSize.width - rosterPaneWidth)
     : sheetSize.width;
   const hasScreenShareStage = mediaSources.some((row) => row.kind === "screen");
+  // Thin mosaic needs room for 1+2 (or 1+1) tiles — old 280px cap crushed shares.
   const stackedVideoMaxHeight = Math.min(
-    hasScreenShareStage || remoteVideoStream || remoteVideoSources.length > 0
-      ? 280
-      : 220,
-    MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
+    Math.max(
+      hasScreenShareStage || remoteVideoStream || remoteVideoSources.length > 0
+        ? Math.round(sheetSize.height * 0.48)
+        : 220,
+      hasScreenShareStage || mediaSources.length >= 2 ? 320 : 220,
+    ),
+    Math.max(MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX, 480),
+    Math.max(200, sheetSize.height - 220),
   );
   const handles: ResizeHandle[] = ["n", "s", "e", "w", "ne", "nw", "se", "sw"];
+
+  const focusedLiveSource =
+    focusedMediaId != null
+      ? mediaSources.find((row) => row.id === focusedMediaId) ?? null
+      : null;
+  const sidebarPipSources =
+    sideBySide && focusedLiveSource
+      ? mediaSources.filter((row) => row.id !== focusedLiveSource.id)
+      : [];
+
+  useEffect(() => {
+    if (!videoStageActive) {
+      setFocusedMediaId(null);
+      return;
+    }
+    if (!sideBySide) {
+      // Thin layout is always mosaic — drop expand when the sheet narrows.
+      setFocusedMediaId(null);
+      return;
+    }
+    if (focusedMediaId && !mediaSources.some((row) => row.id === focusedMediaId)) {
+      setFocusedMediaId(null);
+    }
+  }, [focusedMediaId, mediaSources, sideBySide, videoStageActive]);
 
   useEffect(() => {
     if (!onScreenShareDisplaySize || !screenSharing) return;
@@ -2339,12 +2400,18 @@ export function MessageChatVoicePopover({
                 minHeight: 0,
                 paddingLeft: 12,
                 paddingRight: 8,
+                paddingTop: 12,
+                paddingBottom: 12,
               }}
             >
               <MessageChatVoiceMediaStage
                 sources={suspendHeavy ? [] : mediaSources}
                 active={videoStageActive}
                 fillHeight
+                wideLayout
+                focusedId={focusedMediaId}
+                onFocusedIdChange={setFocusedMediaId}
+                externalPips
                 horizontalInsetPx={0}
                 marginBottomPx={0}
               />
@@ -2359,6 +2426,13 @@ export function MessageChatVoicePopover({
             >
               {renderHeader()}
               {renderDivider()}
+              {sidebarPipSources.length > 0 ? (
+                <MessageChatVoiceMediaPipColumn
+                  sources={sidebarPipSources}
+                  active={videoStageActive}
+                  onSelect={setFocusedMediaId}
+                />
+              ) : null}
               {renderParticipantList()}
               {renderChatOverlay()}
               {renderControlsShadow()}
@@ -2375,8 +2449,9 @@ export function MessageChatVoicePopover({
               sources={suspendHeavy ? [] : mediaSources}
               active={videoStageActive}
               maxHeightPx={stackedVideoMaxHeight}
-              horizontalInsetPx={20}
-              marginBottomPx={0}
+              wideLayout={false}
+              horizontalInsetPx={12}
+              marginBottomPx={8}
             />
             {renderParticipantList()}
             {renderChatOverlay()}

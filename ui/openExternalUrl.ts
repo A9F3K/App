@@ -11,6 +11,13 @@ export type ExternalAuthOpenMethod =
   | "linking"
   | "desktop_oauth_window";
 
+export type ExternalAuthOpenResult = {
+  method: ExternalAuthOpenMethod;
+  ok?: boolean;
+  error?: string | null;
+  sessionToken?: string | null;
+};
+
 function isInNestedFrame(): boolean {
   if (typeof window === "undefined") return false;
   try {
@@ -22,7 +29,30 @@ function isInNestedFrame(): boolean {
 
 /**
  * Open Telegram OIDC in the **top-level** browsing context.
+ * Desktop: awaits the Electron oauth child window so the caller can apply the
+ * session token and avoid leaving a second authenticated window open.
  * @see https://core.telegram.org/bots/telegram-login — Authorization Code + PKCE; URL must open in the user's browser, not a subframe.
+ */
+export async function openExternalAuthUrl(url: string): Promise<ExternalAuthOpenResult> {
+  if (isDesktopAppShell()) {
+    const bridge = getDesktopOAuthBridge();
+    if (bridge) {
+      const result = await bridge.openOAuthUrl(url, getApiBaseUrl());
+      return {
+        method: "desktop_oauth_window",
+        ok: result?.ok !== false && !result?.error,
+        error: result?.error ?? null,
+        sessionToken: result?.sessionToken ?? null,
+      };
+    }
+  }
+
+  return { method: navigateExternalAuthUrl(url) };
+}
+
+/**
+ * Sync navigate helper for non-desktop (and desktop fallback without bridge).
+ * Prefer {@link openExternalAuthUrl} when a session token may be returned.
  */
 export function navigateExternalAuthUrl(url: string): ExternalAuthOpenMethod {
   if (isDesktopAppShell()) {
@@ -85,9 +115,4 @@ export function navigateExternalAuthUrl(url: string): ExternalAuthOpenMethod {
 
   void Linking.openURL(url);
   return "linking";
-}
-
-/** @deprecated Use {@link navigateExternalAuthUrl} (sync). */
-export async function openExternalAuthUrl(url: string): Promise<ExternalAuthOpenMethod> {
-  return navigateExternalAuthUrl(url);
 }

@@ -13,11 +13,16 @@ const VOICE_RING_GAP_PX = 1;
 const VOICE_RING_WIDTH_PX = 2;
 
 const VOICE_RING_STYLE_ID = "hsp-voice-active-ring-style";
-/** Active voice chat ring — Telegram-style blue (same motion as the former green). */
+/** Active voice chat ring — Telegram-style blue (call live, not joined). */
 const VOICE_RING_BLUE = "#3390EC";
 const VOICE_RING_BLUE_BRIGHT = "#6BB6FF";
 const VOICE_RING_BLUE_DEEP = "#1A5FB4";
+/** Joined voice chat ring — iOS green (same as speaking mic). */
+const VOICE_RING_GREEN = "#34C759";
+const VOICE_RING_GREEN_BRIGHT = "#7AE28A";
+const VOICE_RING_GREEN_DEEP = "#1F8F3A";
 export const MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR = VOICE_RING_BLUE;
+export const MESSAGE_CHAT_JOINED_VOICE_RING_COLOR = VOICE_RING_GREEN;
 
 /** Web: animate gradient stop colors in place — no transform/rotation on the ring. */
 function ensureActiveVoiceRingCss(): void {
@@ -35,7 +40,14 @@ function ensureActiveVoiceRingCss(): void {
   66%  { --hsp-vr-a: ${VOICE_RING_BLUE_DEEP}; --hsp-vr-b: ${VOICE_RING_BLUE}; --hsp-vr-c: ${VOICE_RING_BLUE_BRIGHT}; }
   100% { --hsp-vr-a: ${VOICE_RING_BLUE}; --hsp-vr-b: ${VOICE_RING_BLUE_BRIGHT}; --hsp-vr-c: ${VOICE_RING_BLUE_DEEP}; }
 }
-[data-hsp-voice-ring="1"] {
+@keyframes hsp-voice-ring-colors-joined {
+  0%   { --hsp-vr-a: ${VOICE_RING_GREEN}; --hsp-vr-b: ${VOICE_RING_GREEN_BRIGHT}; --hsp-vr-c: ${VOICE_RING_GREEN_DEEP}; }
+  33%  { --hsp-vr-a: ${VOICE_RING_GREEN_BRIGHT}; --hsp-vr-b: ${VOICE_RING_GREEN_DEEP}; --hsp-vr-c: ${VOICE_RING_GREEN}; }
+  66%  { --hsp-vr-a: ${VOICE_RING_GREEN_DEEP}; --hsp-vr-b: ${VOICE_RING_GREEN}; --hsp-vr-c: ${VOICE_RING_GREEN_BRIGHT}; }
+  100% { --hsp-vr-a: ${VOICE_RING_GREEN}; --hsp-vr-b: ${VOICE_RING_GREEN_BRIGHT}; --hsp-vr-c: ${VOICE_RING_GREEN_DEEP}; }
+}
+[data-hsp-voice-ring="1"],
+[data-hsp-voice-ring="joined"] {
   background-image: conic-gradient(
     from 0deg,
     var(--hsp-vr-a),
@@ -47,9 +59,20 @@ function ensureActiveVoiceRingCss(): void {
   -webkit-mask-composite: xor;
   mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
-  animation: hsp-voice-ring-colors 2.2s linear infinite;
   box-sizing: border-box;
   pointer-events: none;
+}
+[data-hsp-voice-ring="1"] {
+  --hsp-vr-a: ${VOICE_RING_BLUE};
+  --hsp-vr-b: ${VOICE_RING_BLUE_BRIGHT};
+  --hsp-vr-c: ${VOICE_RING_BLUE_DEEP};
+  animation: hsp-voice-ring-colors 2.2s linear infinite;
+}
+[data-hsp-voice-ring="joined"] {
+  --hsp-vr-a: ${VOICE_RING_GREEN};
+  --hsp-vr-b: ${VOICE_RING_GREEN_BRIGHT};
+  --hsp-vr-c: ${VOICE_RING_GREEN_DEEP};
+  animation: hsp-voice-ring-colors-joined 2.2s linear infinite;
 }
 `;
   document.head.appendChild(el);
@@ -72,6 +95,8 @@ type Props = {
    * is a fixed conic gradient whose stop colors animate (no border rotation).
    */
   activeVoiceRing?: boolean;
+  /** Participating in the live call — green ring instead of blue. */
+  joinedVoiceRing?: boolean;
   onLoad?: () => void;
   onError?: (error?: unknown) => void;
 };
@@ -87,6 +112,7 @@ export function MessageChatAvatarSlot({
   fetchPriority = "normal",
   borderColor,
   activeVoiceRing = false,
+  joinedVoiceRing = false,
   onLoad,
   onError,
 }: Props) {
@@ -179,7 +205,7 @@ export function MessageChatAvatarSlot({
     return face;
   }
 
-  const ringColor = borderColor ?? VOICE_RING_BLUE;
+  const ringColor = borderColor ?? (joinedVoiceRing ? VOICE_RING_GREEN : VOICE_RING_BLUE);
   const outerPx =
     sizePx + (VOICE_RING_GAP_PX + VOICE_RING_WIDTH_PX) * 2;
   const inset = -(VOICE_RING_GAP_PX + VOICE_RING_WIDTH_PX);
@@ -208,7 +234,7 @@ export function MessageChatAvatarSlot({
         <View
           pointerEvents="none"
           // RN-web: data-* for CSS ring mask + color-stop animation (no rotate).
-          {...({ dataSet: { hspVoiceRing: "1" } } as object)}
+          {...({ dataSet: { hspVoiceRing: joinedVoiceRing ? "joined" : "1" } } as object)}
           style={{
             position: "absolute",
             top: 0,

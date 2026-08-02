@@ -31,13 +31,22 @@ export async function leaveTelegramChatVoice(
     error?: string;
     has_active_voice_chat?: boolean;
     voice_chat_group_call_id?: number | null;
+    participant_count?: number;
+    is_joined?: boolean;
+    participants?: unknown[];
   };
   if (!response.ok || !json.ok) {
     return { ok: false, error: json.error ?? "leave_failed" };
   }
+  const count = typeof json.participant_count === "number" ? Math.max(0, Math.floor(json.participant_count)) : 0;
+  const participantsLen = Array.isArray(json.participants) ? json.participants.length : 0;
+  const joined = Boolean(json.is_joined);
+  // After leave, treat empty leftover calls as inactive so the client can show Start again.
+  const hasActive =
+    Boolean(json.has_active_voice_chat) && (count > 0 || participantsLen > 0 || joined);
   return {
     ok: true,
-    has_active_voice_chat: Boolean(json.has_active_voice_chat),
+    has_active_voice_chat: hasActive,
     voice_chat_group_call_id: normalizeTelegramGroupCallId(json.voice_chat_group_call_id),
   };
 }
