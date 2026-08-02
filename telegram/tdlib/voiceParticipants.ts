@@ -30,7 +30,7 @@ export type VoiceParticipantRow = {
    */
   can_unmute_self: boolean;
   is_self: boolean;
-  /** Local listen volume 0–200% (TDLib volume_level / 100; ≤1 → 0%). */
+  /** Local listen volume 0–200% (TDLib volume_level / 100; default 100%). */
   volume_percent?: number;
   /** TDLib lexicographic order — higher sorts first (Telegram Desktop). */
   order?: string;
@@ -367,12 +367,16 @@ type CollectedParticipant = {
 function normalizeVolumeLevel(raw: unknown, fallback = 10000): number {
   const n = Number(raw);
   if (!Number.isFinite(n)) return fallback;
-  if (n <= 1) return 1;
+  // TDLib range is 1–20000 (10000 = 100%). 0 / negative means unset — never
+  // coerce to 1, or volumeLevelToPercent maps everyone to 0% and the WebRTC
+  // mix GainNode mutes the whole call while the analyser still sees speech.
+  if (n < 1) return fallback;
   return Math.min(20000, Math.max(1, Math.trunc(n)));
 }
 
 function volumeLevelToPercent(level: number): number {
-  if (!Number.isFinite(level) || level <= 1) return 0;
+  if (!Number.isFinite(level) || level < 1) return 100;
+  // level 1 ≈ 0% (Telegram min / muted-for-me); 10000 = 100%.
   return Math.min(200, Math.max(0, Math.round(level / 100)));
 }
 

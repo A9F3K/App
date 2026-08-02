@@ -69,7 +69,7 @@ export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts(UI_GOOGLE_FONT_LOAD_MAP);
 
   useEffect(() => {
-    if (fontsLoaded || fontError) {
+    if (fontsLoaded || fontError || Platform.OS === "web") {
       void SplashScreen.hideAsync();
     }
     if (fontError) {
@@ -77,7 +77,10 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError]);
 
-  if (!fontsLoaded && !fontError) {
+  // Web: never blank the SSR shell while fonts load — a post-deploy cache miss on
+  // the ~15MB index + font files left users on a black screen for many seconds
+  // ("lazy / not loading"). Native still waits so splash can cover the gap.
+  if (Platform.OS !== "web" && !fontsLoaded && !fontError) {
     return null;
   }
 

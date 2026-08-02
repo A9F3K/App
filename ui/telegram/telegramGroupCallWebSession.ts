@@ -322,6 +322,10 @@ export class TelegramGroupCallWebSession {
   /** One auto rejoin after video SDP kills mix audio (per join session). */
   private audioRecoverAfterVideoDone = false;
   private audioRecoverInFlight = false;
+  /** Wall clock when the last full remote-video renegotiate succeeded (soft-stall watch). */
+  private postVideoRenegotiateAt = 0;
+  /** Consecutive near-zero RMS samples after {@link postVideoRenegotiateAt}. */
+  private postVideoSilenceTicks = 0;
   /**
    * Full remote video SDP (extra m-lines / remote_offer) can freeze the mixed
    * audio m-line on Colibri. Off until roster screen requests arrive (or
@@ -1569,6 +1573,9 @@ export class TelegramGroupCallWebSession {
       dataChannel: this.dataChannel?.readyState ?? "missing",
       level: "info",
     });
+    // Arm soft-stall RMS watch — mix m-line can die while inboundPackets trickle.
+    this.postVideoRenegotiateAt = Date.now();
+    this.postVideoSilenceTicks = 0;
     this.sendReceiverVideoConstraints();
     this.pullRemoteMediaTracks(connection);
     // Video subscribe used to leave WebAudio attached to a pre-renegotiate
@@ -1591,9 +1598,18 @@ export class TelegramGroupCallWebSession {
               mapped: this.remoteVideoByEndpoint.size,
               level: stats.inboundVideoPackets > 0 ? "info" : "warn",
             });
+            const audioGrowth =
+              stats.inboundPackets - inboundBefore.inboundPackets;
+            const videoGrowth =
+              stats.inboundVideoPackets - inboundBefore.inboundVideoPackets;
+            const outboundGrowth =
+              stats.outboundPackets - inboundBefore.outboundPackets;
+            // Hard stall: mix audio flat while we keep sending (or video floods).
+            // Trickling audio with exploding video after multi-screen SDP is the
+            // common "hear everyone except the incomplete-SSRC sharer" failure.
             const audioStalled =
-              stats.inboundPackets <= inboundBefore.inboundPackets &&
-              stats.outboundPackets > inboundBefore.outboundPackets + 5;
+              outboundGrowth > 5 &&
+              (audioGrowth <= 0 || (audioGrowth < 5 && videoGrowth > 50));
             if (audioStalled) {
               this.remoteAudioStalledAfterVideo = true;
               logPageDisplay("messages_voice_remote_audio_stalled_after_video", {
@@ -1603,10 +1619,17 @@ export class TelegramGroupCallWebSession {
                 inboundAfter: stats.inboundPackets,
                 outboundBefore: inboundBefore.outboundPackets,
                 outboundAfter: stats.outboundPackets,
+                audioGrowth,
+                videoGrowth,
                 level: "error",
-                note: "mix RTP did not grow after video SDP — audio m-line likely broken",
+                note: "mix RTP stalled or starved after video SDP — recover audio-only",
               });
               void this.recoverAudioOnlyAfterVideoStall();
+            } else if (audioGrowth > 5) {
+              // Mix still healthy after video — disarm soft RMS recover so a brief
+              // analyser dip during track unmute cannot force audio-only rejoin.
+              this.postVideoRenegotiateAt = 0;
+              this.postVideoSilenceTicks = 0;
             }
             if (stats.inboundPackets > inboundBefore.inboundPackets) {
               this.queueRemotePlayback("post-video-audio-check");
@@ -2594,6 +2617,7 @@ export class TelegramGroupCallWebSession {
             peakRms: Number(peakRms.toFixed(4)),
             speaking,
             sink: this.remotePlaybackSink,
+            gain: Number(this.playbackGainValue.toFixed(3)),
             level: "info",
           });
           peakRms = rms;
@@ -2613,8 +2637,47 @@ export class TelegramGroupCallWebSession {
           lastFlipAt = now;
           this.setRemoteSpeaking(speaking);
         }
+        // Soft stall: only after a long settle + sustained silence. Hard stall
+        // (packet growth) is authoritative; do NOT recover on a brief post-video
+        // RMS dip while RTP is still healthy (that caused needless audio-only
+        // rejoins and sticky video blocks in production logs).
+        if (
+          this.postVideoRenegotiateAt > 0 &&
+          !this.remoteAudioStalledAfterVideo &&
+          !this.audioRecoverAfterVideoDone &&
+          !this.audioRecoverInFlight
+        ) {
+          const sinceVideo = now - this.postVideoRenegotiateAt;
+          if (sinceVideo >= 5_000) {
+            if (rms < OFF_RMS) {
+              this.postVideoSilenceTicks += 1;
+              // ~4s of silence samples after the 5s settle window
+              if (this.postVideoSilenceTicks >= 40) {
+                this.postVideoSilenceTicks = 0;
+                this.postVideoRenegotiateAt = 0;
+                this.remoteAudioStalledAfterVideo = true;
+                logPageDisplay("messages_voice_remote_audio_soft_stalled_after_video", {
+                  chatId: this.input.chatId,
+                  groupCallId: this.input.groupCallId,
+                  rms: Number(rms.toFixed(4)),
+                  sinceVideoMs: sinceVideo,
+                  sink: this.remotePlaybackSink,
+                  level: "error",
+                  note: "RMS silent after video SDP — recover audio-only (packets may still trickle)",
+                });
+                void this.recoverAudioOnlyAfterVideoStall();
+                return;
+              }
+            } else if (rms >= ON_RMS) {
+              this.postVideoSilenceTicks = 0;
+              this.postVideoRenegotiateAt = 0;
+            }
+          }
+        }
         // WebAudio sink can stay silent after muted-era latch — flip to HTML audio.
         // Skip when mix RTP already stalled (HTML cannot revive a broken m-line).
+        // Do NOT audio-only-rejoin from this path: brief RMS=0 while video attaches
+        // falsely fired recover (logs: reason=remote_rms_silence_after_video).
         if (
           this.remotePlaybackSink === "webaudio" &&
           rms < OFF_RMS &&
@@ -3253,6 +3316,10 @@ export class TelegramGroupCallWebSession {
    * - someone speaking → max of speaking peers' volumes (0 if all muted)
    * - everyone locally muted → silence
    * - otherwise leave mix at unity
+   *
+   * Never silence the mix from empty/default volume maps — a bad TDLib
+   * volume_level→0% mapping used to mute everyone while the analyser still
+   * saw speech (Seva speaking, hearable RMS, GainNode at 0).
    */
   private computeListenGain(): number {
     const keys = this.listenParticipantKeys;
@@ -3261,7 +3328,15 @@ export class TelegramGroupCallWebSession {
     if (keys.length === 1) {
       return TelegramGroupCallWebSession.percentToLinearGain(volOf(keys[0]!));
     }
-    if (keys.every((key) => volOf(key) <= 0)) return 0;
+    const vols = keys.map(volOf);
+    if (vols.every((v) => v <= 0)) {
+      // Mute-all only when nobody is marked speaking. Bad TDLib volume_level→0%
+      // used to put every remote at 0 while Seva still spoke — analyser heard
+      // speech, GainNode stayed at 0.
+      const anySpeaking = [...this.listenSpeakingKeys].some((key) => keys.includes(key));
+      if (anySpeaking) return 1;
+      return this.listenVolumes.size > 0 ? 0 : 1;
+    }
     const speaking = [...this.listenSpeakingKeys].filter((key) => keys.includes(key));
     if (speaking.length > 0) {
       const audible = speaking.map(volOf).filter((v) => v > 0);
@@ -3277,6 +3352,20 @@ export class TelegramGroupCallWebSession {
 
   private applyListenGain(): void {
     const next = this.computeListenGain();
+    if (next !== this.playbackGainValue) {
+      logPageDisplay("messages_voice_listen_gain", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        gain: Number(next.toFixed(3)),
+        prevGain: Number(this.playbackGainValue.toFixed(3)),
+        participants: this.listenParticipantKeys.length,
+        speaking: this.listenSpeakingKeys.size,
+        zeroVolCount: this.listenParticipantKeys.filter(
+          (key) => (this.listenVolumes.get(key) ?? 100) <= 0,
+        ).length,
+        level: next <= 0 ? "warn" : "info",
+      });
+    }
     this.playbackGainValue = next;
     if (this.playbackGain) {
       try {
@@ -3631,6 +3720,8 @@ export class TelegramGroupCallWebSession {
     }
     this.audioRecoverAfterVideoDone = false;
     this.audioRecoverInFlight = false;
+    this.postVideoRenegotiateAt = 0;
+    this.postVideoSilenceTicks = 0;
 
     // Resume autoplay/silent AudioContext in the Join turn before we create the
     // outbound silence track — suspended ctx → no RTP → inboundAudio=0.
@@ -4385,6 +4476,8 @@ export class TelegramGroupCallWebSession {
     this.remoteVideoSdpBlockedAfterStall = false;
     this.audioRecoverAfterVideoDone = false;
     this.audioRecoverInFlight = false;
+    this.postVideoRenegotiateAt = 0;
+    this.postVideoSilenceTicks = 0;
     this.remoteAudioEnabled = false;
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());

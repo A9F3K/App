@@ -8,7 +8,13 @@ import { chatActionFromTdlib, presenceFromTdlibStatus, isGenericMessagePreviewLa
 import { shouldIncludeChatInList } from "./chatListFilter.js";
 import { emojiStatusCustomIdFromUser, parseEmojiStatusCustomId } from "./emojiStatus.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
-import { ingestGroupCallParticipantUpdate, ingestGroupCallUpdate, verifyGroupCallLiveState } from "./voiceParticipants.js";
+import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
+import {
+  groupCallLooksLive,
+  ingestGroupCallParticipantUpdate,
+  ingestGroupCallUpdate,
+  verifyGroupCallLiveState,
+} from "./voiceParticipants.js";
 import { ingestNewGroupCallMessage } from "./voiceCallMessages.js";
 
 const CHAT_REFRESH_DEBOUNCE_MS = 800;
@@ -465,6 +471,34 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
     }
     if (type === "updateGroupCall") {
       ingestGroupCallUpdate(update);
+      // Keep chat-list rings in sync with getGroupCall participant counts —
+      // syncChats verify is one-shot and message upserts must not be the only
+      // path that can clear/paint spectator live (Blox Fruits mid-call).
+      const groupCall = update.group_call as
+        | {
+            id?: number;
+            participant_count?: number;
+            is_active?: boolean;
+            is_joined?: boolean;
+            need_rejoin?: boolean;
+            has_hidden_listeners?: boolean;
+            recent_speakers?: unknown[];
+          }
+        | undefined;
+      const callId = normalizeTelegramGroupCallId(groupCall?.id) ?? 0;
+      if (callId > 0 && groupCall) {
+        const live = groupCallLooksLive(groupCall);
+        const isJoined = live && Boolean(groupCall.is_joined || groupCall.need_rejoin);
+        const list = getLiveChatList(record.telegramUsername) ?? [];
+        for (const row of list) {
+          if (row.voice_chat_group_call_id !== callId) continue;
+          patchLiveChatVideoChat(record.telegramUsername, row.telegram_chat_id, {
+            has_active_voice_chat: live,
+            voice_chat_group_call_id: callId,
+            voice_chat_is_joined: isJoined,
+          });
+        }
+      }
       return;
     }
     if (type === "updateCall" || type === "updateNewCallSignalingData") {

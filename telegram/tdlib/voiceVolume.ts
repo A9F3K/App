@@ -28,9 +28,11 @@ export function percentToTdlibVolumeLevel(percent: number): number {
   return Math.min(20000, Math.max(1, p * 100));
 }
 
-/** TDLib volume_level → UI 0–200% (level ≤1 displays as 0%). */
+/** TDLib volume_level → UI 0–200%.
+ * level &lt; 1 = unset → 100%; level 1 = Telegram min / muted-for-me → 0%. */
 export function tdlibVolumeLevelToPercent(level: number): number {
-  if (!Number.isFinite(level) || level <= 1) return 0;
+  if (!Number.isFinite(level) || level < 1) return 100;
+  if (level <= 1) return 0;
   return Math.min(200, Math.max(0, Math.round(level / 100)));
 }
 

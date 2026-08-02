@@ -7,3 +7,5 @@ releases/
 
 # Local TDLib gateway session DB (locked while tdlib:gateway runs; not needed on Vercel).
 .tdlib-data/
+
+.tmp/

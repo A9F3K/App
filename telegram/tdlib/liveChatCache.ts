@@ -362,21 +362,37 @@ export function patchLiveChatFromTdlib(
       is_pinned: isChatPinnedInMainList(chat),
       pin_order: mainListOrderKey(chat),
       ...(() => {
-        // Metadata never paints live (see voiceChatFromTdChat). Only keep the
-        // joined flag across getChat upserts for the same bound call — spectator
-        // "live" must be re-verified via getGroupCall (verifyAndPatchVideoChat /
-        // syncChats). Sticky spectator live made empty leftovers look active forever.
+        // Metadata never paints live (see voiceChatFromTdChat). Preserve a
+        // previously verified live/joined flag for the same bound call across
+        // getChat upserts (new messages, read inbox, …). Busy chats like Blox
+        // Fruits otherwise cleared spectator rings on every updateNewMessage
+        // because stillJoined-only kept live only when *we* were in the call.
+        // Clearing inactive leftovers is updateChatVideoChat / updateGroupCall /
+        // verifyAndPatchVideoChat — not every chat-row refresh.
         const voice = voiceChatFromTdChat(chat);
         const nextCallId = voice.voice_chat_group_call_id;
+        if (nextCallId == null) {
+          return {
+            voice_chat_group_call_id: null,
+            has_active_voice_chat: false,
+            voice_chat_is_joined: false,
+          };
+        }
         const sameBound =
-          nextCallId != null &&
           existing?.voice_chat_group_call_id != null &&
           nextCallId === existing.voice_chat_group_call_id;
-        const stillJoined = sameBound && Boolean(existing?.voice_chat_is_joined);
+        if (sameBound) {
+          return {
+            voice_chat_group_call_id: nextCallId,
+            has_active_voice_chat: Boolean(existing?.has_active_voice_chat),
+            voice_chat_is_joined: Boolean(existing?.voice_chat_is_joined),
+          };
+        }
+        // New/changed call id — wait for verify before painting the ring.
         return {
           voice_chat_group_call_id: nextCallId,
-          has_active_voice_chat: stillJoined,
-          voice_chat_is_joined: stillJoined,
+          has_active_voice_chat: false,
+          voice_chat_is_joined: false,
         };
       })(),
       list_tier: existing?.list_tier ?? chatListTier(chat),
