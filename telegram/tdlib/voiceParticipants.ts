@@ -388,6 +388,8 @@ function volumeLevelToPercent(level: number): number {
  * the next pulse / client mix-RMS extend of recent speakers; still clears when
  * silence outlasts the hold. */
 const SPEAKING_HOLD_MS = 8_000;
+/** Block recent_speakers / soft-load from re-inserting someone who just left. */
+const LEAVE_TOMBSTONE_MS = 60_000;
 
 function effectiveSpeaking(row: CollectedParticipant, now: number): boolean {
   if (row.isSpeaking) return true;
@@ -522,9 +524,63 @@ type CallParticipantsCache = {
    * the same speaking overlay + thin-roster stub fallback as the poll path.
    */
   speakers?: Map<string, CollectedParticipant>;
+  /**
+   * participantKey → left-at ms. Empty-order leave sets this so TDLib's lingering
+   * recent_speakers / partial loads cannot re-paint ghosts (пэшка after exit).
+   * Cleared when the same key rejoins with a non-empty order.
+   */
+  leftAt?: Map<string, number>;
   /** Throttle SSE refresh while is_speaking stays true (long utterances). */
   lastSpeakingRefreshAt?: number;
 };
+
+function pruneLeaveTombstones(cached: CallParticipantsCache, now = Date.now()): void {
+  const leftAt = cached.leftAt;
+  if (!leftAt || leftAt.size === 0) return;
+  for (const [key, at] of leftAt) {
+    if (now - at >= LEAVE_TOMBSTONE_MS) leftAt.delete(key);
+  }
+}
+
+function isLeaveTombstoned(
+  cached: CallParticipantsCache,
+  key: string,
+  now = Date.now(),
+): boolean {
+  pruneLeaveTombstones(cached, now);
+  const at = cached.leftAt?.get(key);
+  return at != null && now - at < LEAVE_TOMBSTONE_MS;
+}
+
+function markLeaveTombstone(cached: CallParticipantsCache, key: string): void {
+  if (!cached.leftAt) cached.leftAt = new Map();
+  cached.leftAt.set(key, Date.now());
+}
+
+function clearLeaveTombstone(cached: CallParticipantsCache, key: string): void {
+  cached.leftAt?.delete(key);
+}
+
+/** Drop leave-tombstoned faces unless they rejoined with a non-empty order. */
+function stripLeaveTombstones(
+  members: Map<string, CollectedParticipant>,
+  cached: CallParticipantsCache | undefined,
+): Map<string, CollectedParticipant> {
+  if (!cached?.leftAt?.size) return members;
+  const now = Date.now();
+  let changed = false;
+  const next = new Map(members);
+  for (const [key, row] of next) {
+    if (!isLeaveTombstoned(cached, key, now)) continue;
+    if (row.order) {
+      clearLeaveTombstone(cached, key);
+      continue;
+    }
+    next.delete(key);
+    changed = true;
+  }
+  return changed ? next : members;
+}
 
 const PROFILE_TTL_MS = 30 * 60_000;
 /** Serve stale profiles up to this age while a background refresh runs. */
@@ -611,6 +667,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
   let mediaBecameLive = false;
   let mediaCleared = false;
   let speakingRefresh = false;
+  let memberLeft = false;
   if (!order) {
     // Empty order means left per TDLib. Muted self can also get empty order while
     // still joined — keep pinned self. Everyone else must drop immediately or the
@@ -641,10 +698,18 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
     } else {
       if (cached.members.delete(key)) {
         speakingBecameFalse = true;
+        memberLeft = true;
       }
+      // recent_speakers often still lists leavers for a while. Drop the stub or
+      // mergeSpeakerStubsForDisplay re-paints them after empty-order leave.
+      if (cached.speakers?.delete(key)) {
+        memberLeft = true;
+      }
+      markLeaveTombstone(cached, key);
     }
   } else {
     const now = Date.now();
+    clearLeaveTombstone(cached, key);
     const isSpeaking = Boolean(
       participant.is_speaking ?? (participant as { isSpeaking?: boolean }).isSpeaking,
     );
@@ -711,12 +776,16 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       }
     }
   }
-  // Speaking START and camera/screencast appear/clear flush immediately so the
-  // dialog can renegotiate for presentation video without waiting on debounce.
+  // Speaking START, leave, and camera/screencast appear/clear flush immediately
+  // so the dialog drops ghosts / renegotiates without waiting on debounce.
   void speakingBecameFalse;
   bumpVoiceCallRevision(callId, {
     immediate:
-      speakingBecameTrue || mediaBecameLive || mediaCleared || speakingRefresh,
+      speakingBecameTrue ||
+      memberLeft ||
+      mediaBecameLive ||
+      mediaCleared ||
+      speakingRefresh,
   });
 }
 
@@ -748,7 +817,7 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
   if (groupCall.has_hidden_listeners != null) {
     cached.hasHiddenListeners = Boolean(groupCall.has_hidden_listeners);
   }
-  const speakers = speakersFromGroupCall(groupCall, cached.speakers);
+  const speakers = speakersFromGroupCall(groupCall, cached.speakers, cached);
   const prevSpeakersSnapshot = cached.speakers;
   const countHint = Number(groupCall.participant_count);
   if (Number.isFinite(countHint) && countHint >= 0) {
@@ -763,9 +832,25 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
 
   const now = Date.now();
   for (const [key, speaker] of speakers) {
+    if (isLeaveTombstoned(cached, key, now)) {
+      cached.speakers?.delete(key);
+      continue;
+    }
     const prev = cached.members.get(key);
     if (!prev) {
-      // recent_speakers is not a join roster — never insert ghosts here.
+      // Speaking (or hold) peers missing from the ordered load still need a face —
+      // Desktop shows kapirdosha while speaking even before a full participant
+      // chunk arrives. Never insert silent leavers (tombstoned above).
+      if (!speaker.isSpeaking && !effectiveSpeaking(speaker, now)) continue;
+      cached.members.set(key, {
+        ...speaker,
+        isMuted: true,
+        order: "",
+      });
+      changed = true;
+      if (speaker.isSpeaking || effectiveSpeaking(speaker, now)) {
+        speakingBecameTrue = true;
+      }
       continue;
     }
     const isSpeaking = Boolean(speaker.isSpeaking);
@@ -1049,6 +1134,7 @@ async function resolveSelfUserId(client: Client): Promise<number | null> {
 function speakersFromGroupCall(
   groupCall: GroupCallSnapshot,
   prevSpeakers?: Map<string, CollectedParticipant>,
+  leaveGuard?: CallParticipantsCache,
 ): Map<string, CollectedParticipant> {
   const map = new Map<string, CollectedParticipant>();
   const speakers = Array.isArray(groupCall.recent_speakers) ? groupCall.recent_speakers : [];
@@ -1057,6 +1143,7 @@ function speakersFromGroupCall(
     const { userId, chatId } = parseSender(speaker.participant_id);
     const key = participantKey(userId, chatId);
     if (!key) continue;
+    if (leaveGuard && isLeaveTombstoned(leaveGuard, key, now)) continue;
     const isSpeaking = Boolean(
       speaker.is_speaking ?? (speaker as { isSpeaking?: boolean }).isSpeaking,
     );
@@ -1082,9 +1169,10 @@ function speakersFromGroupCall(
   }
   // Empty recent_speakers mid-call is often a flap (esp. right after join). Keep
   // prior stubs that are still inside the speaking hold so SSE speakingCount
-  // does not drop to 0 for a full silence window while people are mid-sentence.
+  // does not drop to 0 for a full silence tick while people are mid-sentence.
   if (map.size === 0 && prevSpeakers && prevSpeakers.size > 0) {
     for (const [key, prev] of prevSpeakers) {
+      if (leaveGuard && isLeaveTombstoned(leaveGuard, key, now)) continue;
       if (effectiveSpeaking(prev, now)) {
         map.set(key, { ...prev, isSpeaking: false });
       }
@@ -1132,17 +1220,30 @@ function mergeSpeakerStubsForDisplay(
   members: Map<string, CollectedParticipant>,
   speakers: Map<string, CollectedParticipant>,
   liveCount = 0,
+  leaveGuard?: CallParticipantsCache,
 ): Map<string, CollectedParticipant> {
   if (speakers.size === 0) return members;
   const next = new Map(members);
+  const now = Date.now();
+  const hasOrderedMember = [...members.values()].some((row) =>
+    Boolean(row.order),
+  );
   const cap =
     Number.isFinite(liveCount) && liveCount > 0
       ? Math.trunc(liveCount)
       : Number.POSITIVE_INFINITY;
+  const rosterThin = Number.isFinite(liveCount) && liveCount > next.size;
   for (const [key, speaker] of speakers) {
     if (next.has(key)) continue;
-    // Never paint more faces than TDLib's participant_count — leftover speaker
-    // stubs after leaves inflated listed past the real call size.
+    if (leaveGuard && isLeaveTombstoned(leaveGuard, key, now)) continue;
+    // After ordered members exist, only fill gaps: live speakers (Desktop shows
+    // them before load catches up) or thin roster vs participant_count. Silent
+    // recent_speakers leftovers must not re-paint leavers (пэшка after exit).
+    if (hasOrderedMember) {
+      const liveSpeak =
+        Boolean(speaker.isSpeaking) || effectiveSpeaking(speaker, now);
+      if (!liveSpeak && !rosterThin) continue;
+    }
     if (next.size >= cap) break;
     next.set(key, { ...speaker });
   }
@@ -1297,10 +1398,19 @@ function scheduleBackgroundRosterReload(
       const mergedRoster = preferCached
         ? mergeParticipantMaps(prev!.members, loaded)
         : loaded;
-      const members = preserveSpeakingOnRoster(
-        mergedRoster,
-        prev?.members,
-        prev?.speakers,
+      // Rejoin with order clears the leave tombstone before strip.
+      if (prev) {
+        for (const [key, row] of loaded) {
+          if (row.order) clearLeaveTombstone(prev, key);
+        }
+      }
+      const members = stripLeaveTombstones(
+        preserveSpeakingOnRoster(
+          mergedRoster,
+          prev?.members,
+          prev?.speakers,
+        ),
+        prev,
       );
       const nextLoadedAll = rosterLooksComplete(
         members.size,
@@ -1524,6 +1634,7 @@ async function loadJoinedParticipants(
         }
       } else {
         map.delete(key);
+        callMembersCache.get(callId)?.speakers?.delete(key);
       }
       return;
     }
@@ -1737,7 +1848,7 @@ export async function fetchChatVoiceParticipants(
   // speakersFromGroupCall runs inside ingest so lastSpokeAt hold is preserved.
   ingestGroupCallUpdate({ _: "updateGroupCall", group_call: groupCall });
   const speakers =
-    callMembersCache.get(callId)?.speakers ?? speakersFromGroupCall(groupCall);
+    callMembersCache.get(callId)?.speakers ?? speakersFromGroupCall(groupCall, undefined, callMembersCache.get(callId));
 
   // TDLib only allows loadGroupCallParticipants after join. Until then we serve
   // cache + recent_speakers; after join we force a background load.
@@ -1883,7 +1994,7 @@ export async function fetchChatVoiceParticipants(
           (Number.isFinite(participantCountHint) &&
             participantCountHint > collected.size))
       ) {
-        collected = mergeSpeakerStubsForDisplay(collected, speakers);
+        collected = mergeSpeakerStubsForDisplay(collected, speakers, participantCountHint, cached!);
       }
       const rosterComplete = rosterLooksComplete(
         cached!.members.size,
@@ -2002,16 +2113,34 @@ export async function fetchChatVoiceParticipants(
       ? liveTdlibCount
       : Math.max(liveTdlibCount, stickyHint, collected.size);
   if (speakers.size > 0) {
-    collected = mergeSpeakerStubsForDisplay(collected, speakers, stubCap);
+    collected = mergeSpeakerStubsForDisplay(collected, speakers, stubCap, callMembersCache.get(callId));
+    collected = stripLeaveTombstones(collected, callMembersCache.get(callId));
   }
   if (liveTdlibCount >= 2 && collected.size > liveTdlibCount) {
     collected = trimCollectedToLiveCount(collected, speakers, liveTdlibCount);
   }
+  const hasOrderedCollected = [...collected.values()].some((r) =>
+    Boolean(r.order),
+  );
   const orderedRows = [...collected.values()].filter((row) => {
     if (row.order) return true;
     if (isJoined && selfUserId != null && row.userId === selfUserId) return true;
     const key = participantKey(row.userId, row.chatId);
-    // Keep speaker stubs visible — never drop them once loaded_all flips early.
+    // Orderless stubs: allow live speakers / thin-roster fills; never tombstones.
+    if (hasOrderedCollected) {
+      if (key == null || !speakers.has(key)) return false;
+      const cached = callMembersCache.get(callId);
+      if (cached && isLeaveTombstoned(cached, key)) return false;
+      const sp = speakers.get(key);
+      const liveSpeak =
+        Boolean(row.isSpeaking) ||
+        (sp != null && effectiveSpeaking(sp, Date.now())) ||
+        effectiveSpeaking(row, Date.now());
+      const thin =
+        liveTdlibCount > 0 &&
+        [...collected.values()].filter((r) => Boolean(r.order)).length < liveTdlibCount;
+      return liveSpeak || thin;
+    }
     return !rosterLoadedAll || (key != null && speakers.has(key));
   });
   const displayRows =
@@ -2164,9 +2293,9 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
   // Mirror the poll path: overlay recent_speakers onto the live roster, and
   // union speaker stubs whenever the painted map is thin — chat-preview strip
   // relies on these faces when loadGroupCallParticipants is not allowed yet.
-  let collected = cached.members;
+  let collected = stripLeaveTombstones(cached.members, cached);
   if (cached.speakers && cached.speakers.size > 0) {
-    collected = applySpeakingOverlay(cached.members, cached.speakers);
+    collected = applySpeakingOverlay(collected, cached.speakers);
     // Persist speaking hold clocks onto members. Overlay is ephemeral; without
     // this, a speakers map that drops mid-hold left SSE speakingCount=0 while
     // people were still mid-sentence (green mics never stuck after join).
@@ -2199,15 +2328,33 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
         collected,
         cached.speakers,
         cached.participantCountHint,
+        cached,
       );
+      collected = stripLeaveTombstones(collected, cached);
     }
   }
+  const hasOrderedCollected = [...collected.values()].some((r) =>
+    Boolean(r.order),
+  );
   const orderedRows = [...collected.values()].filter((row) => {
     if (row.order) return true;
     if (selfUserId != null && row.userId === selfUserId) return true;
     const key = participantKey(row.userId, row.chatId);
-    // Keep recent_speakers stubs visible after loadedAll — otherwise SSE drops
-    // every face without an order string and the strip paints empty.
+    // Orderless stubs: live speakers / thin roster only — never leave tombstones.
+    if (hasOrderedCollected) {
+      if (key == null || !cached.speakers?.has(key)) return false;
+      if (isLeaveTombstoned(cached, key)) return false;
+      const sp = cached.speakers.get(key);
+      const liveSpeak =
+        Boolean(row.isSpeaking) ||
+        (sp != null && effectiveSpeaking(sp, Date.now())) ||
+        effectiveSpeaking(row, Date.now());
+      const orderedN = [...collected.values()].filter((r) => Boolean(r.order)).length;
+      const thin =
+        cached.participantCountHint > 0 &&
+        orderedN < cached.participantCountHint;
+      return liveSpeak || thin;
+    }
     if (key != null && cached.speakers?.has(key)) return true;
     return !cached.loadedAll;
   });

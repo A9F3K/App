@@ -195,6 +195,12 @@ export function MessageChatVoiceBar({
   const popoverOpenRef = useRef(false);
   popoverOpenRef.current = Boolean(popoverOpen);
   const participantsRef = useRef(participants);
+  /**
+   * Speak-keys removed by an authoritative roster shrink. Soft-merge must not
+   * re-add them from thin recent_speakers SSE (пэшка ghost after leave).
+   */
+  const leaveTombstonesRef = useRef<Map<string, number>>(new Map());
+  const LEAVE_TOMBSTONE_MS = 60_000;
   /** From gateway — muted listeners omitted; refuse remuting open remotes. */
   const hasHiddenListenersRef = useRef(false);
   /** Last time the painted roster grew — resist shrink snapshots for a short window. */
@@ -501,6 +507,7 @@ export function MessageChatVoiceBar({
   useEffect(() => {
     setParticipants([]);
     setParticipantMediaPrefs({});
+    leaveTombstonesRef.current.clear();
     lastNonZeroVolumeRef.current = {};
     volumeZeroRepairAttemptedRef.current.clear();
     listenVolumeNudgeAttemptedRef.current.clear();
@@ -1018,6 +1025,32 @@ export function MessageChatVoiceBar({
         next.length < prev.length &&
         next.length > 0 &&
         ((hint > 0 && hint <= next.length) || orderedSubsetLeave);
+      const nowMs = Date.now();
+      for (const [key, at] of leaveTombstonesRef.current) {
+        if (nowMs - at >= LEAVE_TOMBSTONE_MS) leaveTombstonesRef.current.delete(key);
+      }
+      const isTombstoned = (key: string) => {
+        const at = leaveTombstonesRef.current.get(key);
+        return at != null && nowMs - at < LEAVE_TOMBSTONE_MS;
+      };
+      // Clear tombstone when an ordered snapshot re-includes them (rejoin).
+      for (const row of next) {
+        if (String(row.order ?? "").trim()) {
+          leaveTombstonesRef.current.delete(speakKey(row));
+        }
+      }
+      if (authoritativeShrink || (!incomingLooksOrderless && next.length > 0 && !growsRoster && next.length < prev.length)) {
+        for (const row of prev) {
+          const key = speakKey(row);
+          if (!nextByKey.has(key)) leaveTombstonesRef.current.set(key, nowMs);
+        }
+      }
+      // Drop tombstoned faces from the incoming soft payload before merge/replace.
+      if (next.some((row) => isTombstoned(speakKey(row)))) {
+        next = next.filter((row) => !isTombstoned(speakKey(row)));
+        nextByKey.clear();
+        for (const row of next) nextByKey.set(speakKey(row), row);
+      }
       const looksLikeRecentSpeakersOnly =
         !growsRoster &&
         !authoritativeShrink &&
@@ -1030,9 +1063,17 @@ export function MessageChatVoiceBar({
           (next.length <= 3 && prev.length > next.length) ||
           (hint > next.length && prev.length >= next.length && prev.length > 0));
       if (looksLikeRecentSpeakersOnly) {
-        const merged = prev.map((row) => {
-          const inc = nextByKey.get(speakKey(row));
-          if (!inc) return row;
+        const merged = prev.flatMap((row) => {
+          const key = speakKey(row);
+          if (isTombstoned(key)) return [];
+          const inc = nextByKey.get(key);
+          if (!inc) {
+            // Soft stubs absent from this snap are gone — keeping them unioned
+            // ghosts after leave. Ordered faces stay during thin preferMerge
+            // (hidden listeners / incomplete load) unless tombstoned above.
+            if (!String(row.order ?? "").trim()) return [];
+            return [row];
+          }
           // Thin recent_speakers stubs omit mute — never remute OR unmute from
           // them. Speaking opens mic chrome in the popover, not via is_muted.
           const nextMuted = !String(inc.order ?? "").trim()
@@ -1065,9 +1106,9 @@ export function MessageChatVoiceBar({
             voiceVideoInfoSignature(row.screen_sharing_video_info) ===
               voiceVideoInfoSignature(nextScreen)
           ) {
-            return row;
+            return [row];
           }
-          return {
+          return [{
             ...row,
             is_muted: nextMuted,
             can_unmute_self:
@@ -1084,10 +1125,11 @@ export function MessageChatVoiceBar({
                 : row.volume_percent,
             video_info: nextVideo,
             screen_sharing_video_info: nextScreen,
-          };
+          }];
         });
         for (const inc of next) {
           if (!prevByKey.has(speakKey(inc))) {
+            if (isTombstoned(speakKey(inc))) continue;
             // Untitled soft stubs must not grow the roster past TDLib's count —
             // that painted "+1 / 4 participants" for a 3-person call.
             if (hint >= 2 && merged.length >= hint) continue;

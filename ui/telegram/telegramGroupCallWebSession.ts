@@ -500,6 +500,13 @@ export class TelegramGroupCallWebSession {
    * latched at RMS=0 — used to open the video settle gate and trigger heal.
    */
   private mixRtpPacketsAlive = false;
+  /**
+   * Peak inbound mix packets this PeerConnection. Video renegotiate often
+   * resets the counter to a trickle (prod: 42→2) while the session already
+   * proved the mix was healthy — stall detectors must not use only the
+   * pre-renegotiate snapshot.
+   */
+  private peakInboundAudioPackets = 0;
   /** Wall clock when the remote mix track last unmuted. */
   private remoteAudioUnmutedAt = 0;
   private silentMixHealInFlight = false;
@@ -2106,7 +2113,14 @@ export class TelegramGroupCallWebSession {
             // paused packet growth for ~1s while video attaches — that tore down
             // working screencasts (Seva glance-then-gone: audioGrowth=0 with
             // inboundPackets=71 + inboundVideoPackets=52).
-            const hadHealthyAudioBefore = inboundBefore.inboundPackets > 20;
+            // Prefer session peak / heard flags: renegotiate often snapshots a
+            // collapsed counter (prod: peak 42 → pre_video 2 → stuck at 4).
+            const sessionHadHealthyMix =
+              this.peakInboundAudioPackets > 20 ||
+              this.heardRemoteMixAudio ||
+              this.mixRtpPacketsAlive;
+            const hadHealthyAudioBefore =
+              inboundBefore.inboundPackets > 20 || sessionHadHealthyMix;
             const mixDied =
               hadHealthyAudioBefore && stats.inboundPackets === 0;
             const mixRegressedHard =
@@ -2125,6 +2139,14 @@ export class TelegramGroupCallWebSession {
               hadHealthyAudioBefore &&
               audioGrowth <= (screenPainting ? 0 : 2) &&
               videoGrowth > 15;
+            // Mix collapsed to a trickle after we already heard it this join
+            // (prod: settle gate 42pk → renegotiate 2pk → stuck 4pk + video flood).
+            const mixCollapsedToTrickle =
+              sessionHadHealthyMix &&
+              stats.inboundPackets > 0 &&
+              stats.inboundPackets < 12 &&
+              audioGrowth <= 2 &&
+              videoGrowth > 15;
             // Classic incomplete-SSRC failure: mix never really started, video
             // floods, outbound keeps going.
             const mixNeverStartedStarved =
@@ -2137,6 +2159,7 @@ export class TelegramGroupCallWebSession {
               (mixDied ||
                 mixRegressedHard ||
                 mixPlateauWhileVideo ||
+                mixCollapsedToTrickle ||
                 mixNeverStartedStarved);
             // Live screencast + stalled mix: allow ONE recover to restore voice,
             // then keep the stage (recover↔resubscribe flickered on/off).
@@ -2153,6 +2176,7 @@ export class TelegramGroupCallWebSession {
                 videoGrowth,
                 inboundVideoPackets: stats.inboundVideoPackets,
                 recoverCount: this.audioRecoverCount,
+                peakInboundAudio: this.peakInboundAudioPackets,
                 level: "warn",
                 note: "mix stalled with live screencast — keep stage, heal sink (no recover flicker)",
               });
@@ -2161,10 +2185,11 @@ export class TelegramGroupCallWebSession {
               audioStalled &&
               screenPainting &&
               !mixDied &&
-              !mixRegressedHard
+              !mixRegressedHard &&
+              !mixCollapsedToTrickle &&
+              this.audioRecoverCount >= 1
             ) {
-              // Mild plateau while video attaches — do not rejoin. Hard recover
-              // kills local presentation + remote slots.
+              // Mild plateau after we already recovered once — do not rejoin.
               this.preferStableScreencast = true;
               logPageDisplay("messages_voice_remote_audio_stalled_keep_video", {
                 chatId: this.input.chatId,
@@ -2435,6 +2460,9 @@ export class TelegramGroupCallWebSession {
         }
       });
       const silentCtx = sharedSilentAudioCtx ?? getVoiceAutoplayAudioContext();
+      if (inboundPackets > this.peakInboundAudioPackets) {
+        this.peakInboundAudioPackets = inboundPackets;
+      }
       if (inboundPackets >= 8) {
         this.mixRtpPacketsAlive = true;
       }
@@ -2652,6 +2680,7 @@ export class TelegramGroupCallWebSession {
     this.heardRemoteMixAudio = false;
     this.lastHeardMixAudioAt = 0;
     this.mixRtpPacketsAlive = false;
+    this.peakInboundAudioPackets = 0;
     this.remoteAudioUnmutedAt = 0;
     this.silentMixHealInFlight = false;
     this.silentMixHealCount = 0;
@@ -2701,19 +2730,24 @@ export class TelegramGroupCallWebSession {
   }
 
   /**
-   * Prefer keeping a live screencast over tearing the PeerConnection.
-   * Hard recover stops local presentation + clears remote slots (prod: unmute
-   * second screen → both stages vanished). Soft-heal mix instead when video
-   * is painting; only allow hard recover when there is no live stage to keep.
+   * Refuse further audio-only recovers only after the recover budget is spent.
+   * Skipping after the *first* recover while a screencast was live blocked the
+   * second recover when auto screen-resubscribe froze the mix again (prod:
+   * recover_ok → resubscribe → inboundPackets plateau, silence forever).
    */
   private shouldSkipRecoverToKeepScreen(): boolean {
+    if (
+      this.audioRecoverCount < TelegramGroupCallWebSession.MAX_AUDIO_RECOVERS
+    ) {
+      return false;
+    }
     if (this.screenSharing || this.presentationConnection != null) {
       return true;
     }
     if (this.hasHealthyRemoteVideoMedia()) {
       return true;
     }
-    if (this.preferStableScreencast && this.audioRecoverCount >= 1) {
+    if (this.preferStableScreencast) {
       return true;
     }
     return false;
@@ -2743,6 +2777,8 @@ export class TelegramGroupCallWebSession {
       // Already recovered once — keep stage, do not flicker again.
       if (this.shouldSkipRecoverToKeepScreen()) {
         this.preferStableScreencast = true;
+        // Keep postVideoRenegotiateAt armed only if we still need soft watch;
+        // after a completed recover, clear so we do not loop probes forever.
         this.postVideoRenegotiateAt = 0;
         this.postVideoSilenceTicks = 0;
         logPageDisplay(
@@ -2956,8 +2992,24 @@ export class TelegramGroupCallWebSession {
       this.remoteVideoSdpSubscribeEnabled = false;
       this.preferStableScreencast = true;
       this.notifyLocalMediaListeners();
-      if (this.pendingRemoteVideoAfterRecover.length > 0) {
+      // Only auto-restore screens after the *first* recover. A second recover
+      // means resubscribe already killed the mix once — keep audio, leave
+      // screens for explicit unmute (preferExplicitRemoteVideoSubscribe).
+      if (
+        this.pendingRemoteVideoAfterRecover.length > 0 &&
+        this.audioRecoverCount < 2
+      ) {
         this.scheduleRemoteVideoResubscribeAfterAudioHealthy();
+      } else if (this.pendingRemoteVideoAfterRecover.length > 0) {
+        logPageDisplay("messages_voice_remote_video_resubscribe_skip", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          recoverCount: this.audioRecoverCount,
+          pendingVideo: this.pendingRemoteVideoAfterRecover.length,
+          level: "warn",
+          note:
+            "skip auto screen restore after repeated mix stall — unmute screen from menu",
+        });
       } else {
         logPageDisplay("messages_voice_remote_video_resubscribe_skip", {
           chatId: this.input.chatId,
@@ -4086,7 +4138,20 @@ export class TelegramGroupCallWebSession {
       if (stats.inboundPackets >= 10) {
         this.mixRtpPacketsAlive = true;
       }
-      if (stats.inboundPackets < 8) {
+      // Thin but non-zero counters after video often mean the mix m-line died
+      // mid-renegotiate (prod: stuck at inboundPackets=4 while video flooded).
+      // Treating <8 as "no RTP yet" skipped heal *and* blocked escalate forever.
+      const thinButLikelyFrozen =
+        stats.inboundPackets > 0 &&
+        stats.inboundPackets < 8 &&
+        (this.postVideoRenegotiateAt > 0 ||
+          this.lastAppliedRemoteVideoEndpoints.length > 0 ||
+          stats.inboundVideoPackets > 30) &&
+        (this.heardRemoteMixAudio ||
+          this.mixRtpPacketsAlive ||
+          this.peakInboundAudioPackets > 15 ||
+          stats.inboundVideoPackets > 50);
+      if (stats.inboundPackets < 8 && !thinButLikelyFrozen) {
         logPageDisplay("messages_voice_silent_mix_heal_skip", {
           chatId: this.input.chatId,
           groupCallId: this.input.groupCallId,
@@ -4131,6 +4196,35 @@ export class TelegramGroupCallWebSession {
           });
         }
         return;
+      }
+      if (thinButLikelyFrozen) {
+        logPageDisplay("messages_voice_silent_mix_heal_thin_frozen", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          inboundPackets: stats.inboundPackets,
+          inboundVideoPackets: stats.inboundVideoPackets,
+          peakInboundAudio: this.peakInboundAudioPackets,
+          healCount: this.silentMixHealCount,
+          recoverCount: this.audioRecoverCount,
+          level: "warn",
+          note:
+            "thin mix counter with live video — escalate recover instead of skip",
+        });
+        if (
+          this.audioRecoverCount < TelegramGroupCallWebSession.MAX_AUDIO_RECOVERS &&
+          !this.audioRecoverInFlight &&
+          !this.shouldSkipRecoverToKeepScreen()
+        ) {
+          this.remoteAudioStalledAfterVideo = true;
+          void this.recoverAudioOnlyAfterVideoStall();
+          return;
+        }
+        if (this.shouldSkipRecoverToKeepScreen()) {
+          this.preferStableScreencast = true;
+          // Fall through to sink heal when we already recovered once.
+        } else {
+          return;
+        }
       }
       // Stale plateau: packets exist but are not advancing — heal cannot invent RTP.
       // Run even if we already heard mix earlier this join: video SDP often freezes
@@ -5769,6 +5863,7 @@ export class TelegramGroupCallWebSession {
     this.heardRemoteMixAudio = false;
     this.lastHeardMixAudioAt = 0;
     this.mixRtpPacketsAlive = false;
+    this.peakInboundAudioPackets = 0;
     this.installVisibilityPlaybackKick();
     this.remoteAudioUnmutedAt = 0;
     this.silentMixHealInFlight = false;
@@ -6273,6 +6368,7 @@ export class TelegramGroupCallWebSession {
     this.heardRemoteMixAudio = false;
     this.lastHeardMixAudioAt = 0;
     this.mixRtpPacketsAlive = false;
+    this.peakInboundAudioPackets = 0;
     this.remoteAudioUnmutedAt = 0;
     this.silentMixHealInFlight = false;
     this.silentMixHealCount = 0;
