@@ -178,8 +178,8 @@ export async function fetchTelegramChatVoiceParticipants(
     : participants.length;
   // TDLib getChat often reports participant_count=0 while still returning rows.
   const participantCount = Math.max(rawCount, participants.length);
-  const voiceJoined =
-    Boolean(json.voice_chat_is_joined) || participants.some((row) => row.is_self);
+  // Prefer self-on-roster over sticky TDLib is_joined (false green rings).
+  const voiceJoined = participants.some((row) => row.is_self);
   // Defense in depth: empty bound group calls must not paint as live even if a
   // stale gateway still sets has_active_voice_chat from is_active alone.
   const hasActiveVoiceChat =

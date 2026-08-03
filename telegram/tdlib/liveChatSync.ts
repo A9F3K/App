@@ -57,7 +57,8 @@ async function verifyAndPatchVideoChat(
     has_active_voice_chat: state.live,
     // Keep bound id when empty so Start voice can target the leftover call.
     voice_chat_group_call_id: candidate.voice_chat_group_call_id,
-    voice_chat_is_joined: state.live && state.isJoined,
+    // List verify must not paint green from sticky TDLib is_joined.
+    voice_chat_is_joined: false,
   });
   if (!state.live) {
     logLiveSync(record, "live_chat_video_chat_cleared_inactive", {
@@ -488,14 +489,16 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
       const callId = normalizeTelegramGroupCallId(groupCall?.id) ?? 0;
       if (callId > 0 && groupCall) {
         const live = groupCallLooksLive(groupCall);
-        const isJoined = live && Boolean(groupCall.is_joined || groupCall.need_rejoin);
         const list = getLiveChatList(record.telegramUsername) ?? [];
         for (const row of list) {
           if (row.voice_chat_group_call_id !== callId) continue;
+          // Never set joined=true here — sticky TDLib is_joined painted green
+          // while the web client was not in the call. Preserve an existing
+          // client-owned joined flag while the call stays live.
           patchLiveChatVideoChat(record.telegramUsername, row.telegram_chat_id, {
             has_active_voice_chat: live,
             voice_chat_group_call_id: callId,
-            voice_chat_is_joined: isJoined,
+            voice_chat_is_joined: live ? Boolean(row.voice_chat_is_joined) : false,
           });
         }
       }

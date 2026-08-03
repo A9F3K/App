@@ -224,6 +224,8 @@ type Props = {
   screenSharing: boolean;
   onStartScreenShare: () => void;
   onStopScreenShare: () => void;
+  /** Localized screen-share / session failure shown above the controls. */
+  sessionError?: string | null;
   onDropPress: () => void;
   dropLeaving: boolean;
   /** Remote camera / screenshare for the in-dialog video plane. */
@@ -452,12 +454,19 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
     participant.screen_sharing_video_info?.endpoint_id?.trim() ||
       (participant.screen_sharing_video_info?.source_groups?.length ?? 0) > 0,
   );
+  const peerCameraSharing = Boolean(
+    participant.video_info?.endpoint_id?.trim() ||
+      (participant.video_info?.source_groups?.length ?? 0) > 0,
+  );
   const showScreenShareActive =
     participant.is_self
       ? Boolean(localScreenSharing)
       : !screenLocallyOff && peerScreenSharing;
-  const showScreenShareMuted = !participant.is_self && Boolean(screenLocallyOff);
-  const showVideoMuted = !participant.is_self && Boolean(videoLocallyOff);
+  // Roster: red crossed share only while they publish AND we muted them.
+  const showScreenShareMuted =
+    !participant.is_self && Boolean(screenLocallyOff) && peerScreenSharing;
+  const showVideoMuted =
+    !participant.is_self && Boolean(videoLocallyOff) && peerCameraSharing;
   const textBase = {
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
     fontSize: MESSAGE_FONT_SIZE_PX,
@@ -920,6 +929,7 @@ export function MessageChatVoicePopover({
   screenSharing,
   onStartScreenShare,
   onStopScreenShare,
+  sessionError = null,
   onDropPress,
   dropLeaving,
   remoteVideoStream = null,
@@ -963,6 +973,7 @@ export function MessageChatVoicePopover({
     useState<TelegramChatVoiceParticipant | null>(null);
   /** Wide-stage expand: null = mosaic gallery (pic 2); set = focused tile (pic 3). */
   const [focusedMediaId, setFocusedMediaId] = useState<string | null>(null);
+  const lastMediaStageSigRef = useRef("");
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(() =>
     Platform.OS === "web" && typeof document !== "undefined" ? document.body : null,
   );
@@ -1631,6 +1642,9 @@ export function MessageChatVoicePopover({
 
   useEffect(() => {
     if (!visible || mediaSources.length === 0) return;
+    const sig = mediaSources.map((row) => `${row.id}:${row.kind ?? "?"}`).join("|");
+    if (sig === lastMediaStageSigRef.current) return;
+    lastMediaStageSigRef.current = sig;
     logPageDisplay("messages_voice_media_stage_sources", {
       count: mediaSources.length,
       ids: mediaSources.map((row) => row.id),
@@ -1752,9 +1766,15 @@ export function MessageChatVoicePopover({
           ? t("messages.voiceChat.controls.stopSharing")
           : t("messages.voiceChat.controls.startSharing"),
         onPress: () => {
+          // Start share before closing the menu so getDisplayMedia still has
+          // the click's transient user activation.
+          if (screenSharing) {
+            onStopScreenShare();
+            setMoreMenuAnchor(null);
+            return;
+          }
+          onStartScreenShare();
           setMoreMenuAnchor(null);
-          if (screenSharing) onStopScreenShare();
-          else onStartScreenShare();
         },
       },
       {
@@ -1875,18 +1895,16 @@ export function MessageChatVoicePopover({
     </View>
   );
 
-  const renderParticipantList = (_maxHeight?: number) => {
+  const renderParticipantRows = () => {
     if (isPrivateCall && privateCall) {
       return (
         <View
           style={{
-            flex: 1,
-            minHeight: 0,
-            zIndex: 1,
             alignItems: "center",
             justifyContent: "center",
             paddingHorizontal: 20,
             paddingVertical: 24,
+            minHeight: 200,
           }}
           pointerEvents="auto"
         >
@@ -1902,75 +1920,111 @@ export function MessageChatVoicePopover({
         </View>
       );
     }
+    if (displayParticipants.length === 0) {
+      return (
+        <Text style={[typographyRect15, { color: colors.secondary }]}>
+          {participantCountLabel || t("messages.voiceChat.participants")}
+        </Text>
+      );
+    }
+    return displayParticipants.map((participant, index) => {
+      const prefsKey = voiceParticipantPrefsKey(participant);
+      const prefs = participantMediaPrefs[prefsKey];
+      const volumePercent =
+        prefs?.volumePercent ??
+        (typeof participant.volume_percent === "number"
+          ? participant.volume_percent
+          : 100);
+      return (
+        <VoiceParticipantRow
+          key={
+            participant.user_id != null
+              ? `u:${participant.user_id}`
+              : `c:${participant.chat_id}:${index}`
+          }
+          participant={participant}
+          isLast={index === displayParticipants.length - 1}
+          colors={colors}
+          isSpeaking={
+            isParticipantSpeaking
+              ? isParticipantSpeaking(participant)
+              : Boolean(participant.is_speaking)
+          }
+          liteName={!rosterPaintReady}
+          localScreenSharing={screenSharing}
+          voiceLocallyOff={volumePercent <= 0}
+          screenLocallyOff={prefs?.muteScreen === true}
+          videoLocallyOff={Boolean(prefs?.muteVideo)}
+          onOpenMenu={
+            participant.is_self || !onParticipantVolumeChange
+              ? undefined
+              : (anchor) => {
+                  setParticipantMenuTarget(participant);
+                  setParticipantMenuAnchor(anchor);
+                }
+          }
+          onSelfMicPress={participant.is_self ? () => onMicPress() : undefined}
+        />
+      );
+    });
+  };
+
+  /** Media + roster between the two dividers share one scroll. */
+  const renderMiddleScroll = (opts?: {
+    includeStackedMedia?: boolean;
+    includeSidebarPips?: boolean;
+  }) => {
+    const includeStackedMedia = Boolean(opts?.includeStackedMedia);
+    const includeSidebarPips = Boolean(opts?.includeSidebarPips);
+    const mediaCount = includeStackedMedia ? mediaSources.length : 0;
+    const singleMedia = mediaCount === 1;
     return (
-    <View
-      style={{
-        flex: 1,
-        minHeight: 0,
-        zIndex: 1,
-        overflow: "hidden",
-      }}
-      pointerEvents="auto"
-    >
-      <HspScrollColumn
-        style={{ flex: 1, minHeight: 0 }}
-        contentContainerStyle={{
-          paddingHorizontal: 20,
-          paddingTop: 16,
-          paddingBottom: 16,
-          flexGrow: 1,
+      <View
+        style={{
+          flex: 1,
+          minHeight: 0,
+          zIndex: 1,
+          overflow: "hidden",
         }}
-        scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
-        containOverscroll
+        pointerEvents="auto"
       >
-        {displayParticipants.length > 0 ? (
-          displayParticipants.map((participant, index) => {
-            const prefsKey = voiceParticipantPrefsKey(participant);
-            const prefs = participantMediaPrefs[prefsKey];
-            const volumePercent =
-              prefs?.volumePercent ??
-              (typeof participant.volume_percent === "number"
-                ? participant.volume_percent
-                : 100);
-            return (
-            <VoiceParticipantRow
-              key={
-                participant.user_id != null
-                  ? `u:${participant.user_id}`
-                  : `c:${participant.chat_id}:${index}`
-              }
-              participant={participant}
-              isLast={index === displayParticipants.length - 1}
-              colors={colors}
-              isSpeaking={
-                isParticipantSpeaking
-                  ? isParticipantSpeaking(participant)
-                  : Boolean(participant.is_speaking)
-              }
-              liteName={!rosterPaintReady}
-              localScreenSharing={screenSharing}
-              voiceLocallyOff={volumePercent <= 0}
-              screenLocallyOff={Boolean(prefs?.muteScreen)}
-              videoLocallyOff={Boolean(prefs?.muteVideo)}
-              onOpenMenu={
-                participant.is_self || !onParticipantVolumeChange
-                  ? undefined
-                  : (anchor) => {
-                      setParticipantMenuTarget(participant);
-                      setParticipantMenuAnchor(anchor);
-                    }
-              }
-              onSelfMicPress={participant.is_self ? () => onMicPress() : undefined}
+        <HspScrollColumn
+          style={{ flex: 1, minHeight: 0 }}
+          contentContainerStyle={{
+            paddingHorizontal: 20,
+            paddingTop:
+              includeStackedMedia && mediaCount > 0
+                ? singleMedia
+                  ? 0
+                  : 8
+                : 16,
+            paddingBottom: 16,
+            flexGrow: 1,
+          }}
+          scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
+          containOverscroll
+        >
+          {includeStackedMedia && mediaCount > 0 ? (
+            <MessageChatVoiceMediaStage
+              sources={suspendHeavy ? [] : mediaSources}
+              active={videoStageActive}
+              maxHeightPx={stackedVideoMaxHeight}
+              wideLayout={false}
+              fitSingleToContent={singleMedia}
+              horizontalInsetPx={0}
+              marginBottomPx={singleMedia ? 8 : 12}
             />
-            );
-          })
-        ) : (
-          <Text style={[typographyRect15, { color: colors.secondary }]}>
-            {participantCountLabel || t("messages.voiceChat.participants")}
-          </Text>
-        )}
-      </HspScrollColumn>
-    </View>
+          ) : null}
+          {includeSidebarPips && sidebarPipSources.length > 0 ? (
+            <MessageChatVoiceMediaPipColumn
+              sources={sidebarPipSources}
+              active={videoStageActive}
+              onSelect={setFocusedMediaId}
+            />
+          ) : null}
+          {renderParticipantRows()}
+        </HspScrollColumn>
+      </View>
     );
   };
 
@@ -2151,6 +2205,28 @@ export function MessageChatVoicePopover({
       }}
     />
   );
+
+  const renderSessionError = () => {
+    if (!sessionError) return null;
+    return (
+      <Text
+        numberOfLines={3}
+        style={[
+          typographyRect15,
+          {
+            color: colors.secondary,
+            textAlign: "center",
+            paddingHorizontal: 20,
+            paddingTop: 10,
+            paddingBottom: 0,
+            flexShrink: 0,
+          },
+        ]}
+      >
+        {sessionError}
+      </Text>
+    );
+  };
 
   const renderControls = () => (
     <View
@@ -2426,17 +2502,11 @@ export function MessageChatVoicePopover({
             >
               {renderHeader()}
               {renderDivider()}
-              {sidebarPipSources.length > 0 ? (
-                <MessageChatVoiceMediaPipColumn
-                  sources={sidebarPipSources}
-                  active={videoStageActive}
-                  onSelect={setFocusedMediaId}
-                />
-              ) : null}
-              {renderParticipantList()}
+              {renderMiddleScroll({ includeSidebarPips: true })}
               {renderChatOverlay()}
               {renderControlsShadow()}
               {renderDivider()}
+              {renderSessionError()}
               {renderControls()}
               {renderChatComposer()}
             </View>
@@ -2445,18 +2515,11 @@ export function MessageChatVoicePopover({
           <>
             {renderHeader()}
             {renderDivider()}
-            <MessageChatVoiceMediaStage
-              sources={suspendHeavy ? [] : mediaSources}
-              active={videoStageActive}
-              maxHeightPx={stackedVideoMaxHeight}
-              wideLayout={false}
-              horizontalInsetPx={12}
-              marginBottomPx={8}
-            />
-            {renderParticipantList()}
+            {renderMiddleScroll({ includeStackedMedia: true })}
             {renderChatOverlay()}
             {renderControlsShadow()}
             {renderDivider()}
+            {renderSessionError()}
             {renderControls()}
             {renderChatComposer()}
           </>
@@ -2488,7 +2551,8 @@ export function MessageChatVoicePopover({
               0,
         );
         const muteVideo = Boolean(prefs?.muteVideo);
-        const muteScreen = Boolean(prefs?.muteScreen);
+        // Default unmuted for active shares — only true when user muted in menu.
+        const muteScreen = prefs?.muteScreen === true;
         // Listen preference — mute is allowed before they publish (preemptive).
         const voiceOn = volumePercent > 0;
         const videoOn = !muteVideo;

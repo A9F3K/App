@@ -999,7 +999,8 @@ async function buildLiveRowsForChats(
     return {
       ...row,
       has_active_voice_chat: true,
-      voice_chat_is_joined: state.isJoined,
+      // Green joined ring is client-session / self-on-roster — not list sync.
+      voice_chat_is_joined: false,
     };
   });
 }

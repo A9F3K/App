@@ -54,16 +54,23 @@ export type TelegramVoiceSession = {
   joinListen: (opts?: { startMuted?: boolean }) => Promise<boolean>;
   toggleMic: () => Promise<void>;
   toggleCamera: () => Promise<void>;
-  startScreenShare: () => Promise<void>;
+  startScreenShare: (preacquiredStream?: MediaStream | null) => Promise<void>;
   stopScreenShare: () => Promise<void>;
   /** Subscribe to remote camera / screencast publishers from the roster. */
   setRemoteVideoRequests: (requests: TelegramRemoteVideoRequest[]) => void;
+  /**
+   * User unmuted a screencast in the participant menu — arm video SDP even when
+   * mix RMS is quiet (and clear a prior stall sticky-block once).
+   */
+  preferExplicitRemoteVideoSubscribe: () => void;
   /** Local WebAudio listen volumes for the mixed remote track (0–200%). */
   setParticipantListenVolumes: (input: {
     volumes: Record<string, number>;
     speakingKeys?: string[];
     participantKeys?: string[];
   }) => void;
+  /** Rebuild remote mix playback after stalls / tab focus / silent-mix heal. */
+  kickRemotePlayback: (reason?: string) => void;
   setScreenShareDisplaySize: (width: number, height: number) => void;
   leaveVoice: () => Promise<
     Awaited<ReturnType<typeof leaveTelegramChatVoice>>
@@ -430,25 +437,32 @@ export function useTelegramVoiceSession({
     }
   }, [chatId, groupCallId]);
 
-  const startScreenShare = useCallback(async () => {
-    const session = sessionRef.current;
-    if (!session || Platform.OS !== "web") return;
-    try {
-      setError(null);
-      session.unlockRemoteAudio();
-      await session.startScreenShare();
-      setJoined(session.isJoined);
-      setMediaConnected(session.isMediaConnected());
-      setScreenSharing(session.isScreenSharing);
-      setLocalScreenStream(session.getLiveLocalScreenStream());
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "screen_share_failed";
-      setError(message);
-      setScreenSharing(session.isScreenSharing);
-      setLocalScreenStream(session.getLiveLocalScreenStream());
-      appWarn("[voice-session-screen]", message, { chatId, groupCallId });
-    }
-  }, [chatId, groupCallId]);
+  const startScreenShare = useCallback(
+    async (preacquiredStream?: MediaStream | null) => {
+      const session = sessionRef.current;
+      if (!session || Platform.OS !== "web") {
+        setError("screen_share_unavailable");
+        return;
+      }
+      try {
+        setError(null);
+        session.unlockRemoteAudio();
+        await session.startScreenShare(preacquiredStream);
+        setJoined(session.isJoined);
+        setMediaConnected(session.isMediaConnected());
+        setScreenSharing(session.isScreenSharing);
+        setLocalScreenStream(session.getLiveLocalScreenStream());
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "screen_share_failed";
+        setError(message);
+        setScreenSharing(session.isScreenSharing);
+        setLocalScreenStream(session.getLiveLocalScreenStream());
+        appWarn("[voice-session-screen]", message, { chatId, groupCallId });
+      }
+    },
+    [chatId, groupCallId],
+  );
 
   const stopScreenShare = useCallback(async () => {
     const session = sessionRef.current;
@@ -471,6 +485,10 @@ export function useTelegramVoiceSession({
     sessionRef.current?.setRequestedRemoteVideos(requests);
   }, []);
 
+  const preferExplicitRemoteVideoSubscribe = useCallback(() => {
+    sessionRef.current?.preferExplicitRemoteVideoSubscribe();
+  }, []);
+
   const setParticipantListenVolumes = useCallback(
     (input: {
       volumes: Record<string, number>;
@@ -481,6 +499,10 @@ export function useTelegramVoiceSession({
     },
     [],
   );
+
+  const kickRemotePlayback = useCallback((reason?: string) => {
+    sessionRef.current?.kickRemotePlayback(reason);
+  }, []);
 
   const setScreenShareDisplaySize = useCallback((width: number, height: number) => {
     sessionRef.current?.setScreenShareDisplaySize(width, height);
@@ -528,7 +550,9 @@ export function useTelegramVoiceSession({
     startScreenShare,
     stopScreenShare,
     setRemoteVideoRequests,
+    preferExplicitRemoteVideoSubscribe,
     setParticipantListenVolumes,
+    kickRemotePlayback,
     setScreenShareDisplaySize,
     leaveVoice,
   };

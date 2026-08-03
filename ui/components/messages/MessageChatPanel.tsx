@@ -176,20 +176,20 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       const result = await fetchTelegramChatVoiceParticipants(probeChatId);
       if (cancelled || !result.ok || isVoiceDialogUiOpen()) return;
       if (chat.telegram_chat_id !== probeChatId) return;
-      // Server may still advertise a bound empty call — require participants or
-      // joined self. Do not trust has_hidden_listeners alone (stale leftovers).
+      // Server may still advertise a bound empty call — require participants.
+      // Do not trust has_hidden_listeners alone (stale leftovers).
+      // Green joined ring is only for *this* client's voice session — this
+      // probe runs only while !voiceJoined, so never paint joined=true here
+      // (sticky TDLib is_joined logged as isJoined=true while joined=false).
       const live =
         Boolean(result.has_active_voice_chat) &&
-        (result.participant_count > 0 ||
-          result.participants.length > 0 ||
-          Boolean(result.voice_chat_is_joined));
-      const joined = live && Boolean(result.voice_chat_is_joined);
+        (result.participant_count > 0 || result.participants.length > 0);
       patchAuthenticatedHomeSelectedChatVoice(probeChatId, {
         has_active_voice_chat: live,
         // Keep bound id when clearing live so Start voice can reuse it.
         voice_chat_group_call_id:
           result.voice_chat_group_call_id ?? chat.voice_chat_group_call_id ?? null,
-        voice_chat_is_joined: joined,
+        voice_chat_is_joined: false,
       });
       setVoicePresenceConfirmed(live);
       if (!live) return;
@@ -197,7 +197,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
         chatId: probeChatId,
         groupCallId: result.voice_chat_group_call_id,
         participantCount: result.participant_count,
-        isJoined: joined,
+        isJoined: false,
       });
     };
 

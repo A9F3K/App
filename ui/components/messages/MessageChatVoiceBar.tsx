@@ -141,6 +141,10 @@ export function MessageChatVoiceBar({
   participantMediaPrefsRef.current = participantMediaPrefs;
   const lastNonZeroVolumeRef = useRef<Record<string, number>>({});
   const volumeApiTimerRef = useRef<number | null>(null);
+  /** Peers we already restored from TDLib volume_level=1 (0%) this join. */
+  const volumeZeroRepairAttemptedRef = useRef<Set<string>>(new Set());
+  /** Unmuted remotes we already nudged to 100% listen volume this join (SFU). */
+  const listenVolumeNudgeAttemptedRef = useRef<Set<string>>(new Set());
   /** Listed row count — always matches dialog roster / strip avatars. */
   const [participantCount, setParticipantCount] = useState(0);
   /** TDLib total hint (may exceed loaded rows until force reload). */
@@ -207,6 +211,8 @@ export function MessageChatVoiceBar({
     }>
   >([]);
   const lastGoodRemoteVideoAtRef = useRef(0);
+  /** Skip identical auto-subscribe payloads — duplicates restarted audio-settle. */
+  const lastRemoteVideoRequestSigRef = useRef("");
 
   const syncVoicePresence = useCallback(
     (
@@ -244,7 +250,9 @@ export function MessageChatVoiceBar({
         patchAuthenticatedHomeSelectedChatVoice(forChatId, {
           has_active_voice_chat: true,
           voice_chat_group_call_id: callId ?? null,
-          voice_chat_is_joined: hasSelf,
+          // Green = this web session is in the call. TDLib/self-on-another-client
+          // must not paint joined while local WebRTC is idle.
+          voice_chat_is_joined: false,
         });
         return true;
       }
@@ -306,6 +314,9 @@ export function MessageChatVoiceBar({
   localSpeakingRef.current = voiceSession.localSpeaking;
   const remoteSpeakingRef = useRef(voiceSession.remoteSpeaking);
   remoteSpeakingRef.current = voiceSession.remoteSpeaking;
+  /** Latched once mix RMS proves hearable this join — greens must not depend on
+   * the instantaneous remoteSpeaking frame (HTML sink / speech pauses flap it). */
+  const heardRemoteMixRef = useRef(false);
   const joinListenRef = useRef(voiceSession.joinListen);
   joinListenRef.current = voiceSession.joinListen;
   const unlockAudioRef = useRef(voiceSession.unlockAudio);
@@ -491,6 +502,8 @@ export function MessageChatVoiceBar({
     setParticipants([]);
     setParticipantMediaPrefs({});
     lastNonZeroVolumeRef.current = {};
+    volumeZeroRepairAttemptedRef.current.clear();
+    listenVolumeNudgeAttemptedRef.current.clear();
     hasHiddenListenersRef.current = false;
     if (volumeApiTimerRef.current != null) {
       window.clearTimeout(volumeApiTimerRef.current);
@@ -507,6 +520,7 @@ export function MessageChatVoiceBar({
     mixCarrySpeakingKeysRef.current.clear();
     recentSpeakerFaceKeysRef.current.clear();
     mixSilentSinceRef.current = 0;
+    heardRemoteMixRef.current = false;
     if (speakingHoldTimerRef.current) {
       clearTimeout(speakingHoldTimerRef.current);
       speakingHoldTimerRef.current = null;
@@ -623,22 +637,14 @@ export function MessageChatVoiceBar({
     [rowSpeakKeys],
   );
 
-  /** Thin recent_speakers / strip faces become mix-RMS green targets after join. */
+  /** Only TDLib-marked speakers become mix-RMS green targets — never the whole roster. */
   const seedRecentSpeakerFaces = useCallback(
     (
       rows: TelegramChatVoiceParticipant[],
-      options?: { force?: boolean; countHint?: number },
+      _options?: { force?: boolean; countHint?: number },
     ) => {
-      const joinedLocally = voiceJoinedRef.current;
-      const hint = options?.countHint ?? rosterTotalHintRef.current;
-      const thin =
-        Boolean(options?.force) ||
-        !joinedLocally ||
-        (hint > 0 && rows.length > 0 && rows.length < hint) ||
-        (rows.length > 0 && rows.length <= 3);
-      if (!thin) return;
       for (const row of rows) {
-        if (row.is_self) continue;
+        if (row.is_self || !row.is_speaking) continue;
         for (const key of rowSpeakKeys(row)) {
           if (key === "self") continue;
           recentSpeakerFaceKeysRef.current.add(key);
@@ -688,14 +694,11 @@ export function MessageChatVoiceBar({
                 user_id: row.user_id && row.user_id > 0 ? row.user_id : prev.user_id,
                 chat_id: row.chat_id && row.chat_id !== 0 ? row.chat_id : prev.chat_id,
                 is_speaking: Boolean(row.is_speaking),
-                // Speaking ⇒ unmuted. Orderless recent_speakers stubs omit mute —
-                // never remute a live unmuted roster row from a silent stub.
-                // Do NOT sticky-keep prev.is_speaking — that left greens after mute.
-                is_muted: Boolean(row.is_speaking)
-                  ? false
-                  : !String(row.order ?? "").trim()
-                    ? Boolean(prev.is_muted)
-                    : Boolean(row.is_muted),
+                // Orderless recent_speakers stubs omit mute — never remute OR
+                // unmute from them. Speaking must not flip is_muted (mute ≠ green).
+                is_muted: !String(row.order ?? "").trim()
+                  ? Boolean(prev.is_muted)
+                  : Boolean(row.is_muted),
                 can_unmute_self:
                   typeof row.can_unmute_self === "boolean"
                     ? row.can_unmute_self
@@ -705,8 +708,11 @@ export function MessageChatVoiceBar({
               }
             : {
                 ...row,
-                // New faces from stubs: prefer unmuted when mute is unknown/false.
-                is_muted: Boolean(row.is_speaking) ? false : Boolean(row.is_muted),
+                // New orderless stubs: mute unknown — default muted until TDLib
+                // sends an ordered participant update (never invent unmuted).
+                is_muted: !String(row.order ?? "").trim()
+                  ? true
+                  : Boolean(row.is_muted),
               },
         );
       }
@@ -722,10 +728,8 @@ export function MessageChatVoiceBar({
       };
       let remoteSpeakingMarked = 0;
       let selfSpeakingSkipped = 0;
-      const unmuteKeys = new Set<string>();
       for (const row of mergedRows) {
         const key = canonicalSpeakKey(row);
-        const rosterKey = participantSpeakKey(row);
         // Local self: only RMS + live mic. TDLib often marks self speaking on join
         // while the mic is still muted — that painted a green ring incorrectly.
         if (key === "self" && joinedLocally) {
@@ -738,15 +742,40 @@ export function MessageChatVoiceBar({
           }
           continue;
         }
-        // Speaking wins over a stale muted flag (recent_speakers stubs default
-        // muted=true). Truly muted remotes still clear below when not speaking.
+        // Speaking wins for green ring. Do NOT permanently flip is_muted here —
+        // that left mute icons wrong after a speaking pulse (unmuteKeys).
         if (row.is_speaking) {
+          const prefs =
+            participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
+          const volumePercent =
+            prefs?.volumePercent ??
+            (typeof row.volume_percent === "number" ? row.volume_percent : 100);
+          // volume_level=1 (0%) = muted-for-me — SFU omits them; never paint as
+          // hearable while UI unmute would lie.
+          if (volumePercent <= 0) {
+            for (const speakKey of rowSpeakKeys(row)) {
+              lastTdlibSpeakingAtRef.current.set(speakKey, now);
+            }
+            clearSpeakingHoldsForRow(row);
+            continue;
+          }
+          // After WebRTC join, green = hearable in the mix. TDLib is_speaking
+          // alone while the mix was never hearable painted unmuted speakers as
+          // live (Сева / СИГМА). Once mix energy latched this join, keep trusting
+          // TDLib pulses through brief RMS dips (HTML sink / pause flaps).
+          if (
+            joinedLocally &&
+            !remoteSpeakingRef.current &&
+            !heardRemoteMixRef.current
+          ) {
+            for (const speakKey of rowSpeakKeys(row)) {
+              lastTdlibSpeakingAtRef.current.set(speakKey, now);
+            }
+            clearSpeakingHoldsForRow(row);
+            continue;
+          }
           markSpeaking(row);
           remoteSpeakingMarked += 1;
-          if (row.is_muted) {
-            unmuteKeys.add(key);
-            unmuteKeys.add(rosterKey);
-          }
           continue;
         }
         if (row.is_muted) {
@@ -810,20 +839,6 @@ export function MessageChatVoiceBar({
       }
       speakingListedRef.current = mergedRows.length;
       pendingSpeakingMapRef.current = next;
-      if (unmuteKeys.size > 0) {
-        setParticipants((prev) => {
-          let changed = false;
-          const updated = prev.map((row) => {
-            if (!row.is_muted) return row;
-            const key = canonicalSpeakKey(row);
-            const rosterKey = participantSpeakKey(row);
-            if (!unmuteKeys.has(key) && !unmuteKeys.has(rosterKey)) return row;
-            changed = true;
-            return { ...row, is_muted: false };
-          });
-          return changed ? updated : prev;
-        });
-      }
       const commitSpeaking = () => {
         speakingRafRef.current = null;
         const pending = pendingSpeakingMapRef.current;
@@ -867,6 +882,18 @@ export function MessageChatVoiceBar({
         }
         commitSpeaking();
         return;
+      }
+      // Listen-muted join: TDLib often pulses only self is_speaking — log so we
+      // can tell "SSE speakingCount=1" is not a remote green candidate.
+      if (selfSpeakingSkipped > 0) {
+        logPageDisplay("messages_voice_roster_speaking_self_only", {
+          chatId,
+          selfSpeakingSkipped,
+          listed: speakingListedRef.current,
+          popoverOpen: popoverOpenRef.current,
+          level: "info",
+          note: "TDLib speaking pulse was self — remotes rely on mix open-mic paint",
+        });
       }
       if (speakingRafRef.current != null) return;
       speakingRafRef.current = window.setTimeout(commitSpeaking, 0) as unknown as number;
@@ -957,21 +984,25 @@ export function MessageChatVoiceBar({
       if (growsRoster) {
         lastRosterExpandAtRef.current = Date.now();
       }
-      // Authoritative shrink: payload size matches TDLib hint (or hint dropped to
-      // match). Do NOT sticky-keep leavers — that painted listed=4 / hint=3 and
-      // bounced rows up/down as ghosts joined then vanished.
-      const authoritativeShrink =
-        !growsRoster &&
-        next.length < prev.length &&
-        next.length > 0 &&
-        hint > 0 &&
-        hint <= next.length;
       // Orderless rows are recent_speakers stubs (mute unknown). Treat them as a
       // soft merge even when listed === hint — otherwise silent stubs remute the
       // whole roster when they replace a fuller force-reload paint.
       const incomingLooksOrderless =
         next.length > 0 &&
         next.every((row) => !String(row.order ?? "").trim());
+      // Authoritative shrink: hint caught up, OR an ordered snapshot is a strict
+      // subset of the painted roster (peer left) even if participant_count lags.
+      const orderedSubsetLeave =
+        !growsRoster &&
+        next.length < prev.length &&
+        next.length > 0 &&
+        !incomingLooksOrderless &&
+        next.every((row) => prevByKey.has(speakKey(row)));
+      const authoritativeShrink =
+        !growsRoster &&
+        next.length < prev.length &&
+        next.length > 0 &&
+        ((hint > 0 && hint <= next.length) || orderedSubsetLeave);
       const looksLikeRecentSpeakersOnly =
         !growsRoster &&
         !authoritativeShrink &&
@@ -987,13 +1018,11 @@ export function MessageChatVoiceBar({
         const merged = prev.map((row) => {
           const inc = nextByKey.get(speakKey(row));
           if (!inc) return row;
-          // Thin recent_speakers stubs omit mute — never remute OR unmute from them
-          // unless they are actively speaking (open mic while talking).
-          const nextMuted = Boolean(inc.is_speaking)
-            ? false
-            : !String(inc.order ?? "").trim()
-              ? Boolean(row.is_muted)
-              : Boolean(inc.is_muted);
+          // Thin recent_speakers stubs omit mute — never remute OR unmute from them.
+          // Speaking must not flip is_muted (mute icon ≠ green ring).
+          const nextMuted = !String(inc.order ?? "").trim()
+            ? Boolean(row.is_muted)
+            : Boolean(inc.is_muted);
           const nextTitle = inc.title.trim() || row.title;
           const nextDescription = inc.description || row.description;
           const nextEmoji =
@@ -1048,7 +1077,13 @@ export function MessageChatVoiceBar({
             // that painted "+1 / 4 participants" for a 3-person call.
             if (hint >= 2 && merged.length >= hint) continue;
             if (!inc.title.trim() && hint > 0 && merged.length >= hint) continue;
-            merged.push({ ...inc, is_speaking: false });
+            const orderless = !String(inc.order ?? "").trim();
+            merged.push({
+              ...inc,
+              is_speaking: false,
+              // Unknown mute on soft stubs → muted until an ordered update.
+              is_muted: orderless ? true : Boolean(inc.is_muted),
+            });
           }
         }
         next = merged;
@@ -1091,14 +1126,12 @@ export function MessageChatVoiceBar({
           ) {
             return prevMatch;
           }
-          // Orderless recent_speakers stubs must not remute an open mic. Real
-          // mute updates always carry a participant order string from TDLib —
-          // trust those so everyone-muted calls show muted chrome.
-          const nextMuted = Boolean(row.is_speaking)
-            ? false
-            : !String(row.order ?? "").trim() && prevMatch && !prevMatch.is_muted
-              ? false
-              : Boolean(row.is_muted);
+          // Orderless recent_speakers stubs must not invent mute either way —
+          // keep the prior TDLib mute until an ordered participant update lands.
+          // Trust ordered rows so everyone-muted calls show muted chrome.
+          const nextMuted = !String(row.order ?? "").trim()
+            ? Boolean(prevMatch?.is_muted ?? true)
+            : Boolean(row.is_muted);
           return {
             ...row,
             is_speaking: false,
@@ -1186,8 +1219,22 @@ export function MessageChatVoiceBar({
           prevListed: prev.length,
           mutedCount: next.filter((row) => row.is_muted).length,
           unmutedCount: next.filter((row) => !row.is_muted).length,
+          zeroVolumeRemoteCount: next.filter(
+            (row) =>
+              !row.is_self &&
+              typeof row.volume_percent === "number" &&
+              row.volume_percent <= 0,
+          ).length,
           popoverOpen: popoverOpenRef.current,
           titles: next.slice(0, 6).map((row) => row.title || "?"),
+          volumes: next
+            .filter((row) => !row.is_self)
+            .slice(0, 6)
+            .map((row) => ({
+              title: row.title || "?",
+              muted: row.is_muted,
+              volume: row.volume_percent ?? null,
+            })),
           screens: next
             .filter((row) => row.screen_sharing_video_info?.endpoint_id)
             .slice(0, 4)
@@ -1278,42 +1325,11 @@ export function MessageChatVoiceBar({
     if (!live && snapshot.participants.length === 0 && !voiceJoinedRef.current) return;
 
     const applyRows = (rows: TelegramChatVoiceParticipant[], countHint: number) => {
-      // SSE payloads are often recent-speakers-only; merge so we never drop a
-      // fuller roster that force-reload already painted.
-      const prevListed = participantsRef.current.length;
-      if (
-        popoverOpenRef.current &&
-        prevListed > 0 &&
-        rows.length > 0 &&
-        rows.length < prevListed &&
-        countHint >= prevListed
-      ) {
-        logPageDisplay("messages_voice_dialog_sse_skip_thin", {
-          chatId,
-          listed: rows.length,
-          prevListed,
-          hint: countHint,
-        });
-        // Thin recent_speakers stubs omit mute — only open mics when speaking.
-        // Never unmute a muted roster face from a silent stub.
-        const speakKey = participantSpeakKey;
-        const byKey = new Map(rows.map((row) => [speakKey(row), row]));
-        setParticipants((prev) => {
-          let changed = false;
-          const next = prev.map((row) => {
-            if (row.is_self) return row;
-            const inc = byKey.get(speakKey(row));
-            if (!inc || !inc.is_speaking) return row;
-            if (!row.is_muted) return row;
-            changed = true;
-            return { ...row, is_muted: false };
-          });
-          return changed ? next : prev;
-        });
-        return;
-      }
+      // Thin recent-speakers stubs still merge inside applyRosterRows. Do not
+      // early-return on shrink — that kept leavers (Сева) painted when SSE
+      // sent listed=1 with a stale hint≥prevListed (sse_skip_thin).
       applyRosterRows(rows, countHint, {
-        preferMerge: true,
+        preferMerge: countHint > rows.length,
       });
     };
 
@@ -1673,16 +1689,17 @@ export function MessageChatVoiceBar({
     }
   }, [joined, voiceSession.localSpeaking, voiceSession.micActive]);
 
-  // Mix RMS is not per-participant identity. Use it only to:
-  // 1) keep green on people TDLib recently marked speaking (SSE often drops to
-  //    speakingCount=0 after join while audio continues),
-  // 2) attribute audio when exactly one remote is unmuted.
-  // Never paint the whole unmuted roster green from the mix unless we have no
-  // identity at all (cap 3 open mics).
-  const MIX_SPEAKING_GRACE_MS = 120_000;
+  // Mix RMS is not per-participant identity. After WebRTC join TDLib often only
+  // pulses is_speaking for self (skipped while listen-muted) while remotes keep
+  // talking — SSE speakingCount stays 0 and greens never light. Prefer TDLib
+  // identity; otherwise light unmuted remotes while mix RMS is hot (mixed track
+  // cannot name a speaker). Silent-mix open-mic paint was the old lie — this
+  // path only runs while remoteSpeakingRef is true.
+  const MIX_SPEAKING_GRACE_MS = 18_000;
   const MIX_SPEAKING_HOLD_MS = 2_400;
   const extendMixSpeakingHolds = useCallback(() => {
     if (!voiceJoinedRef.current || !remoteSpeakingRef.current) return;
+    heardRemoteMixRef.current = true;
     mixSilentSinceRef.current = 0;
     const roster = participantsRef.current;
     const remotes = roster.filter(
@@ -1692,56 +1709,32 @@ export function MessageChatVoiceBar({
     const now = Date.now();
     const graceMs = MIX_SPEAKING_GRACE_MS;
     const holdMs = MIX_SPEAKING_HOLD_MS;
-    const isRecentSpeaker = (row: TelegramChatVoiceParticipant) => {
+    // TDLib-backed identity only — do not invent from speakingByKey/hold (loops).
+    const isTdlibRecentSpeaker = (row: TelegramChatVoiceParticipant) => {
       const keys = rowSpeakKeys(row);
       return keys.some((key) => {
         const seen = lastTdlibSpeakingAtRef.current.get(key) ?? 0;
-        const until = speakingHoldUntilRef.current.get(key) ?? 0;
-        return (
-          mixCarrySpeakingKeysRef.current.has(key) ||
-          recentSpeakerFaceKeysRef.current.has(key) ||
-          (seen > 0 && now - seen < graceMs) ||
-          until > now ||
-          Boolean(speakingByKeyRef.current[key])
-        );
+        return seen > 0 && now - seen < graceMs;
       });
     };
-    if (mixCarrySpeakingKeysRef.current.size === 0) {
-      for (const row of remotes) {
-        if (!isRecentSpeaker(row)) continue;
-        for (const key of rowSpeakKeys(row)) mixCarrySpeakingKeysRef.current.add(key);
-      }
-      for (const key of Object.keys(speakingByKeyRef.current)) {
-        mixCarrySpeakingKeysRef.current.add(key);
-      }
-    }
-    let targets = remotes.filter((row) => !row.is_muted && isRecentSpeaker(row));
+    let targets = remotes.filter((row) => !row.is_muted && isTdlibRecentSpeaker(row));
+    let mixSource: "tdlib_hold" | "solo" | "open_mics" = "tdlib_hold";
     if (targets.length === 0) {
-      const unmutedRemotes = remotes.filter((row) => !row.is_muted);
+      const unmutedRemotes = remotes.filter((row) => {
+        if (row.is_muted) return false;
+        const prefs =
+          participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
+        const volumePercent =
+          prefs?.volumePercent ??
+          (typeof row.volume_percent === "number" ? row.volume_percent : 100);
+        return volumePercent > 0;
+      });
       if (unmutedRemotes.length === 1) {
         targets = unmutedRemotes;
-      } else if (unmutedRemotes.length === 0) {
-        return;
-      } else if (
-        recentSpeakerFaceKeysRef.current.size === 0 &&
-        mixCarrySpeakingKeysRef.current.size === 0
-      ) {
-        const seedRows = unmutedRemotes.slice(0, 3);
-        for (const row of seedRows) {
-          for (const key of rowSpeakKeys(row)) {
-            recentSpeakerFaceKeysRef.current.add(key);
-            mixCarrySpeakingKeysRef.current.add(key);
-          }
-        }
-        targets = seedRows;
-        logPageDisplay("messages_voice_roster_speaking_seed", {
-          chatId,
-          unmutedCount: unmutedRemotes.length,
-          seeded: seedRows.length,
-          listed: roster.length,
-          source: "remote_audio_no_tdlib_cap3",
-          level: "warn",
-        });
+        mixSource = "solo";
+      } else if (unmutedRemotes.length > 1) {
+        targets = unmutedRemotes;
+        mixSource = "open_mics";
       } else {
         return;
       }
@@ -1750,9 +1743,6 @@ export function MessageChatVoiceBar({
       for (const key of rowSpeakKeys(row)) {
         speakingHoldUntilRef.current.set(key, now + holdMs);
         mixCarrySpeakingKeysRef.current.add(key);
-        if (!lastTdlibSpeakingAtRef.current.has(key)) {
-          lastTdlibSpeakingAtRef.current.set(key, now);
-        }
       }
     }
     setSpeakingByKey((prev) => {
@@ -1782,7 +1772,12 @@ export function MessageChatVoiceBar({
         listed: roster.length,
         applyMs: 0,
         popoverOpen: popoverOpenRef.current,
-        source: "remote_audio_level_recent_or_solo",
+        source:
+          mixSource === "solo"
+            ? "remote_audio_level_solo"
+            : mixSource === "open_mics"
+              ? "remote_audio_level_open_mics"
+              : "remote_audio_level_tdlib_hold",
       });
       return next;
     });
@@ -1809,6 +1804,16 @@ export function MessageChatVoiceBar({
       });
     }, holdMs + 50);
   }, [canonicalSpeakKey, chatId, rowSpeakKeys]);
+
+  useEffect(() => {
+    if (!joined) {
+      heardRemoteMixRef.current = false;
+      return;
+    }
+    if (voiceSession.remoteSpeaking) {
+      heardRemoteMixRef.current = true;
+    }
+  }, [joined, voiceSession.remoteSpeaking]);
 
   useEffect(() => {
     if (!joined) return;
@@ -2061,7 +2066,10 @@ export function MessageChatVoiceBar({
   const voiceJoined = voiceSession.joined;
   const remoteVideoSourceKey = useMemo(() => {
     const muteSig = Object.entries(participantMediaPrefs)
-      .map(([key, prefs]) => `${key}:${prefs.muteScreen ? 1 : 0}`)
+      .map(
+        ([key, prefs]) =>
+          `${key}:${prefs.muteScreen ? 1 : 0}:${prefs.muteVideo ? 1 : 0}`,
+      )
       .sort()
       .join(",");
     return (
@@ -2069,7 +2077,7 @@ export function MessageChatVoiceBar({
         .filter((row) => !row.is_self)
         .map(
           (row) =>
-            `${row.user_id ?? row.chat_id}:${voiceVideoInfoSignature(row.screen_sharing_video_info)}`,
+            `${row.user_id ?? row.chat_id}:s${voiceVideoInfoSignature(row.screen_sharing_video_info)}:c${voiceVideoInfoSignature(row.video_info)}`,
         )
         .join("|") + `|mute:${muteSig}`
     );
@@ -2078,13 +2086,20 @@ export function MessageChatVoiceBar({
     if (!voiceJoined || Platform.OS !== "web") {
       lastGoodRemoteVideoRequestsRef.current = [];
       lastGoodRemoteVideoAtRef.current = 0;
+      lastRemoteVideoRequestSigRef.current = "";
       setRemoteVideoRequests([]);
       return;
     }
     let cancelled = false;
     let stickyExpireTimer: number | null = null;
-    const hasScreenPublishers = participantsRef.current.some(
-      (row) => !row.is_self && participantHasScreenPublisher(row),
+    const hasVideoPublishers = participantsRef.current.some(
+      (row) =>
+        !row.is_self &&
+        (participantHasScreenPublisher(row) ||
+          Boolean(
+            row.video_info?.endpoint_id?.trim() ||
+              (row.video_info?.source_groups?.length ?? 0) > 0,
+          )),
     );
     const applyRequests = () => {
       if (cancelled) return;
@@ -2093,13 +2108,27 @@ export function MessageChatVoiceBar({
         kind: "camera" | "screen";
         ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
       }> = [];
-      const pendingGroups: Array<{ user: string; kind: "screen"; endpoint: string }> =
-        [];
+      const pendingGroups: Array<{
+        user: string;
+        kind: "camera" | "screen";
+        endpoint: string;
+      }> = [];
       for (const row of participantsRef.current) {
         if (row.is_self) continue;
         const prefs = participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
         const screen = row.screen_sharing_video_info;
-        if (screen?.source_groups?.length && !prefs?.muteScreen) {
+        const camera = row.video_info;
+        // Default: show active shares/cameras on join. Only skip when muted
+        // in the participant menu.
+        const screenAllowed =
+          prefs != null
+            ? prefs.muteScreen === false
+            : Boolean(screen?.source_groups?.length || screen?.endpoint_id?.trim());
+        const cameraAllowed =
+          prefs != null
+            ? prefs.muteVideo === false
+            : Boolean(camera?.source_groups?.length || camera?.endpoint_id?.trim());
+        if (screen?.source_groups?.length && screenAllowed) {
           requests.push({
             endpointId: screen.endpoint_id || `screen-${row.user_id ?? row.chat_id ?? "x"}`,
             kind: "screen",
@@ -2108,16 +2137,32 @@ export function MessageChatVoiceBar({
               sourceIds: g.source_ids,
             })),
           });
-        } else if (screen?.endpoint_id?.trim() && !prefs?.muteScreen) {
+        } else if (screen?.endpoint_id?.trim() && screenAllowed) {
           pendingGroups.push({
             user: row.title || String(row.user_id ?? row.chat_id ?? "?"),
             kind: "screen",
             endpoint: screen.endpoint_id,
           });
         }
+        if (camera?.source_groups?.length && cameraAllowed) {
+          requests.push({
+            endpointId: camera.endpoint_id || `cam-${row.user_id ?? row.chat_id ?? "x"}`,
+            kind: "camera",
+            ssrcGroups: camera.source_groups.map((g) => ({
+              semantics: g.semantics,
+              sourceIds: g.source_ids,
+            })),
+          });
+        } else if (camera?.endpoint_id?.trim() && cameraAllowed) {
+          pendingGroups.push({
+            user: row.title || String(row.user_id ?? row.chat_id ?? "?"),
+            kind: "camera",
+            endpoint: camera.endpoint_id,
+          });
+        }
       }
-      // Prefer complete SIM+FID groups. Never auto-subscribe FID-only screens
-      // (Nekit-style groups:1) — they stall the mix audio m-line with multi-screen.
+      // Prefer complete SIM+FID groups. Multi FID-only (Nekit-style groups:1)
+      // used to stall mix audio — never subscribe more than one incomplete.
       const scoreSsrcGroups = (
         groups: Array<{ semantics: string; sourceIds: number[] }>,
       ): number => {
@@ -2128,24 +2173,101 @@ export function MessageChatVoiceBar({
         return (hasSim ? 100 : 0) + fidCount * 20 + groups.length * 10;
       };
       const COMPLETE_SSRC_MIN = 100; // requires SIM
-      const completeRequests = requests.filter(
-        (r) => scoreSsrcGroups(r.ssrcGroups) >= COMPLETE_SSRC_MIN,
+      const MAX_REMOTE_VIDEOS = 2;
+      const sortVideoRequests = (
+        list: typeof requests,
+      ): typeof requests =>
+        [...list].sort((a, b) => {
+          if (a.kind !== b.kind) return a.kind === "screen" ? -1 : 1;
+          return scoreSsrcGroups(b.ssrcGroups) - scoreSsrcGroups(a.ssrcGroups);
+        });
+      const completeRequests = sortVideoRequests(
+        requests.filter(
+          (r) => scoreSsrcGroups(r.ssrcGroups) >= COMPLETE_SSRC_MIN,
+        ),
       );
-      completeRequests.sort(
-        (a, b) => scoreSsrcGroups(b.ssrcGroups) - scoreSsrcGroups(a.ssrcGroups),
+      const incompleteRequests = sortVideoRequests(
+        requests.filter(
+          (r) => scoreSsrcGroups(r.ssrcGroups) < COMPLETE_SSRC_MIN,
+        ),
       );
-      // Cap screens — each extra m-line raises mix-audio stall risk.
-      // Incomplete-only → subscribe nothing (audio-first).
-      const next = completeRequests.slice(0, 3);
+      // Build subscribe set. Bug: when a 2nd FID-only share appeared,
+      // `requests.length === 1` gate cleared *all* incomplete → first tile
+      // vanished then stage went empty. Keep sticky incomplete; prefer SIM.
+      const lastGood = lastGoodRemoteVideoRequestsRef.current;
+      const lastGoodIds = new Set(lastGood.map((r) => r.endpointId));
+      const next: typeof requests = [];
+      const picked = new Set<string>();
+      const take = (row: (typeof requests)[number]) => {
+        if (picked.has(row.endpointId) || next.length >= MAX_REMOTE_VIDEOS) {
+          return;
+        }
+        picked.add(row.endpointId);
+        next.push(row);
+      };
+      if (completeRequests.length > 0) {
+        // SIM publishers only — mixing FID-only with SIM stalled mix audio.
+        for (const prev of lastGood) {
+          const match = completeRequests.find(
+            (r) => r.endpointId === prev.endpointId,
+          );
+          if (match) take(match);
+        }
+        for (const row of completeRequests) take(row);
+      } else {
+        // No SIM: keep the live incomplete tile (sticky), else best screen.
+        for (const prev of lastGood) {
+          const match = incompleteRequests.find(
+            (r) => r.endpointId === prev.endpointId,
+          );
+          if (match) {
+            take(match);
+            break;
+          }
+        }
+        if (next.length === 0) {
+          const sticky = incompleteRequests.find((r) =>
+            lastGoodIds.has(r.endpointId),
+          );
+          if (sticky) take(sticky);
+          else if (incompleteRequests[0]) take(incompleteRequests[0]);
+        }
+      }
       const SOFT_VIDEO_STICKY_MS = 5_000;
-      if (next.length === 0 && lastGoodRemoteVideoRequestsRef.current.length > 0) {
-        const stillHasScreenEndpoint = participantsRef.current.some(
+      // Sticky only while the user explicitly opted into a screen/camera.
+      const wantsVideoSubscribe = participantsRef.current.some((row) => {
+        if (row.is_self) return false;
+        const prefs = participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
+        const sharing = Boolean(
+          row.screen_sharing_video_info?.endpoint_id?.trim() ||
+            row.video_info?.endpoint_id?.trim(),
+        );
+        if (!sharing) return false;
+        if (prefs == null) return true;
+        const screenOn = Boolean(row.screen_sharing_video_info?.endpoint_id?.trim())
+          ? prefs.muteScreen === false
+          : false;
+        const camOn = Boolean(row.video_info?.endpoint_id?.trim())
+          ? prefs.muteVideo === false
+          : false;
+        return screenOn || camOn;
+      });
+      if (
+        next.length === 0 &&
+        wantsVideoSubscribe &&
+        lastGoodRemoteVideoRequestsRef.current.length > 0
+      ) {
+        const stillHasVideoEndpoint = participantsRef.current.some(
           (row) =>
-            !row.is_self && Boolean(row.screen_sharing_video_info?.endpoint_id?.trim()),
+            !row.is_self &&
+            Boolean(
+              row.screen_sharing_video_info?.endpoint_id?.trim() ||
+                row.video_info?.endpoint_id?.trim(),
+            ),
         );
         const stickyAgeMs = Date.now() - lastGoodRemoteVideoAtRef.current;
         if (
-          (stillHasScreenEndpoint || pendingGroups.length > 0) &&
+          (stillHasVideoEndpoint || pendingGroups.length > 0) &&
           stickyAgeMs < SOFT_VIDEO_STICKY_MS
         ) {
           logPageDisplay("messages_voice_remote_video_requests", {
@@ -2160,7 +2282,7 @@ export function MessageChatVoiceBar({
             hint: rosterTotalHintRef.current,
             stickyAgeMs,
             level: "warn",
-            note: "sticky keep last good screen requests — soft roster missing source_groups",
+            note: "sticky keep last good video requests — soft roster missing source_groups",
           });
           if (stickyExpireTimer != null) window.clearTimeout(stickyExpireTimer);
           stickyExpireTimer = window.setTimeout(() => {
@@ -2177,9 +2299,24 @@ export function MessageChatVoiceBar({
       if (next.length > 0) {
         lastGoodRemoteVideoRequestsRef.current = next;
         lastGoodRemoteVideoAtRef.current = Date.now();
-      } else {
+      } else if (!wantsVideoSubscribe) {
+        // Publishers gone / user muted — drop sticky. Soft roster blanks must
+        // not wipe lastGood or the 2nd-share transition clears both tiles.
         lastGoodRemoteVideoRequestsRef.current = [];
       }
+      const nextSig = next
+        .map(
+          (r) =>
+            `${r.kind}:${r.endpointId}:${r.ssrcGroups
+              .map((g) => `${g.semantics}:${g.sourceIds.join(",")}`)
+              .join(";")}`,
+        )
+        .sort()
+        .join("|");
+      if (nextSig === lastRemoteVideoRequestSigRef.current) {
+        return;
+      }
+      lastRemoteVideoRequestSigRef.current = nextSig;
       setRemoteVideoRequests(next);
       logPageDisplay("messages_voice_remote_video_requests", {
         chatId,
@@ -2192,16 +2329,27 @@ export function MessageChatVoiceBar({
         level: next.length > 0 ? "info" : "warn",
         note:
           next.length > 0
-            ? pendingGroups.length > 0 || requests.length > completeRequests.length
-              ? "complete_ssrc_only_cap_3 — incomplete FID-only skipped"
-              : "auto_screen_subscribe_cap_3"
+            ? pendingGroups.length > 0 ||
+              requests.length > next.length ||
+              incompleteRequests.length > 0
+              ? "explicit_video_complete_ssrc_cap_2"
+              : "explicit_video_subscribe_cap_2"
             : requests.length > 0
-              ? "skipped_incomplete_ssrc_screens — audio-first"
-              : "no screen source_groups on roster — force-reload may still be pending",
+              ? "skipped_incomplete_ssrc_video — audio-first"
+              : participantsRef.current.some(
+                    (row) =>
+                      !row.is_self &&
+                      Boolean(
+                        row.screen_sharing_video_info?.endpoint_id ||
+                          row.video_info?.endpoint_id,
+                      ),
+                  )
+                ? "video_publishers_present_but_not_subscribed"
+                : "no video source_groups on roster — force-reload may still be pending",
       });
     };
-    const timer = window.setTimeout(applyRequests, hasScreenPublishers ? 600 : 2_500);
-    const retry = window.setTimeout(applyRequests, hasScreenPublishers ? 2_200 : 5_000);
+    const timer = window.setTimeout(applyRequests, hasVideoPublishers ? 600 : 2_500);
+    const retry = window.setTimeout(applyRequests, hasVideoPublishers ? 2_200 : 5_000);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -2212,26 +2360,31 @@ export function MessageChatVoiceBar({
 
   const displayParticipants = useMemo(() => {
     return participants.map((row) => {
-      const speaking = Boolean(
-        !row.is_muted && rowSpeakKeys(row).some((k) => speakingByKey[k]),
-      );
-      return speaking === Boolean(row.is_speaking)
+      // Prefer gated speaking map — never OR raw TDLib is_speaking after join
+      // (that painted Сева green while the mix was silent / recovering).
+      const speaking = Boolean(rowSpeakKeys(row).some((k) => speakingByKey[k]));
+      const speakingFallback =
+        !voiceJoinedRef.current && Boolean(row.is_speaking);
+      const nextSpeaking = speaking || speakingFallback;
+      return nextSpeaking === Boolean(row.is_speaking)
         ? row
-        : { ...row, is_speaking: speaking };
+        : { ...row, is_speaking: nextSpeaking };
     });
   }, [participants, rowSpeakKeys, speakingByKey]);
 
   const resolveParticipantSpeaking = useCallback(
     (row: TelegramChatVoiceParticipant) => {
-      if (row.is_muted) return false;
       const prefs = participantMediaPrefs[voiceParticipantPrefsKey(row)];
       const volume =
         prefs?.volumePercent ??
         (typeof row.volume_percent === "number" ? row.volume_percent : 100);
       if (volume <= 0) return false;
-      return Boolean(
-        rowSpeakKeys(row).some((k) => speakingByKey[k]) || row.is_speaking,
-      );
+      // Side map is gated on hearable mix / holds. Do not fall back to raw
+      // TDLib is_speaking while WebRTC mix is silent — that painted unmuted
+      // speakers as live when Opus was frozen.
+      if (rowSpeakKeys(row).some((k) => speakingByKey[k])) return true;
+      if (!voiceJoinedRef.current) return Boolean(row.is_speaking);
+      return false;
     },
     [participantMediaPrefs, rowSpeakKeys, speakingByKey],
   );
@@ -2243,7 +2396,12 @@ export function MessageChatVoiceBar({
       if (existing) return { key, prefs: existing };
       const volumePercent =
         typeof participant.volume_percent === "number" ? participant.volume_percent : 100;
-      const prefs = { volumePercent, muteVideo: false, muteScreen: false };
+      // Default show active shares; menu mute sets muteScreen=true.
+      const sharing = Boolean(
+        participant.screen_sharing_video_info?.endpoint_id?.trim() ||
+          (participant.screen_sharing_video_info?.source_groups?.length ?? 0) > 0,
+      );
+      const prefs = { volumePercent, muteVideo: false, muteScreen: !sharing };
       return { key, prefs };
     },
     [],
@@ -2321,53 +2479,153 @@ export function MessageChatVoiceBar({
   const onParticipantToggleMuteScreen = useCallback(
     (participant: TelegramChatVoiceParticipant) => {
       const { key, prefs } = ensureParticipantPrefs(participant);
+      const cur = participantMediaPrefsRef.current[key] ?? prefs;
+      const nextMute = !cur.muteScreen;
       setParticipantMediaPrefs((prev) => {
-        const cur = prev[key] ?? prefs;
-        return { ...prev, [key]: { ...cur, muteScreen: !cur.muteScreen } };
+        const existing = prev[key] ?? prefs;
+        return { ...prev, [key]: { ...existing, muteScreen: nextMute } };
       });
+      // Unmute must arm video SDP even when mix RMS is quiet.
+      if (!nextMute) {
+        voiceSession.preferExplicitRemoteVideoSubscribe();
+      }
     },
-    [ensureParticipantPrefs],
+    [ensureParticipantPrefs, voiceSession],
   );
 
-  // Push local listen volumes into the WebRTC mix GainNode (TDLib alone does not
-  // attenuate our SFU audio track).
+  // Push local listen volumes into the WebRTC mix GainNode. TDLib volume_level
+  // also gates SFU mix contribution — volume_level=1 (0%) mutes that peer for
+  // you server-side (prod: hear Сева, silence when only СИГМА remains unmuted).
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") return;
     const volumes: Record<string, number> = {};
     const participantKeys: string[] = [];
     const speakingKeys: string[] = [];
+    const repairRows: TelegramChatVoiceParticipant[] = [];
     for (const row of participants) {
       if (row.is_self) continue;
       const key = voiceParticipantPrefsKey(row);
       participantKeys.push(key);
       const prefs = participantMediaPrefs[key];
-      const volumePercent =
+      const hasLocalVolumePref = prefs?.volumePercent != null;
+      let volumePercent =
         prefs?.volumePercent ??
         (typeof row.volume_percent === "number" ? row.volume_percent : 100);
+      // Individual TDLib muted-for-me (volume_level=1 → 0%) without a local
+      // mute preference — restore 100% locally and via API so SFU forwards them.
+      if (volumePercent <= 0 && !hasLocalVolumePref) {
+        volumePercent = 100;
+        repairRows.push(row);
+      }
       volumes[key] = volumePercent;
-      // Include volume-0 peers who are speaking so we can silence the mix when
-      // only muted listeners would otherwise be heard.
       const peerSpeaking = Boolean(
-        !row.is_muted &&
-          (rowSpeakKeys(row).some((k) => speakingByKey[k]) || row.is_speaking),
+        !row.is_muted && rowSpeakKeys(row).some((k) => speakingByKey[k]),
       );
       if (peerSpeaking) speakingKeys.push(key);
     }
-    // Guard: if every remote is 0% and the user never set local prefs, treat as
-    // bad TDLib defaults — do not mute the SFU mix (hearable RMS, silent speakers).
-    const allZero =
-      participantKeys.length > 0 && participantKeys.every((key) => volumes[key]! <= 0);
-    const hasLocalMutePrefs = participantKeys.some(
-      (key) => participantMediaPrefs[key]?.volumePercent != null,
-    );
-    if (allZero && !hasLocalMutePrefs) {
-      for (const key of participantKeys) volumes[key] = 100;
+    if (repairRows.length > 0) {
       logPageDisplay("messages_voice_listen_volume_repaired", {
         chatId,
-        repaired: participantKeys.length,
+        repaired: repairRows.length,
+        titles: repairRows.map((r) => r.title || "?").slice(0, 4),
         level: "warn",
-        note: "all remotes volume_percent=0 without local prefs — restored to 100%",
+        note: "remote volume_percent=0 without local prefs — restored to 100% (SFU muted-for-me)",
       });
+      setParticipantMediaPrefs((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const row of repairRows) {
+          const key = voiceParticipantPrefsKey(row);
+          if (next[key]?.volumePercent != null) continue;
+          const base = next[key] ?? {
+            volumePercent: 100,
+            muteVideo: false,
+            muteScreen: false,
+          };
+          next[key] = { ...base, volumePercent: 100 };
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+      for (const row of repairRows) {
+        const key = voiceParticipantPrefsKey(row);
+        if (volumeZeroRepairAttemptedRef.current.has(key)) continue;
+        volumeZeroRepairAttemptedRef.current.add(key);
+        lastNonZeroVolumeRef.current[key] = 100;
+        void setTelegramChatVoiceParticipantVolume({
+          chatId,
+          groupCallId,
+          userId: row.user_id,
+          peerChatId: row.chat_id,
+          volumePercent: 100,
+        }).then((result) => {
+          if (!result.ok) {
+            appWarn("[voice-participant-volume-repair]", result.error, {
+              chatId,
+              groupCallId,
+              userId: row.user_id,
+              title: row.title,
+            });
+            volumeZeroRepairAttemptedRef.current.delete(key);
+            return;
+          }
+          logPageDisplay("messages_voice_listen_volume_sfu_restored", {
+            chatId,
+            groupCallId,
+            userId: row.user_id,
+            title: row.title,
+            volume_percent: result.volume_percent,
+            level: "info",
+            note: "setGroupCallParticipantVolumeLevel 100% after muted-for-me default",
+          });
+        });
+      }
+    }
+    // Proactive SFU listen-volume nudge: roster can show unmuted @ 100% while
+    // the SFU never got setGroupCallParticipantVolumeLevel for this client
+    // (prod: hear some peers, silence for others e.g. Зоро). Once per peer/join.
+    if (groupCallId != null && groupCallId > 0) {
+      for (const row of participants) {
+        if (row.is_self || row.is_muted) continue;
+        const key = voiceParticipantPrefsKey(row);
+        if (listenVolumeNudgeAttemptedRef.current.has(key)) continue;
+        const prefs = participantMediaPrefs[key];
+        if (prefs?.volumePercent != null && prefs.volumePercent <= 0) continue;
+        const volumePercent =
+          prefs?.volumePercent ??
+          (typeof row.volume_percent === "number" && row.volume_percent > 0
+            ? row.volume_percent
+            : 100);
+        if (volumePercent <= 0) continue;
+        listenVolumeNudgeAttemptedRef.current.add(key);
+        void setTelegramChatVoiceParticipantVolume({
+          chatId,
+          groupCallId,
+          userId: row.user_id,
+          peerChatId: row.chat_id,
+          volumePercent: Math.max(100, volumePercent),
+        }).then((result) => {
+          if (!result.ok) {
+            appWarn("[voice-participant-volume-nudge]", result.error, {
+              chatId,
+              groupCallId,
+              userId: row.user_id,
+              title: row.title,
+            });
+            listenVolumeNudgeAttemptedRef.current.delete(key);
+            return;
+          }
+          logPageDisplay("messages_voice_listen_volume_sfu_nudged", {
+            chatId,
+            groupCallId,
+            userId: row.user_id,
+            title: row.title,
+            volume_percent: result.volume_percent,
+            level: "info",
+            note: "setGroupCallParticipantVolumeLevel after join for unmuted remote",
+          });
+        });
+      }
     }
     setParticipantListenVolumes({
       volumes,
@@ -2382,6 +2640,7 @@ export function MessageChatVoiceBar({
     rowSpeakKeys,
     setParticipantListenVolumes,
     chatId,
+    groupCallId,
   ]);
 
   // Opening the sheet: paint first, then load roster. Do NOT wait for WebRTC
@@ -3070,6 +3329,8 @@ export function MessageChatVoiceBar({
     try {
       const result = await voiceSession.leaveVoice();
       if (result.ok) {
+        volumeZeroRepairAttemptedRef.current.clear();
+        listenVolumeNudgeAttemptedRef.current.clear();
         onClosePopover();
         onLeftVoice?.();
         // leaveTelegramChatVoice already treats empty leftover calls as inactive.
@@ -3115,6 +3376,8 @@ export function MessageChatVoiceBar({
     try {
       const result = await voiceSession.leaveVoice();
       if (result.ok) {
+        volumeZeroRepairAttemptedRef.current.clear();
+        listenVolumeNudgeAttemptedRef.current.clear();
         onLeftVoice?.();
         const live = Boolean(result.has_active_voice_chat);
         const keepCallId =
@@ -3168,17 +3431,41 @@ export function MessageChatVoiceBar({
   }, [joined, unlockThenJoin, voiceSession]);
 
   const onStartScreenShare = useCallback(() => {
-    if (!joined) {
-      if (popoverOpenRef.current) return;
-      unlockThenJoin();
-      return;
-    }
+    // Always attempt share — session acquires getDisplayMedia first (user
+    // gesture), then joins if needed. Do not no-op when the dialog is open
+    // but WebRTC is not joined yet (that looked like a dead Start sharing).
     void voiceSession.startScreenShare();
-  }, [joined, unlockThenJoin, voiceSession]);
+  }, [voiceSession]);
 
   const onStopScreenShare = useCallback(() => {
     void voiceSession.stopScreenShare();
   }, [voiceSession]);
+
+  const sessionErrorLabel = useMemo(() => {
+    const code = voiceSession.error;
+    if (!code) return null;
+    if (
+      code === "screen_share_unsupported" ||
+      code === "screen_share_unavailable"
+    ) {
+      return t("messages.voiceChat.errors.screenShareUnsupported");
+    }
+    if (code === "screen_share_denied") {
+      return t("messages.voiceChat.errors.screenShareDenied");
+    }
+    if (code === "screen_share_cancelled") {
+      return t("messages.voiceChat.errors.screenShareCancelled");
+    }
+    if (
+      code === "screen_share_failed" ||
+      code.startsWith("screen_share") ||
+      code.startsWith("presentation_") ||
+      code === "voice_not_joined"
+    ) {
+      return t("messages.voiceChat.errors.screenShareFailed");
+    }
+    return null;
+  }, [t, voiceSession.error]);
 
   const showStrip = Boolean(joined || presenceConfirmed);
 
@@ -3239,7 +3526,9 @@ export function MessageChatVoiceBar({
   // during getUserMedia / SDP negotiation right after the user presses Join.
   // Freeze detector: only while the sheet is open — joining after Close must
   // not keep rAF monitors attributing WebRTC work to the dialog.
-  useVoiceDialogFreezeDetector(popoverOpen);
+  useVoiceDialogFreezeDetector(popoverOpen, () => {
+    voiceSession.kickRemotePlayback("stall-recover");
+  });
 
   return (
     <>
@@ -3309,9 +3598,7 @@ export function MessageChatVoiceBar({
                   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
                   const participantTitle = participant.title.trim() || "?";
                   const speaking = Boolean(
-                    !participant.is_muted &&
-                      (rowSpeakKeys(participant).some((k) => speakingByKey[k]) ||
-                        participant.is_speaking),
+                    rowSpeakKeys(participant).some((k) => speakingByKey[k]),
                   );
                   const avatarPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_PX;
                   return (
@@ -3472,6 +3759,7 @@ export function MessageChatVoiceBar({
         screenSharing={voiceSession.screenSharing}
         onStartScreenShare={() => void onStartScreenShare()}
         onStopScreenShare={() => void onStopScreenShare()}
+        sessionError={sessionErrorLabel}
         onDropPress={() => void onDropFromPopover()}
         dropLeaving={leaving}
         remoteVideoStream={voiceSession.remoteVideoStream}

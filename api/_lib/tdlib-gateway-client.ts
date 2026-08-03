@@ -1381,9 +1381,7 @@ export async function gatewayFetchChatVoiceParticipants(
   const participantCount = Number(json.participant_count);
   const voiceCallId = normalizeTelegramGroupCallId(json.voice_chat_group_call_id);
   const hasActive = Boolean(json.has_active_voice_chat);
-  const isJoined =
-    hasActive &&
-    (Boolean(json.voice_chat_is_joined) || participants.some((row) => row.is_self));
+  const isJoined = hasActive && participants.some((row) => row.is_self);
   const resolveSource =
     typeof json.voice_resolve_source === "string" ? json.voice_resolve_source : "none";
   const loadedAllParticipants = Boolean(json.loaded_all_participants);

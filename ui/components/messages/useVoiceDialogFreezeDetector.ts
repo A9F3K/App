@@ -1,178 +1,185 @@
-/**
- * Detects and logs main-thread freeze events during voice dialog sessions.
- *
- * Uses two complementary techniques:
- *  1. PerformanceObserver(longtask) — catches heavy main-thread blocks.
- *  2. rAF heartbeat — catches compositor stalls longtask misses.
- *
- * IMPORTANT: do not POST/log every Chrome longtask (≥50ms). That feedback loop
- * (console + /api/voice-debug) was freezing the voice dialog worse than the
- * original work.
- */
-
 import { useEffect, useRef } from "react";
 import { Platform } from "react-native";
+
 import { logPageDisplay } from "../../pageDisplayLog";
-import { isVoiceDialogUiOpen } from "./voiceDialogUiGate";
 
-let lastPostAt = 0;
-const POST_MIN_INTERVAL_MS = 2_000;
+type PerformanceWithMemory = Performance & {
+  memory?: { usedJSHeapSize?: number };
+};
 
-function postFreezeEvent(event: string, details: Record<string, unknown>) {
-  if (typeof fetch === "undefined") return;
-  const now = Date.now();
-  if (now - lastPostAt < POST_MIN_INTERVAL_MS) return;
-  lastPostAt = now;
-  fetch("/api/voice-debug", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ event, details, ts: now }),
-  }).catch(() => {
-    /* ignore network errors */
-  });
+type PerformanceObserverEntryListLike = {
+  getEntries: () => ReadonlyArray<{ duration: number; startTime: number; name?: string }>;
+};
+
+/**
+ * Opt-in global longtask logger (`window.__HSP_VOICE_DEBUG__ = true`).
+ * Always-on observe+POST stacked with hard-reload chat paint — keep off by default.
+ */
+export function installGlobalVoiceFreezeLogger(): () => void {
+  if (Platform.OS !== "web" || typeof window === "undefined") {
+    return () => undefined;
+  }
+  const debugFlag = (window as unknown as { __HSP_VOICE_DEBUG__?: boolean })
+    .__HSP_VOICE_DEBUG__;
+  if (!debugFlag) {
+    return () => undefined;
+  }
+  if (typeof performance === "undefined") {
+    return () => undefined;
+  }
+  let disposed = false;
+  let longtaskObserver: { disconnect: () => void } | null = null;
+  try {
+    const PO = (
+      globalThis as unknown as {
+        PerformanceObserver?: new (
+          cb: (list: PerformanceObserverEntryListLike) => void,
+        ) => {
+          observe: (opts: { type: string; buffered?: boolean }) => void;
+          disconnect: () => void;
+        };
+      }
+    ).PerformanceObserver;
+    if (PO) {
+      const obs = new PO((list) => {
+        if (disposed) return;
+        for (const entry of list.getEntries()) {
+          if (entry.duration < 200) continue;
+          const mem = (performance as PerformanceWithMemory).memory;
+          logPageDisplay("voice_global_longtask", {
+            durationMs: Math.round(entry.duration),
+            startTimeMs: Math.round(entry.startTime),
+            usedJSHeapMb:
+              typeof mem?.usedJSHeapSize === "number"
+                ? Math.round(mem.usedJSHeapSize / 1_048_576)
+                : undefined,
+            level: entry.duration >= 400 ? "error" : "warn",
+            note: "opt-in __HSP_VOICE_DEBUG__ longtask",
+          });
+        }
+      });
+      obs.observe({ type: "longtask", buffered: true });
+      longtaskObserver = obs;
+    }
+  } catch {
+    // ignore
+  }
+  return () => {
+    disposed = true;
+    longtaskObserver?.disconnect();
+  };
 }
 
-/** Warn when rAF gap exceeds this threshold. */
-const RAF_STALL_WARN_MS = 500;
-/** Error-level freeze (controls probably unresponsive by now). */
-const RAF_STALL_ERROR_MS = 1200;
-/** Ignore routine Chrome longtasks; only surface real freezes. */
-const LONGTASK_LOG_MS = 200;
-const LONGTASK_ERROR_MS = 400;
-/** Cap console spam while SDP/ICE churns. */
-const LONGTASK_LOG_MIN_INTERVAL_MS = 750;
-
-export function useVoiceDialogFreezeDetector(enabled: boolean): void {
-  const enabledRef = useRef(enabled);
-  enabledRef.current = enabled;
+/**
+ * Observes main-thread freezes while the voice dialog is open.
+ * Logs to [page-display] so prod console dumps show when longtasks / rAF stalls
+ * coincide with unresponsive Join/Leave controls.
+ *
+ * Optional onSevereStall: rebuild WebAudio after ≥400ms freezes (Chrome can
+ * leave MediaStreamSource silent after GC / emoji decode storms).
+ */
+export function useVoiceDialogFreezeDetector(
+  active: boolean,
+  onSevereStall?: () => void,
+): void {
+  const onSevereStallRef = useRef(onSevereStall);
+  onSevereStallRef.current = onSevereStall;
+  const lastStallKickAtRef = useRef(0);
 
   useEffect(() => {
-    if (!enabled || Platform.OS !== "web" || typeof window === "undefined") return;
+    if (!active || Platform.OS !== "web") return;
+    if (typeof performance === "undefined" || typeof window === "undefined") return;
 
-    let observer: PerformanceObserver | null = null;
-    let lastLogAt = 0;
-    if (
-      typeof PerformanceObserver !== "undefined" &&
-      PerformanceObserver.supportedEntryTypes?.includes("longtask")
-    ) {
-      try {
-        observer = new PerformanceObserver((list) => {
-          if (!enabledRef.current) return;
-          for (const entry of list.getEntries()) {
-            const durationMs = Math.round(entry.duration);
-            if (durationMs < LONGTASK_LOG_MS) continue;
-            const now = performance.now();
-            if (now - lastLogAt < LONGTASK_LOG_MIN_INTERVAL_MS && durationMs < LONGTASK_ERROR_MS) {
-              continue;
-            }
-            lastLogAt = now;
-            const level = durationMs >= LONGTASK_ERROR_MS ? "error" : "warn";
-            const details = {
-              durationMs,
-              startTimeMs: Math.round(entry.startTime),
-              level,
-              note:
-                level === "error"
-                  ? "main thread frozen ≥400ms — controls likely unresponsive"
-                  : "long task ≥200ms during voice dialog",
-            };
-            logPageDisplay("voice_dialog_longtask", details);
-            // Console only while sheet is open — POSTing /api/voice-debug during
-            // Join was part of the freeze feedback loop.
-            if (level === "error" && !isVoiceDialogUiOpen()) {
-              postFreezeEvent("voice_dialog_longtask", details);
-            }
-          }
-        });
-        observer.observe({ entryTypes: ["longtask"] });
-      } catch {
-        // Browser may not support longtask
-      }
-    }
-
+    let disposed = false;
     let rafId = 0;
     let lastRaf = performance.now();
-    let totalFreezeMs = 0;
     let freezeCount = 0;
+    let totalFreezeMs = 0;
+    let longtaskObserver: { disconnect: () => void } | null = null;
 
-    const tick = (now: number) => {
-      if (!enabledRef.current) return;
+    const kickIfSevere = (durationMs: number) => {
+      if (durationMs < 400) return;
+      const now = Date.now();
+      // Coalesce storms — at most once per 2.5s.
+      if (now - lastStallKickAtRef.current < 2_500) return;
+      lastStallKickAtRef.current = now;
+      try {
+        onSevereStallRef.current?.();
+      } catch {
+        // ignore
+      }
+    };
+
+    const onRaf = (now: number) => {
+      if (disposed) return;
       const gap = now - lastRaf;
-      if (gap > RAF_STALL_WARN_MS) {
-        totalFreezeMs += gap;
+      lastRaf = now;
+      // rAF normally ~16ms; gaps >500ms mean the main thread was blocked.
+      if (gap > 500) {
         freezeCount += 1;
-        const level = gap >= RAF_STALL_ERROR_MS ? "error" : "warn";
-        const stallDetails = {
+        totalFreezeMs += gap;
+        logPageDisplay("voice_dialog_raf_stall", {
           gapMs: Math.round(gap),
           totalFreezeMs: Math.round(totalFreezeMs),
           freezeCount,
-          level,
+          level: gap >= 1200 ? "error" : "warn",
           note:
-            level === "error"
+            gap >= 1200
               ? "rAF gap ≥1.2s — dialog controls blocked, compositor stalled"
               : "rAF gap >500ms — partial freeze during voice dialog",
-        };
-        logPageDisplay("voice_dialog_raf_stall", stallDetails);
-        if (level === "error" && !isVoiceDialogUiOpen()) {
-          postFreezeEvent("voice_dialog_raf_stall", stallDetails);
-        }
+        });
+        kickIfSevere(gap);
       }
-      lastRaf = now;
-      rafId = requestAnimationFrame(tick);
+      rafId = requestAnimationFrame(onRaf);
     };
+    rafId = requestAnimationFrame(onRaf);
 
-    rafId = requestAnimationFrame(tick);
+    // PerformanceObserver longtask (Chrome) — more precise than rAF gaps.
+    try {
+      const PO = (
+        globalThis as unknown as {
+          PerformanceObserver?: new (
+            cb: (list: PerformanceObserverEntryListLike) => void,
+          ) => {
+            observe: (opts: { type: string; buffered?: boolean }) => void;
+            disconnect: () => void;
+          };
+        }
+      ).PerformanceObserver;
+      if (PO) {
+        const obs = new PO((list) => {
+          if (disposed) return;
+          for (const entry of list.getEntries()) {
+            if (entry.duration < 200) continue;
+            const mem = (performance as PerformanceWithMemory).memory;
+            logPageDisplay("voice_dialog_longtask", {
+              durationMs: Math.round(entry.duration),
+              startTimeMs: Math.round(entry.startTime),
+              name: entry.name || undefined,
+              usedJSHeapMb:
+                typeof mem?.usedJSHeapSize === "number"
+                  ? Math.round(mem.usedJSHeapSize / 1_048_576)
+                  : undefined,
+              level: entry.duration >= 400 ? "error" : "warn",
+              note:
+                entry.duration >= 400
+                  ? "main thread frozen ≥400ms — controls likely unresponsive"
+                  : "long task ≥200ms during voice dialog",
+            });
+            kickIfSevere(entry.duration);
+          }
+        });
+        obs.observe({ type: "longtask", buffered: true });
+        longtaskObserver = obs;
+      }
+    } catch {
+      // Safari / older browsers: rAF fallback only.
+    }
 
     return () => {
-      observer?.disconnect();
+      disposed = true;
       if (rafId) cancelAnimationFrame(rafId);
+      longtaskObserver?.disconnect();
     };
-  }, [enabled]);
-}
-
-/**
- * Global freeze logger for the page lifetime.
- * Opt-in only (`window.__HSP_VOICE_DEBUG__`) — always-on logging/POSTs were
- * stacking with chat-list paint and making hard-reload feel frozen.
- */
-export function installGlobalVoiceFreezeLogger(): (() => void) | undefined {
-  if (
-    Platform.OS !== "web" ||
-    typeof window === "undefined" ||
-    typeof PerformanceObserver === "undefined" ||
-    !PerformanceObserver.supportedEntryTypes?.includes("longtask")
-  ) {
-    return undefined;
-  }
-  const debug =
-    Boolean((window as { __HSP_VOICE_DEBUG__?: boolean }).__HSP_VOICE_DEBUG__);
-  if (!debug) {
-    return undefined;
-  }
-  try {
-    let lastLogAt = 0;
-    const obs = new PerformanceObserver((list) => {
-      for (const entry of list.getEntries()) {
-        const durationMs = Math.round(entry.duration);
-        if (durationMs < 800) continue;
-        const now = performance.now();
-        if (now - lastLogAt < 2_000 && durationMs < 1_200) continue;
-        lastLogAt = now;
-        const d = {
-          durationMs,
-          startTimeMs: Math.round(entry.startTime),
-          level: durationMs >= 1_200 ? "error" : "warn",
-        };
-        logPageDisplay("voice_dialog_global_longtask", d);
-      }
-    });
-    try {
-      obs.observe({ type: "longtask", buffered: false });
-    } catch {
-      obs.observe({ entryTypes: ["longtask"] });
-    }
-    return () => obs.disconnect();
-  } catch {
-    return undefined;
-  }
+  }, [active]);
 }

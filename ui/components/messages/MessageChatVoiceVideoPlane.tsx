@@ -104,11 +104,38 @@ function VoiceVideoElement({
     if (!active || !stream) return;
 
     const el = videoRef.current;
+    let stopped = false;
+    let poll = 0;
+    let stopPoll = 0;
+    let frameCallbackId = 0;
+    const videoEl = el as
+      | (HTMLVideoElement & {
+          requestVideoFrameCallback?: (cb: () => void) => number;
+          cancelVideoFrameCallback?: (id: number) => void;
+        })
+      | null;
+
+    const stopFrameWatch = () => {
+      stopped = true;
+      if (poll) window.clearInterval(poll);
+      if (stopPoll) window.clearTimeout(stopPoll);
+      poll = 0;
+      stopPoll = 0;
+      if (videoEl?.cancelVideoFrameCallback && frameCallbackId) {
+        videoEl.cancelVideoFrameCallback(frameCallbackId);
+        frameCallbackId = 0;
+      }
+    };
+
     const markFrames = () => {
+      if (stopped) return;
       const video = videoRef.current;
       if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) return;
       if (video.videoWidth <= 4 && video.videoHeight <= 4) return;
       setHasFrames(true);
+      // Stop frame polling once we have real pixels — rVFC every frame during
+      // screen decode was contributing to voice-dialog main-thread stalls.
+      stopFrameWatch();
     };
 
     const onTrackUnmute = () => {
@@ -117,8 +144,19 @@ function VoiceVideoElement({
       window.setTimeout(markFrames, 400);
       window.setTimeout(markFrames, 1200);
     };
+    // Do not drop opacity on brief WebRTC mute flaps — that made a live stage
+    // look black/frozen while currentTime still advanced.
+    let muteHideTimer = 0;
     const onTrackMute = () => {
-      setHasFrames(false);
+      if (muteHideTimer) window.clearTimeout(muteHideTimer);
+      muteHideTimer = window.setTimeout(() => {
+        muteHideTimer = 0;
+        if (stopped) return;
+        const stillMuted = stream
+          .getVideoTracks()
+          .some((t) => t.readyState === "live" && t.muted);
+        if (stillMuted) setHasFrames(false);
+      }, 700);
     };
 
     for (const track of stream.getVideoTracks()) {
@@ -135,19 +173,16 @@ function VoiceVideoElement({
       markFrames();
     }
 
-    const poll = window.setInterval(markFrames, 250);
-    const stopPoll = window.setTimeout(() => window.clearInterval(poll), 20_000);
+    poll = window.setInterval(markFrames, 250);
+    stopPoll = window.setTimeout(() => {
+      if (poll) window.clearInterval(poll);
+      poll = 0;
+    }, 20_000);
 
-    const videoEl = el as
-      | (HTMLVideoElement & {
-          requestVideoFrameCallback?: (cb: () => void) => number;
-          cancelVideoFrameCallback?: (id: number) => void;
-        })
-      | null;
-    let frameCallbackId = 0;
     const onVideoFrame = () => {
+      if (stopped) return;
       markFrames();
-      if (videoEl?.requestVideoFrameCallback) {
+      if (!stopped && videoEl?.requestVideoFrameCallback) {
         frameCallbackId = videoEl.requestVideoFrameCallback(onVideoFrame);
       }
     };
@@ -156,11 +191,8 @@ function VoiceVideoElement({
     }
 
     return () => {
-      window.clearInterval(poll);
-      window.clearTimeout(stopPoll);
-      if (videoEl?.cancelVideoFrameCallback && frameCallbackId) {
-        videoEl.cancelVideoFrameCallback(frameCallbackId);
-      }
+      stopFrameWatch();
+      if (muteHideTimer) window.clearTimeout(muteHideTimer);
       for (const track of stream.getVideoTracks()) {
         track.removeEventListener("unmute", onTrackUnmute);
         track.removeEventListener("mute", onTrackMute);
@@ -346,9 +378,11 @@ type MosaicProps = {
   active: boolean;
   wide: boolean;
   onSelect: (id: string) => void;
+  /** Parent sizes the stage (e.g. single-tile aspect box) — fill it instead of flex-grow. */
+  fillParent?: boolean;
 };
 
-function MosaicGrid({ sources, active, wide, onSelect }: MosaicProps) {
+function MosaicGrid({ sources, active, wide, onSelect, fillParent = false }: MosaicProps) {
   const rows = mosaicRowSizes(sources.length, wide);
   let cursor = 0;
   const rowSources = rows.map((size) => {
@@ -358,7 +392,15 @@ function MosaicGrid({ sources, active, wide, onSelect }: MosaicProps) {
   });
 
   return (
-    <View style={{ flex: 1, minHeight: 0, width: "100%", gap: TILE_GAP_PX }}>
+    <View
+      style={{
+        flex: fillParent ? undefined : 1,
+        width: "100%",
+        height: fillParent ? "100%" : undefined,
+        minHeight: fillParent ? undefined : 0,
+        gap: TILE_GAP_PX,
+      }}
+    >
       {rowSources.map((row, rowIndex) => (
         <View
           key={`mosaic-row:${rowIndex}`}
@@ -458,7 +500,26 @@ type StageProps = {
    * them in the roster column (Discord-style).
    */
   externalPips?: boolean;
+  /**
+   * When a single tile is showing, size the stage to the video aspect ratio
+   * (capped by maxHeight) instead of a fixed empty band with letterbox gaps.
+   */
+  fitSingleToContent?: boolean;
 };
+
+function aspectRatioFromSource(source: VoiceMediaStageSource): number {
+  for (const track of source.stream.getVideoTracks()) {
+    try {
+      const settings = track.getSettings?.() ?? {};
+      const w = Number(settings.width) || 0;
+      const h = Number(settings.height) || 0;
+      if (w > 4 && h > 4) return w / h;
+    } catch {
+      /* ignore */
+    }
+  }
+  return source.kind === "camera" ? 3 / 4 : 16 / 9;
+}
 
 /**
  * Screenshare / camera stage:
@@ -477,6 +538,7 @@ function MessageChatVoiceMediaStageInner({
   focusedId: focusedIdProp,
   onFocusedIdChange,
   externalPips = false,
+  fitSingleToContent = false,
 }: StageProps) {
   const [focusedIdState, setFocusedIdState] = useState<string | null>(null);
   const focusedId = focusedIdProp !== undefined ? focusedIdProp : focusedIdState;
@@ -487,6 +549,7 @@ function MessageChatVoiceMediaStageInner({
     },
     [focusedIdProp, onFocusedIdChange],
   );
+  const [stageWidthPx, setStageWidthPx] = useState(0);
 
   const liveSources = useMemo(
     () =>
@@ -522,6 +585,13 @@ function MessageChatVoiceMediaStageInner({
       : null;
   const showFocus = Boolean(focused);
   const pips = focused ? liveSources.filter((row) => row.id !== focused.id) : [];
+  const fitSingle =
+    fitSingleToContent && !fillHeight && !showFocus && liveSources.length === 1;
+  const singleAspect = fitSingle ? aspectRatioFromSource(liveSources[0]!) : 16 / 9;
+  const fittedHeightPx =
+    fitSingle && stageWidthPx > 0
+      ? Math.min(maxHeightPx, Math.max(1, Math.round(stageWidthPx / singleAspect)))
+      : null;
 
   const shellStyle = fillHeight
     ? {
@@ -533,18 +603,35 @@ function MessageChatVoiceMediaStageInner({
         marginBottom: marginBottomPx,
         overflow: "hidden" as const,
       }
-    : {
-        alignSelf: "stretch" as const,
-        width: "100%" as const,
-        paddingHorizontal: horizontalInsetPx,
-        marginBottom: marginBottomPx,
-        height: maxHeightPx,
-        maxHeight: maxHeightPx,
-        overflow: "hidden" as const,
-      };
+    : fitSingle
+      ? {
+          alignSelf: "stretch" as const,
+          width: "100%" as const,
+          paddingHorizontal: horizontalInsetPx,
+          marginBottom: marginBottomPx,
+          height: fittedHeightPx ?? undefined,
+          maxHeight: maxHeightPx,
+          aspectRatio: fittedHeightPx == null ? singleAspect : undefined,
+          overflow: "hidden" as const,
+        }
+      : {
+          alignSelf: "stretch" as const,
+          width: "100%" as const,
+          paddingHorizontal: horizontalInsetPx,
+          marginBottom: marginBottomPx,
+          height: maxHeightPx,
+          maxHeight: maxHeightPx,
+          overflow: "hidden" as const,
+        };
 
   return (
-    <View style={shellStyle}>
+    <View
+      style={shellStyle}
+      onLayout={(e) => {
+        const w = Math.round(e.nativeEvent.layout.width);
+        if (w > 0 && w !== stageWidthPx) setStageWidthPx(w);
+      }}
+    >
       {showFocus && focused ? (
         <View style={{ flex: 1, minHeight: 0, width: "100%", position: "relative" }}>
           <MediaTile
@@ -599,6 +686,7 @@ function MessageChatVoiceMediaStageInner({
           sources={liveSources}
           active={active}
           wide={wideLayout}
+          fillParent={fitSingle}
           onSelect={(id) => {
             if (allowFocus) setFocusedId(id);
           }}

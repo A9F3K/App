@@ -61,20 +61,22 @@ const HISTORY_VOICE_PROBE_MIN_INTERVAL_MS = 15_000;
 /** True when getGroupCall reports a call the UI should treat as live. */
 export function groupCallLooksLive(groupCall: GroupCallSnapshot | null | undefined): boolean {
   if (!groupCall || typeof groupCall !== "object") return false;
-  // Already in the call — always treat as live for leave/UI.
-  if (groupCall.is_joined || groupCall.need_rejoin) return true;
-  // Empty/stale bound calls keep is_active=true (and sometimes has_hidden_listeners)
-  // with participant_count=0 (logs: kapibara groupCallId=10). Do not paint rings /
-  // Join strip unless someone is actually there.
-  if (groupCall.is_active !== true) return false;
   const speakers = Array.isArray(groupCall.recent_speakers)
     ? groupCall.recent_speakers
     : [];
-  if (speakers.length > 0) return true;
   const count = Number(groupCall.participant_count);
+  const hasPeople =
+    speakers.length > 0 || (Number.isFinite(count) && count > 0);
+  // Sticky TDLib is_joined / need_rejoin after a crashed leave must NOT paint
+  // rings by itself when the call is empty (green "joined" avatar with nobody
+  // there). Real joins always have participant_count ≥ 1 or recent_speakers.
+  if (groupCall.is_joined || groupCall.need_rejoin) {
+    return hasPeople;
+  }
+  if (groupCall.is_active !== true) return false;
   // has_hidden_listeners alone is not enough — TDLib can leave it set on empty
   // leftover calls while participant_count stays 0.
-  return Number.isFinite(count) && count > 0;
+  return hasPeople;
 }
 
 /** Verify a chat-bound group call id before painting list rings / voice strip. */
@@ -327,10 +329,9 @@ function readCanUnmuteSelf(
 }
 
 /**
- * Chrome mute for the painted roster. Trust TDLib's mute flag except while the
- * person is actively speaking (open-mic + green). Do NOT clear mute for
- * has_hidden_listeners — that left every self-muted face looking unmuted when
- * the whole call went silent.
+ * Chrome mute for the painted roster. Trust TDLib's mute flag only — green ring
+ * is `is_speaking` / effectiveSpeaking, never conflated with mic on/off.
+ * Clearing mute while speaking left muted faces looking unmuted after a pulse.
  */
 function resolvePaintedMuted(input: {
   muted: boolean;
@@ -339,7 +340,7 @@ function resolvePaintedMuted(input: {
   hasHiddenListeners: boolean;
   isPinnedSelf: boolean;
 }): boolean {
-  if (input.isSpeaking) return false;
+  void input.isSpeaking;
   void input.isHandRaised;
   void input.hasHiddenListeners;
   void input.isPinnedSelf;
@@ -655,7 +656,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
     const videoInfo = normalizeVideoInfo(participant.video_info);
     const screenInfo = normalizeVideoInfo(participant.screen_sharing_video_info);
     const mutedFromTdlib =
-      readMutedForAllUsers(participant) ?? (prev?.isMuted ?? false);
+      readMutedForAllUsers(participant) ?? (prev?.isMuted ?? true);
     const isHandRaised = readHandRaised(participant);
     const canUnmuteSelf =
       readCanUnmuteSelf(participant) ?? prev?.canUnmuteSelf ?? true;
@@ -787,7 +788,7 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
           ...prev,
           isSpeaking: true,
           lastSpokeAt: now,
-          isMuted: false,
+          // Keep TDLib mute — resolvePaintedMuted clears chrome while speaking.
         });
         changed = true;
         const lastRefresh = cached.lastSpeakingRefreshAt ?? 0;
@@ -1076,10 +1077,10 @@ function speakersFromGroupCall(
       // Preserve hold across flaps — rebuilding with lastSpokeAt:undefined made
       // every SSE snapshot report speakingCount=0 a tick after someone spoke.
       lastSpokeAt,
-      // recent_speakers omit mute entirely. Never invent muted from silence, and
-      // never sticky-keep a prior stub mute — that left open-mic faces permanently
-      // red after a bad first paint. Real mute only comes from ordered members.
-      isMuted: false,
+      // recent_speakers omit mute entirely. Default muted until an ordered
+      // updateGroupCallParticipant arrives — inventing unmuted painted whole
+      // soft/SSE rosters as open-mic (mutedCount=0) before a real load.
+      isMuted: true,
       canUnmuteSelf: prev?.canUnmuteSelf ?? true,
       volumeLevel: prev?.volumeLevel ?? 10000,
       order: "",
@@ -1119,9 +1120,10 @@ function applySpeakingOverlay(
       lastSpokeAt: liveSpeaking
         ? now
         : (row.lastSpokeAt ?? speaker?.lastSpokeAt),
-      // Open mic only while actively speaking. Mere presence in recent_speakers
-      // used to force isMuted=false so a silent/muted call looked all-unmuted.
-      isMuted: liveSpeaking ? false : row.isMuted,
+      // Keep TDLib mute in the store — paint clears mute chrome only while
+      // live speaking via resolvePaintedMuted. Writing isMuted:false here left
+      // everyone unmuted after the first recent_speakers pulse.
+      isMuted: row.isMuted,
       order: row.order || speaker?.order || "",
     });
   }
@@ -1197,14 +1199,9 @@ function mergeParticipantMaps(
             lastSpokeAt: row.isSpeaking
               ? (row.lastSpokeAt ?? Date.now())
               : (prev.lastSpokeAt ?? row.lastSpokeAt),
-            // Real unmute / speaking always opens. Orderless stubs must not remute
-            // a face that already had an open mic from a full participant load.
-            isMuted:
-              row.isSpeaking || !row.isMuted
-                ? false
-                : !row.order && !prev.isMuted
-                  ? false
-                  : row.isMuted,
+            // Orderless stubs omit mute — never remute OR unmute from them.
+            // Speaking must not write unmuted into the store (mute ≠ green).
+            isMuted: !row.order ? prev.isMuted : row.isMuted,
             canUnmuteSelf: row.canUnmuteSelf ?? prev.canUnmuteSelf ?? true,
             volumeLevel: row.volumeLevel ?? prev.volumeLevel ?? 10000,
             order: row.order || prev.order,
@@ -1212,7 +1209,12 @@ function mergeParticipantMaps(
             videoInfo: row.videoInfo,
             screenInfo: row.screenInfo,
           }
-        : { ...row, volumeLevel: row.volumeLevel ?? 10000 },
+        : {
+            ...row,
+            volumeLevel: row.volumeLevel ?? 10000,
+            // Unknown mute on a brand-new orderless stub → muted until ordered.
+            isMuted: row.order ? row.isMuted : true,
+          },
     );
   }
   return next;
@@ -1548,7 +1550,7 @@ async function loadJoinedParticipants(
       readCanUnmuteSelf(participant) ?? prev?.canUnmuteSelf ?? true;
     const isPinnedSelf = userId != null && pinnedSelfUserIds.has(userId);
     const mutedRaw =
-      mutedFromTdlib ?? prev?.isMuted ?? false;
+      mutedFromTdlib ?? prev?.isMuted ?? true;
     map.set(key, {
       userId,
       chatId,
@@ -1556,8 +1558,8 @@ async function loadJoinedParticipants(
       lastSpokeAt: isSpeaking ? Date.now() : prev?.lastSpokeAt,
       isHandRaised,
       canUnmuteSelf,
-      // Missing mute on a load chunk must not invent muted=true; has_hidden_listeners
-      // also clears stale muted flags on visible non-hand remotes.
+      // Missing mute on a load chunk: keep prev, else default muted — inventing
+      // unmuted painted soft/SSE rosters as open-mic before ordered updates.
       isMuted: resolvePaintedMuted({
         muted: mutedRaw,
         isSpeaking,
@@ -2064,7 +2066,8 @@ export async function fetchChatVoiceParticipants(
     const isSelf = selfUserId != null && row.userId === selfUserId;
     const paintedMuted = resolvePaintedMuted({
       muted: row.isMuted,
-      isSpeaking: effectiveSpeaking(row, Date.now()),
+      // Live speaking only — hold must not clear mute chrome.
+      isSpeaking: Boolean(row.isSpeaking),
       isHandRaised: Boolean(row.isHandRaised),
       hasHiddenListeners,
       isPinnedSelf: isSelf,
@@ -2122,6 +2125,10 @@ export async function fetchChatVoiceParticipants(
   });
 
   const cachedAfter = callMembersCache.get(callId);
+  // Green "joined" ring must mean self is on the roster — not sticky TDLib
+  // is_joined after leave/WebRTC disconnect (client logs: isJoined=true while
+  // joined=false and no is_self row).
+  const selfOnRoster = participants.some((row) => row.is_self);
   return {
     ok: true,
     error: null,
@@ -2129,7 +2136,7 @@ export async function fetchChatVoiceParticipants(
     participants,
     has_active_voice_chat: true,
     voice_chat_group_call_id: callId,
-    voice_chat_is_joined: isJoined,
+    voice_chat_is_joined: selfOnRoster,
     voice_resolve_source: resolved.source,
     // Client must stop force-reload when the visible roster is done — listed
     // will never equal participant_count while has_hidden_listeners is set.
@@ -2242,7 +2249,8 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
         is_speaking: speaking,
         is_muted: resolvePaintedMuted({
           muted: row.isMuted,
-          isSpeaking: speaking,
+          // Live speaking only — SPEAKING_HOLD_MS must not wipe mute icons.
+          isSpeaking: Boolean(row.isSpeaking),
           isHandRaised: Boolean(row.isHandRaised),
           hasHiddenListeners: Boolean(cached.hasHiddenListeners),
           isPinnedSelf: isSelf,

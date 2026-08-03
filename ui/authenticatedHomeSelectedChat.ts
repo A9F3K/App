@@ -532,7 +532,7 @@ export function bumpAuthenticatedHomeSelectedChatScrollBelowUnread(delta: number
 const CLIENT_VOICE_INTENT_TTL_MS = 45_000;
 const clientVoiceIntentByChatId = new Map<
   number,
-  { active: boolean; callId: number; at: number }
+  { active: boolean; joined: boolean; callId: number; at: number }
 >();
 
 /** Record an explicit client voice paint (probe, soft-poll, leave, join). */
@@ -541,12 +541,14 @@ export function noteClientVoiceIntent(
   meta: {
     has_active_voice_chat: boolean;
     voice_chat_group_call_id: number | null;
+    voice_chat_is_joined?: boolean;
   },
 ): void {
   if (!Number.isFinite(chatId) || chatId === 0) return;
   const callId = Math.max(0, Math.trunc(Number(meta.voice_chat_group_call_id) || 0));
   clientVoiceIntentByChatId.set(chatId, {
     active: Boolean(meta.has_active_voice_chat),
+    joined: Boolean(meta.voice_chat_is_joined),
     callId,
     at: Date.now(),
   });
@@ -558,6 +560,8 @@ export function noteClientVoiceIntent(
  * Also prefer a recent client "live" probe over a poll that still reports false
  * (list verify lags getGroupCall participants). Never block false→true for a
  * different call id — that hid real rings after chats start inactive.
+ * Green joined is taken from the client intent (session join), not OR'd from
+ * sticky poll/TDLib is_joined.
  */
 export function preferClientClearedVoiceFields(
   prev: MessageChatRowData | null | undefined,
@@ -578,9 +582,7 @@ export function preferClientClearedVoiceFields(
     return {
       has_active_voice_chat: intent.active,
       voice_chat_group_call_id: intent.callId,
-      voice_chat_is_joined: intent.active
-        ? Boolean(next.voice_chat_is_joined || prev?.voice_chat_is_joined)
-        : false,
+      voice_chat_is_joined: intent.active ? intent.joined : false,
     };
   }
   return {

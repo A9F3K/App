@@ -2281,7 +2281,7 @@ export async function leaveChatVoiceForUser(
     const voice = {
       has_active_voice_chat: verified.live,
       voice_chat_group_call_id: callId,
-      voice_chat_is_joined: verified.isJoined,
+      voice_chat_is_joined: false,
     };
     patchLiveChatVideoChat(telegramUsername, chatId, voice);
     return {
