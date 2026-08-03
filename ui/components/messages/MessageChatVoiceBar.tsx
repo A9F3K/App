@@ -695,7 +695,8 @@ export function MessageChatVoiceBar({
                 chat_id: row.chat_id && row.chat_id !== 0 ? row.chat_id : prev.chat_id,
                 is_speaking: Boolean(row.is_speaking),
                 // Orderless recent_speakers stubs omit mute — never remute OR
-                // unmute from them. Speaking must not flip is_muted (mute ≠ green).
+                // unmute from them. Speaking opens mic chrome in the popover
+                // (not a sticky is_muted flip that left listeners open-mic).
                 is_muted: !String(row.order ?? "").trim()
                   ? Boolean(prev.is_muted)
                   : Boolean(row.is_muted),
@@ -708,8 +709,8 @@ export function MessageChatVoiceBar({
               }
             : {
                 ...row,
-                // New orderless stubs: mute unknown — default muted until TDLib
-                // sends an ordered participant update (never invent unmuted).
+                // New orderless stubs omit mute — stay muted until ordered TDLib
+                // data (default unmuted invented open mics vs Telegram Desktop).
                 is_muted: !String(row.order ?? "").trim()
                   ? true
                   : Boolean(row.is_muted),
@@ -778,9 +779,23 @@ export function MessageChatVoiceBar({
           remoteSpeakingMarked += 1;
           continue;
         }
+        // Soft stubs omit mute and often stay is_muted. Still honor an active
+        // speaking hold so the live speaker keeps a green mic (tdesktop) —
+        // clearing holds on mute wiped speaking chrome right after a pulse.
         if (row.is_muted) {
-          // Muted + not speaking: clear every alias key so mute icon stays on.
-          clearSpeakingHoldsForRow(row);
+          const aliases = rowSpeakKeys(row);
+          let until = 0;
+          for (const speakKey of aliases) {
+            until = Math.max(
+              until,
+              speakingHoldUntilRef.current.get(speakKey) ?? 0,
+            );
+          }
+          if (until > now) {
+            for (const speakKey of aliases) next[speakKey] = true;
+          } else {
+            clearSpeakingHoldsForRow(row);
+          }
           continue;
         }
         const aliases = rowSpeakKeys(row);
@@ -1018,8 +1033,8 @@ export function MessageChatVoiceBar({
         const merged = prev.map((row) => {
           const inc = nextByKey.get(speakKey(row));
           if (!inc) return row;
-          // Thin recent_speakers stubs omit mute — never remute OR unmute from them.
-          // Speaking must not flip is_muted (mute icon ≠ green ring).
+          // Thin recent_speakers stubs omit mute — never remute OR unmute from
+          // them. Speaking opens mic chrome in the popover, not via is_muted.
           const nextMuted = !String(inc.order ?? "").trim()
             ? Boolean(row.is_muted)
             : Boolean(inc.is_muted);
@@ -1081,7 +1096,8 @@ export function MessageChatVoiceBar({
             merged.push({
               ...inc,
               is_speaking: false,
-              // Unknown mute on soft stubs → muted until an ordered update.
+              // Unknown mute on soft stubs → muted until an ordered update
+              // (default unmuted invented open-mic chrome vs Telegram Desktop).
               is_muted: orderless ? true : Boolean(inc.is_muted),
             });
           }
@@ -1128,7 +1144,7 @@ export function MessageChatVoiceBar({
           }
           // Orderless recent_speakers stubs must not invent mute either way —
           // keep the prior TDLib mute until an ordered participant update lands.
-          // Trust ordered rows so everyone-muted calls show muted chrome.
+          // Unknown (no prior) → muted — matches Telegram Desktop until load.
           const nextMuted = !String(row.order ?? "").trim()
             ? Boolean(prevMatch?.is_muted ?? true)
             : Boolean(row.is_muted);
@@ -1692,9 +1708,9 @@ export function MessageChatVoiceBar({
   // Mix RMS is not per-participant identity. After WebRTC join TDLib often only
   // pulses is_speaking for self (skipped while listen-muted) while remotes keep
   // talking — SSE speakingCount stays 0 and greens never light. Prefer TDLib
-  // identity; otherwise light unmuted remotes while mix RMS is hot (mixed track
-  // cannot name a speaker). Silent-mix open-mic paint was the old lie — this
-  // path only runs while remoteSpeakingRef is true.
+  // identity; otherwise, if exactly one unmuted remote exists, light them while
+  // mix RMS is hot. Never invent unmute / speaking for the whole roster from
+  // mixed-track energy (that painted every face open-mic vs Telegram Desktop).
   const MIX_SPEAKING_GRACE_MS = 18_000;
   const MIX_SPEAKING_HOLD_MS = 2_400;
   const extendMixSpeakingHolds = useCallback(() => {
@@ -1709,6 +1725,14 @@ export function MessageChatVoiceBar({
     const now = Date.now();
     const graceMs = MIX_SPEAKING_GRACE_MS;
     const holdMs = MIX_SPEAKING_HOLD_MS;
+    const remoteVolumePercent = (row: TelegramChatVoiceParticipant) => {
+      const prefs =
+        participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
+      return (
+        prefs?.volumePercent ??
+        (typeof row.volume_percent === "number" ? row.volume_percent : 100)
+      );
+    };
     // TDLib-backed identity only — do not invent from speakingByKey/hold (loops).
     const isTdlibRecentSpeaker = (row: TelegramChatVoiceParticipant) => {
       const keys = rowSpeakKeys(row);
@@ -1717,27 +1741,22 @@ export function MessageChatVoiceBar({
         return seen > 0 && now - seen < graceMs;
       });
     };
-    let targets = remotes.filter((row) => !row.is_muted && isTdlibRecentSpeaker(row));
-    let mixSource: "tdlib_hold" | "solo" | "open_mics" = "tdlib_hold";
+    let targets = remotes.filter(
+      (row) =>
+        !row.is_muted &&
+        remoteVolumePercent(row) > 0 &&
+        isTdlibRecentSpeaker(row),
+    );
+    let mixSource: "tdlib_hold" | "solo" = "tdlib_hold";
     if (targets.length === 0) {
       const unmutedRemotes = remotes.filter((row) => {
         if (row.is_muted) return false;
-        const prefs =
-          participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
-        const volumePercent =
-          prefs?.volumePercent ??
-          (typeof row.volume_percent === "number" ? row.volume_percent : 100);
-        return volumePercent > 0;
+        return remoteVolumePercent(row) > 0;
       });
-      if (unmutedRemotes.length === 1) {
-        targets = unmutedRemotes;
-        mixSource = "solo";
-      } else if (unmutedRemotes.length > 1) {
-        targets = unmutedRemotes;
-        mixSource = "open_mics";
-      } else {
-        return;
-      }
+      // Only safe without TDLib identity when exactly one open mic exists.
+      if (unmutedRemotes.length !== 1) return;
+      targets = unmutedRemotes;
+      mixSource = "solo";
     }
     for (const row of targets) {
       for (const key of rowSpeakKeys(row)) {
@@ -1775,9 +1794,7 @@ export function MessageChatVoiceBar({
         source:
           mixSource === "solo"
             ? "remote_audio_level_solo"
-            : mixSource === "open_mics"
-              ? "remote_audio_level_open_mics"
-              : "remote_audio_level_tdlib_hold",
+            : "remote_audio_level_tdlib_hold",
       });
       return next;
     });

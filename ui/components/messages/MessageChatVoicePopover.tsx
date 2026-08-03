@@ -416,8 +416,13 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
     Boolean(participant.is_muted) && participant.can_unmute_self === false;
   const micLocallyMuted = Boolean(voiceLocallyOff);
   const micUserOff = Boolean(participant.is_muted) && !micAdminMuted;
-  const micOff = micAdminMuted || micLocallyMuted || micUserOff;
-  const speaking = isSpeaking && !micOff;
+  // Soft stubs often stay is_muted until an ordered load. tdesktop still shows
+  // an open green mic on the live speaker — don't require !is_muted for that.
+  const speaking =
+    isSpeaking && !micAdminMuted && !micLocallyMuted;
+  const micOff = speaking
+    ? false
+    : micAdminMuted || micLocallyMuted || micUserOff;
   const micChromeRed = micAdminMuted || micLocallyMuted;
   const openParticipantProfile = () => {
     if (participant.is_self) return;
@@ -1516,14 +1521,21 @@ export function MessageChatVoicePopover({
         Boolean(participant.is_muted) && participant.can_unmute_self === false;
       const userOff = Boolean(participant.is_muted) && !adminMuted;
       const locallyOff = !participant.is_self && volumePercent <= 0;
-      // Red only for admin mute / muted-for-you. User mic-off → grey on tiles.
-      const muteChrome: "red" | "grey" | undefined =
-        adminMuted || locallyOff ? "red" : userOff ? "grey" : undefined;
-      const muted = Boolean(muteChrome);
       const speakingRaw = isParticipantSpeaking
         ? isParticipantSpeaking(participant)
         : Boolean(participant.is_speaking);
-      return { muted, muteChrome, speaking: speakingRaw && !muted };
+      // Live speaking opens mic chrome (soft stubs may still report is_muted).
+      const speaking = speakingRaw && !adminMuted && !locallyOff;
+      // Red only for admin mute / muted-for-you. User mic-off → grey on tiles.
+      const muteChrome: "red" | "grey" | undefined = speaking
+        ? undefined
+        : adminMuted || locallyOff
+          ? "red"
+          : userOff
+            ? "grey"
+            : undefined;
+      const muted = Boolean(muteChrome);
+      return { muted, muteChrome, speaking };
     };
 
     const pushIfLive = (row: VoiceMediaStageSource) => {

@@ -340,10 +340,12 @@ function resolvePaintedMuted(input: {
   hasHiddenListeners: boolean;
   isPinnedSelf: boolean;
 }): boolean {
-  void input.isSpeaking;
   void input.isHandRaised;
   void input.hasHiddenListeners;
   void input.isPinnedSelf;
+  // Live speaking only (not hold) — tdesktop shows an open green mic on the
+  // speaking face. Do not sticky-write unmuted into the store; paint only.
+  if (input.isSpeaking) return false;
   return Boolean(input.muted);
 }
 
@@ -628,13 +630,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
           lastSpokeAt: undefined,
           isHandRaised,
           canUnmuteSelf,
-          isMuted: resolvePaintedMuted({
-            muted: mutedRaw,
-            isSpeaking: false,
-            isHandRaised,
-            hasHiddenListeners: Boolean(cached.hasHiddenListeners),
-            isPinnedSelf: true,
-          }),
+          isMuted: mutedRaw,
           volumeLevel:
             participant.volume_level != null
               ? normalizeVolumeLevel(participant.volume_level, prev.volumeLevel)
@@ -655,6 +651,8 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
     const prev = cached.members.get(key);
     const videoInfo = normalizeVideoInfo(participant.video_info);
     const screenInfo = normalizeVideoInfo(participant.screen_sharing_video_info);
+    // Missing mute field: keep prior. Brand-new without prior → muted — default
+    // unmuted invented open-mic chrome on soft ingest (vs Telegram Desktop).
     const mutedFromTdlib =
       readMutedForAllUsers(participant) ?? (prev?.isMuted ?? true);
     const isHandRaised = readHandRaised(participant);
@@ -697,13 +695,9 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       lastSpokeAt,
       isHandRaised,
       canUnmuteSelf,
-      isMuted: resolvePaintedMuted({
-        muted: mutedFromTdlib,
-        isSpeaking,
-        isHandRaised,
-        hasHiddenListeners: Boolean(cached.hasHiddenListeners),
-        isPinnedSelf,
-      }),
+      // Store TDLib mute only — speaking opens mic chrome at serialize via
+      // resolvePaintedMuted. Writing painted unmuted here sticky-opened faces.
+      isMuted: mutedFromTdlib,
       volumeLevel,
       order,
       videoInfo: nextVideo,
@@ -1077,10 +1071,10 @@ function speakersFromGroupCall(
       // Preserve hold across flaps — rebuilding with lastSpokeAt:undefined made
       // every SSE snapshot report speakingCount=0 a tick after someone spoke.
       lastSpokeAt,
-      // recent_speakers omit mute entirely. Default muted until an ordered
-      // updateGroupCallParticipant arrives — inventing unmuted painted whole
-      // soft/SSE rosters as open-mic (mutedCount=0) before a real load.
-      isMuted: true,
+      // recent_speakers omit mute entirely. Never invent unmuted (open green
+      // mics on listeners vs Telegram Desktop). Speaking opens mic chrome at
+      // paint time via resolvePaintedMuted — do not sticky-write unmuted here.
+      isMuted: prev?.isMuted ?? true,
       canUnmuteSelf: prev?.canUnmuteSelf ?? true,
       volumeLevel: prev?.volumeLevel ?? 10000,
       order: "",
@@ -1212,7 +1206,8 @@ function mergeParticipantMaps(
         : {
             ...row,
             volumeLevel: row.volumeLevel ?? 10000,
-            // Unknown mute on a brand-new orderless stub → muted until ordered.
+            // Unknown mute on a brand-new orderless stub → muted until ordered
+            // (default unmuted invented open-mic chrome vs Telegram Desktop).
             isMuted: row.order ? row.isMuted : true,
           },
     );
@@ -1519,15 +1514,7 @@ async function loadJoinedParticipants(
             isSpeaking: false,
             isHandRaised,
             canUnmuteSelf,
-            isMuted: resolvePaintedMuted({
-              muted: mutedRaw,
-              isSpeaking: false,
-              isHandRaised,
-              hasHiddenListeners: Boolean(
-                callMembersCache.get(callId)?.hasHiddenListeners,
-              ),
-              isPinnedSelf: true,
-            }),
+            isMuted: mutedRaw,
             volumeLevel:
               participant.volume_level != null
                 ? normalizeVolumeLevel(participant.volume_level, prev.volumeLevel)
@@ -1549,6 +1536,8 @@ async function loadJoinedParticipants(
     const canUnmuteSelf =
       readCanUnmuteSelf(participant) ?? prev?.canUnmuteSelf ?? true;
     const isPinnedSelf = userId != null && pinnedSelfUserIds.has(userId);
+    // Missing mute on a load chunk: keep prev, else muted — default unmuted
+    // invented open-mic chrome when TDLib omitted the field on soft chunks.
     const mutedRaw =
       mutedFromTdlib ?? prev?.isMuted ?? true;
     map.set(key, {
@@ -1558,17 +1547,9 @@ async function loadJoinedParticipants(
       lastSpokeAt: isSpeaking ? Date.now() : prev?.lastSpokeAt,
       isHandRaised,
       canUnmuteSelf,
-      // Missing mute on a load chunk: keep prev, else default muted — inventing
-      // unmuted painted soft/SSE rosters as open-mic before ordered updates.
-      isMuted: resolvePaintedMuted({
-        muted: mutedRaw,
-        isSpeaking,
-        isHandRaised,
-        hasHiddenListeners: Boolean(
-          callMembersCache.get(callId)?.hasHiddenListeners,
-        ),
-        isPinnedSelf,
-      }),
+      // Store TDLib mute only — speaking opens mic chrome at serialize via
+      // resolvePaintedMuted. Writing painted unmuted here sticky-opened faces.
+      isMuted: mutedRaw,
       volumeLevel:
         participant.volume_level != null
           ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)

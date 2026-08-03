@@ -100,8 +100,9 @@ export function useVoiceDialogFreezeDetector(
     const kickIfSevere = (durationMs: number) => {
       if (durationMs < 400) return;
       const now = Date.now();
-      // Coalesce storms — at most once per 2.5s.
-      if (now - lastStallKickAtRef.current < 2_500) return;
+      // Coalesce storms — at most once per 8s (was 2.5s; stall-recover
+      // WebAudio rebuilds worsened freezes during join).
+      if (now - lastStallKickAtRef.current < 8_000) return;
       lastStallKickAtRef.current = now;
       try {
         onSevereStallRef.current?.();

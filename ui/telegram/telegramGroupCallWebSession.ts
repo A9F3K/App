@@ -510,7 +510,13 @@ export class TelegramGroupCallWebSession {
   private static readonly POST_HEARD_SILENCE_TICKS = 30;
   /** Prefer a dedicated AudioContext after a silent-mix heal (shared unlock can latch). */
   private preferDedicatedPlaybackCtx = false;
-  private remotePlaybackSink: "webaudio" | "html_audio" = "webaudio";
+  /**
+   * Prefer unmuted HTML <audio> for remote mix. WebAudio MediaStreamSource often
+   * latches RMS=0 on Telegram SFU comfort-noise for seconds (prod: silent_mix_heal
+   * while RTP grows). HTML is hearable immediately after track unmute.
+   */
+  private preferHtmlRemotePlayback = true;
+  private remotePlaybackSink: "webaudio" | "html_audio" = "html_audio";
   private analyserCtx: AudioContext | null = null;
   private analyserRaf: number | null = null;
   /** In-flight getUserMedia from the Join click — reused by setMicEnabled. */
@@ -2650,8 +2656,9 @@ export class TelegramGroupCallWebSession {
     this.silentMixHealInFlight = false;
     this.silentMixHealCount = 0;
     this.preferDedicatedPlaybackCtx = false;
+    this.preferHtmlRemotePlayback = true;
     this.remoteAudioSettleRetryCount = 0;
-    this.remotePlaybackSink = "webaudio";
+    this.remotePlaybackSink = "html_audio";
     this.remoteSilenceTicks = 0;
     this.uninstallVisibilityPlaybackKick();
     appWarn("[voice-join-lost]", reason, {
@@ -3745,8 +3752,10 @@ export class TelegramGroupCallWebSession {
       this.remoteSpeakingAnalyser = analyser;
       this.remoteSilenceTicks = 0;
       const data = new Uint8Array(analyser.frequencyBinCount);
-      const ON_RMS = 0.01;
-      const OFF_RMS = 0.004;
+      // Lower ON so attenuated / comfort-noise mixes latch "heard" sooner
+      // (prod Vespiol: peakRms≈0.0078 under the old 0.01 gate for many seconds).
+      const ON_RMS = 0.006;
+      const OFF_RMS = 0.003;
       const MIN_FLIP_MS = 180;
       /** Require sustained silence before clearing — brief dips were flapping
        * remoteSpeaking every 200ms and tore down the mix→green extend interval.
@@ -3803,10 +3812,12 @@ export class TelegramGroupCallWebSession {
           const firstHearable = !this.heardRemoteMixAudio;
           this.heardRemoteMixAudio = true;
           this.lastHeardMixAudioAt = now;
-          if (firstHearable) {
-            // Meter clone can spike while WebAudio playback stays silent —
-            // force a rebuild so the hearable sink catches up.
-            this.queueRemotePlayback("mix-energy-first");
+          if (firstHearable && this.remotePlaybackSink === "webaudio") {
+            // Meter can spike on a clone while WebAudio playback stays silent —
+            // flip to HTML (do NOT rebuild WebAudio — that re-latched silence).
+            void this.switchRemotePlaybackToHtml("mix-energy-first", {
+              force: true,
+            });
           }
           if (!speaking) next = true;
           // Do not open video SDP on the first RMS spike — wait until
@@ -3904,13 +3915,13 @@ export class TelegramGroupCallWebSession {
           !this.audioRecoverInFlight;
         const unmuteSettled =
           this.remoteAudioUnmutedAt > 0 &&
-          now - this.remoteAudioUnmutedAt >= 2_500;
+          now - this.remoteAudioUnmutedAt >= 800;
         const neverHeardSilent =
           silenceEligible &&
           !this.heardRemoteMixAudio &&
           unmuteSettled &&
           (this.mixRtpPacketsAlive ||
-            now - this.remoteAudioUnmutedAt >= 3_500);
+            now - this.remoteAudioUnmutedAt >= 1_500);
         const postHeardSilent =
           silenceEligible &&
           this.heardRemoteMixAudio &&
@@ -3923,8 +3934,8 @@ export class TelegramGroupCallWebSession {
           const tickNeed = postHeardSilent
             ? TelegramGroupCallWebSession.POST_HEARD_SILENCE_TICKS
             : this.mixRtpPacketsAlive
-              ? 15
-              : 20;
+              ? 8
+              : 12;
           if (this.remoteSilenceTicks >= tickNeed) {
             this.remoteSilenceTicks = 0;
             void this.healSilentMixDespiteRtp();
@@ -3937,8 +3948,8 @@ export class TelegramGroupCallWebSession {
           !this.remoteAudioStalledAfterVideo
         ) {
           this.remoteSilenceTicks += 1;
-          // ~3s never-heard dead-zone (was 5s @ OFF_RMS — missed mid-band).
-          if (this.remoteSilenceTicks >= 30) {
+          // ~1s never-heard on WebAudio — flip to HTML immediately.
+          if (this.remoteSilenceTicks >= 10) {
             this.remoteSilenceTicks = 0;
             void this.switchRemotePlaybackToHtml("remote_rms_silence");
           }
@@ -4176,6 +4187,7 @@ export class TelegramGroupCallWebSession {
         }
       }
       this.silentMixHealCount += 1;
+      this.preferHtmlRemotePlayback = true;
       logPageDisplay("messages_voice_silent_mix_heal", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
@@ -4241,22 +4253,10 @@ export class TelegramGroupCallWebSession {
         }
       }
       this.preferDedicatedPlaybackCtx = true;
-      this.teardownWebAudioPlayback();
-      if (
-        this.playbackCtx &&
-        this.playbackCtx !== getVoiceAutoplayAudioContext()
-      ) {
-        try {
-          void this.playbackCtx.close();
-        } catch {
-          // ignore
-        }
-        this.playbackCtx = null;
-      }
+      // Skip WebAudio rebuild thrash — go straight to HTML (prod: heal then
+      // stall-recover yanked back to silent WebAudio for seconds).
       this.remoteSilenceTicks = 0;
       unlockVoiceAutoplay();
-      const ctx = this.ensurePlaybackContext();
-      await ctx?.resume().catch(() => undefined);
       await this.switchRemotePlaybackToHtml("silent_mix_heal", { force: true });
       // After the last heal attempt, rejoin if the mix counter is still dead —
       // including when we heard audio earlier and video SDP froze it afterward.
@@ -4680,6 +4680,9 @@ export class TelegramGroupCallWebSession {
 
   private async syncSpeakingToTelegram(speaking: boolean): Promise<void> {
     if (!this.joined || this.audioSourceId == null) return;
+    // Listen-only / muted mic: no local speaking to publish — hammering the
+    // gateway during join caused 502 + GROUPCALL_JOIN_MISSING storms.
+    if (this.usingSilentAudio || !this.micEnabled) return;
     const now = Date.now();
     if (now < this.speakingSyncBlockedUntil) return;
     // Debounce Telegram updates; always flush "not speaking" promptly.
@@ -4705,11 +4708,14 @@ export class TelegramGroupCallWebSession {
           chatId: this.input.chatId,
           groupCallId: this.input.groupCallId,
         });
+        const errText = typeof err === "string" ? err : String(err ?? "");
         if (
-          typeof err === "string" &&
-          (err.includes("GROUPCALL_JOIN_MISSING") ||
-            err.includes("GROUPCALL_FORBIDDEN") ||
-            err.includes("GROUPCALL_INVALID"))
+          errText.includes("GROUPCALL_JOIN_MISSING") ||
+          errText.includes("GROUPCALL_FORBIDDEN") ||
+          errText.includes("GROUPCALL_INVALID") ||
+          errText.includes("502") ||
+          errText.includes("Bad Gateway") ||
+          errText.includes("gateway")
         ) {
           // Soft-fail while WebRTC is still up — gateway 502 / getGroupCall races
           // used to markJoinLost and then call-message send failed with the same
@@ -4720,7 +4726,7 @@ export class TelegramGroupCallWebSession {
             (pc.connectionState === "connected" ||
               pc.iceConnectionState === "connected" ||
               pc.iceConnectionState === "completed");
-          this.speakingSyncBlockedUntil = Date.now() + 8_000;
+          this.speakingSyncBlockedUntil = Date.now() + 60_000;
           if (mediaLive) {
             logPageDisplay("messages_voice_speaking_join_missing_soft", {
               chatId: this.input.chatId,
@@ -4729,10 +4735,10 @@ export class TelegramGroupCallWebSession {
               conn: pc?.connectionState ?? "none",
               ice: pc?.iceConnectionState ?? "none",
               level: "warn",
-              note: "keep joined; block speaking sync briefly",
+              note: "keep joined; block speaking sync 60s",
             });
           } else {
-            this.markJoinLost(err);
+            this.markJoinLost(errText);
           }
         }
       }
@@ -4742,6 +4748,7 @@ export class TelegramGroupCallWebSession {
         err instanceof Error ? err.message : String(err),
         { chatId: this.input.chatId, groupCallId: this.input.groupCallId },
       );
+      this.speakingSyncBlockedUntil = Date.now() + 30_000;
     }
   }
 
@@ -5097,22 +5104,32 @@ export class TelegramGroupCallWebSession {
       reason === "post-video-renegotiate" ||
       reason === "post-video-audio-check" ||
       reason === "post-video-soft-silent" ||
-      reason === "mix-energy-first" ||
       reason === "silent-mix-heal" ||
-      reason === "stall-recover" ||
       reason === "visibility-resume";
 
-    // Stay on HTML audio once silence fallback flipped — WebAudio rebuilds keep
-    // latching silent while the track is live. forceRebuild used to yank us
-    // back to muted HTML + dead WebAudio (prod: stall-recover after heal).
+    // Prefer HTML for instant hearable mix. Never yank HTML→WebAudio after a
+    // silence heal or while preferHtml is set (prod: mix-energy-first /
+    // stall-recover re-latched silent WebAudio for many seconds).
+    const stickHtml =
+      this.preferHtmlRemotePlayback ||
+      this.preferDedicatedPlaybackCtx ||
+      this.silentMixHealCount > 0 ||
+      (this.remotePlaybackSink === "html_audio" &&
+        (this.heardRemoteMixAudio || reason === "stall-recover"));
     const keepHtmlSilenceFallback =
       this.remotePlaybackSink === "html_audio" &&
-      (this.silentMixHealCount > 0 || this.preferDedicatedPlaybackCtx) &&
-      reason !== "mix-energy-first" &&
-      reason !== "track-unmute";
+      (this.silentMixHealCount > 0 ||
+        this.preferDedicatedPlaybackCtx ||
+        this.preferHtmlRemotePlayback ||
+        this.heardRemoteMixAudio);
     if (
+      stickHtml ||
+      keepHtmlSilenceFallback ||
       (this.remotePlaybackSink === "html_audio" && !forceRebuild) ||
-      keepHtmlSilenceFallback
+      reason === "silent_mix_heal" ||
+      reason === "silent-mix-heal" ||
+      reason === "remote_rms_silence" ||
+      reason === "mix-energy-first"
     ) {
       const audio = this.ensureRemoteAudioElement();
       if (audio.srcObject !== stream) {
@@ -5121,6 +5138,7 @@ export class TelegramGroupCallWebSession {
       audio.muted = false;
       audio.volume = 1;
       this.remotePlaybackSink = "html_audio";
+      this.preferHtmlRemotePlayback = true;
       this.applyListenGain();
       try {
         if (audio.paused) await audio.play().catch(() => undefined);
@@ -5129,6 +5147,26 @@ export class TelegramGroupCallWebSession {
       }
       if (stream.getAudioTracks().some((t) => t.readyState === "live" && !t.muted)) {
         this.startRemoteSpeakingMonitor();
+      }
+      if (
+        reason === "track-attach" ||
+        reason === "track-unmute" ||
+        reason === "ice-connected" ||
+        reason === "pc-connected" ||
+        reason === "resume" ||
+        reason === "unlock"
+      ) {
+        logPageDisplay("messages_voice_remote_playback_ok", {
+          reason,
+          sink: "html_audio",
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          tracks: stream.getAudioTracks().length,
+          ctxState: ctx?.state ?? "none",
+          mutedTracks: stream.getAudioTracks().filter((t) => t.muted).length,
+          level: "info",
+          note: "html_first_instant_hear",
+        });
       }
       return;
     }
@@ -5291,6 +5329,31 @@ export class TelegramGroupCallWebSession {
   kickRemotePlayback(reason: string = "stall-recover"): void {
     if (!this.joined || typeof document === "undefined") return;
     this.ensureRemoteStream();
+    // Do not rebuild WebAudio on UI freezes when HTML is already the sink —
+    // stall-recover storms re-latched silence and burned the main thread.
+    if (
+      this.preferHtmlRemotePlayback ||
+      this.remotePlaybackSink === "html_audio" ||
+      this.silentMixHealCount > 0 ||
+      this.heardRemoteMixAudio
+    ) {
+      const stream = this.remoteStream;
+      const audio = this.ensureRemoteAudioElement();
+      if (stream && audio.srcObject !== stream) {
+        audio.srcObject = stream;
+      }
+      audio.muted = false;
+      this.remotePlaybackSink = "html_audio";
+      this.preferHtmlRemotePlayback = true;
+      this.applyListenGain();
+      void audio.play().catch(() => undefined);
+      if (
+        stream?.getAudioTracks().some((t) => t.readyState === "live" && !t.muted)
+      ) {
+        this.startRemoteSpeakingMonitor();
+      }
+      return;
+    }
     const ctx = this.ensurePlaybackContext();
     void ctx?.resume().catch(() => undefined);
     this.queueRemotePlayback(reason);
@@ -5711,8 +5774,9 @@ export class TelegramGroupCallWebSession {
     this.silentMixHealInFlight = false;
     this.silentMixHealCount = 0;
     this.preferDedicatedPlaybackCtx = false;
+    this.preferHtmlRemotePlayback = true;
     this.remoteAudioSettleRetryCount = 0;
-    this.remotePlaybackSink = "webaudio";
+    this.remotePlaybackSink = "html_audio";
     this.remoteSilenceTicks = 0;
     this.remoteAudioSettleExtended = false;
     this.remoteAudioSettlePacketsAtExtend = 0;
@@ -6098,7 +6162,7 @@ export class TelegramGroupCallWebSession {
           !this.heardRemoteMixAudio &&
           this.mixRtpPacketsAlive &&
           this.remoteAudioUnmutedAt > 0 &&
-          Date.now() - this.remoteAudioUnmutedAt >= 3_000 &&
+          Date.now() - this.remoteAudioUnmutedAt >= 1_200 &&
           this.silentMixHealCount <
             TelegramGroupCallWebSession.MAX_SILENT_MIX_HEALS &&
           !this.silentMixHealInFlight &&
@@ -6203,7 +6267,8 @@ export class TelegramGroupCallWebSession {
     this.clearVideoRenegotiateConnectWait();
     this.gestureUnmuteCleanup?.();
     this.gestureUnmuteCleanup = null;
-    this.remotePlaybackSink = "webaudio";
+    this.remotePlaybackSink = "html_audio";
+    this.preferHtmlRemotePlayback = true;
     this.remoteSilenceTicks = 0;
     this.heardRemoteMixAudio = false;
     this.lastHeardMixAudioAt = 0;
