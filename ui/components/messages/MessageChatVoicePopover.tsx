@@ -1503,7 +1503,9 @@ export function MessageChatVoicePopover({
     const selfName = (self?.title || "").trim() || "You";
 
     const tileChromeFor = (participant: TelegramChatVoiceParticipant | undefined) => {
-      if (!participant) return { muted: false, speaking: false };
+      if (!participant) {
+        return { muted: false, muteChrome: undefined as "red" | "grey" | undefined, speaking: false };
+      }
       const prefs = participantMediaPrefs[voiceParticipantPrefsKey(participant)];
       const volumePercent =
         prefs?.volumePercent ??
@@ -1514,11 +1516,14 @@ export function MessageChatVoicePopover({
         Boolean(participant.is_muted) && participant.can_unmute_self === false;
       const userOff = Boolean(participant.is_muted) && !adminMuted;
       const locallyOff = !participant.is_self && volumePercent <= 0;
-      const muted = adminMuted || userOff || locallyOff;
+      // Red only for admin mute / muted-for-you. User mic-off → grey on tiles.
+      const muteChrome: "red" | "grey" | undefined =
+        adminMuted || locallyOff ? "red" : userOff ? "grey" : undefined;
+      const muted = Boolean(muteChrome);
       const speakingRaw = isParticipantSpeaking
         ? isParticipantSpeaking(participant)
         : Boolean(participant.is_speaking);
-      return { muted, speaking: speakingRaw && !muted };
+      return { muted, muteChrome, speaking: speakingRaw && !muted };
     };
 
     const pushIfLive = (row: VoiceMediaStageSource) => {
@@ -1543,6 +1548,7 @@ export function MessageChatVoicePopover({
         label: selfName,
         kind: "screen",
         muted: chrome.muted,
+        muteChrome: chrome.muteChrome,
         speaking: chrome.speaking,
       });
     }
@@ -1554,6 +1560,7 @@ export function MessageChatVoicePopover({
         label: selfName,
         kind: "camera",
         muted: chrome.muted,
+        muteChrome: chrome.muteChrome,
         speaking: chrome.speaking,
       });
     }
@@ -1603,6 +1610,7 @@ export function MessageChatVoicePopover({
           label: (participant?.title || "").trim() || (source.kind === "screen" ? "Screen share" : "Camera"),
           kind: source.kind,
           muted: chrome.muted,
+          muteChrome: chrome.muteChrome,
           speaking: chrome.speaking,
         });
       }

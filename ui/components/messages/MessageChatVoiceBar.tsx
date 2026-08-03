@@ -3332,8 +3332,16 @@ export function MessageChatVoiceBar({
         volumeZeroRepairAttemptedRef.current.clear();
         listenVolumeNudgeAttemptedRef.current.clear();
         onClosePopover();
+        // Drop strip / dock immediately — do not keep Join preview after Leave
+        // even when others remain in the call (probe may still mark chat live).
         onLeftVoice?.();
-        // leaveTelegramChatVoice already treats empty leftover calls as inactive.
+        setParticipants([]);
+        setParticipantCount(0);
+        rosterTotalHintRef.current = 0;
+        rosterCountHintStateRef.current = 0;
+        setRosterCountHint(0);
+        setPresenceConfirmedAndNotify(false);
+        setActiveVoiceDock(null);
         const live = Boolean(result.has_active_voice_chat);
         const keepCallId =
           typeof result.voice_chat_group_call_id === "number" &&
@@ -3341,7 +3349,6 @@ export function MessageChatVoiceBar({
           result.voice_chat_group_call_id > 0
             ? Math.trunc(result.voice_chat_group_call_id)
             : null;
-        setPresenceConfirmedAndNotify(live);
         patchAuthenticatedHomeSelectedChatVoice(chatId, {
           has_active_voice_chat: live,
           voice_chat_group_call_id: keepCallId,
@@ -3369,6 +3376,8 @@ export function MessageChatVoiceBar({
     // Hide the sheet immediately — leave may take a moment on the gateway.
     onClosePopover();
     if (!joined) {
+      setPresenceConfirmedAndNotify(false);
+      setActiveVoiceDock(null);
       onLeftVoice?.();
       return;
     }
@@ -3379,6 +3388,13 @@ export function MessageChatVoiceBar({
         volumeZeroRepairAttemptedRef.current.clear();
         listenVolumeNudgeAttemptedRef.current.clear();
         onLeftVoice?.();
+        setParticipants([]);
+        setParticipantCount(0);
+        rosterTotalHintRef.current = 0;
+        rosterCountHintStateRef.current = 0;
+        setRosterCountHint(0);
+        setPresenceConfirmedAndNotify(false);
+        setActiveVoiceDock(null);
         const live = Boolean(result.has_active_voice_chat);
         const keepCallId =
           typeof result.voice_chat_group_call_id === "number" &&
@@ -3386,7 +3402,6 @@ export function MessageChatVoiceBar({
           result.voice_chat_group_call_id > 0
             ? Math.trunc(result.voice_chat_group_call_id)
             : null;
-        setPresenceConfirmedAndNotify(live);
         patchAuthenticatedHomeSelectedChatVoice(chatId, {
           has_active_voice_chat: live,
           voice_chat_group_call_id: keepCallId,

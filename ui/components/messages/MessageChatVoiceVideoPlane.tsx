@@ -10,8 +10,13 @@ export type VoiceMediaStageSource = {
   /** Shown on mosaic / focus tiles. */
   label?: string;
   kind?: "camera" | "screen";
-  /** Mic off for everyone (or local mute chrome). */
+  /** Mic off (crossed icon). */
   muted?: boolean;
+  /**
+   * Crossed-mic color on the tile. Red = admin / muted-for-you.
+   * Grey = user turned their own mic off. Default red when muted for back-compat.
+   */
+  muteChrome?: "red" | "grey";
   /** Green border + green mic when speaking. */
   speaking?: boolean;
 };
@@ -291,6 +296,9 @@ function MediaTile({
   compact = false,
 }: TileChromeProps) {
   const muted = Boolean(source.muted);
+  const muteChrome = source.muteChrome ?? (muted ? "red" : undefined);
+  const micMutedColor =
+    muteChrome === "grey" ? "rgba(255,255,255,0.45)" : "#FF1111";
   const label = (source.label || "").trim();
   const micSize = compact ? 14 : 18;
 
@@ -334,7 +342,7 @@ function MediaTile({
         <VoiceParticipantStateMicIcon
           speaking={speaking && !muted}
           muted={muted}
-          color={muted ? "#FF1111" : speaking ? SPEAKING_BORDER : "#ffffff"}
+          color={muted ? micMutedColor : speaking ? SPEAKING_BORDER : "#ffffff"}
           size={micSize}
         />
       </View>

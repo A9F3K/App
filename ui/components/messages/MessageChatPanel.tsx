@@ -191,6 +191,12 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           result.voice_chat_group_call_id ?? chat.voice_chat_group_call_id ?? null,
         voice_chat_is_joined: false,
       });
+      // After explicit Leave, keep the Join/face preview hidden until the user
+      // rejoins or opens another chat — probe must not resurrect the strip.
+      if (userLeftVoiceRef.current) {
+        setVoicePresenceConfirmed(false);
+        return;
+      }
       setVoicePresenceConfirmed(live);
       if (!live) return;
       appWarn("[message-voice-detect]", result.voice_resolve_source, {
@@ -390,7 +396,15 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     closeVoicePopover();
     setStartedCallId(null);
     setVoiceDialogUiOpen(false);
+    setVoicePresenceConfirmed(false);
   }, [clearJoinArmTimer, closeVoicePopover]);
+
+  const onVoicePresenceConfirmedChange = useCallback((confirmed: boolean) => {
+    // Leave must hide the Join/face preview; ignore late SSE/poll that try to
+    // resurrect presence until the user explicitly rejoins.
+    if (confirmed && userLeftVoiceRef.current) return;
+    setVoicePresenceConfirmed(confirmed);
+  }, []);
 
   return (
     <View
@@ -423,7 +437,7 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           }}
           onClosePopover={closeVoicePopover}
           onLeftVoice={leaveVoiceUi}
-          onPresenceConfirmedChange={setVoicePresenceConfirmed}
+          onPresenceConfirmedChange={onVoicePresenceConfirmedChange}
           suppressStripPressUntilRef={suppressStripPressUntilRef}
         />
       ) : null}
