@@ -47,6 +47,7 @@ import {
   searchChatsForUser,
   searchContactsForUser,
   searchMessagesChatIdsForUser,
+  hydrateChatSearchHitsForUser,
   focusChatForUser,
   viewChatInboxMessagesForUser,
   startConnectAttempt,
@@ -320,40 +321,101 @@ export function startTdlibGatewayServer(): http.Server {
             searchChatsForUser(telegramUsername, query),
             searchMessagesChatIdsForUser(telegramUsername, query),
           ]);
-          const chatIds = new Set<number>();
+          const byChatId = new Map<
+            number,
+            {
+              chatId: number;
+              title: string;
+              peerUserId: number | null;
+              peerUsername: string | null;
+              chatUsername: string | null;
+              chatKind: string | null;
+            }
+          >();
           const peerUserIds = new Set<number>();
           for (const row of chats) {
-            if (Number.isFinite(row.chatId) && row.chatId !== 0) chatIds.add(Math.trunc(row.chatId));
+            if (!Number.isFinite(row.chatId) || row.chatId === 0) continue;
+            byChatId.set(Math.trunc(row.chatId), {
+              chatId: Math.trunc(row.chatId),
+              title: row.title,
+              peerUserId: row.peerUserId,
+              peerUsername: row.peerUsername,
+              chatUsername: row.chatUsername,
+              chatKind: row.chatKind,
+            });
             if (row.peerUserId != null && Number.isFinite(row.peerUserId) && row.peerUserId !== 0) {
               peerUserIds.add(Math.trunc(row.peerUserId));
             }
           }
           for (const row of contacts) {
             if (row.chatId != null && Number.isFinite(row.chatId) && row.chatId !== 0) {
-              chatIds.add(Math.trunc(row.chatId));
+              const chatId = Math.trunc(row.chatId);
+              if (!byChatId.has(chatId)) {
+                const title = [row.firstName, row.lastName].filter(Boolean).join(" ").trim()
+                  || row.username
+                  || `User ${row.userId}`;
+                byChatId.set(chatId, {
+                  chatId,
+                  title,
+                  peerUserId: Math.trunc(row.userId),
+                  peerUsername: row.username,
+                  chatUsername: null,
+                  chatKind: "private",
+                });
+              }
             }
             if (Number.isFinite(row.userId) && row.userId !== 0) {
               peerUserIds.add(Math.trunc(row.userId));
             }
           }
-          for (const chatId of messageChatIds) {
-            if (Number.isFinite(chatId) && chatId !== 0) chatIds.add(Math.trunc(chatId));
+          // Message hits: hydrate real titles for chats missed by name search.
+          const missingMessageIds = messageChatIds.filter((chatId) => {
+            const id = Math.trunc(chatId);
+            return Number.isFinite(id) && id !== 0 && !byChatId.has(id);
+          });
+          if (missingMessageIds.length > 0) {
+            const hydrated = await hydrateChatSearchHitsForUser(
+              telegramUsername,
+              missingMessageIds,
+            );
+            for (const row of hydrated) {
+              byChatId.set(row.chatId, {
+                chatId: row.chatId,
+                title: row.title,
+                peerUserId: row.peerUserId,
+                peerUsername: row.peerUsername,
+                chatUsername: row.chatUsername,
+                chatKind: row.chatKind,
+              });
+              if (
+                row.peerUserId != null &&
+                Number.isFinite(row.peerUserId) &&
+                row.peerUserId !== 0
+              ) {
+                peerUserIds.add(Math.trunc(row.peerUserId));
+              }
+            }
           }
+          const chatRows = [...byChatId.values()];
           logGateway("chats_search_served", {
             telegramUsername,
             query,
             contactCount: contacts.length,
             chatCount: chats.length,
             messageChatCount: messageChatIds.length,
-            chatIdCount: chatIds.size,
+            chatIdCount: chatRows.length,
             peerUserIdCount: peerUserIds.size,
+            sampleTitles: chatRows
+              .slice(0, 5)
+              .map((row) => row.title)
+              .join(" | "),
           });
           sendJson(res, 200, {
             ok: true,
-            chatIds: [...chatIds],
+            chatIds: chatRows.map((row) => row.chatId),
             peerUserIds: [...peerUserIds],
+            chats: chatRows,
             contacts,
-            chats,
             messageChatIds,
           });
           return;

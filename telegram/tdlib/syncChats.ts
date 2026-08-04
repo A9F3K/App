@@ -558,18 +558,19 @@ function profilePhotoFileIds(user: TdUserProfile): number[] {
   );
 }
 
-export async function readUserAvatarBytes(
+async function downloadUserProfilePhotoBytes(
   client: Client,
-  userId: number,
-): Promise<{ data: Buffer; mime: string } | typeof TELEGRAM_THREAD_NO_AVATAR | null> {
-  try {
-    const user = (await client.invoke({ _: "getUser", user_id: userId })) as TdUserProfile;
-    const fileIds = profilePhotoFileIds(user);
-    if (fileIds.length === 0) return TELEGRAM_THREAD_NO_AVATAR;
-
+  fileIds: number[],
+): Promise<{ data: Buffer; mime: string } | null> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await sleep(250 * attempt);
     for (const fileId of fileIds) {
       try {
-        let file = (await client.invoke({ _: "getFile", file_id: fileId })) as TdFile;
+        let file: TdFile | undefined = (await client.invoke({
+          _: "getFile",
+          file_id: fileId,
+        })) as TdFile;
+        const useSync = attempt >= 1;
         if (!file?.local?.is_downloading_completed || !file.local.path) {
           await client.invoke({
             _: "downloadFile",
@@ -577,9 +578,15 @@ export async function readUserAvatarBytes(
             priority: 16,
             offset: 0,
             limit: 0,
-            synchronous: true,
+            synchronous: useSync,
           });
-          file = (await waitForLocalFile(client, fileId)) ?? (await client.invoke({ _: "getFile", file_id: fileId })) as TdFile;
+          if (!useSync) {
+            file = (await waitForLocalFile(client, fileId)) ?? undefined;
+          } else {
+            file =
+              (await waitForLocalFile(client, fileId)) ??
+              ((await client.invoke({ _: "getFile", file_id: fileId })) as TdFile);
+          }
         }
         const filePath = file?.local?.path;
         if (!filePath) continue;
@@ -587,12 +594,56 @@ export async function readUserAvatarBytes(
         if (buf.length === 0) continue;
         return { data: buf, mime: mimeFromPath(filePath) };
       } catch {
-        /* try next size */
+        /* try next size / attempt */
       }
     }
-    return TELEGRAM_THREAD_NO_AVATAR;
+  }
+  return null;
+}
+
+export async function readUserAvatarBytes(
+  client: Client,
+  userId: number,
+): Promise<{ data: Buffer; mime: string } | typeof TELEGRAM_THREAD_NO_AVATAR | null> {
+  try {
+    let user = (await client.invoke({ _: "getUser", user_id: userId })) as TdUserProfile;
+    let fileIds = profilePhotoFileIds(user);
+
+    // Voice-roster peers are often cold in TDLib: getUser returns without
+    // profile_photo until the private chat is opened (same as Desktop).
+    if (fileIds.length === 0) {
+      try {
+        await client.invoke({
+          _: "createPrivateChat",
+          user_id: userId,
+          force: false,
+        });
+      } catch {
+        /* deleted / inaccessible — fall through */
+      }
+      try {
+        user = (await client.invoke({ _: "getUser", user_id: userId })) as TdUserProfile;
+        fileIds = profilePhotoFileIds(user);
+      } catch {
+        /* keep empty fileIds */
+      }
+    }
+
+    if (fileIds.length > 0) {
+      const downloaded = await downloadUserProfilePhotoBytes(client, fileIds);
+      if (downloaded) return downloaded;
+      // Photo ids exist but download failed — retryable, not a hard no-avatar.
+      return null;
+    }
+
+    // Private chat id equals user id; chat.photo is sometimes populated first.
+    const chatBytes = await readChatAvatarBytes(client, userId);
+    if (chatBytes && chatBytes !== TELEGRAM_THREAD_NO_AVATAR) return chatBytes;
+    if (chatBytes === TELEGRAM_THREAD_NO_AVATAR) return TELEGRAM_THREAD_NO_AVATAR;
+    return null;
   } catch {
-    return TELEGRAM_THREAD_NO_AVATAR;
+    // Transient TDLib / session errors should 503, not sticky 404.
+    return null;
   }
 }
 

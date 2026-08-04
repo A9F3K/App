@@ -940,10 +940,12 @@ export async function telegramMessagesAvatarHandler(
       ...telegramUserIdLogField(hasUserId ? userId : null),
       elapsedMs: Date.now() - started,
     });
+    // Never cache 404s — cold TDLib misses used to stick for a day and hide
+    // real custom photos (e.g. voice roster) after the first empty getUser.
     if (res) {
       res.status(404);
       res.setHeader("Content-Type", "application/json");
-      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.setHeader("Cache-Control", "private, no-store");
       if (request) {
         const headers = new Headers();
         applyAuthApiCors(request, headers);
@@ -952,7 +954,7 @@ export async function telegramMessagesAvatarHandler(
       res.end(JSON.stringify({ ok: false, error: "no_avatar" }));
       return;
     }
-    const headers = new Headers({ ...JSON_HEADERS, "Cache-Control": "public, max-age=86400" });
+    const headers = new Headers({ ...JSON_HEADERS, "Cache-Control": "private, no-store" });
     if (request) applyAuthApiCors(request, headers);
     return new Response(JSON.stringify({ ok: false, error: "no_avatar" }), { status: 404, headers });
   }
@@ -2788,7 +2790,7 @@ export async function telegramMessagesSearchHandler(
   const url = requestUrl(request);
   const query = (url.searchParams.get("query") || "").trim();
   if (!query) {
-    return finishJson(request, res, { ok: true, chatIds: [], peerUserIds: [] }, 200);
+    return finishJson(request, res, { ok: true, chatIds: [], peerUserIds: [], chats: [] }, 200);
   }
 
   const started = Date.now();
@@ -2799,6 +2801,7 @@ export async function telegramMessagesSearchHandler(
     ok: !result.error,
     chatIdCount: result.chatIds.length,
     peerUserIdCount: result.peerUserIds.length,
+    chatStubCount: result.chats.length,
     error: result.error,
     elapsedMs: Date.now() - started,
   });
@@ -2812,6 +2815,7 @@ export async function telegramMessagesSearchHandler(
         error: result.error,
         chatIds: [],
         peerUserIds: [],
+        chats: [],
       },
       result.error === "session_not_ready" || result.error === "session_restoring" ? 503 : 502,
     );
@@ -2820,7 +2824,12 @@ export async function telegramMessagesSearchHandler(
   return finishJson(
     request,
     res,
-    { ok: true, chatIds: result.chatIds, peerUserIds: result.peerUserIds },
+    {
+      ok: true,
+      chatIds: result.chatIds,
+      peerUserIds: result.peerUserIds,
+      chats: result.chats,
+    },
     200,
   );
 }

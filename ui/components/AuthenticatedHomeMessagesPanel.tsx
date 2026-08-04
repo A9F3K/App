@@ -55,7 +55,7 @@ import {
 } from "./messages/voiceDialogUiGate";
 import { telegramEmojiDebug } from "./messages/telegramEmojiDebug";
 import { useTelegramMessagesChatListStream } from "./messages/useTelegramMessagesChatListStream";
-import { fetchTelegramChatListSearch } from "../telegram/fetchTelegramChatListSearch";
+import { fetchTelegramChatListSearch, type TelegramChatListSearchHit } from "../telegram/fetchTelegramChatListSearch";
 
 function normalizeSearchNeedle(raw: string): string {
   return raw.trim().toLowerCase().replace(/^@+/, "");
@@ -96,6 +96,24 @@ function chatSearchRank(row: MessageChatRowData, needle: string, serverHit: bool
   if (subtitle.includes(needle)) return 4;
   if (serverHit) return 5;
   return 6;
+}
+
+/** Remote TDLib hits for chats not yet in the scroll-synced local window. */
+function remoteSearchHitToRow(hit: TelegramChatListSearchHit): MessageChatRowData {
+  return {
+    id: hit.chatId,
+    telegram_chat_id: hit.chatId,
+    title: hit.title,
+    subtitle: "",
+    avatar_url: null,
+    last_message_at: null,
+    unread_count: 0,
+    peer_user_id: hit.peerUserId,
+    peer_username: hit.peerUsername,
+    chat_username: hit.chatUsername,
+    chat_kind: hit.chatKind,
+    list_tier: "positioned",
+  };
 }
 
 type Props = {
@@ -511,6 +529,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const [chatListSearchQuery, setChatListSearchQuery] = useState("");
   const [remoteSearchChatIds, setRemoteSearchChatIds] = useState<number[]>([]);
   const [remoteSearchPeerUserIds, setRemoteSearchPeerUserIds] = useState<number[]>([]);
+  const [remoteSearchHits, setRemoteSearchHits] = useState<TelegramChatListSearchHit[]>([]);
   const selectedChat = useAuthenticatedHomeSelectedChat();
   const selectedChatId = selectedChat?.telegram_chat_id ?? null;
   const selectedChatRef = useRef(selectedChat);
@@ -1318,6 +1337,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     if (!isTelegramMessagesConnected || !searchNeedle) {
       setRemoteSearchChatIds([]);
       setRemoteSearchPeerUserIds([]);
+      setRemoteSearchHits([]);
       return;
     }
     const controller = new AbortController();
@@ -1327,6 +1347,17 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         if (!result.ok) return;
         setRemoteSearchChatIds(result.chatIds);
         setRemoteSearchPeerUserIds(result.peerUserIds);
+        setRemoteSearchHits(result.chats);
+        logPageDisplay("messages_chat_list_search", {
+          query: chatListSearchQuery.trim(),
+          chatIdCount: result.chatIds.length,
+          peerUserIdCount: result.peerUserIds.length,
+          stubCount: result.chats.length,
+          sampleTitles: result.chats
+            .slice(0, 5)
+            .map((row) => row.title)
+            .join(" | "),
+        });
       });
     }, 220);
     return () => {
@@ -1337,6 +1368,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
 
   const displayChats = useMemo(() => {
     if (!searchNeedle) return sortedChats;
+    const localIds = new Set(sortedChats.map((row) => row.telegram_chat_id));
     const matched = sortedChats.filter((row) => {
       if (chatMatchesLocalSearch(row, searchNeedle)) return true;
       if (remoteSearchChatIdSet.has(row.telegram_chat_id)) return true;
@@ -1349,7 +1381,15 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       }
       return false;
     });
-    return matched
+    // Include TDLib hits that are not in the scroll-synced window yet.
+    const remoteOnly: MessageChatRowData[] = [];
+    for (const hit of remoteSearchHits) {
+      if (localIds.has(hit.chatId)) continue;
+      if (matched.some((row) => row.telegram_chat_id === hit.chatId)) continue;
+      remoteOnly.push(remoteSearchHitToRow(hit));
+    }
+    const combined = [...matched, ...remoteOnly];
+    return combined
       .map((row, index) => ({
         row,
         index,
@@ -1365,6 +1405,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       .map((entry) => entry.row);
   }, [
     remoteSearchChatIdSet,
+    remoteSearchHits,
     remoteSearchPeerUserIdSet,
     searchNeedle,
     sortedChats,

@@ -874,8 +874,8 @@ export async function resolveVoiceStreamGroupCallId(
 type AvatarImageResult = { data: Buffer; mime: string } | "no_avatar" | null;
 type CachedAvatarEntry = { value: AvatarImageResult; atMs: number };
 const userAvatarCache = new Map<string, CachedAvatarEntry>();
-/** Cold getUser often lacks profile_photo — do not sticky-fail forever. */
-const USER_NO_AVATAR_TTL_MS = 60_000;
+/** Cold getUser often lacks profile_photo — keep miss TTL short so hydration can recover. */
+const USER_NO_AVATAR_TTL_MS = 15_000;
 const USER_AVATAR_OK_TTL_MS = 10 * 60_000;
 const chatAvatarCache = new Map<string, AvatarImageResult>();
 
@@ -982,50 +982,114 @@ export async function listContactsForUser(
   }
 }
 
+export type ChatSearchHit = {
+  chatId: number;
+  title: string;
+  peerUserId: number | null;
+  peerUsername: string | null;
+  chatUsername: string | null;
+  chatKind: "private" | "group" | "supergroup" | "channel" | null;
+};
+
+async function collectChatSearchHit(
+  client: Client,
+  chatId: number,
+  collected: Map<number, ChatSearchHit>,
+  usernameHint?: string | null,
+): Promise<void> {
+  if (!Number.isFinite(chatId) || chatId === 0 || collected.has(chatId)) return;
+  try {
+    const chatPreview = await import("./chatPreview.js");
+    const messageHistoryMap = await import("./messageHistoryMap.js");
+    const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+    const hint = usernameHint?.trim().replace(/^@+/, "") || null;
+    collected.set(chatId, {
+      chatId,
+      title: chatPreview.chatTitle(chat),
+      peerUserId: chatPreview.peerUserIdFromChat(chat),
+      peerUsername: chatPreview.peerUsernameFromChat(chat),
+      chatUsername: chatPreview.chatUsernameFromChat(chat) ?? hint,
+      chatKind: messageHistoryMap.chatKindFromTdChat(chat),
+    });
+  } catch {
+    /* skip unavailable chat */
+  }
+}
+
 export async function searchChatsForUser(
   telegramUsername: string,
   query: string,
-): Promise<Array<{ chatId: number; title: string; peerUserId: number | null }>> {
+): Promise<ChatSearchHit[]> {
   const record = await requireReadySession(telegramUsername, 90_000);
   if (!record) return [];
 
   const trimmed = query.trim();
   if (!trimmed) return [];
+  const usernameCandidate = trimmed.replace(/^@+/, "");
+  const looksLikeUsername = /^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(usernameCandidate);
 
-  const collected = new Map<number, { chatId: number; title: string; peerUserId: number | null }>();
+  const collected = new Map<number, ChatSearchHit>();
+  const client = record.client;
+
+  // Local known chats (main + archive).
   for (const chatList of [{ _: "chatListMain" as const }, { _: "chatListArchive" as const }]) {
     try {
-      const result = (await record.client.invoke({
+      const result = (await client.invoke({
         _: "searchChats",
         chat_list: chatList,
         query: trimmed,
-        limit: 30,
+        limit: 40,
       })) as { chat_ids?: number[] };
       for (const chatId of result.chat_ids ?? []) {
-        if (collected.has(chatId)) continue;
-        try {
-          const chat = (await record.client.invoke({ _: "getChat", chat_id: chatId })) as {
-            id?: number;
-            title?: string;
-            type?: { _?: string; user_id?: number; first_name?: string; last_name?: string };
-          };
-          const peerUserId =
-            chat.type?._ === "chatTypePrivate" && typeof chat.type.user_id === "number"
-              ? chat.type.user_id
-              : null;
-          collected.set(chatId, {
-            chatId,
-            title: chat.title?.trim() || `Chat ${chatId}`,
-            peerUserId,
-          });
-        } catch {
-          /* skip */
-        }
+        await collectChatSearchHit(client, chatId, collected);
       }
     } catch {
       /* skip list */
     }
   }
+
+  // Server-side search among chats this account knows (beyond local cache pages).
+  try {
+    const result = (await client.invoke({
+      _: "searchChatsOnServer",
+      query: trimmed,
+      limit: 40,
+    })) as { chat_ids?: number[] };
+    for (const chatId of result.chat_ids ?? []) {
+      await collectChatSearchHit(client, chatId, collected);
+    }
+  } catch {
+    /* optional method / older TDLib */
+  }
+
+  // Public title/username prefix search (finds chats not in the synced list window).
+  try {
+    const result = (await client.invoke({
+      _: "searchPublicChats",
+      query: trimmed,
+    })) as { chat_ids?: number[] };
+    for (const chatId of (result.chat_ids ?? []).slice(0, 40)) {
+      await collectChatSearchHit(client, chatId, collected);
+    }
+  } catch {
+    /* optional */
+  }
+
+  // Exact public username (e.g. HyperlinksSpaceChat / @HyperlinksSpaceChat).
+  if (looksLikeUsername) {
+    try {
+      const chat = (await client.invoke({
+        _: "searchPublicChat",
+        username: usernameCandidate,
+      })) as TdChat;
+      if (typeof chat?.id === "number") {
+        await collectChatSearchHit(client, chat.id, collected, usernameCandidate);
+      }
+    } catch {
+      /* username not found / private */
+    }
+  }
+
   return [...collected.values()];
 }
 
@@ -1064,6 +1128,20 @@ export async function searchMessagesChatIdsForUser(
     }
   }
   return [...collected];
+}
+
+/** Hydrate chat ids (e.g. message-search hits) into displayable search stubs. */
+export async function hydrateChatSearchHitsForUser(
+  telegramUsername: string,
+  chatIds: number[],
+): Promise<ChatSearchHit[]> {
+  const record = await requireReadySession(telegramUsername, 90_000);
+  if (!record) return [];
+  const collected = new Map<number, ChatSearchHit>();
+  for (const raw of chatIds) {
+    await collectChatSearchHit(record.client, raw, collected);
+  }
+  return [...collected.values()];
 }
 
 export async function searchContactsForUser(

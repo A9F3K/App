@@ -2034,12 +2034,26 @@ export async function gatewayDisconnect(telegramUsername: string): Promise<{ ok:
   }
 }
 
+export type TelegramChatListSearchHit = {
+  chatId: number;
+  title: string;
+  peerUserId: number | null;
+  peerUsername: string | null;
+  chatUsername: string | null;
+  chatKind: "private" | "group" | "supergroup" | "channel" | null;
+};
+
 export async function gatewaySearchChats(
   telegramUsername: string,
   query: string,
-): Promise<{ chatIds: number[]; peerUserIds: number[]; error?: string }> {
+): Promise<{
+  chatIds: number[];
+  peerUserIds: number[];
+  chats: TelegramChatListSearchHit[];
+  error?: string;
+}> {
   const trimmed = query.trim();
-  if (!trimmed) return { chatIds: [], peerUserIds: [] };
+  if (!trimmed) return { chatIds: [], peerUserIds: [], chats: [] };
   const params = new URLSearchParams({
     telegramUsername,
     query: trimmed,
@@ -2052,6 +2066,7 @@ export async function gatewaySearchChats(
       return {
         chatIds: [],
         peerUserIds: [],
+        chats: [],
         error: typeof json.error === "string" ? json.error : "search_failed",
       };
     }
@@ -2067,11 +2082,40 @@ export async function gatewaySearchChats(
           .filter((id) => Number.isFinite(id) && id !== 0)
           .map((id) => Math.trunc(id))
       : [];
-    return { chatIds, peerUserIds };
+    const chats: TelegramChatListSearchHit[] = [];
+    if (Array.isArray(json.chats)) {
+      for (const raw of json.chats) {
+        if (!raw || typeof raw !== "object") continue;
+        const row = raw as Record<string, unknown>;
+        const chatId = Number(row.chatId);
+        if (!Number.isFinite(chatId) || chatId === 0) continue;
+        const peerUserIdRaw = Number(row.peerUserId);
+        const kind = row.chatKind;
+        chats.push({
+          chatId: Math.trunc(chatId),
+          title: typeof row.title === "string" && row.title.trim() ? row.title.trim() : `Chat ${chatId}`,
+          peerUserId:
+            Number.isFinite(peerUserIdRaw) && peerUserIdRaw !== 0
+              ? Math.trunc(peerUserIdRaw)
+              : null,
+          peerUsername: typeof row.peerUsername === "string" ? row.peerUsername : null,
+          chatUsername: typeof row.chatUsername === "string" ? row.chatUsername : null,
+          chatKind:
+            kind === "private" ||
+            kind === "group" ||
+            kind === "supergroup" ||
+            kind === "channel"
+              ? kind
+              : null,
+        });
+      }
+    }
+    return { chatIds, peerUserIds, chats };
   } catch (err) {
     return {
       chatIds: [],
       peerUserIds: [],
+      chats: [],
       error: err instanceof Error ? err.message : "gateway_unreachable",
     };
   }

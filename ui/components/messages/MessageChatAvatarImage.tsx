@@ -63,7 +63,13 @@ async function fetchAvatarBlobOnce(uri: string): Promise<string | null> {
   const cached = avatarBlobCache.get(uri);
   if (cached) return cached;
 
-  const response = await fetch(uri, { method: "GET", credentials: "include" });
+  // Bypass HTTP cache: authenticated 404s were previously Cache-Control:max-age=86400
+  // and stuck voice-roster avatars on initials even after TDLib hydrated the photo.
+  const response = await fetch(uri, {
+    method: "GET",
+    credentials: "include",
+    cache: "no-store",
+  });
   if (!response.ok) {
     if (response.status === 404 || response.status === 403) {
       // Record the miss but do NOT notify every avatar subscriber — a burst of

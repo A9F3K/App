@@ -243,9 +243,19 @@ export function peerUsernameFromChat(chat: TdChat): string | null {
 export function chatUsernameFromChat(chat: TdChat): string | null {
   const type = chat.type?._;
   if (type === "chatTypeSupergroup" || type === "chatTypeChannel") {
-    return normalizeTelegramUsername(chat.type?.username);
+    const fromType = normalizeTelegramUsername(chat.type?.username);
+    if (fromType) return fromType;
   }
-  return null;
+  const usernames = (chat as { usernames?: { active_usernames?: string[]; editable_username?: string } })
+    .usernames;
+  const active = usernames?.active_usernames;
+  if (Array.isArray(active)) {
+    for (const entry of active) {
+      const normalized = normalizeTelegramUsername(entry);
+      if (normalized) return normalized;
+    }
+  }
+  return normalizeTelegramUsername(usernames?.editable_username);
 }
 
 /** Member count for groups, supergroups, and channels (null for private chats). */
