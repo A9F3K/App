@@ -6,7 +6,8 @@ export type GatewayStreamKind =
   | "history"
   | "voice_participants"
   | "voice_messages"
-  | "private_call_audio";
+  | "private_call_audio"
+  | "private_call_video";
 
 export type StreamTicketPayload = {
   v: 1;
@@ -28,6 +29,7 @@ const STREAM_KINDS = new Set<GatewayStreamKind>([
   "voice_participants",
   "voice_messages",
   "private_call_audio",
+  "private_call_video",
 ]);
 
 function b64urlEncode(buf: Buffer | string): string {
@@ -153,7 +155,7 @@ export function verifyStreamTicket(
     if (payload.chatId !== expectedChat) return null;
   }
 
-  if (expected.stream === "private_call_audio") {
+  if (expected.stream === "private_call_audio" || expected.stream === "private_call_video") {
     const expectedCall =
       expected.callId != null && Number.isFinite(expected.callId)
         ? Math.trunc(expected.callId)
@@ -180,6 +182,8 @@ export function gatewayStreamPathForKind(stream: GatewayStreamKind): string {
       return "/v1/chat/voice/messages/stream";
     case "private_call_audio":
       return "/v1/call/audio/stream";
+    case "private_call_video":
+      return "/v1/call/video/stream";
   }
 }
 
@@ -195,6 +199,8 @@ export function gatewayStreamKindForPath(pathname: string): GatewayStreamKind | 
       return "voice_messages";
     case "/v1/call/audio/stream":
       return "private_call_audio";
+    case "/v1/call/video/stream":
+      return "private_call_video";
     default:
       return null;
   }

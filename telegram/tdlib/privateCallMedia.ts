@@ -7,6 +7,14 @@ import {
   hasPrivateCallAudioClients,
   pushRemoteAudioToBrowsers,
 } from "./privateCallAudioBridge.js";
+import {
+  PRIVATE_CALL_VIDEO_FPS,
+  PRIVATE_CALL_VIDEO_MAX_HEIGHT,
+  PRIVATE_CALL_VIDEO_MAX_WIDTH,
+  detachPrivateCallVideoClients,
+  pushRemoteVideoToBrowsers,
+  type PrivateCallVideoDevice,
+} from "./privateCallVideoBridge.js";
 import { logGateway } from "./gatewayLog.js";
 type CallServer = {
   id?: number;
@@ -59,7 +67,12 @@ type NtConnectionState = {
 
 type NtMediaSource = { EXTERNAL: number };
 type NtStreamMode = { CAPTURE: number; PLAYBACK: number };
-type NtStreamDevice = { MICROPHONE: number; SPEAKER: number };
+type NtStreamDevice = {
+  MICROPHONE: number;
+  SPEAKER: number;
+  CAMERA: number;
+  SCREEN: number;
+};
 type NtVideoRotation = { VIDEO_ROTATION_0: number };
 
 type NtFrameData = {
@@ -73,6 +86,30 @@ type NtFrame = {
   ssrc: bigint;
   data: Buffer;
   frameData: NtFrameData;
+};
+
+type NtAudioDescription = {
+  mediaSource: number;
+  sampleRate: number;
+  channelCount: number;
+  input: string;
+  keepOpen: boolean;
+};
+
+type NtVideoDescription = {
+  mediaSource: number;
+  width: number;
+  height: number;
+  fps: number;
+  input: string;
+  keepOpen: boolean;
+};
+
+type NtMediaDescription = {
+  microphone?: NtAudioDescription;
+  speaker?: NtAudioDescription;
+  camera?: NtVideoDescription;
+  screen?: NtVideoDescription;
 };
 
 type NtCallsModule = {
@@ -90,22 +127,7 @@ type NtCallsModule = {
     setStreamSources(
       userId: bigint,
       mode: number,
-      media: {
-        microphone?: {
-          mediaSource: number;
-          sampleRate: number;
-          channelCount: number;
-          input: string;
-          keepOpen: boolean;
-        };
-        speaker?: {
-          mediaSource: number;
-          sampleRate: number;
-          channelCount: number;
-          input: string;
-          keepOpen: boolean;
-        };
-      },
+      media: NtMediaDescription,
     ): Promise<void>;
     sendExternalFrame(
       userId: bigint,
@@ -148,6 +170,7 @@ type MediaSession = {
   audioBridgeReady: boolean;
   captureReady: boolean;
   playbackReady: boolean;
+  videoSourcesReady: boolean;
   startPromise: Promise<void> | null;
   connectAttempts: number;
   silenceTimer: ReturnType<typeof setInterval> | null;
@@ -462,6 +485,17 @@ function emptyFrameData(mod: NtCallsModule): NtFrameData {
 
 const silencePcm = Buffer.alloc(PRIVATE_CALL_AUDIO_FRAME_BYTES);
 
+function videoExternal(mod: NtCallsModule): NtVideoDescription {
+  return {
+    mediaSource: mod.MediaSource.EXTERNAL,
+    width: PRIVATE_CALL_VIDEO_MAX_WIDTH,
+    height: PRIVATE_CALL_VIDEO_MAX_HEIGHT,
+    fps: PRIVATE_CALL_VIDEO_FPS,
+    input: "",
+    keepOpen: true,
+  };
+}
+
 async function ensureCaptureSource(
   mod: NtCallsModule,
   session: MediaSession,
@@ -476,8 +510,11 @@ async function ensureCaptureSource(
       input: "",
       keepOpen: true,
     },
+    camera: videoExternal(mod),
+    screen: videoExternal(mod),
   });
   session.captureReady = true;
+  session.videoSourcesReady = true;
   logGateway("private_call_media_step", {
     telegramUsername: session.telegramUsername,
     callId: session.callId,
@@ -507,8 +544,11 @@ async function ensurePlaybackSource(
       input: "",
       keepOpen: true,
     },
+    camera: videoExternal(mod),
+    screen: videoExternal(mod),
   });
   session.playbackReady = true;
+  session.videoSourcesReady = true;
   session.audioBridgeReady = session.captureReady && session.playbackReady;
   logGateway("private_call_audio_bridge_ready", {
     telegramUsername: session.telegramUsername,
@@ -590,6 +630,51 @@ export async function pushInboundPrivateCallAudio(
   }
 }
 
+export async function pushInboundPrivateCallVideo(
+  telegramUsername: string,
+  callId: number,
+  device: PrivateCallVideoDevice,
+  width: number,
+  height: number,
+  i420: Buffer,
+): Promise<void> {
+  const session = sessionsByUsername.get(telegramUsername);
+  if (!session || session.callId !== Math.trunc(callId)) return;
+  if (!session.mediaEstablished) return;
+  const mod = loadNtModule();
+  if (!mod) return;
+  if (i420.length === 0 || width < 2 || height < 2) return;
+  const streamDevice =
+    device === "camera" ? mod.StreamDevice.CAMERA : mod.StreamDevice.SCREEN;
+  try {
+    if (!session.audioBridgeReady || !session.videoSourcesReady) {
+      await ensureExternalAudioBridge(mod, session);
+    }
+    await session.nt.sendExternalFrame(
+      BigInt(session.userId),
+      streamDevice,
+      toNtBytes(i420),
+      {
+        absoluteCaptureTimestampMs: BigInt(Date.now()),
+        rotation: mod.VideoRotation.VIDEO_ROTATION_0,
+        width: Math.trunc(width),
+        height: Math.trunc(height),
+      },
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logGateway("private_call_video_in_failed", {
+      telegramUsername,
+      callId,
+      device,
+      width,
+      height,
+      byteLength: i420.length,
+      message,
+    });
+  }
+}
+
 export async function pushPrivateCallSignalingData(
   telegramUsername: string,
   callId: number,
@@ -619,6 +704,7 @@ export async function stopPrivateCallMedia(
   if (callId != null && session.callId !== Math.trunc(callId)) return;
   stopSilenceKeepalive(session);
   detachPrivateCallAudioClients(telegramUsername, session.callId);
+  detachPrivateCallVideoClients(telegramUsername, session.callId);
   sessionsByUsername.delete(telegramUsername);
   try {
     await session.nt.stop(BigInt(session.userId));
@@ -703,6 +789,8 @@ export function ensurePrivateCallMediaStarted(
         await connectMediaSession(client, mod, existing, state);
       } catch (err) {
         stopSilenceKeepalive(existing);
+        detachPrivateCallAudioClients(telegramUsername, existing.callId);
+        detachPrivateCallVideoClients(telegramUsername, existing.callId);
         sessionsByUsername.delete(telegramUsername);
         const message = err instanceof Error ? err.message : String(err);
         logGateway("private_call_media_start_failed", {
@@ -738,6 +826,7 @@ export function ensurePrivateCallMediaStarted(
     audioBridgeReady: false,
     captureReady: false,
     playbackReady: false,
+    videoSourcesReady: false,
     startPromise: null,
     connectAttempts: 0,
     silenceTimer: null,
@@ -807,16 +896,28 @@ export function ensurePrivateCallMediaStarted(
   nt.onFrames((peerUserId, mode, device, frames) => {
     if (Number(peerUserId) !== session.userId) return;
     if (mode !== mod.StreamMode.PLAYBACK) return;
-    // P2P inbound audio arrives on MICROPHONE; keep SPEAKER as a fallback.
-    if (
-      device !== mod.StreamDevice.MICROPHONE &&
-      device !== mod.StreamDevice.SPEAKER
-    ) {
-      return;
-    }
     for (const frame of frames) {
       if (!frame.data?.length) continue;
-      pushRemoteAudioToBrowsers(session.telegramUsername, session.callId, frame.data);
+      if (
+        device === mod.StreamDevice.MICROPHONE ||
+        device === mod.StreamDevice.SPEAKER
+      ) {
+        pushRemoteAudioToBrowsers(session.telegramUsername, session.callId, frame.data);
+        continue;
+      }
+      if (device === mod.StreamDevice.CAMERA || device === mod.StreamDevice.SCREEN) {
+        const width = Number(frame.frameData?.width) || 0;
+        const height = Number(frame.frameData?.height) || 0;
+        if (width < 2 || height < 2) continue;
+        pushRemoteVideoToBrowsers(
+          session.telegramUsername,
+          session.callId,
+          device === mod.StreamDevice.CAMERA ? "camera" : "screen",
+          width,
+          height,
+          Buffer.isBuffer(frame.data) ? frame.data : Buffer.from(frame.data),
+        );
+      }
     }
   });
 
@@ -825,6 +926,8 @@ export function ensurePrivateCallMediaStarted(
       await connectMediaSession(client, mod, session, state);
     } catch (err) {
       stopSilenceKeepalive(session);
+      detachPrivateCallAudioClients(telegramUsername, session.callId);
+      detachPrivateCallVideoClients(telegramUsername, session.callId);
       sessionsByUsername.delete(telegramUsername);
       const message = err instanceof Error ? err.message : String(err);
       logGateway("private_call_media_start_failed", {

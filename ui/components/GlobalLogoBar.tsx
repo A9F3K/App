@@ -16,20 +16,20 @@ import { useRouter } from "expo-router";
 import { appLog } from "../../shared/appLog";
 import { useTelegram } from "./Telegram";
 import { HyperlinksSpaceLogo } from "./HyperlinksSpaceLogo";
-import { LogoWordmark } from "./LogoWordmark";
+import { LOGO_WORDMARK_ASPECT, LogoWordmark } from "./LogoWordmark";
 import { getTmaInitAndWebAppDebugSnapshot, showGlobalLogoBarOnWelcomeTma } from "./telegramWebApp";
-import { dark, layout, light, useColors } from "../theme";
+import { layout, useColors } from "../theme";
 import { useAuth } from "../../auth/AuthContext";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { isWelcomeLayoutRoute } from "../isWelcomeLayoutRoute";
 import { useResolvedPathname } from "../useResolvedPathname";
 
 const LOGO_HEIGHT = 32;
-const WELCOME_LOGO_HEIGHT = 40;
+/** Welcome header glyph height — matches `assets/HyperlinksSpaceLogo.svg` (94×31). */
+const WELCOME_LOGO_HEIGHT = 31;
 /** When also in phone TMA, use a smaller 24px header glyph; width alone is not enough (see `useCompactHeaderGlyph`). */
 const HEADER_NARROW_MAX_WIDTH = 480;
 const MOBILE_LOGO_SIZE = 24;
-const WORDMARK_ASPECT = 104 / 40;
 const WELCOME_VERTICAL_INDENT = 15;
 const BOTTOM_PADDING = 10;
 const BROWSER_FALLBACK_TOP_PADDING = 30;
@@ -100,8 +100,9 @@ function WelcomeMarketingBarContent({
   const { t } = useAppStrings();
   const { triggerHaptic } = useTelegram();
   const colors = useColors();
-  const logoTextColor = colors.primary === light.primary ? dark.background : light.background;
-  const wordmarkWidth = WORDMARK_ASPECT * wordmarkHeight;
+  // Dark: HyperlinksSpaceLogo.svg (white wordmark). Light: HyperlinksSpaceLogoWhiteTheme.svg (black).
+  const logoTextColor = colors.primary;
+  const wordmarkWidth = LOGO_WORDMARK_ASPECT * wordmarkHeight;
 
   const onAbout = () => {
     if (Platform.OS !== "web") {
@@ -115,6 +116,7 @@ function WelcomeMarketingBarContent({
       style={[
         styles.marketingBar,
         {
+          // Equal top/bottom padding + centered row → logo sits on the header’s vertical midpoint.
           paddingTop: contentPaddingTop,
           paddingBottom: contentPaddingBottom,
           paddingHorizontal: layout.contentSideInsetPx,
@@ -122,11 +124,16 @@ function WelcomeMarketingBarContent({
           borderTopColor: borderBottomColor,
           borderBottomColor,
           borderTopWidth: hideTopBorder ? 0 : 1,
+          justifyContent: "center",
         },
       ]}
     >
-      <View style={styles.marketingRow}>
-        <View style={styles.marketingLeft} accessible accessibilityLabel={t("global.logoBar.wordmarkA11y")}>
+      <View style={[styles.marketingRow, { minHeight: wordmarkHeight }]}>
+        <View
+          style={[styles.marketingLeft, { height: wordmarkHeight, justifyContent: "center" }]}
+          accessible
+          accessibilityLabel={t("global.logoBar.wordmarkA11y")}
+        >
           <LogoWordmark
             width={wordmarkWidth}
             height={wordmarkHeight}
@@ -135,7 +142,7 @@ function WelcomeMarketingBarContent({
         </View>
         <Pressable
           onPress={onAbout}
-          style={styles.aboutHit}
+          style={[styles.aboutHit, { minHeight: wordmarkHeight }]}
           accessibilityRole="link"
           accessibilityLabel={t("global.logoBar.about")}
           accessibilityHint={t("global.logoBar.aboutHint")}
@@ -257,8 +264,8 @@ export function GlobalLogoBar() {
     router.replace("/");
   };
 
-  const logoWordmarkTextColor = colors.primary === light.primary ? dark.background : light.background;
-  const desktopImmersiveWordmarkWidth = WORDMARK_ASPECT * wordmarkForMarketing;
+  const logoWordmarkTextColor = colors.primary;
+  const desktopImmersiveWordmarkWidth = LOGO_WORDMARK_ASPECT * wordmarkForMarketing;
 
   if (!shouldShow) {
     return <View style={[styles.container, { height: 0, backgroundColor }]} />;
@@ -375,10 +382,12 @@ const styles = StyleSheet.create({
   marketingLeft: {
     flexShrink: 1,
     marginRight: 12,
+    justifyContent: "center",
   },
   aboutHit: {
-    paddingVertical: 8,
     paddingHorizontal: 4,
+    justifyContent: "center",
+    alignItems: "center",
   },
   aboutText: {
     fontSize: 16,

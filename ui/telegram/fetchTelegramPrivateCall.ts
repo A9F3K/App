@@ -85,8 +85,10 @@ export async function fetchTelegramPrivateCallStatus(
 
 export async function discardTelegramPrivateCall(
   callId?: number | null,
+  options?: { durationSec?: number | null },
 ): Promise<{ ok: boolean; error?: string }> {
   try {
+    const durationSec = options?.durationSec;
     const response = await fetch(buildApiUrl("/api/telegram-messages-call-discard"), {
       method: "POST",
       credentials: "include",
@@ -95,6 +97,10 @@ export async function discardTelegramPrivateCall(
         call_id:
           callId != null && Number.isFinite(callId) && callId > 0
             ? Math.trunc(callId)
+            : undefined,
+        duration:
+          durationSec != null && Number.isFinite(durationSec) && durationSec > 0
+            ? Math.trunc(durationSec)
             : undefined,
       }),
     });

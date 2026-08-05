@@ -1907,6 +1907,7 @@ export async function gatewayGetPrivateCall(
 export async function gatewayDiscardPrivateCall(
   telegramUsername: string,
   callId?: number | null,
+  durationSec?: number | null,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const { response, json } = await gatewayFetch("/v1/call/discard", {
@@ -1916,6 +1917,10 @@ export async function gatewayDiscardPrivateCall(
         callId:
           callId != null && Number.isFinite(callId) && callId > 0
             ? Math.trunc(callId)
+            : undefined,
+        duration:
+          durationSec != null && Number.isFinite(durationSec) && durationSec > 0
+            ? Math.trunc(durationSec)
             : undefined,
       }),
     });

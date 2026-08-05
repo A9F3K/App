@@ -1993,42 +1993,70 @@ export class TelegramGroupCallWebSession {
       outboundPackets: 0,
     };
     try {
-      // Always prefer the join *answer* (SFU mix SSRCs). After the first video
-      // subscribe, remoteDescription is our crafted offer — reusing it as the
-      // audio template froze inboundPackets while video kept growing.
+      // Skeleton must match the PC's current m-line count/order. Always rebuilding
+      // from joinAnswer alone dropped extras on 2→1 screen shrink and Chrome
+      // rejected: "order of m-lines in subsequent offer doesn't match".
       const remote = connection.remoteDescription;
+      const localDesc = connection.localDescription;
+      const sessionSdp = localDesc?.sdp || remote?.sdp || "";
+      const joinAnswer = this.joinAnswerSdp;
+      const sessionSections = sessionSdp
+        ? parseOfferMediaSections(sessionSdp)
+        : [];
+      const sessionFirstVideo = sessionSections.findIndex(
+        (s) => s.kind === "video",
+      );
+      const sessionExtraVideo = sessionSections.filter(
+        (s, index) => s.kind === "video" && index !== sessionFirstVideo,
+      ).length;
+      // Prefer session SDP once remote-video m-lines exist so shrinks keep
+      // inactive placeholders. First subscribe still grows from join answer.
+      const useSessionSkeleton = Boolean(sessionSdp) && sessionExtraVideo > 0;
+      const skeletonSdp = useSessionSkeleton
+        ? sessionSdp
+        : joinAnswer ||
+          (remote?.type === "offer" ? remote.sdp : null) ||
+          (remote?.type === "answer" ? remote.sdp : null) ||
+          localDesc?.sdp ||
+          remote?.sdp ||
+          "";
+      if (!skeletonSdp) return;
       const audioBase:
         | "remote_offer"
         | "join_answer"
+        | "session_skeleton"
         | "remote_answer"
-        | "local_description" = this.joinAnswerSdp
-        ? "join_answer"
-        : remote?.type === "offer"
-          ? "remote_offer"
-          : remote?.type === "answer"
-            ? "remote_answer"
-            : "local_description";
-      const localSdp =
-        this.joinAnswerSdp ||
-        (remote?.type === "offer" ? remote.sdp : null) ||
-        (remote?.type === "answer" ? remote.sdp : null) ||
-        connection.localDescription?.sdp ||
-        remote?.sdp ||
-        "";
-      if (!localSdp) return;
+        | "local_description" = useSessionSkeleton
+        ? joinAnswer
+          ? "session_skeleton"
+          : localDesc?.type === "answer"
+            ? "local_description"
+            : remote?.type === "offer"
+              ? "remote_offer"
+              : "remote_answer"
+        : joinAnswer
+          ? "join_answer"
+          : remote?.type === "offer"
+            ? "remote_offer"
+            : remote?.type === "answer"
+              ? "remote_answer"
+              : "local_description";
       inboundBefore = await this.logIceDiagnostics(
         connection,
         "pre_video_renegotiate",
       );
       const offerSdp = groupCallRemoteSubscribeOfferSdp(
         transport,
-        localSdp,
+        skeletonSdp,
         sections,
         {
           videoPayloadTypes: this.videoPayloadTypes,
           videoExtensions: this.videoExtensions,
           // Only strip client send SSRCs when falling back to local offer.
-          stripSenderSsrcs: audioBase === "local_description",
+          stripSenderSsrcs: audioBase === "local_description" && !joinAnswer,
+          // Keep SFU mix SSRCs from join answer while session skeleton holds m-lines.
+          audioTemplateSdp:
+            useSessionSkeleton && joinAnswer ? joinAnswer : undefined,
         },
       );
       const offerMedia = parseOfferMediaSections(offerSdp);
@@ -2043,7 +2071,9 @@ export class TelegramGroupCallWebSession {
         hasApplication: offerMedia.some((s) => s.kind === "application"),
         joinPayloadIds: this.videoPayloadTypes.map((p) => p.id).slice(0, 8),
         audioBase,
-        stripSenderSsrcs: audioBase === "local_description",
+        sessionExtraVideo,
+        wantedVideos: sections.length,
+        stripSenderSsrcs: audioBase === "local_description" && !joinAnswer,
         level: "info",
       });
       await connection.setRemoteDescription({
@@ -2194,12 +2224,18 @@ export class TelegramGroupCallWebSession {
               );
             // Mix collapsed to a trickle after we already heard it this join
             // (prod: settle gate 42pk → renegotiate 2pk → stuck 4pk + video flood).
+            // Do NOT treat thin-but-still-growing counters during screen attach as
+            // collapse (prod: 8→9 + video flood tore down live screens).
             const mixCollapsedToTrickle =
               sessionHadHealthyMix &&
               stats.inboundPackets > 0 &&
               stats.inboundPackets < 12 &&
-              audioGrowth <= 2 &&
-              videoGrowth > 15;
+              audioGrowth <= 0 &&
+              videoGrowth > 15 &&
+              !(
+                screenPainting &&
+                this.mixCounterLooksHealthyForScreen(stats.inboundPackets)
+              );
             // Classic incomplete-SSRC failure: mix never really started, video
             // floods, outbound keeps going.
             const mixNeverStartedStarved =
@@ -2762,27 +2798,26 @@ export class TelegramGroupCallWebSession {
   }
 
   /**
-   * Refuse further audio-only recovers only after the recover budget is spent.
-   * Skipping after the *first* recover while a screencast was live blocked the
-   * second recover when auto screen-resubscribe froze the mix again (prod:
-   * recover_ok → resubscribe → inboundPackets plateau, silence forever).
+   * Refuse further audio-only recovers once a screencast is preferred/live after
+   * at least one recover. A second recover used to drop the stage and then skip
+   * auto-resubscribe forever ("screen indicator on, black stage").
    */
   private shouldSkipRecoverToKeepScreen(): boolean {
+    const hasLiveOrPreferredScreen =
+      this.screenSharing ||
+      this.presentationConnection != null ||
+      this.hasHealthyRemoteVideoMedia() ||
+      (this.preferStableScreencast &&
+        this.lastAppliedRemoteVideoEndpoints.length > 0);
+    if (this.audioRecoverCount >= 1 && hasLiveOrPreferredScreen) {
+      return true;
+    }
     if (
       this.audioRecoverCount < TelegramGroupCallWebSession.MAX_AUDIO_RECOVERS
     ) {
       return false;
     }
-    if (this.screenSharing || this.presentationConnection != null) {
-      return true;
-    }
-    if (this.hasHealthyRemoteVideoMedia()) {
-      return true;
-    }
-    if (this.preferStableScreencast) {
-      return true;
-    }
-    return false;
+    return hasLiveOrPreferredScreen || this.preferStableScreencast;
   }
 
   /**
@@ -3103,8 +3138,8 @@ export class TelegramGroupCallWebSession {
   }
 
   private finishRemoteVideoResubscribeAfterRecover(): void {
-    const pending = this.pendingRemoteVideoAfterRecover;
-    if (pending.length === 0) return;
+    const allPending = this.pendingRemoteVideoAfterRecover;
+    if (allPending.length === 0) return;
     if (!this.joined) {
       this.pendingRemoteVideoAfterRecover = [];
       return;
@@ -3114,6 +3149,9 @@ export class TelegramGroupCallWebSession {
       this.scheduleRemoteVideoResubscribeAfterAudioHealthy();
       return;
     }
+    // Dual remote-screen restore often re-stalls Colibri mix; restore one and
+    // leave further shares for explicit unmute.
+    const pending = allPending.slice(0, 1);
     this.pendingRemoteVideoAfterRecover = [];
     this.remoteVideoSdpBlockedAfterStall = false;
     this.remoteAudioStalledAfterVideo = false;
@@ -3126,6 +3164,7 @@ export class TelegramGroupCallWebSession {
       recoverCount: this.audioRecoverCount,
       count: pending.length,
       endpoints: pending.map((r) => r.endpointId).slice(0, 4),
+      skippedExtra: Math.max(0, allPending.length - pending.length),
       level: "info",
       note: "one-shot remote screen restore after audio recover",
     });

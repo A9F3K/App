@@ -1341,16 +1341,18 @@ export async function telegramMessagesCallDiscardHandler(
     return finishJson(request, res, { ok: false, error: "not_connected" }, 403);
   }
 
-  let body: { call_id?: number; callId?: number } = {};
+  let body: { call_id?: number; callId?: number; duration?: number } = {};
   try {
     body = await parseRequestBody(request);
   } catch {
     body = {};
   }
   const callId = Number(body.call_id ?? body.callId);
+  const duration = Number(body.duration);
   const result = await gatewayDiscardPrivateCall(
     userOrRes,
     Number.isFinite(callId) && callId > 0 ? callId : null,
+    Number.isFinite(duration) && duration > 0 ? duration : null,
   );
   if (!result.ok) {
     const status = result.error === "session_not_ready" ? 503 : 400;
@@ -2894,8 +2896,10 @@ export async function telegramMessagesStreamTicketHandler(
     return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
   }
 
-  if (stream === "private_call_audio" && (callId == null || callId <= 0)) {
-    return finishJson(request, res, { ok: false, error: "call_id_required" }, 400);
+  if (stream === "private_call_audio" || stream === "private_call_video") {
+    if (callId == null || callId <= 0) {
+      return finishJson(request, res, { ok: false, error: "call_id_required" }, 400);
+    }
   }
 
   const minted = mintStreamTicket({
@@ -2923,7 +2927,7 @@ export async function telegramMessagesStreamTicketHandler(
 
   const streamUrl = `${gatewayBaseUrl}${path}?${params.toString()}`;
   const wsUrl =
-    stream === "private_call_audio"
+    stream === "private_call_audio" || stream === "private_call_video"
       ? `${gatewayHttpToWebSocketUrl(gatewayBaseUrl)}${path}?${params.toString()}`
       : null;
   logTelegramMessagesApi("messages_stream_ticket", {

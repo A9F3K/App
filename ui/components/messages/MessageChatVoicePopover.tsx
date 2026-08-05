@@ -1917,6 +1917,10 @@ export function MessageChatVoicePopover({
 
   const renderParticipantRows = () => {
     if (isPrivateCall && privateCall) {
+      // Live camera/screencast tiles replace the large avatar.
+      if (mediaSources.length > 0) {
+        return null;
+      }
       return (
         <View
           style={{

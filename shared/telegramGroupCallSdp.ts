@@ -1094,7 +1094,9 @@ export function mungeLocalOfferExtraVideoToJoinCodecs(
  * screencast SSRCs, then the browser createAnswer()s. createOffer + fake answer
  * often left Colibri SCTP stuck in "connecting" (no ReceiverVideoConstraints).
  *
- * m-line order must match the current local description or setRemoteDescription fails.
+ * m-line order must match the current negotiated description or setRemoteDescription
+ * fails. Shrinking 2→1 remote screens must keep inactive placeholders for removed
+ * slots — never drop m-lines from a join-answer-only template.
  */
 export function groupCallRemoteSubscribeOfferSdp(
   transport: TelegramGroupCallTransport,
@@ -1106,9 +1108,18 @@ export function groupCallRemoteSubscribeOfferSdp(
     audioSourceId?: number | null;
     /** True only when `localSdp` is our local join offer (client send SSRCs). */
     stripSenderSsrcs?: boolean;
+    /**
+     * Join answer (or other SFU mix template). When `localSdp` is the current
+     * session description (extra video m-lines), use this for the audio section
+     * so mix SSRCs stay intact while m-line count/order is preserved.
+     */
+    audioTemplateSdp?: string;
   },
 ): string {
   const localSections = parseOfferMediaSections(localSdp);
+  const audioTemplateSection = opts?.audioTemplateSdp
+    ? parseOfferMediaSections(opts.audioTemplateSdp).find((s) => s.kind === "audio")
+    : null;
   const videoMedia = {
     videoPayloadTypes: opts?.videoPayloadTypes,
     videoExtensions: opts?.videoExtensions,
@@ -1167,11 +1178,13 @@ export function groupCallRemoteSubscribeOfferSdp(
     const mid = offerSection.mid || "0";
     if (offerSection.kind === "audio" && !mainAudioDone) {
       mainAudioDone = true;
+      // Prefer join-answer mix SSRCs when the skeleton is a later session SDP.
+      const audioSource = audioTemplateSection ?? offerSection;
       // Preserve SFU mix SSRCs from join/remote answer. Only strip when the
       // template is our local offer (see stripSenderSsrcs opt).
-      const preserved = Boolean(offerSection.rawLines?.length) &&
+      const preserved = Boolean(audioSource.rawLines?.length) &&
         sdp.addPreservedAudioSection(
-          offerSection.rawLines ?? [],
+          audioSource.rawLines ?? [],
           transport,
           dtlsSetup,
           mid,

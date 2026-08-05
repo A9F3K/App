@@ -1531,13 +1531,14 @@ export async function getPrivateCallForSession(
 export async function discardPrivateCallForSession(
   telegramUsername: string,
   callId?: number | null,
+  durationSec?: number | null,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const record = await requireReadySession(telegramUsername, 30_000);
   if (!record) {
     return { ok: false, error: "session_not_ready" };
   }
   const { discardPrivateCallForUser } = await import("./privateCall.js");
-  return discardPrivateCallForUser(record.client, telegramUsername, callId);
+  return discardPrivateCallForUser(record.client, telegramUsername, callId, durationSec);
 }
 
 export async function acceptPrivateCallForSession(

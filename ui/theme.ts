@@ -134,13 +134,15 @@ export function useColors(): ThemeColors {
   const { useTelegram } = require("./components/Telegram") as {
     useTelegram: () => {
       colorScheme: ThemeName;
+      manualTheme: ThemeName | null;
       isInTelegram: boolean;
       useTelegramTheme: boolean;
       themeBgReady: boolean;
       clientHydrated: boolean;
     };
   };
-  const { colorScheme, useTelegramTheme, themeBgReady, clientHydrated } = useTelegram();
+  const { colorScheme, manualTheme, useTelegramTheme, themeBgReady, clientHydrated } =
+    useTelegram();
 
   // SSR has no `window`, so `useTelegramTheme` is false and we use `dark`. On the client, TMA would
   // otherwise take the branch below with `transparent` before `clientHydrated` — different from
@@ -149,7 +151,8 @@ export function useColors(): ThemeColors {
     return getColorsForTheme("dark");
   }
 
-  if (useTelegramTheme && !themeBgReady) {
+  // Manual override skips Telegram pre-ready CSS so light/dark paint immediately from settings.
+  if (useTelegramTheme && !themeBgReady && manualTheme == null) {
     const preReady =
       getThemeColorsFromTelegramCssVars() ??
       getThemeColorsFromWebAppThemeParams() ??
@@ -160,10 +163,8 @@ export function useColors(): ThemeColors {
     return TELEGRAM_PRE_READY_FALLBACK;
   }
 
-  const themeName: ThemeName =
-    !useTelegramTheme ? "dark" : themeBgReady ? colorScheme : "dark";
-
-  return getColorsForTheme(themeName);
+  // `colorScheme` is already effective (manual ?? Telegram / plain-web auto).
+  return getColorsForTheme(colorScheme);
 }
 
 /**

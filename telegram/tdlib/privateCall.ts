@@ -618,6 +618,7 @@ export async function discardPrivateCallForUser(
   client: Client,
   telegramUsername: string,
   callId?: number | null,
+  durationSec?: number | null,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const cached = callsByUsername.get(telegramUsername);
   const id =
@@ -628,12 +629,16 @@ export async function discardPrivateCallForUser(
     callsByUsername.delete(telegramUsername);
     return { ok: true };
   }
+  const duration =
+    durationSec != null && Number.isFinite(durationSec) && durationSec > 0
+      ? Math.min(86_400, Math.trunc(durationSec))
+      : 0;
   try {
     await client.invoke({
       _: "discardCall",
       call_id: id,
       is_disconnected: false,
-      duration: 0,
+      duration,
       is_video: Boolean(cached?.isVideo),
       connection_id: 0,
     });

@@ -27,6 +27,11 @@ import {
   startPrivateCallAudioBridge,
   type PrivateCallAudioBridge,
 } from "../../telegram/privateCallAudioBridge";
+import {
+  startPrivateCallVideoBridge,
+  type PrivateCallVideoBridge,
+} from "../../telegram/privateCallVideoBridge";
+import type { TelegramRemoteVideoSource } from "../../telegram/telegramGroupCallWebSession";
 
 export type PrivateCallPeer = {
   chat: MessageChatRowData;
@@ -62,8 +67,19 @@ function statusKeyForPhase(phase: PrivateCallPhase): AppStringKey {
   }
 }
 
+function formatCallDuration(totalSec: number): string {
+  const sec = Math.max(0, Math.trunc(totalSec));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 /**
- * Profile phone action — TDLib createCall / getCall / discardCall signaling
+ * Profile phone action — TDLib createCall / discardCall signaling
  * (dial → ring → exchanging keys → ready) plus ntgcalls WebRTC on the gateway.
  * UI shows Connected only after media_established; until then peer may still
  * be on "exchange encryption keys" in native Telegram.
@@ -82,15 +98,20 @@ export function MessageChatPrivateCallHost({
   const [micActive, setMicActive] = useState(true);
   const [cameraActive, setCameraActive] = useState(false);
   const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const [localMicStream, setLocalMicStream] = useState<MediaStream | null>(null);
+  const [remoteVideoSources, setRemoteVideoSources] = useState<TelegramRemoteVideoSource[]>([]);
   const audioBridgeRef = useRef<PrivateCallAudioBridge | null>(null);
+  const videoBridgeRef = useRef<PrivateCallVideoBridge | null>(null);
   const [screenSharing, setScreenSharing] = useState(false);
   const [call, setCall] = useState<PrivateCallSnapshot | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
   const [dropLeaving, setDropLeaving] = useState(false);
+  const [elapsedSec, setElapsedSec] = useState(0);
   const callIdRef = useRef<number | null>(null);
   const hungUpRef = useRef(false);
   const readyLoggedRef = useRef(false);
+  const connectedAtRef = useRef<number | null>(null);
 
   const chat = peer?.chat ?? null;
   const title = (chat?.title ?? "").trim() || t("messages.privateCall.active");
@@ -124,14 +145,42 @@ export function MessageChatPrivateCallHost({
   }, [chat, peerUserId, openSeq]);
 
   const phase: PrivateCallPhase = call?.phase ?? (callError ? "error" : "dialing");
-  const statusText =
-    callError && phase === "error"
-      ? callError
-      : call?.emojis?.length && phase === "ready" && call.media_established
-        ? `${t("messages.privateCall.connected")}  ${call.emojis.join(" ")}`
-        : phase === "ready" && !call?.media_established
-          ? t("messages.privateCall.connecting")
-          : t(statusKeyForPhase(phase));
+  const mediaReady = phase === "ready" && Boolean(call?.media_established);
+
+  useEffect(() => {
+    if (!mediaReady) {
+      connectedAtRef.current = null;
+      setElapsedSec(0);
+      return;
+    }
+    if (connectedAtRef.current == null) {
+      connectedAtRef.current = Date.now();
+    }
+    const tick = () => {
+      const started = connectedAtRef.current;
+      if (started == null) return;
+      setElapsedSec(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [mediaReady]);
+
+  const statusText = useMemo(() => {
+    if (callError && phase === "error") return callError;
+    if (phase === "ready" && !call?.media_established) {
+      return t("messages.privateCall.connecting");
+    }
+    if (mediaReady) {
+      const clock = formatCallDuration(elapsedSec);
+      const base = `${t("messages.privateCall.connected")} · ${clock}`;
+      if (call?.emojis?.length) {
+        return `${base}  ${call.emojis.join(" ")}`;
+      }
+      return base;
+    }
+    return t(statusKeyForPhase(phase));
+  }, [call?.emojis, call?.media_established, callError, elapsedSec, mediaReady, phase, t]);
 
   const stopTracks = useCallback((stream: MediaStream | null) => {
     stream?.getTracks().forEach((track) => track.stop());
@@ -140,7 +189,14 @@ export function MessageChatPrivateCallHost({
   const stopAllMedia = useCallback(() => {
     audioBridgeRef.current?.stop();
     audioBridgeRef.current = null;
+    videoBridgeRef.current?.stop();
+    videoBridgeRef.current = null;
+    setRemoteVideoSources([]);
     setLocalCameraStream((prev) => {
+      stopTracks(prev);
+      return null;
+    });
+    setLocalScreenStream((prev) => {
       stopTracks(prev);
       return null;
     });
@@ -158,12 +214,16 @@ export function MessageChatPrivateCallHost({
     stopPrivateCallRingback();
     setDropLeaving(true);
     setActiveVoiceDock(null);
+    const durationSec =
+      connectedAtRef.current != null
+        ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
+        : elapsedSec;
     stopAllMedia();
     const id = callIdRef.current;
-    await discardTelegramPrivateCall(id);
+    await discardTelegramPrivateCall(id, { durationSec });
     setDropLeaving(false);
     onHangUp();
-  }, [onHangUp, stopAllMedia]);
+  }, [elapsedSec, onHangUp, stopAllMedia]);
 
   // Ringback only while waiting for answer — stop once peer starts key exchange.
   useEffect(() => {
@@ -183,7 +243,6 @@ export function MessageChatPrivateCallHost({
   useEffect(() => {
     hungUpRef.current = false;
     if (peerUserId == null || peerUserId === 0) {
-      // Still resolving user id from profile — wait.
       if (chat != null && (chat.peer_user_id == null || chat.peer_user_id === 0)) {
         return;
       }
@@ -195,6 +254,8 @@ export function MessageChatPrivateCallHost({
     setCallError(null);
     callIdRef.current = null;
     readyLoggedRef.current = false;
+    connectedAtRef.current = null;
+    setElapsedSec(0);
     unlockVoiceAutoplay();
     setVoiceDialogUiOpen(true);
     logPageDisplay("messages_private_call_start", {
@@ -225,9 +286,6 @@ export function MessageChatPrivateCallHost({
     };
   }, [peerUserId, chat, t]);
 
-  // Poll call state while we have a call id. Depend on call_id (not only phase) so
-  // polling starts right after createCall — previously phase stayed "dialing" and
-  // the effect never re-ran after callIdRef was set.
   const activeCallId = call?.call_id ?? null;
   useEffect(() => {
     if (hungUpRef.current) return;
@@ -274,7 +332,6 @@ export function MessageChatPrivateCallHost({
           if (result.call.phase === "error" && result.call.error) {
             setCallError(result.call.error);
           }
-          // Auto-close shortly after remote hangup.
           setTimeout(() => {
             if (!hungUpRef.current) onHangUp();
           }, 1200);
@@ -316,7 +373,49 @@ export function MessageChatPrivateCallHost({
       audioBridgeRef.current?.stop();
       audioBridgeRef.current = null;
     };
-  }, [phase, call?.media_established, call?.call_id]); // eslint-disable-line react-hooks/exhaustive-deps -- restart bridge when media connects
+  }, [phase, call?.media_established, call?.call_id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Browser ↔ gateway video bridge for camera / screencast.
+  useEffect(() => {
+    if (phase !== "ready" || !call?.media_established || Platform.OS !== "web") return;
+    const callId = call.call_id;
+    if (callId == null) return;
+    let cancelled = false;
+    const abort = new AbortController();
+    void startPrivateCallVideoBridge({
+      callId,
+      signal: abort.signal,
+      onRemoteSources: (sources) => {
+        if (cancelled || hungUpRef.current) return;
+        setRemoteVideoSources(sources);
+      },
+    }).then((bridge) => {
+      if (cancelled || hungUpRef.current) {
+        bridge?.stop();
+        return;
+      }
+      if (!bridge) return;
+      videoBridgeRef.current?.stop();
+      videoBridgeRef.current = bridge;
+      bridge.setLocalCameraStream(localCameraStream);
+      bridge.setLocalScreenStream(localScreenStream);
+    });
+    return () => {
+      cancelled = true;
+      abort.abort();
+      videoBridgeRef.current?.stop();
+      videoBridgeRef.current = null;
+      setRemoteVideoSources([]);
+    };
+  }, [phase, call?.media_established, call?.call_id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    videoBridgeRef.current?.setLocalCameraStream(localCameraStream);
+  }, [localCameraStream]);
+
+  useEffect(() => {
+    videoBridgeRef.current?.setLocalScreenStream(localScreenStream);
+  }, [localScreenStream]);
 
   useEffect(() => {
     audioBridgeRef.current?.setMicEnabled(micActive);
@@ -335,7 +434,6 @@ export function MessageChatPrivateCallHost({
     };
   }, [stopAllMedia]);
 
-  // Minimized dock while call stays alive.
   useEffect(() => {
     const active =
       phase === "dialing" ||
@@ -385,6 +483,14 @@ export function MessageChatPrivateCallHost({
     setCameraActive(false);
   }, [stopTracks]);
 
+  const stopScreenShare = useCallback(() => {
+    setLocalScreenStream((prev) => {
+      stopTracks(prev);
+      return null;
+    });
+    setScreenSharing(false);
+  }, [stopTracks]);
+
   const onMicPress = useCallback(() => {
     setMicActive((prev) => !prev);
   }, []);
@@ -399,13 +505,56 @@ export function MessageChatPrivateCallHost({
       return;
     }
     void navigator.mediaDevices
-      .getUserMedia({ video: true, audio: false })
+      .getUserMedia({
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 360 },
+          frameRate: { ideal: 15, max: 24 },
+        },
+        audio: false,
+      })
       .then((stream) => {
+        const track = stream.getVideoTracks()[0];
+        track?.addEventListener("ended", () => {
+          setLocalCameraStream((prev) => {
+            if (prev === stream) {
+              stopTracks(prev);
+              return null;
+            }
+            return prev;
+          });
+          setCameraActive(false);
+        });
         setLocalCameraStream(stream);
         setCameraActive(true);
       })
       .catch(() => setCameraActive(false));
-  }, [cameraActive, stopCamera]);
+  }, [cameraActive, stopCamera, stopTracks]);
+
+  const onStartScreenShare = useCallback(() => {
+    if (Platform.OS !== "web" || typeof navigator === "undefined" || !navigator.mediaDevices?.getDisplayMedia) {
+      setScreenSharing(true);
+      return;
+    }
+    void navigator.mediaDevices
+      .getDisplayMedia({ video: true, audio: false })
+      .then((stream) => {
+        const track = stream.getVideoTracks()[0];
+        track?.addEventListener("ended", () => {
+          setLocalScreenStream((prev) => {
+            if (prev === stream) {
+              stopTracks(prev);
+              return null;
+            }
+            return prev;
+          });
+          setScreenSharing(false);
+        });
+        setLocalScreenStream(stream);
+        setScreenSharing(true);
+      })
+      .catch(() => setScreenSharing(false));
+  }, [stopTracks]);
 
   const handleDrop = useCallback(() => {
     void hangUp();
@@ -432,12 +581,14 @@ export function MessageChatPrivateCallHost({
       cameraActive={cameraActive}
       onCameraPress={onCameraPress}
       screenSharing={screenSharing}
-      onStartScreenShare={() => setScreenSharing(true)}
-      onStopScreenShare={() => setScreenSharing(false)}
+      onStartScreenShare={onStartScreenShare}
+      onStopScreenShare={stopScreenShare}
       onDropPress={handleDrop}
       dropLeaving={dropLeaving}
       localCameraStream={localCameraStream}
-      videoActive={cameraActive}
+      localScreenStream={localScreenStream}
+      remoteVideoSources={remoteVideoSources}
+      videoActive={cameraActive || screenSharing || remoteVideoSources.length > 0}
       privateCall={{
         avatarUrl,
         initials,

@@ -48,6 +48,11 @@ const en = {
   "common.loading": "Loading…",
 
   "settings.sheetTitle": "Settings",
+  "settings.theme": "Theme",
+  "settings.themeAuto": "Auto",
+  "settings.themeDark": "Dark",
+  "settings.themeLight": "Light",
+  "settings.themeA11y": "Choose interface theme: Auto follows Telegram or system default",
 
   "debug.api": "api:",
   "debug.fetchMs": "fetchMs:",
@@ -477,6 +482,11 @@ const ru = {
   "common.loading": "Загрузка…",
 
   "settings.sheetTitle": "Настройки",
+  "settings.theme": "Тема",
+  "settings.themeAuto": "Авто",
+  "settings.themeDark": "Тёмная",
+  "settings.themeLight": "Светлая",
+  "settings.themeA11y": "Выберите тему интерфейса: Авто следует Telegram или системной по умолчанию",
 
   "debug.api": "api:",
   "debug.fetchMs": "fetchMs:",
@@ -904,6 +914,11 @@ const zh = {
   "common.emDash": "—",
   "common.loading": "加载中…",
   "settings.sheetTitle": "设置",
+  "settings.theme": "主题",
+  "settings.themeAuto": "自动",
+  "settings.themeDark": "深色",
+  "settings.themeLight": "浅色",
+  "settings.themeA11y": "选择界面主题：自动跟随 Telegram 或系统默认",
   "debug.api": "api:",
   "debug.fetchMs": "fetchMs:",
   "debug.hasWebAppLine": "hasWebAppApi: {{has}} · inTelegram: {{in}}",

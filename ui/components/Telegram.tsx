@@ -36,6 +36,10 @@ import {
 import type { TelegramLayoutStartupSnapshot } from "./telegramWebApp";
 import { buildApiUrl } from "../../api/_base";
 import { appError, appLog } from "../../shared/appLog";
+import {
+  readStoredManualAppTheme,
+  writeStoredManualAppTheme,
+} from "../manualAppThemeStorage";
 
 let sdkInitialized = false;
 function ensureSdkInitialized() {
@@ -233,8 +237,16 @@ export type TelegramContextValue = {
    * Differs from isInTelegram when status is "dev" but tgWebApp hash/init data exists (theme.ts must not force dark).
    */
   useTelegramTheme: boolean;
-  /** "dark" | "light" per Telegram theme; dark is default/fallback. */
+  /**
+   * Effective UI scheme after manual override (settings) or Telegram / plain-web auto.
+   * Prefer this over `autoColorScheme` for chrome and `useColors`.
+   */
   colorScheme: "dark" | "light";
+  /** Telegram (or plain-web default dark) scheme before manual override. */
+  autoColorScheme: "dark" | "light";
+  /** Settings override; `null` = inherit `autoColorScheme`. */
+  manualTheme: "dark" | "light" | null;
+  setManualTheme: (theme: "dark" | "light" | null) => void;
   /** True once we have a valid Telegram theme bg_color and can safely paint our custom palette. */
   themeBgReady: boolean;
   /** False on SSR/first paint, true after client mount — keeps useColors in sync with server HTML (hydration). */
@@ -300,6 +312,9 @@ const defaultContext: TelegramContextValue = {
   isInTelegram: false,
   useTelegramTheme: false,
   colorScheme: "dark",
+  autoColorScheme: "dark",
+  manualTheme: null,
+  setManualTheme: () => {},
   themeBgReady: false,
   clientHydrated: false,
   triggerHaptic: () => {},
@@ -349,7 +364,12 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
   // the client snapshot differed from server HTML; `runTmaFlow` / viewport sync set the real value.
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(true);
-  const [colorScheme, setColorScheme] = useState<"dark" | "light">(initialColorSchemeFromBootstrap);
+  const [telegramColorScheme, setColorScheme] = useState<"dark" | "light">(
+    initialColorSchemeFromBootstrap,
+  );
+  const [manualTheme, setManualThemeState] = useState<"dark" | "light" | null>(() =>
+    readStoredManualAppTheme(),
+  );
 
   // Client starts hidden (themeBgReady false) until plain-web unlock (useLayoutEffect) or TMA runTmaFlow.
   const [themeBgReady, setThemeBgReady] = useState<boolean>(initialThemeBgReadyFromBootstrap);
@@ -360,6 +380,11 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
   );
   useEffect(() => {
     setClientHydrated(true);
+  }, []);
+
+  const setManualTheme = useCallback((theme: "dark" | "light" | null) => {
+    setManualThemeState(theme);
+    writeStoredManualAppTheme(theme);
   }, []);
 
   const applyServerWalletAfterRegister = useCallback((w: TelegramWalletRow) => {
@@ -992,6 +1017,10 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
     status !== "dev" && status !== "error" && status !== "idle";
   const isInTelegram = tmaBootstrapActive && miniAppContext;
   const useTelegramTheme = miniAppContext && tmaBootstrapActive;
+  const autoColorScheme: "dark" | "light" = useTelegramTheme
+    ? telegramColorScheme
+    : "dark";
+  const colorScheme: "dark" | "light" = manualTheme ?? autoColorScheme;
 
   useEffect(() => {
     refreshLayoutStartup();
@@ -1009,6 +1038,9 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
     isInTelegram,
     useTelegramTheme,
     colorScheme,
+    autoColorScheme,
+    manualTheme,
+    setManualTheme,
     themeBgReady,
     clientHydrated,
     triggerHaptic: triggerHapticImpl,

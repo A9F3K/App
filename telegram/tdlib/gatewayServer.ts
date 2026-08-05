@@ -15,6 +15,7 @@ import {
   type StreamTicketPayload,
 } from "./streamTicket.js";
 import { attachPrivateCallAudioWebSocket } from "./privateCallAudioStream.js";
+import { attachPrivateCallVideoWebSocket } from "./privateCallVideoStream.js";
 import {
   disconnectUserSession,
   gatewayHealth,
@@ -1779,10 +1780,12 @@ export function startTdlibGatewayServer(): http.Server {
           const body = (await readJson(req)) as {
             telegramUsername?: string;
             callId?: number;
+            duration?: number;
           };
           const telegramUsername =
             typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
           const callId = Number(body.callId);
+          const duration = Number(body.duration);
           if (!telegramUsername) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
             return;
@@ -1790,6 +1793,7 @@ export function startTdlibGatewayServer(): http.Server {
           const result = await discardPrivateCallForSession(
             telegramUsername,
             Number.isFinite(callId) && callId > 0 ? callId : null,
+            Number.isFinite(duration) && duration > 0 ? duration : null,
           );
           if (!result.ok) {
             sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
@@ -1981,6 +1985,7 @@ export function startTdlibGatewayServer(): http.Server {
   });
 
   attachPrivateCallAudioWebSocket(server);
+  attachPrivateCallVideoWebSocket(server);
 
   const port = getGatewayPort();
   const host = getGatewayBindHost();
