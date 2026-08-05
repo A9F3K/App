@@ -492,7 +492,9 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           ? micOff
             ? "Unmute microphone"
             : "Mute microphone"
-          : undefined
+          : micLocallyMuted
+            ? `${title}, muted for you — open menu to unmute`
+            : undefined
       }
       disabled={participant.is_self ? !onSelfMicPress : !onOpenMenu}
       onPress={(event) => openMenuFromEvent(event)}

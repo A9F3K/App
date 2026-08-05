@@ -52,6 +52,11 @@ export type TelegramVoiceSession = {
    * (another client) so web join does not remute and paint a red self mic.
    */
   joinListen: (opts?: { startMuted?: boolean }) => Promise<boolean>;
+  /**
+   * Force TDLib rejoin while keeping (or restoring) mic state. Used when mute /
+   * speaking / in-call messages fail with GROUPCALL_JOIN_MISSING despite a live PC.
+   */
+  rejoinForTdlib: (opts?: { startMuted?: boolean }) => Promise<boolean>;
   toggleMic: () => Promise<void>;
   toggleCamera: () => Promise<void>;
   startScreenShare: (preacquiredStream?: MediaStream | null) => Promise<void>;
@@ -141,11 +146,16 @@ export function useTelegramVoiceSession({
     videoSourcesUnsubRef.current = null;
     localMediaUnsubRef.current?.();
     localMediaUnsubRef.current = null;
-    const wasJoined = Boolean(sessionRef.current?.isJoined);
-    sessionRef.current?.dispose();
+    const session = sessionRef.current;
+    const wasJoined = Boolean(session?.isJoined);
+    // Snapshot before dispose / before parent can overwrite groupCallIdRef on
+    // chat switch — leaving chat A with B's call id left TDLib JOIN_MISSING.
+    const leaveChatId = session?.chatId ?? chatId;
+    const leaveGroupCallId = session?.groupCallId ?? groupCallIdRef.current;
+    session?.dispose();
     sessionRef.current = null;
     if (wasJoined) {
-      void leaveTelegramChatVoice(chatId, groupCallIdRef.current).catch(() => undefined);
+      void leaveTelegramChatVoice(leaveChatId, leaveGroupCallId).catch(() => undefined);
     }
     resetLocalUi();
   }, [chatId, resetLocalUi]);
@@ -368,6 +378,38 @@ export function useTelegramVoiceSession({
     }
   }, [chatId, groupCallId]);
 
+  const rejoinForTdlib = useCallback(async (opts?: { startMuted?: boolean }): Promise<boolean> => {
+    if (Platform.OS !== "web") return false;
+    const session = sessionRef.current;
+    if (!session) return false;
+    const startMuted = opts?.startMuted !== false;
+    setJoining(true);
+    setError(null);
+    micActiveRef.current = !startMuted;
+    setMicActive(!startMuted);
+    try {
+      const ok = await session.rejoinForTdlibPresence(startMuted);
+      setJoined(ok);
+      setMediaConnected(session.isMediaConnected());
+      setNegotiating(session.isNegotiating());
+      if (ok) {
+        session.setRemoteAudioEnabled(true);
+        session.resumeRemoteAudio();
+        const enabled = session.isMicEnabled;
+        micActiveRef.current = enabled;
+        setMicActive(enabled);
+      }
+      return ok;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "voice_rejoin_failed";
+      setError(message);
+      appWarn("[voice-session-rejoin]", message, { chatId, groupCallId });
+      return false;
+    } finally {
+      setJoining(false);
+    }
+  }, [chatId, groupCallId]);
+
   const unlockAudio = useCallback(() => {
     sessionRef.current?.unlockRemoteAudio();
   }, []);
@@ -545,6 +587,7 @@ export function useTelegramVoiceSession({
     unlockAudio,
     prefetchMic,
     joinListen,
+    rejoinForTdlib,
     toggleMic,
     toggleCamera,
     startScreenShare,

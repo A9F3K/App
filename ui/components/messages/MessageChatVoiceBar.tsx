@@ -29,6 +29,12 @@ import { MessageChatVoicePopover, type VoiceChatMessage, voiceParticipantPrefsKe
 import { MessageChatVoiceVideoPlane } from "./MessageChatVoiceVideoPlane";
 import { setTelegramChatVoiceParticipantVolume } from "../../telegram/setTelegramChatVoiceParticipantVolume";
 import {
+  isIntentionalVoiceMute,
+  patchStoredVoicePeerMediaPrefs,
+  readStoredVoicePeerMediaPrefs,
+  storedPrefsToSessionPrefs,
+} from "../../telegram/voiceParticipantMediaPrefsStorage";
+import {
   useTelegramVoiceParticipantsStream,
   type VoiceParticipantsStreamSnapshot,
 } from "./useTelegramVoiceParticipantsStream";
@@ -143,8 +149,14 @@ export function MessageChatVoiceBar({
   const volumeApiTimerRef = useRef<number | null>(null);
   /** Peers we already restored from TDLib volume_level=1 (0%) this join. */
   const volumeZeroRepairAttemptedRef = useRef<Set<string>>(new Set());
+  /** Intentional muted-for-me peers we re-applied volume 0 to on the SFU this join. */
+  const intentionalMuteReapplyAttemptedRef = useRef<Set<string>>(new Set());
   /** Unmuted remotes we already nudged to 100% listen volume this join (SFU). */
   const listenVolumeNudgeAttemptedRef = useRef<Set<string>>(new Set());
+  /** TDLib account user_id when volume API reports self (may differ from UI is_self). */
+  const tdlibSelfUserIdRef = useRef<number | null>(null);
+  /** Account key for persisted mute / stream prefs (Telegram username). */
+  const voicePrefsAccountId = telegramUsername?.trim() || "anon";
   /** Listed row count — always matches dialog roster / strip avatars. */
   const [participantCount, setParticipantCount] = useState(0);
   /** TDLib total hint (may exceed loaded rows until force reload). */
@@ -325,6 +337,8 @@ export function MessageChatVoiceBar({
   const heardRemoteMixRef = useRef(false);
   const joinListenRef = useRef(voiceSession.joinListen);
   joinListenRef.current = voiceSession.joinListen;
+  const rejoinForTdlibRef = useRef(voiceSession.rejoinForTdlib);
+  rejoinForTdlibRef.current = voiceSession.rejoinForTdlib;
   const unlockAudioRef = useRef(voiceSession.unlockAudio);
   unlockAudioRef.current = voiceSession.unlockAudio;
   const selfTitleRef = useRef("");
@@ -510,7 +524,9 @@ export function MessageChatVoiceBar({
     leaveTombstonesRef.current.clear();
     lastNonZeroVolumeRef.current = {};
     volumeZeroRepairAttemptedRef.current.clear();
+    intentionalMuteReapplyAttemptedRef.current.clear();
     listenVolumeNudgeAttemptedRef.current.clear();
+    tdlibSelfUserIdRef.current = null;
     hasHiddenListenersRef.current = false;
     if (volumeApiTimerRef.current != null) {
       window.clearTimeout(volumeApiTimerRef.current);
@@ -1012,19 +1028,15 @@ export function MessageChatVoiceBar({
       const incomingLooksOrderless =
         next.length > 0 &&
         next.every((row) => !String(row.order ?? "").trim());
-      // Authoritative shrink: hint caught up, OR an ordered snapshot is a strict
-      // subset of the painted roster (peer left) even if participant_count lags.
-      const orderedSubsetLeave =
-        !growsRoster &&
-        next.length < prev.length &&
-        next.length > 0 &&
-        !incomingLooksOrderless &&
-        next.every((row) => prevByKey.has(speakKey(row)));
+      // Authoritative shrink only when TDLib's participant_count has caught up to
+      // the smaller payload. An ordered listed=1 (often self-only) with hint still
+      // 5+ used to tombstone every remote and paint only "You" (prod SSE flaps).
+      const hintConfirmsShrink = hint > 0 && hint <= next.length;
       const authoritativeShrink =
         !growsRoster &&
         next.length < prev.length &&
         next.length > 0 &&
-        ((hint > 0 && hint <= next.length) || orderedSubsetLeave);
+        hintConfirmsShrink;
       const nowMs = Date.now();
       for (const [key, at] of leaveTombstonesRef.current) {
         if (nowMs - at >= LEAVE_TOMBSTONE_MS) leaveTombstonesRef.current.delete(key);
@@ -1039,7 +1051,9 @@ export function MessageChatVoiceBar({
           leaveTombstonesRef.current.delete(speakKey(row));
         }
       }
-      if (authoritativeShrink || (!incomingLooksOrderless && next.length > 0 && !growsRoster && next.length < prev.length)) {
+      // Only tombstone on confirmed shrink — never on thin ordered SSE, or merge
+      // drops remotes and the sheet collapses to self.
+      if (authoritativeShrink) {
         for (const row of prev) {
           const key = speakKey(row);
           if (!nextByKey.has(key)) leaveTombstonesRef.current.set(key, nowMs);
@@ -1616,11 +1630,32 @@ export function MessageChatVoiceBar({
 
   const onSendVoiceChatMessage = useCallback(
     async (text: string) => {
-      const result = await sendTelegramChatVoiceCallMessage({
-        chatId,
-        groupCallId,
-        text,
-      });
+      const sendOnce = () =>
+        sendTelegramChatVoiceCallMessage({
+          chatId,
+          groupCallId,
+          text,
+        });
+      let result = await sendOnce();
+      if (
+        !result.ok &&
+        typeof result.error === "string" &&
+        result.error.includes("GROUPCALL_JOIN_MISSING")
+      ) {
+        // joinListen no-ops when WebRTC still reports joined — force TDLib rebind.
+        logPageDisplay("messages_voice_call_message_rejoin", {
+          chatId,
+          groupCallId,
+          level: "warn",
+          note: "GROUPCALL_JOIN_MISSING on send — force TDLib rejoin then retry",
+        });
+        const rejoined = await rejoinForTdlibRef.current({
+          startMuted: !micActiveRef.current,
+        });
+        if (rejoined) {
+          result = await sendOnce();
+        }
+      }
       if (!result.ok) {
         appWarn("[voice-call-message]", result.error, { chatId, groupCallId });
         return;
@@ -2453,17 +2488,44 @@ export function MessageChatVoiceBar({
       const key = voiceParticipantPrefsKey(participant);
       const existing = participantMediaPrefsRef.current[key];
       if (existing) return { key, prefs: existing };
-      const volumePercent =
+      const tdlibVolume =
         typeof participant.volume_percent === "number" ? participant.volume_percent : 100;
+      const stored = readStoredVoicePeerMediaPrefs(voicePrefsAccountId, key);
+      const fromStore = storedPrefsToSessionPrefs(stored, tdlibVolume);
       // Default show active shares; menu mute sets muteScreen=true.
       const sharing = Boolean(
         participant.screen_sharing_video_info?.endpoint_id?.trim() ||
           (participant.screen_sharing_video_info?.source_groups?.length ?? 0) > 0,
       );
+      if (fromStore) {
+        if (fromStore.volumePercent > 0) {
+          lastNonZeroVolumeRef.current[key] = fromStore.volumePercent;
+        } else if (
+          typeof stored?.volumePercent === "number" &&
+          stored.volumePercent > 0
+        ) {
+          lastNonZeroVolumeRef.current[key] = stored.volumePercent;
+        }
+        return {
+          key,
+          prefs: {
+            volumePercent: fromStore.volumePercent,
+            muteVideo: fromStore.muteVideo,
+            // Stored screen mute wins; otherwise hide idle share slots.
+            muteScreen: stored?.muteScreen === true ? true : !sharing,
+          },
+        };
+      }
+      // Stale TDLib muted-for-me (0%) without an intentional mute → treat as 100%.
+      const volumePercent =
+        tdlibVolume <= 0 && !isIntentionalVoiceMute(voicePrefsAccountId, key)
+          ? 100
+          : tdlibVolume;
+      if (volumePercent > 0) lastNonZeroVolumeRef.current[key] = volumePercent;
       const prefs = { volumePercent, muteVideo: false, muteScreen: !sharing };
       return { key, prefs };
     },
-    [],
+    [voicePrefsAccountId],
   );
 
   const onParticipantVolumeChange = useCallback(
@@ -2471,6 +2533,18 @@ export function MessageChatVoiceBar({
       const { key, prefs } = ensureParticipantPrefs(participant);
       const nextPercent = Math.min(200, Math.max(0, Math.round(volumePercent)));
       if (nextPercent > 0) lastNonZeroVolumeRef.current[key] = nextPercent;
+      // Persist intentional muted-for-me at account scope; clear on unmute.
+      if (nextPercent <= 0) {
+        patchStoredVoicePeerMediaPrefs(voicePrefsAccountId, key, {
+          voiceMuted: true,
+          volumePercent: lastNonZeroVolumeRef.current[key] ?? 100,
+        });
+      } else {
+        patchStoredVoicePeerMediaPrefs(voicePrefsAccountId, key, {
+          voiceMuted: false,
+          volumePercent: nextPercent,
+        });
+      }
       setParticipantMediaPrefs((prev) => ({
         ...prev,
         [key]: { ...prefs, ...prev[key], volumePercent: nextPercent },
@@ -2506,11 +2580,19 @@ export function MessageChatVoiceBar({
           }));
           if (result.volume_percent > 0) {
             lastNonZeroVolumeRef.current[key] = result.volume_percent;
+            patchStoredVoicePeerMediaPrefs(voicePrefsAccountId, key, {
+              voiceMuted: false,
+              volumePercent: result.volume_percent,
+            });
+          } else {
+            patchStoredVoicePeerMediaPrefs(voicePrefsAccountId, key, {
+              voiceMuted: true,
+            });
           }
         });
       }, 120);
     },
-    [chatId, ensureParticipantPrefs, groupCallId],
+    [chatId, ensureParticipantPrefs, groupCallId, voicePrefsAccountId],
   );
 
   const onParticipantToggleMuteVoice = useCallback(
@@ -2518,10 +2600,16 @@ export function MessageChatVoiceBar({
       const { key, prefs } = ensureParticipantPrefs(participant);
       const current =
         participantMediaPrefsRef.current[key]?.volumePercent ?? prefs.volumePercent;
-      const next = current > 0 ? 0 : lastNonZeroVolumeRef.current[key] || 100;
+      const stored = readStoredVoicePeerMediaPrefs(voicePrefsAccountId, key);
+      const restore =
+        lastNonZeroVolumeRef.current[key] ||
+        (typeof stored?.volumePercent === "number" && stored.volumePercent > 0
+          ? stored.volumePercent
+          : 100);
+      const next = current > 0 ? 0 : restore;
       onParticipantVolumeChange(participant, next);
     },
-    [ensureParticipantPrefs, onParticipantVolumeChange],
+    [ensureParticipantPrefs, onParticipantVolumeChange, voicePrefsAccountId],
   );
 
   const onParticipantToggleMuteVideo = useCallback(
@@ -2529,10 +2617,14 @@ export function MessageChatVoiceBar({
       const { key, prefs } = ensureParticipantPrefs(participant);
       setParticipantMediaPrefs((prev) => {
         const cur = prev[key] ?? prefs;
-        return { ...prev, [key]: { ...cur, muteVideo: !cur.muteVideo } };
+        const nextMute = !cur.muteVideo;
+        patchStoredVoicePeerMediaPrefs(voicePrefsAccountId, key, {
+          muteVideo: nextMute,
+        });
+        return { ...prev, [key]: { ...cur, muteVideo: nextMute } };
       });
     },
-    [ensureParticipantPrefs],
+    [ensureParticipantPrefs, voicePrefsAccountId],
   );
 
   const onParticipantToggleMuteScreen = useCallback(
@@ -2540,6 +2632,9 @@ export function MessageChatVoiceBar({
       const { key, prefs } = ensureParticipantPrefs(participant);
       const cur = participantMediaPrefsRef.current[key] ?? prefs;
       const nextMute = !cur.muteScreen;
+      patchStoredVoicePeerMediaPrefs(voicePrefsAccountId, key, {
+        muteScreen: nextMute,
+      });
       setParticipantMediaPrefs((prev) => {
         const existing = prev[key] ?? prefs;
         return { ...prev, [key]: { ...existing, muteScreen: nextMute } };
@@ -2549,38 +2644,147 @@ export function MessageChatVoiceBar({
         voiceSession.preferExplicitRemoteVideoSubscribe();
       }
     },
-    [ensureParticipantPrefs, voiceSession],
+    [ensureParticipantPrefs, voicePrefsAccountId, voiceSession],
   );
+
+  // Hydrate account-persisted mute / stream prefs into session state so roster
+  // icons (red mic, crossed screen) match before WebRTC join.
+  useEffect(() => {
+    if (participants.length === 0) return;
+    setParticipantMediaPrefs((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const row of participants) {
+        if (row.is_self) continue;
+        const key = voiceParticipantPrefsKey(row);
+        if (next[key]) continue;
+        const { prefs } = ensureParticipantPrefs(row);
+        next[key] = prefs;
+        changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [participants, ensureParticipantPrefs]);
 
   // Push local listen volumes into the WebRTC mix GainNode. TDLib volume_level
   // also gates SFU mix contribution — volume_level=1 (0%) mutes that peer for
-  // you server-side (prod: hear Сева, silence when only СИГМА remains unmuted).
+  // you server-side. On join: unmute everyone unless this account intentionally
+  // muted them (persisted + red mic); stale TDLib 0% without that mark is repaired.
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") return;
     const volumes: Record<string, number> = {};
     const participantKeys: string[] = [];
     const speakingKeys: string[] = [];
     const repairRows: TelegramChatVoiceParticipant[] = [];
+    const intentionalMuteRows: TelegramChatVoiceParticipant[] = [];
     for (const row of participants) {
       if (row.is_self) continue;
       const key = voiceParticipantPrefsKey(row);
       participantKeys.push(key);
       const prefs = participantMediaPrefs[key];
+      const intentionalMute = isIntentionalVoiceMute(voicePrefsAccountId, key);
       const hasLocalVolumePref = prefs?.volumePercent != null;
       let volumePercent =
         prefs?.volumePercent ??
         (typeof row.volume_percent === "number" ? row.volume_percent : 100);
-      // Individual TDLib muted-for-me (volume_level=1 → 0%) without a local
-      // mute preference — restore 100% locally and via API so SFU forwards them.
-      if (volumePercent <= 0 && !hasLocalVolumePref) {
+
+      if (intentionalMute) {
+        // Keep muted-for-me; paint red mic and ensure SFU stays at 0.
+        volumePercent = 0;
+        if (!hasLocalVolumePref || (prefs?.volumePercent ?? 1) > 0) {
+          intentionalMuteRows.push(row);
+        } else if (
+          typeof row.volume_percent === "number" &&
+          row.volume_percent > 0
+        ) {
+          intentionalMuteRows.push(row);
+        }
+      } else if (volumePercent <= 0) {
+        // Stale SFU muted-for-me without an intentional mute — hear them.
         volumePercent = 100;
         repairRows.push(row);
+      } else if (
+        typeof row.volume_percent === "number" &&
+        row.volume_percent <= 0 &&
+        volumePercent > 0
+      ) {
+        // Hydrated session prefs already 100% but TDLib/SFU still at 0.
+        repairRows.push(row);
       }
+
       volumes[key] = volumePercent;
       const peerSpeaking = Boolean(
         !row.is_muted && rowSpeakKeys(row).some((k) => speakingByKey[k]),
       );
       if (peerSpeaking) speakingKeys.push(key);
+    }
+    if (intentionalMuteRows.length > 0) {
+      logPageDisplay("messages_voice_listen_volume_intentional_mute", {
+        chatId,
+        count: intentionalMuteRows.length,
+        titles: intentionalMuteRows.map((r) => r.title || "?").slice(0, 4),
+        level: "info",
+        note: "account-persisted muted-for-me — keep 0% and show unmute in menu",
+      });
+      setParticipantMediaPrefs((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        for (const row of intentionalMuteRows) {
+          const key = voiceParticipantPrefsKey(row);
+          const stored = readStoredVoicePeerMediaPrefs(voicePrefsAccountId, key);
+          if (
+            typeof stored?.volumePercent === "number" &&
+            stored.volumePercent > 0
+          ) {
+            lastNonZeroVolumeRef.current[key] = stored.volumePercent;
+          }
+          const base = next[key] ?? {
+            volumePercent: 0,
+            muteVideo: stored?.muteVideo === true,
+            muteScreen: stored?.muteScreen === true,
+          };
+          if (base.volumePercent !== 0) {
+            next[key] = { ...base, volumePercent: 0 };
+            changed = true;
+          } else if (!next[key]) {
+            next[key] = base;
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+      for (const row of intentionalMuteRows) {
+        const key = voiceParticipantPrefsKey(row);
+        if (intentionalMuteReapplyAttemptedRef.current.has(key)) continue;
+        intentionalMuteReapplyAttemptedRef.current.add(key);
+        void setTelegramChatVoiceParticipantVolume({
+          chatId,
+          groupCallId,
+          userId: row.user_id,
+          peerChatId: row.chat_id,
+          volumePercent: 0,
+        }).then((result) => {
+          if (!result.ok) {
+            appWarn("[voice-participant-volume-intentional-mute]", result.error, {
+              chatId,
+              groupCallId,
+              userId: row.user_id,
+              title: row.title,
+            });
+            intentionalMuteReapplyAttemptedRef.current.delete(key);
+            return;
+          }
+          logPageDisplay("messages_voice_listen_volume_sfu_muted", {
+            chatId,
+            groupCallId,
+            userId: row.user_id,
+            title: row.title,
+            volume_percent: result.volume_percent,
+            level: "info",
+            note: "setGroupCallParticipantVolumeLevel 0% for intentional muted-for-me",
+          });
+        });
+      }
     }
     if (repairRows.length > 0) {
       logPageDisplay("messages_voice_listen_volume_repaired", {
@@ -2588,26 +2792,29 @@ export function MessageChatVoiceBar({
         repaired: repairRows.length,
         titles: repairRows.map((r) => r.title || "?").slice(0, 4),
         level: "warn",
-        note: "remote volume_percent=0 without local prefs — restored to 100% (SFU muted-for-me)",
+        note: "remote volume_percent=0 without intentional mute — restored to 100%",
       });
       setParticipantMediaPrefs((prev) => {
         let changed = false;
         const next = { ...prev };
         for (const row of repairRows) {
           const key = voiceParticipantPrefsKey(row);
-          if (next[key]?.volumePercent != null) continue;
+          if (isIntentionalVoiceMute(voicePrefsAccountId, key)) continue;
           const base = next[key] ?? {
             volumePercent: 100,
             muteVideo: false,
             muteScreen: false,
           };
-          next[key] = { ...base, volumePercent: 100 };
-          changed = true;
+          if ((base.volumePercent ?? 0) <= 0 || !next[key]) {
+            next[key] = { ...base, volumePercent: 100 };
+            changed = true;
+          }
         }
         return changed ? next : prev;
       });
       for (const row of repairRows) {
         const key = voiceParticipantPrefsKey(row);
+        if (isIntentionalVoiceMute(voicePrefsAccountId, key)) continue;
         if (volumeZeroRepairAttemptedRef.current.has(key)) continue;
         volumeZeroRepairAttemptedRef.current.add(key);
         lastNonZeroVolumeRef.current[key] = 100;
@@ -2646,8 +2853,16 @@ export function MessageChatVoiceBar({
     if (groupCallId != null && groupCallId > 0) {
       for (const row of participants) {
         if (row.is_self || row.is_muted) continue;
+        if (
+          row.user_id != null &&
+          tdlibSelfUserIdRef.current != null &&
+          row.user_id === tdlibSelfUserIdRef.current
+        ) {
+          continue;
+        }
         const key = voiceParticipantPrefsKey(row);
         if (listenVolumeNudgeAttemptedRef.current.has(key)) continue;
+        if (isIntentionalVoiceMute(voicePrefsAccountId, key)) continue;
         const prefs = participantMediaPrefs[key];
         if (prefs?.volumePercent != null && prefs.volumePercent <= 0) continue;
         const volumePercent =
@@ -2665,6 +2880,55 @@ export function MessageChatVoiceBar({
           volumePercent: Math.max(100, volumePercent),
         }).then((result) => {
           if (!result.ok) {
+            const errText =
+              typeof result.error === "string" ? result.error : String(result.error ?? "");
+            if (/Can't change self volume/i.test(errText)) {
+              // Optimistic self row can use a different identity than TDLib's
+              // account (display name vs linked user) — never retry this peer.
+              if (row.user_id != null) {
+                tdlibSelfUserIdRef.current = row.user_id;
+              }
+              logPageDisplay("messages_voice_listen_volume_self_skip", {
+                chatId,
+                groupCallId,
+                userId: row.user_id,
+                title: row.title,
+                level: "info",
+                note: "TDLib self — skip SFU volume nudge",
+              });
+              setParticipants((prev) => {
+                const uid = row.user_id;
+                if (uid == null) return prev;
+                const optimistic = prev.find((p) => p.is_self);
+                let changed = false;
+                const next = prev.flatMap((p) => {
+                  if (p.user_id === uid) {
+                    if (p.is_self && p.title === (optimistic?.title || p.title)) {
+                      return [p];
+                    }
+                    changed = true;
+                    return [
+                      {
+                        ...p,
+                        is_self: true,
+                        title: optimistic?.title?.trim() || p.title,
+                        description: optimistic?.description || p.description,
+                        emoji_status_custom_emoji_id:
+                          optimistic?.emoji_status_custom_emoji_id ??
+                          p.emoji_status_custom_emoji_id,
+                      },
+                    ];
+                  }
+                  if (p.is_self && p.user_id !== uid) {
+                    changed = true;
+                    return [];
+                  }
+                  return [p];
+                });
+                return changed ? next : prev;
+              });
+              return;
+            }
             appWarn("[voice-participant-volume-nudge]", result.error, {
               chatId,
               groupCallId,
@@ -2700,6 +2964,7 @@ export function MessageChatVoiceBar({
     setParticipantListenVolumes,
     chatId,
     groupCallId,
+    voicePrefsAccountId,
   ]);
 
   // Opening the sheet: paint first, then load roster. Do NOT wait for WebRTC
@@ -3389,7 +3654,9 @@ export function MessageChatVoiceBar({
       const result = await voiceSession.leaveVoice();
       if (result.ok) {
         volumeZeroRepairAttemptedRef.current.clear();
+        intentionalMuteReapplyAttemptedRef.current.clear();
         listenVolumeNudgeAttemptedRef.current.clear();
+        tdlibSelfUserIdRef.current = null;
         onClosePopover();
         // Drop strip / dock immediately — do not keep Join preview after Leave
         // even when others remain in the call (probe may still mark chat live).
@@ -3444,8 +3711,10 @@ export function MessageChatVoiceBar({
     try {
       const result = await voiceSession.leaveVoice();
       if (result.ok) {
-        volumeZeroRepairAttemptedRef.current.clear();
-        listenVolumeNudgeAttemptedRef.current.clear();
+    volumeZeroRepairAttemptedRef.current.clear();
+    intentionalMuteReapplyAttemptedRef.current.clear();
+    listenVolumeNudgeAttemptedRef.current.clear();
+    tdlibSelfUserIdRef.current = null;
         onLeftVoice?.();
         setParticipants([]);
         setParticipantCount(0);
