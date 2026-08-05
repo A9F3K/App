@@ -11,6 +11,7 @@ import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.
 import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFetchUserProfile, gatewayBlockUser, gatewayUnblockUser, gatewaySearchChatLinks, gatewaySearchChatMedia, gatewayCreatePrivateCall, gatewayGetPrivateCall, gatewayDiscardPrivateCall, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayOpenChatMessagesStream, gatewayOpenVoiceParticipantsStream, gatewayOpenVoiceCallMessagesStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayDeleteChatMessages,   gatewayJoinChatVoice, gatewaySetChatVoiceMicMuted, gatewaySetChatVoiceParticipantVolume, gatewaySetChatVoiceParticipantSpeaking, gatewayStartChatVoice, gatewayLeaveChatVoice, gatewayStartChatVoiceScreenShare, gatewayEndChatVoiceScreenShare, gatewaySendChatVoiceCallMessage, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewaySearchChats, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages } from "../_lib/tdlib-gateway-client.js";
 import { getGatewayPublicBaseUrl } from "../../telegram/tdlib/env.js";
 import {
+  gatewayHttpToWebSocketUrl,
   gatewayStreamPathForKind,
   isGatewayStreamKind,
   mintStreamTicket,
@@ -2880,6 +2881,9 @@ export async function telegramMessagesStreamTicketHandler(
     Number.isFinite(groupCallIdRaw) && groupCallIdRaw > 0
       ? Math.trunc(groupCallIdRaw)
       : null;
+  const callIdRaw = Number(url.searchParams.get("call_id"));
+  const callId =
+    Number.isFinite(callIdRaw) && callIdRaw > 0 ? Math.trunc(callIdRaw) : null;
 
   if (
     (stream === "history" ||
@@ -2890,11 +2894,16 @@ export async function telegramMessagesStreamTicketHandler(
     return finishJson(request, res, { ok: false, error: "chat_id_required" }, 400);
   }
 
+  if (stream === "private_call_audio" && (callId == null || callId <= 0)) {
+    return finishJson(request, res, { ok: false, error: "call_id_required" }, 400);
+  }
+
   const minted = mintStreamTicket({
     telegramUsername: userOrRes,
     stream,
     chatId,
     groupCallId,
+    callId,
   });
   const path = gatewayStreamPathForKind(stream);
   const params = new URLSearchParams({
@@ -2903,6 +2912,7 @@ export async function telegramMessagesStreamTicketHandler(
   });
   if (chatId != null) params.set("chatId", String(chatId));
   if (groupCallId != null) params.set("groupCallId", String(groupCallId));
+  if (callId != null) params.set("callId", String(callId));
   const sinceRevisionRaw = url.searchParams.get("since_revision");
   if (sinceRevisionRaw != null && sinceRevisionRaw.trim() !== "") {
     const sinceRevision = Number(sinceRevisionRaw);
@@ -2912,11 +2922,16 @@ export async function telegramMessagesStreamTicketHandler(
   }
 
   const streamUrl = `${gatewayBaseUrl}${path}?${params.toString()}`;
+  const wsUrl =
+    stream === "private_call_audio"
+      ? `${gatewayHttpToWebSocketUrl(gatewayBaseUrl)}${path}?${params.toString()}`
+      : null;
   logTelegramMessagesApi("messages_stream_ticket", {
     telegramUsername: userOrRes,
     stream,
     chatId,
     groupCallId,
+    callId,
     expiresAt: minted.expiresAt,
   });
 
@@ -2931,6 +2946,7 @@ export async function telegramMessagesStreamTicketHandler(
       token: minted.token,
       expiresAt: minted.expiresAt,
       url: streamUrl,
+      wsUrl,
     },
     200,
   );

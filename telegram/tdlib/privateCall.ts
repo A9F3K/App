@@ -1,5 +1,6 @@
 import type { Client } from "tdl";
 import { logGateway } from "./gatewayLog.js";
+import { getPrivateCallMediaEstablished } from "./privateCallMedia.js";
 
 /**
  * Protocol layers / tgcalls versions accepted by current Telegram clients.
@@ -50,6 +51,8 @@ export type PrivateCallSnapshot = {
   has_encryption_key: boolean;
   /** Reflector / P2P server count from callStateReady. */
   server_count: number;
+  /** True once ntgcalls WebRTC transport is connected (peer can finish key exchange). */
+  media_established: boolean;
 };
 
 type CallState = {
@@ -60,6 +63,17 @@ type CallState = {
   error?: { message?: string };
   encryption_key?: unknown;
   servers?: unknown[];
+  allow_p2p?: boolean;
+  protocol?: { library_versions?: string[]; max_layer?: number };
+  custom_parameters?: string;
+};
+
+type CallPayload = {
+  id?: number;
+  user_id?: number;
+  is_outgoing?: boolean;
+  is_video?: boolean;
+  state?: CallState;
 };
 
 type CachedCall = {
@@ -73,6 +87,8 @@ type CachedCall = {
   hasEncryptionKey: boolean;
   serverCount: number;
   updatedAt: number;
+  /** Last TDLib call object (needed because this TDLib build has no getCall). */
+  callPayload?: CallPayload;
 };
 
 const callsByUsername = new Map<string, CachedCall>();
@@ -102,20 +118,43 @@ function phaseFromState(state: CallState | null | undefined): PrivateCallPhase {
   }
 }
 
+/** Unwrap TDLib bytes / { bytes: ... } / base64 / number[] into a Buffer. */
+function unwrapTdlibBytes(raw: unknown): Buffer | null {
+  if (raw == null) return null;
+  if (typeof raw === "object" && raw !== null && "bytes" in raw) {
+    return unwrapTdlibBytes((raw as { bytes: unknown }).bytes);
+  }
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(raw)) {
+    return raw.length > 0 ? raw : null;
+  }
+  if (raw instanceof Uint8Array) {
+    return raw.length > 0 ? Buffer.from(raw) : null;
+  }
+  if (Array.isArray(raw) && raw.length > 0 && raw.every((n) => typeof n === "number")) {
+    return Buffer.from(raw as number[]);
+  }
+  if (typeof raw === "string" && raw.length > 0) {
+    if (/^[A-Za-z0-9+/]+=*$/.test(raw) && raw.length % 4 === 0) {
+      const b64 = Buffer.from(raw, "base64");
+      if (b64.length > 0) return b64;
+    }
+    return Buffer.from(raw, "binary");
+  }
+  return null;
+}
+
 function hasEncryptionKey(state: CallState | null | undefined): boolean {
-  const key = state?.encryption_key;
-  if (key == null) return false;
-  if (typeof Buffer !== "undefined" && Buffer.isBuffer(key)) return key.length > 0;
-  if (key instanceof Uint8Array) return key.length > 0;
-  if (typeof key === "string") return key.length > 0;
-  return true;
+  return unwrapTdlibBytes(state?.encryption_key) != null;
 }
 
 function serverCountFromState(state: CallState | null | undefined): number {
   return Array.isArray(state?.servers) ? state!.servers!.length : 0;
 }
 
-function snapshotFromCache(cached: CachedCall): PrivateCallSnapshot {
+function snapshotFromCache(
+  cached: CachedCall,
+  telegramUsername: string,
+): PrivateCallSnapshot {
   return {
     call_id: cached.callId,
     user_id: cached.userId,
@@ -126,6 +165,7 @@ function snapshotFromCache(cached: CachedCall): PrivateCallSnapshot {
     emojis: cached.emojis,
     has_encryption_key: cached.hasEncryptionKey,
     server_count: cached.serverCount,
+    media_established: getPrivateCallMediaEstablished(telegramUsername),
   };
 }
 
@@ -167,6 +207,19 @@ function buildCachedFromCall(
     hasEncryptionKey: hasEncryptionKey(state) || existing?.hasEncryptionKey === true,
     serverCount: serverCountFromState(state) || existing?.serverCount || 0,
     updatedAt: Date.now(),
+    callPayload: {
+      id: callId,
+      user_id: Number(call.user_id) || existing?.userId || undefined,
+      is_outgoing: Boolean(call.is_outgoing ?? existing?.isOutgoing ?? true),
+      is_video: Boolean(call.is_video ?? existing?.isVideo ?? false),
+      state:
+        state && state._ === "callStateReady" && hasEncryptionKey(state)
+          ? state
+          : existing?.callPayload?.state?._ === "callStateReady" &&
+              hasEncryptionKey(existing.callPayload.state)
+            ? existing.callPayload.state
+            : state ?? existing?.callPayload?.state,
+    },
   };
   if (existing && existing.phase !== next.phase) {
     logGateway("private_call_phase", {
@@ -192,29 +245,128 @@ export function getCachedPrivateCall(telegramUsername: string): PrivateCallSnaps
       return null;
     }
   }
-  return snapshotFromCache(cached);
+  return snapshotFromCache(cached, telegramUsername);
+}
+
+function mergeCallWithCache(
+  telegramUsername: string,
+  call: CallPayload | null | undefined,
+): CallPayload | null {
+  if (!call) return null;
+  const cached = callsByUsername.get(telegramUsername);
+  const userId = Number(call.user_id) || cached?.userId || 0;
+  const cachedPayload = cached?.callPayload;
+  const state =
+    call.state && call.state._ === "callStateReady" && hasEncryptionKey(call.state)
+      ? call.state
+      : call.state?._ === "callStateReady" && cachedPayload?.state?._ === "callStateReady"
+        ? { ...cachedPayload.state, ...call.state }
+        : call.state ?? cachedPayload?.state;
+  return {
+    ...cachedPayload,
+    ...call,
+    id: Number(call.id) || cached?.callId,
+    user_id: userId || undefined,
+    is_outgoing: call.is_outgoing ?? cached?.isOutgoing,
+    is_video: call.is_video ?? cached?.isVideo,
+    state,
+  };
+}
+
+async function maybeStartPrivateCallMedia(
+  client: Client,
+  telegramUsername: string,
+  callOrCallId: CallPayload | number,
+): Promise<void> {
+  const callId =
+    typeof callOrCallId === "number"
+      ? Math.trunc(callOrCallId)
+      : Math.trunc(Number(callOrCallId.id));
+  if (!Number.isFinite(callId) || callId <= 0) {
+    logGateway("private_call_media_skip", {
+      telegramUsername,
+      reason: "no_call_id",
+      callId,
+    });
+    return;
+  }
+
+  // This prebuilt-tdlib build has no getCall — rely on updateCall + cached payload.
+  const fromArg =
+    typeof callOrCallId === "number" ? null : mergeCallWithCache(telegramUsername, callOrCallId);
+  const cached = callsByUsername.get(telegramUsername);
+  const call =
+    fromArg &&
+    fromArg.state?._ === "callStateReady" &&
+    hasEncryptionKey(fromArg.state) &&
+    serverCountFromState(fromArg.state) > 0
+      ? fromArg
+      : mergeCallWithCache(telegramUsername, cached?.callPayload ?? fromArg);
+
+  if (!call?.state || call.state._ !== "callStateReady") {
+    logGateway("private_call_media_skip", {
+      telegramUsername,
+      callId,
+      reason: "not_ready",
+      stateType: call?.state?._ ?? null,
+    });
+    return;
+  }
+  if (!hasEncryptionKey(call.state) || serverCountFromState(call.state) === 0) {
+    logGateway("private_call_media_skip", {
+      telegramUsername,
+      callId,
+      reason: "ready_incomplete",
+      hasKey: hasEncryptionKey(call.state),
+      serverCount: serverCountFromState(call.state),
+    });
+    return;
+  }
+
+  const cachedUserId = cached?.userId ?? 0;
+  if (!(Number(call.user_id) || cachedUserId)) {
+    logGateway("private_call_media_skip", {
+      telegramUsername,
+      callId,
+      reason: "no_user_id",
+    });
+    return;
+  }
+
+  try {
+    const { ensurePrivateCallMediaStarted } = await import("./privateCallMedia.js");
+    ensurePrivateCallMediaStarted(
+      client,
+      telegramUsername,
+      {
+        ...call,
+        user_id: Number(call.user_id) || cachedUserId,
+      },
+      async (id, data) => {
+        const result = await sendPrivateCallSignalingData(client, id, data);
+        return result.ok ? { ok: true as const } : { ok: false as const, error: result.error };
+      },
+      cachedUserId,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logGateway("private_call_media_hook_failed", { telegramUsername, message });
+  }
 }
 
 export function applyPrivateCallUpdate(
   telegramUsername: string,
   update: Record<string, unknown>,
+  client?: Client | null,
 ): PrivateCallSnapshot | null {
   if (update._ === "updateNewCallSignalingData") {
     const callId = Number(update.call_id);
     if (!Number.isFinite(callId) || callId <= 0) return null;
-    const raw = update.data;
-    let buf: Buffer | null = null;
-    if (typeof Buffer !== "undefined" && Buffer.isBuffer(raw)) {
-      buf = raw;
-    } else if (raw instanceof Uint8Array) {
-      buf = Buffer.from(raw);
-    } else if (typeof raw === "string" && raw.length > 0) {
-      buf = Buffer.from(raw, "base64");
-    }
+    // TDLib often wraps bytes as { bytes: Buffer|base64 }; unwrap before gating.
+    const buf = unwrapTdlibBytes(update.data);
     if (buf && buf.length > 0) {
       const list = signalingByCallId.get(Math.trunc(callId)) ?? [];
       list.push(buf);
-      // Cap buffer — without tgcalls we only keep recent packets for diagnostics.
       if (list.length > 64) list.splice(0, list.length - 64);
       signalingByCallId.set(Math.trunc(callId), list);
       logGateway("private_call_signaling_in", {
@@ -222,6 +374,19 @@ export function applyPrivateCallUpdate(
         callId: Math.trunc(callId),
         byteLength: buf.length,
         queued: list.length,
+      });
+      void import("./privateCallMedia.js").then(({ pushPrivateCallSignalingData }) =>
+        pushPrivateCallSignalingData(telegramUsername, Math.trunc(callId), buf),
+      );
+    } else {
+      logGateway("private_call_signaling_in_skipped", {
+        telegramUsername,
+        callId: Math.trunc(callId),
+        dataType: typeof update.data,
+        dataKeys:
+          update.data && typeof update.data === "object"
+            ? Object.keys(update.data as object).slice(0, 8)
+            : [],
       });
     }
     return getCachedPrivateCall(telegramUsername);
@@ -245,12 +410,29 @@ export function applyPrivateCallUpdate(
     existing.phase === "ready"
   ) {
     // Ignore unrelated call updates while one is active.
-    return snapshotFromCache(existing);
+    return snapshotFromCache(existing, telegramUsername);
   }
   const next = buildCachedFromCall(telegramUsername, call ?? {}, existing);
   if (!next) return null;
   rememberCall(telegramUsername, next);
-  return snapshotFromCache(next);
+  if (client && next.phase === "ready") {
+    // Start media immediately from the update payload (merged with cache).
+    // Do not wait on a follow-up getCall — that used to swallow failures and
+    // leave ntgcalls never started while signaling piled up.
+    const merged = mergeCallWithCache(telegramUsername, {
+      ...(call ?? {}),
+      id: next.callId,
+      user_id: next.userId,
+      is_outgoing: next.isOutgoing,
+      is_video: next.isVideo,
+      state: call?.state,
+    });
+    void maybeStartPrivateCallMedia(client, telegramUsername, merged ?? next.callId);
+    if (existing?.phase !== "ready") {
+      void refreshPrivateCallForUser(client, telegramUsername, next.callId);
+    }
+  }
+  return snapshotFromCache(next, telegramUsername);
 }
 
 export function takePendingCallSignalingData(callId: number): Buffer[] {
@@ -280,7 +462,7 @@ export async function createPrivateCallForUser(
       existing.phase === "exchanging" ||
       existing.phase === "ready")
   ) {
-    return { ok: true, call: snapshotFromCache(existing) };
+    return { ok: true, call: snapshotFromCache(existing, telegramUsername) };
   }
   try {
     const created = (await client.invoke({
@@ -329,27 +511,8 @@ export async function createPrivateCallForUser(
       protocolMaxLayer: CALL_PROTOCOL.max_layer,
       libraryVersions: CALL_PROTOCOL.library_versions.slice(0, 3),
     });
-    // Refresh once — pending / is_received often arrives as a follow-up update.
-    try {
-      const fresh = (await client.invoke({
-        _: "getCall",
-        call_id: cached.callId,
-      })) as {
-        id?: number;
-        state?: CallState;
-        is_outgoing?: boolean;
-        is_video?: boolean;
-        user_id?: number;
-      };
-      const refreshed = buildCachedFromCall(telegramUsername, fresh, cached);
-      if (refreshed) {
-        cached = refreshed;
-        rememberCall(telegramUsername, cached);
-      }
-    } catch {
-      // keep create result
-    }
-    return { ok: true, call: snapshotFromCache(cached) };
+    // Refresh is driven by updateCall — this TDLib build has no getCall.
+    return { ok: true, call: snapshotFromCache(cached, telegramUsername) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logGateway("private_call_create_failed", { userId, message });
@@ -436,25 +599,16 @@ export async function refreshPrivateCallForUser(
     callId != null && Number.isFinite(callId) && callId! > 0
       ? Math.trunc(callId!)
       : cached?.callId;
-  if (id == null || id <= 0) return cached ? snapshotFromCache(cached) : null;
-  try {
-    const fresh = (await client.invoke({
-      _: "getCall",
-      call_id: id,
-    })) as {
-      id?: number;
-      user_id?: number;
-      is_outgoing?: boolean;
-      is_video?: boolean;
-      state?: CallState;
-    };
-    const next = buildCachedFromCall(telegramUsername, fresh, cached);
-    if (!next) return cached ? snapshotFromCache(cached) : null;
-    rememberCall(telegramUsername, next);
-    return snapshotFromCache(next);
-  } catch {
-    return cached ? snapshotFromCache(cached) : null;
+  if (id == null || id <= 0) return cached ? snapshotFromCache(cached, telegramUsername) : null;
+  // prebuilt-tdlib 0.1008066 has no getCall — serve cache and (re)try media from it.
+  if (cached?.phase === "ready" && cached.callPayload) {
+    await maybeStartPrivateCallMedia(
+      client,
+      telegramUsername,
+      mergeCallWithCache(telegramUsername, cached.callPayload) ?? cached.callPayload,
+    );
   }
+  return cached ? snapshotFromCache(cached, telegramUsername) : null;
 }
 
 export async function discardPrivateCallForUser(
@@ -488,6 +642,9 @@ export async function discardPrivateCallForUser(
     }
   }
   signalingByCallId.delete(id);
+  void import("./privateCallMedia.js").then(({ stopPrivateCallMedia }) =>
+    stopPrivateCallMedia(telegramUsername, id),
+  );
   rememberCall(telegramUsername, {
     callId: id,
     userId: cached?.userId ?? 0,

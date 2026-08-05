@@ -11,9 +11,11 @@ import {
 import type { MessageChatRowData } from "../components/messages/MessageChatRow";
 import { MessageChatProfileSheet } from "../components/messages/MessageChatProfileSheet";
 import { ActiveVoiceCallDock } from "../components/messages/ActiveVoiceCallDock";
+import { PrivateCallLoadingShell } from "../components/messages/PrivateCallLoadingShell";
 import { useColors } from "../theme";
 import { logPageDisplay } from "../pageDisplayLog";
 import { unlockVoiceAutoplay } from "../telegram/unlockVoiceAutoplay";
+import { startPrivateCallRingback } from "../telegram/privateCallRingback";
 
 /** Lazy — avoids ProfileContext ↔ VoicePopover circular import via private-call host. */
 const MessageChatPrivateCallHost = lazy(() =>
@@ -122,6 +124,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     const chat = toProfileChat(target);
     // Must run in the phone-button gesture so ringback AudioContext can play.
     unlockVoiceAutoplay();
+    startPrivateCallRingback();
+    void import("../components/messages/MessageChatPrivateCallHost");
     logPageDisplay("messages_private_call_start", {
       chatId: chat.telegram_chat_id,
       peerUserId: chat.peer_user_id ?? null,
@@ -169,7 +173,13 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         }}
       />
       {privateCallAlive && privateCallChat ? (
-        <Suspense fallback={null}>
+        <Suspense
+          fallback={
+            privateCallVisible ? (
+              <PrivateCallLoadingShell chat={privateCallChat} onClose={minimizePrivateCall} />
+            ) : null
+          }
+        >
           <MessageChatPrivateCallHost
             peer={{ chat: privateCallChat }}
             visible={privateCallVisible}

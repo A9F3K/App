@@ -14,6 +14,7 @@ import {
   verifyStreamTicket,
   type StreamTicketPayload,
 } from "./streamTicket.js";
+import { attachPrivateCallAudioWebSocket } from "./privateCallAudioStream.js";
 import {
   disconnectUserSession,
   gatewayHealth,
@@ -1978,6 +1979,8 @@ export function startTdlibGatewayServer(): http.Server {
       }
     })();
   });
+
+  attachPrivateCallAudioWebSocket(server);
 
   const port = getGatewayPort();
   const host = getGatewayBindHost();

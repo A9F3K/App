@@ -23,6 +23,10 @@ import {
   startPrivateCallRingback,
   stopPrivateCallRingback,
 } from "../../telegram/privateCallRingback";
+import {
+  startPrivateCallAudioBridge,
+  type PrivateCallAudioBridge,
+} from "../../telegram/privateCallAudioBridge";
 
 export type PrivateCallPeer = {
   chat: MessageChatRowData;
@@ -60,9 +64,9 @@ function statusKeyForPhase(phase: PrivateCallPhase): AppStringKey {
 
 /**
  * Profile phone action — TDLib createCall / getCall / discardCall signaling
- * (dial → ring → exchanging keys → ready). Same chrome as group voice with
- * peer avatar instead of roster. Peer audio still requires a tgcalls media
- * bridge after callStateReady; local mic stays live for mute UX.
+ * (dial → ring → exchanging keys → ready) plus ntgcalls WebRTC on the gateway.
+ * UI shows Connected only after media_established; until then peer may still
+ * be on "exchange encryption keys" in native Telegram.
  */
 export function MessageChatPrivateCallHost({
   peer,
@@ -79,6 +83,7 @@ export function MessageChatPrivateCallHost({
   const [cameraActive, setCameraActive] = useState(false);
   const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
   const [localMicStream, setLocalMicStream] = useState<MediaStream | null>(null);
+  const audioBridgeRef = useRef<PrivateCallAudioBridge | null>(null);
   const [screenSharing, setScreenSharing] = useState(false);
   const [call, setCall] = useState<PrivateCallSnapshot | null>(null);
   const [callError, setCallError] = useState<string | null>(null);
@@ -122,15 +127,19 @@ export function MessageChatPrivateCallHost({
   const statusText =
     callError && phase === "error"
       ? callError
-      : call?.emojis?.length && phase === "ready"
+      : call?.emojis?.length && phase === "ready" && call.media_established
         ? `${t("messages.privateCall.connected")}  ${call.emojis.join(" ")}`
-        : t(statusKeyForPhase(phase));
+        : phase === "ready" && !call?.media_established
+          ? t("messages.privateCall.connecting")
+          : t(statusKeyForPhase(phase));
 
   const stopTracks = useCallback((stream: MediaStream | null) => {
     stream?.getTracks().forEach((track) => track.stop());
   }, []);
 
   const stopAllMedia = useCallback(() => {
+    audioBridgeRef.current?.stop();
+    audioBridgeRef.current = null;
     setLocalCameraStream((prev) => {
       stopTracks(prev);
       return null;
@@ -240,6 +249,7 @@ export function MessageChatPrivateCallHost({
             hasEncryptionKey: result.call.has_encryption_key ?? false,
             serverCount: result.call.server_count ?? 0,
             emojiCount: result.call.emojis?.length ?? 0,
+            mediaEstablished: result.call.media_established ?? false,
             source: "poll",
           });
         }
@@ -247,6 +257,7 @@ export function MessageChatPrivateCallHost({
         if (
           result.call.phase === "ready" &&
           result.call.has_encryption_key &&
+          result.call.media_established &&
           !readyLoggedRef.current
         ) {
           readyLoggedRef.current = true;
@@ -254,7 +265,7 @@ export function MessageChatPrivateCallHost({
             callId: result.call.call_id,
             serverCount: result.call.server_count ?? 0,
             emojiCount: result.call.emojis?.length ?? 0,
-            note: "signaling_ready_media_needs_tgcalls",
+            mediaEstablished: true,
           });
         }
         if (result.call.phase === "discarded" || result.call.phase === "error") {
@@ -278,32 +289,37 @@ export function MessageChatPrivateCallHost({
     };
   }, [activeCallId, phase, onHangUp, stopAllMedia]);
 
-  // Local mic while connected (peer audio requires tgcalls; keep capture + mute UX).
+  // Browser ↔ gateway PCM bridge once WebRTC media is up.
   useEffect(() => {
-    if (phase !== "ready" || Platform.OS !== "web") return;
-    if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
+    if (phase !== "ready" || !call?.media_established || Platform.OS !== "web") return;
+    const callId = call.call_id;
+    if (callId == null) return;
     let cancelled = false;
-    void navigator.mediaDevices
-      .getUserMedia({ audio: true, video: false })
-      .then((stream) => {
-        if (cancelled || hungUpRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        for (const track of stream.getAudioTracks()) {
-          track.enabled = micActive;
-        }
-        setLocalMicStream(stream);
-      })
-      .catch(() => {
-        // mic permission denied — UI still shows connected
-      });
+    const abort = new AbortController();
+    void startPrivateCallAudioBridge({
+      callId,
+      micEnabled: micActive,
+      signal: abort.signal,
+    }).then((bridge) => {
+      if (cancelled || hungUpRef.current) {
+        bridge?.stop();
+        return;
+      }
+      if (!bridge) return;
+      audioBridgeRef.current?.stop();
+      audioBridgeRef.current = bridge;
+      setLocalMicStream(null);
+    });
     return () => {
       cancelled = true;
+      abort.abort();
+      audioBridgeRef.current?.stop();
+      audioBridgeRef.current = null;
     };
-  }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps -- remount mic only on ready
+  }, [phase, call?.media_established, call?.call_id]); // eslint-disable-line react-hooks/exhaustive-deps -- restart bridge when media connects
 
   useEffect(() => {
+    audioBridgeRef.current?.setMicEnabled(micActive);
     if (!localMicStream) return;
     for (const track of localMicStream.getAudioTracks()) {
       track.enabled = micActive;
@@ -406,7 +422,12 @@ export function MessageChatPrivateCallHost({
       participants={[]}
       colors={colors}
       micActive={micActive}
-      micJoining={phase === "dialing" || phase === "ringing" || phase === "exchanging"}
+      micJoining={
+        phase === "dialing" ||
+        phase === "ringing" ||
+        phase === "exchanging" ||
+        (phase === "ready" && !call?.media_established)
+      }
       onMicPress={onMicPress}
       cameraActive={cameraActive}
       onCameraPress={onCameraPress}

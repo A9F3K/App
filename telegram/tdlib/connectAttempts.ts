@@ -27,6 +27,10 @@ import { getLiveChatList, getLiveChatListRevision, patchLiveChatMemberMeta, patc
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
 import { type TdChat } from "./chatPreview.js";
 import { verifyGroupCallLiveState } from "./voiceParticipants.js";
+import {
+  getPrivateCallMediaLoadError,
+  isPrivateCallMediaAvailable,
+} from "./privateCallMedia.js";
 
 export type ConnectAuthMethod = "qr" | "phone";
 
@@ -2379,11 +2383,19 @@ export async function leaveChatVoiceForUser(
   }
 }
 
-export function gatewayHealth(): { ok: boolean; tdlibConfigured: boolean; hasApiCredentials: boolean } {
+export function gatewayHealth(): {
+  ok: boolean;
+  tdlibConfigured: boolean;
+  hasApiCredentials: boolean;
+  privateCallMediaAvailable: boolean;
+  privateCallMediaLoadError: string | null;
+} {
   return {
     ok: true,
     tdlibConfigured: tdlConfigured,
     hasApiCredentials: Boolean(getTelegramApiCredentials()),
+    privateCallMediaAvailable: isPrivateCallMediaAvailable(),
+    privateCallMediaLoadError: getPrivateCallMediaLoadError(),
   };
 }
 

@@ -1842,6 +1842,7 @@ export type GatewayPrivateCallSnapshot = {
   emojis: string[];
   has_encryption_key?: boolean;
   server_count?: number;
+  media_established?: boolean;
 };
 
 export async function gatewayCreatePrivateCall(

@@ -5,7 +5,8 @@ export type GatewayStreamKind =
   | "chats"
   | "history"
   | "voice_participants"
-  | "voice_messages";
+  | "voice_messages"
+  | "private_call_audio";
 
 export type StreamTicketPayload = {
   v: 1;
@@ -13,6 +14,7 @@ export type StreamTicketPayload = {
   stream: GatewayStreamKind;
   chatId?: number;
   groupCallId?: number;
+  callId?: number;
   iat: number;
   exp: number;
 };
@@ -25,6 +27,7 @@ const STREAM_KINDS = new Set<GatewayStreamKind>([
   "history",
   "voice_participants",
   "voice_messages",
+  "private_call_audio",
 ]);
 
 function b64urlEncode(buf: Buffer | string): string {
@@ -59,6 +62,7 @@ export function mintStreamTicket(input: {
   stream: GatewayStreamKind;
   chatId?: number | null;
   groupCallId?: number | null;
+  callId?: number | null;
   ttlSec?: number;
   nowSec?: number;
 }): { token: string; expiresAt: number; payload: StreamTicketPayload } {
@@ -85,6 +89,13 @@ export function mintStreamTicket(input: {
   ) {
     payload.groupCallId = Math.trunc(input.groupCallId);
   }
+  if (
+    input.callId != null &&
+    Number.isFinite(input.callId) &&
+    input.callId > 0
+  ) {
+    payload.callId = Math.trunc(input.callId);
+  }
   const payloadJson = JSON.stringify(payload);
   const token = `${b64urlEncode(payloadJson)}.${signPayloadJson(payloadJson)}`;
   return { token, expiresAt: payload.exp, payload };
@@ -96,6 +107,7 @@ export function verifyStreamTicket(
     stream: GatewayStreamKind;
     chatId?: number | null;
     groupCallId?: number | null;
+    callId?: number | null;
     nowSec?: number;
   },
 ): StreamTicketPayload | null {
@@ -141,6 +153,15 @@ export function verifyStreamTicket(
     if (payload.chatId !== expectedChat) return null;
   }
 
+  if (expected.stream === "private_call_audio") {
+    const expectedCall =
+      expected.callId != null && Number.isFinite(expected.callId)
+        ? Math.trunc(expected.callId)
+        : null;
+    if (expectedCall == null || expectedCall <= 0) return null;
+    if (payload.callId !== expectedCall) return null;
+  }
+
   return {
     ...payload,
     sub: payload.sub.trim(),
@@ -157,6 +178,8 @@ export function gatewayStreamPathForKind(stream: GatewayStreamKind): string {
       return "/v1/chat/voice/participants/stream";
     case "voice_messages":
       return "/v1/chat/voice/messages/stream";
+    case "private_call_audio":
+      return "/v1/call/audio/stream";
   }
 }
 
@@ -170,7 +193,17 @@ export function gatewayStreamKindForPath(pathname: string): GatewayStreamKind | 
       return "voice_participants";
     case "/v1/chat/voice/messages/stream":
       return "voice_messages";
+    case "/v1/call/audio/stream":
+      return "private_call_audio";
     default:
       return null;
   }
+}
+
+/** Convert gateway HTTP(S) base URL to WebSocket URL. */
+export function gatewayHttpToWebSocketUrl(httpUrl: string): string {
+  const trimmed = httpUrl.trim();
+  if (trimmed.startsWith("https://")) return `wss://${trimmed.slice("https://".length)}`;
+  if (trimmed.startsWith("http://")) return `ws://${trimmed.slice("http://".length)}`;
+  return trimmed;
 }

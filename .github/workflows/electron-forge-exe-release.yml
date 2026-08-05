@@ -2,8 +2,8 @@
 name: Electron Forge EXE Release
 
 on:
+  push:
   workflow_dispatch:
-    # No manual inputs: release tag/build folder id is computed from current UTC time.
 
 permissions:
   contents: write

@@ -506,7 +506,7 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
     }
     if (type === "updateCall" || type === "updateNewCallSignalingData") {
       void import("./privateCall.js").then(({ applyPrivateCallUpdate }) => {
-        applyPrivateCallUpdate(record.telegramUsername, update);
+        applyPrivateCallUpdate(record.telegramUsername, update, record.client);
       });
       return;
     }
