@@ -576,10 +576,13 @@ export async function sendPrivateCallSignalingData(
     return { ok: false, error: "empty_signaling_data" };
   }
   try {
+    // TDLib JSON interface requires bytes as base64 strings. Passing a Node Buffer
+    // serializes as an Object and fails with "Expected String, but receive Object",
+    // which blocks ICE/setup and leaves the peer on "Exchanging encryption keys".
     await client.invoke({
       _: "sendCallSignalingData",
       call_id: Math.trunc(callId),
-      data: bytes,
+      data: bytes.toString("base64"),
     });
     return { ok: true };
   } catch (err) {

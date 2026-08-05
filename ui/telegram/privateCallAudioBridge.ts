@@ -1,9 +1,14 @@
 import { buildApiUrl } from "../../api/_base";
-import { getVoiceAutoplayAudioContext, unlockVoiceAutoplay } from "./unlockVoiceAutoplay";
+import { unlockVoiceAutoplay } from "./unlockVoiceAutoplay";
 
 const SAMPLE_RATE = 48_000;
+/** Telegram / ntgcalls external PCM frame (10 ms @ 48 kHz). */
 const FRAME_SAMPLES = 480;
-const FRAME_BYTES = FRAME_SAMPLES * 2;
+/**
+ * createScriptProcessor requires 0 or a power of two in [256, 16384].
+ * 480 is invalid — use 512 and re-chunk to 480-sample network frames.
+ */
+const PROCESSOR_BUFFER_SIZE = 512;
 
 export type PrivateCallAudioBridge = {
   setMicEnabled: (enabled: boolean) => void;
@@ -47,12 +52,9 @@ async function mintPrivateCallAudioWsUrl(
   }
 }
 
-function floatToInt16(input: Float32Array, output: Int16Array): void {
-  for (let i = 0; i < output.length; i++) {
-    const sample = input[i] ?? 0;
-    const clamped = sample < -1 ? -1 : sample > 1 ? 1 : sample;
-    output[i] = clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
-  }
+function floatToInt16Sample(sample: number): number {
+  const clamped = sample < -1 ? -1 : sample > 1 ? 1 : sample;
+  return clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
 }
 
 /**
@@ -73,7 +75,16 @@ export async function startPrivateCallAudioBridge(input: {
   const ticket = await mintPrivateCallAudioWsUrl(input.callId, input.signal);
   if (!ticket.ok) return null;
 
-  const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+  const micStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+      sampleRate: SAMPLE_RATE,
+      channelCount: 1,
+    },
+    video: false,
+  });
   if (input.signal?.aborted) {
     micStream.getTracks().forEach((track) => track.stop());
     return null;
@@ -81,11 +92,9 @@ export async function startPrivateCallAudioBridge(input: {
 
   let micEnabled = input.micEnabled !== false;
   let stopped = false;
-  const playbackQueue: Int16Array[] = [];
 
-  const ctx =
-    getVoiceAutoplayAudioContext() ??
-    new AudioContext({ sampleRate: SAMPLE_RATE });
+  // Dedicated 48 kHz context — Telegram frames are 10 ms @ 48 kHz.
+  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
   if (ctx.state === "suspended") {
     await ctx.resume().catch(() => undefined);
   }
@@ -93,47 +102,66 @@ export async function startPrivateCallAudioBridge(input: {
   const ws = new WebSocket(ticket.wsUrl);
   ws.binaryType = "arraybuffer";
 
-  const captureNode = ctx.createScriptProcessor(FRAME_SAMPLES, 1, 1);
-  const playbackNode = ctx.createScriptProcessor(FRAME_SAMPLES, 0, 1);
+  const captureNode = ctx.createScriptProcessor(PROCESSOR_BUFFER_SIZE, 1, 1);
+  const playbackNode = ctx.createScriptProcessor(PROCESSOR_BUFFER_SIZE, 0, 1);
   const captureSource = ctx.createMediaStreamSource(micStream);
-  const int16Scratch = new Int16Array(FRAME_SAMPLES);
+  // Keep ScriptProcessor in the graph without monitoring local mic.
+  const silentGain = ctx.createGain();
+  silentGain.gain.value = 0;
+
+  const capturePending: number[] = [];
+  const playbackPending: number[] = [];
+  const MAX_PLAYBACK_SAMPLES = SAMPLE_RATE * 2; // ~2s cap
 
   captureNode.onaudioprocess = (event) => {
     if (stopped || !micEnabled || ws.readyState !== WebSocket.OPEN) return;
     const channel = event.inputBuffer.getChannelData(0);
-    floatToInt16(channel, int16Scratch);
-    ws.send(int16Scratch.buffer.slice(0));
+    for (let i = 0; i < channel.length; i++) {
+      capturePending.push(channel[i] ?? 0);
+    }
+    while (capturePending.length >= FRAME_SAMPLES) {
+      const frame = new Int16Array(FRAME_SAMPLES);
+      for (let i = 0; i < FRAME_SAMPLES; i++) {
+        frame[i] = floatToInt16Sample(capturePending.shift() ?? 0);
+      }
+      try {
+        ws.send(frame.buffer.slice(0));
+      } catch {
+        // drop on send failure
+      }
+    }
   };
 
   playbackNode.onaudioprocess = (event) => {
     const output = event.outputBuffer.getChannelData(0);
-    const frame = playbackQueue.shift();
-    if (!frame) {
-      output.fill(0);
-      return;
+    for (let i = 0; i < output.length; i++) {
+      const sample = playbackPending.shift();
+      output[i] = sample == null ? 0 : sample / 32768;
     }
-    const count = Math.min(frame.length, output.length);
-    for (let i = 0; i < count; i++) {
-      output[i] = frame[i] / 32768;
+  };
+
+  const enqueuePlaybackPcm = (buf: ArrayBuffer) => {
+    if (buf.byteLength < 2) return;
+    const usable = buf.byteLength - (buf.byteLength % 2);
+    const samples = new Int16Array(buf.slice(0, usable));
+    for (let i = 0; i < samples.length; i++) {
+      playbackPending.push(samples[i] ?? 0);
     }
-    for (let i = count; i < output.length; i++) {
-      output[i] = 0;
+    // Bound latency if frames pile up.
+    while (playbackPending.length > MAX_PLAYBACK_SAMPLES) {
+      playbackPending.shift();
     }
   };
 
   ws.onmessage = (event) => {
     const data = event.data;
     if (data instanceof ArrayBuffer) {
-      if (data.byteLength >= FRAME_BYTES) {
-        playbackQueue.push(new Int16Array(data.slice(0, FRAME_BYTES)));
-      }
+      enqueuePlaybackPcm(data);
       return;
     }
     if (data instanceof Blob) {
       void data.arrayBuffer().then((buf) => {
-        if (buf.byteLength >= FRAME_BYTES) {
-          playbackQueue.push(new Int16Array(buf.slice(0, FRAME_BYTES)));
-        }
+        if (!stopped) enqueuePlaybackPcm(buf);
       });
     }
   };
@@ -169,13 +197,15 @@ export async function startPrivateCallAudioBridge(input: {
     } catch {
       // ignore
     }
+    void ctx.close().catch(() => undefined);
     return null;
   }
 
   if (stopped) return null;
 
   captureSource.connect(captureNode);
-  captureNode.connect(ctx.destination);
+  captureNode.connect(silentGain);
+  silentGain.connect(ctx.destination);
   playbackNode.connect(ctx.destination);
 
   function stopEverything(): void {
@@ -186,11 +216,18 @@ export async function startPrivateCallAudioBridge(input: {
     } catch {
       // ignore
     }
-    captureNode.disconnect();
-    playbackNode.disconnect();
-    captureSource.disconnect();
+    try {
+      captureNode.disconnect();
+      playbackNode.disconnect();
+      captureSource.disconnect();
+      silentGain.disconnect();
+    } catch {
+      // ignore
+    }
     micStream.getTracks().forEach((track) => track.stop());
-    playbackQueue.length = 0;
+    capturePending.length = 0;
+    playbackPending.length = 0;
+    void ctx.close().catch(() => undefined);
   }
 
   input.signal?.addEventListener("abort", stopEverything, { once: true });

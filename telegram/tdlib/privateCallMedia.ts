@@ -213,9 +213,37 @@ function pickPeerLibraryVersions(ready: CallStateReady): string[] {
 function negotiateLibraryVersions(ready: CallStateReady): string[] {
   const ours = getOurLibraryVersions();
   const theirs = pickPeerLibraryVersions(ready);
-  const overlap = theirs.filter((v) => ours.includes(v));
+  const theirSet = new Set(theirs);
+  // Keep our preference order (newest first) so ntgcalls best-match can pick 12/13.
+  const overlap = ours.filter((v) => theirSet.has(v));
   if (overlap.length > 0) return overlap;
-  return theirs.length > 0 ? theirs : ours;
+  // Never pass peer-only versions we cannot run.
+  return ours;
+}
+
+/**
+ * ntgcalls `connectP2p` parses customParameters with boost.json whenever the
+ * optional string is present. Empty / non-object JSON → "incomplete JSON".
+ * Valid object string or "{}" is safe (same as omitting experiments).
+ */
+function normalizeCustomParameters(raw: unknown): string {
+  let text = "";
+  if (typeof raw === "string") {
+    text = raw.trim();
+  } else if (raw != null) {
+    const buf = asBuffer(raw);
+    if (buf) text = buf.toString("utf8").trim();
+  }
+  if (!text) return "{}";
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return text;
+    }
+  } catch {
+    // fall through
+  }
+  return "{}";
 }
 
 function mapServers(servers: CallServer[] | undefined): NtRtcServer[] {
@@ -293,8 +321,7 @@ async function connectMediaSession(
 
   const peer = BigInt(session.userId);
   const versions = negotiateLibraryVersions(state);
-  const customParameters =
-    typeof state.custom_parameters === "string" ? state.custom_parameters : "";
+  const customParameters = normalizeCustomParameters(state.custom_parameters);
 
   // TDLib already completed the DH exchange when it emits callStateReady with
   // encryption_key. Re-running connectP2p after the first attempt throws
@@ -337,7 +364,8 @@ async function connectMediaSession(
     callId: session.callId,
     step: "connectP2p",
     serverCount: servers.length,
-    versionSample: versions.slice(0, 2),
+    versionSample: versions.slice(0, 3),
+    customParametersLen: customParameters.length,
   });
   await session.nt.connectP2p(
     peer,
