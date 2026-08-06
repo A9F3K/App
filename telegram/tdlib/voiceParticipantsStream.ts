@@ -71,7 +71,7 @@ export function serveVoiceParticipantsStream(
   const pushSnapshot = (revision: number): void => {
     if (closed || revision <= lastSentRevision) return;
     lastSentRevision = revision;
-    const snap = getVoiceParticipantsStreamSnapshot(callId);
+    const snap = getVoiceParticipantsStreamSnapshot(callId, telegramUsername);
     writeSse(res, "participants", {
       revision: snap.revision,
       chat_id: chatId,
@@ -85,7 +85,7 @@ export function serveVoiceParticipantsStream(
   if (current > lastSentRevision) {
     pushSnapshot(current);
   } else {
-    const snap = getVoiceParticipantsStreamSnapshot(callId);
+    const snap = getVoiceParticipantsStreamSnapshot(callId, telegramUsername);
     writeSse(res, "ready", {
       revision: snap.revision,
       chat_id: chatId,

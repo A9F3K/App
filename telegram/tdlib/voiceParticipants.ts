@@ -4,6 +4,7 @@ import { logGateway } from "./gatewayLog.js";
 import type { TdChat, TdMessage } from "./chatPreview.js";
 import { formattedTextPlain, readTdVideoChat, voiceChatFromTdChat } from "./chatPreview.js";
 import { emojiStatusCustomIdFromChat, emojiStatusCustomIdFromUser } from "./emojiStatus.js";
+import { getLiveChatSelfUserId, setLiveChatSelfUserId } from "./liveChatCache.js";
 import {
   beginVoiceParticipantsQuietLoad,
   emitVoiceParticipantsRevision,
@@ -571,6 +572,14 @@ type CallParticipantsCache = {
   revision: number;
   /** Last known TDLib participant_count hint for this call. */
   participantCountHint: number;
+  /** TDLib getMe for the client that last fetched/joined this call cache. */
+  selfUserId?: number | null;
+  /**
+   * Per TDLib account join flags (userId → joined). A single process-global
+   * boolean mixed multi-tenant gateways: Сева's is_joined flipped Vsevolod's
+   * spectator SSE (and the reverse), so You / screencast titles swapped.
+   */
+  selfJoinedByUserId?: Map<number, boolean>;
   /** From getGroupCall / updateGroupCall — muted listeners omitted from the list. */
   hasHiddenListeners?: boolean;
   /**
@@ -663,13 +672,6 @@ const chatToGroupCallId = new Map<number, number>();
 const bgReloadInFlight = new Set<number>();
 /** Last time a background reload started per call (throttle reconciles). */
 const bgReloadLastAt = new Map<number, number>();
-/** Self user ids confirmed joined; empty-order updates must not drop them. */
-const pinnedSelfUserIds = new Set<number>();
-
-function pinVoiceParticipantSelfUserId(userId: number): void {
-  if (Number.isFinite(userId) && userId > 0) pinnedSelfUserIds.add(Math.trunc(userId));
-}
-
 function ensureCallCache(
   callId: number,
   seed?: Partial<CallParticipantsCache>,
@@ -683,10 +685,102 @@ function ensureCallCache(
       loadedAll: seed?.loadedAll ?? false,
       revision: seed?.revision ?? 0,
       participantCountHint: seed?.participantCountHint ?? 0,
+      selfUserId: seed?.selfUserId ?? null,
+      selfJoinedByUserId: seed?.selfJoinedByUserId,
     };
     callMembersCache.set(callId, cached);
   }
   return cached;
+}
+
+function isAccountJoined(
+  cached: CallParticipantsCache,
+  selfUserId: number | null | undefined,
+): boolean {
+  if (selfUserId == null || selfUserId <= 0) return false;
+  return cached.selfJoinedByUserId?.get(Math.trunc(selfUserId)) === true;
+}
+
+/** Returns true when the joined flag actually changed. */
+function setAccountJoined(
+  cached: CallParticipantsCache,
+  selfUserId: number | null | undefined,
+  joined: boolean,
+): boolean {
+  if (selfUserId == null || selfUserId <= 0) return false;
+  const id = Math.trunc(selfUserId);
+  if (!cached.selfJoinedByUserId) cached.selfJoinedByUserId = new Map();
+  const prev = cached.selfJoinedByUserId.get(id) === true;
+  if (prev === joined) return false;
+  if (joined) cached.selfJoinedByUserId.set(id, true);
+  else cached.selfJoinedByUserId.delete(id);
+  return true;
+}
+
+/** Synthetic listen-only self row while joined (hidden listeners / solo muted). */
+function isListenOnlySelfInject(
+  row: CollectedParticipant,
+  selfUserId: number | null | undefined,
+): boolean {
+  return (
+    row.order === "\uffff" &&
+    selfUserId != null &&
+    selfUserId > 0 &&
+    row.userId === selfUserId
+  );
+}
+
+/**
+ * Drop listen-only self injects from a member map (and optionally the call cache)
+ * when the account is not joined — leftover injects painted "You" for spectators.
+ */
+function stripListenOnlySelfInjects(
+  members: Map<string, CollectedParticipant>,
+  selfUserId: number | null | undefined,
+  cached?: CallParticipantsCache,
+): Map<string, CollectedParticipant> {
+  if (selfUserId == null || selfUserId <= 0) return members;
+  let changed = false;
+  const next = new Map(members);
+  for (const [key, row] of next) {
+    if (!isListenOnlySelfInject(row, selfUserId)) continue;
+    next.delete(key);
+    cached?.members.delete(key);
+    cached?.speakers?.delete(key);
+    if (cached) markLeaveTombstone(cached, key);
+    changed = true;
+  }
+  return changed ? next : members;
+}
+
+/**
+ * Shared call caches outlive a single TDLib account. When getMe flips (multi-tenant
+ * gateway: Сева then Vsevolod), drop the previous account from the cache unless
+ * they are still present in this client's live TDLib roster.
+ */
+function adoptCallSelfUserId(
+  cached: CallParticipantsCache,
+  selfUserId: number | null,
+  liveMembers?: Map<string, CollectedParticipant>,
+): boolean {
+  if (selfUserId == null || selfUserId <= 0) return false;
+  const nextId = Math.trunc(selfUserId);
+  const prevId =
+    cached.selfUserId != null && cached.selfUserId > 0
+      ? Math.trunc(cached.selfUserId)
+      : null;
+  cached.selfUserId = nextId;
+  if (prevId == null || prevId === nextId) return false;
+  let removed = false;
+  for (const [key, row] of [...cached.members.entries()]) {
+    if (row.userId !== prevId) continue;
+    if (liveMembers?.has(key)) continue;
+    cached.members.delete(key);
+    cached.speakers?.delete(key);
+    markLeaveTombstone(cached, key);
+    removed = true;
+  }
+  return removed;
 }
 
 function bumpVoiceCallRevision(callId: number, options?: { immediate?: boolean }): number {
@@ -725,9 +819,12 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
   let memberLeft = false;
   if (!order) {
     // Empty order means left per TDLib. Muted self can also get empty order while
-    // still joined — keep pinned self. Everyone else must drop immediately or the
-    // roster grows past Telegram Desktop's participant list.
-    if (userId != null && pinnedSelfUserIds.has(userId)) {
+    // still joined — keep this call's self. Everyone else must drop immediately or
+    // the roster grows past Telegram Desktop's participant list.
+    if (
+      userId != null &&
+      isAccountJoined(cached, userId)
+    ) {
       const prev = cached.members.get(key);
       if (prev) {
         if (prev.isSpeaking) speakingBecameFalse = true;
@@ -778,7 +875,9 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
     const isHandRaised = readHandRaised(participant);
     const canUnmuteSelf =
       readCanUnmuteSelf(participant) ?? prev?.canUnmuteSelf ?? true;
-    const isPinnedSelf = userId != null && pinnedSelfUserIds.has(userId);
+    const isPinnedSelf =
+      userId != null && cached.selfUserId != null && userId === cached.selfUserId;
+    void isPinnedSelf;
     const volumeLevel =
       participant.volume_level != null
         ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)
@@ -852,7 +951,10 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
  * updateGroupCallParticipant flags are often ahead of that list, and wiping them
  * made green mics never stick.
  */
-export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
+export function ingestGroupCallUpdate(
+  update: Record<string, unknown>,
+  options?: { telegramUsername?: string; selfUserId?: number | null },
+): void {
   if (update._ !== "updateGroupCall") return;
   const groupCall = update.group_call as GroupCallSnapshot | undefined;
   if (!groupCall || typeof groupCall !== "object") return;
@@ -871,6 +973,24 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
   }
   if (groupCall.has_hidden_listeners != null) {
     cached.hasHiddenListeners = Boolean(groupCall.has_hidden_listeners);
+  }
+  // Resolve which TDLib account this update belongs to — never use a shared
+  // process-global joined flag (that swapped Сева ↔ Vsevolod self/screencast).
+  const actorSelfId =
+    options?.selfUserId != null && options.selfUserId > 0
+      ? Math.trunc(options.selfUserId)
+      : options?.telegramUsername?.trim()
+        ? getLiveChatSelfUserId(options.telegramUsername.trim())
+        : null;
+  const tdlibJoined = Boolean(groupCall.is_joined || groupCall.need_rejoin);
+  let selfJoinChanged = false;
+  if (actorSelfId != null) {
+    selfJoinChanged = setAccountJoined(cached, actorSelfId, tdlibJoined);
+    if (!tdlibJoined) {
+      const before = cached.members.size;
+      stripListenOnlySelfInjects(cached.members, actorSelfId, cached);
+      if (cached.members.size !== before) selfJoinChanged = true;
+    }
   }
   const speakers = speakersFromGroupCall(groupCall, cached.speakers, cached);
   const prevSpeakersSnapshot = cached.speakers;
@@ -975,7 +1095,7 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
   }
   cached.speakers = speakers;
 
-  if (!changed && !speakersChanged) return;
+  if (!changed && !speakersChanged && !selfJoinChanged) return;
   void speakingBecameFalse;
   if (speakingBecameTrue) {
     logGateway("voice_participants_speaking_pulse", {
@@ -983,7 +1103,9 @@ export function ingestGroupCallUpdate(update: Record<string, unknown>): void {
       revision: (callMembersCache.get(callId)?.revision ?? 0) + 1,
     });
   }
-  bumpVoiceCallRevision(callId, { immediate: speakingBecameTrue || speakingRefresh });
+  bumpVoiceCallRevision(callId, {
+    immediate: speakingBecameTrue || speakingRefresh || selfJoinChanged,
+  });
 }
 
 function participantKey(userId: number | null, chatId: number | null): string | null {
@@ -1007,8 +1129,11 @@ function parseSender(sender: { _?: string; user_id?: number; chat_id?: number } 
 }
 
 const profileRefreshInFlight = new Set<string>();
-/** Cached getMe id for this gateway process (one TDLib account per process). */
-let cachedSelfUserId: number | null = null;
+/**
+ * Per-TDLib-client getMe id. A process-global cache mixed multi-tenant
+ * gateways (Сева vs Vsevolod) so the wrong face was marked is_self / You.
+ */
+const selfUserIdByClient = new WeakMap<object, number>();
 
 async function loadParticipantProfile(
   client: Client,
@@ -1172,13 +1297,15 @@ async function resolveParticipantProfile(
 }
 
 async function resolveSelfUserId(client: Client): Promise<number | null> {
-  if (cachedSelfUserId != null) return cachedSelfUserId;
+  const cached = selfUserIdByClient.get(client);
+  if (cached != null) return cached;
   try {
     const me = (await client.invoke({ _: "getMe" })) as { id?: number };
     const id = Number(me.id);
     if (Number.isFinite(id) && id > 0) {
-      cachedSelfUserId = Math.trunc(id);
-      return cachedSelfUserId;
+      const trunc = Math.trunc(id);
+      selfUserIdByClient.set(client, trunc);
+      return trunc;
     }
   } catch {
     /* ignore */
@@ -1312,6 +1439,7 @@ function trimCollectedToLiveCount(
   members: Map<string, CollectedParticipant>,
   speakers: Map<string, CollectedParticipant> | undefined,
   liveCount: number,
+  selfUserId?: number | null,
 ): Map<string, CollectedParticipant> {
   if (members.size <= liveCount) return members;
   const ordered = [...members.entries()].filter(([, row]) => Boolean(row.order));
@@ -1325,7 +1453,9 @@ function trimCollectedToLiveCount(
       if (row.screenInfo?.source_groups?.length) s += 16;
       if (row.videoInfo?.source_groups?.length) s += 8;
       if (speakers?.has(key)) s += 4;
-      if (row.userId != null && pinnedSelfUserIds.has(row.userId)) s += 2;
+      if (row.userId != null && selfUserId != null && row.userId === selfUserId) {
+        s += 2;
+      }
       if (
         row.isSpeaking ||
         (row.lastSpokeAt != null && Date.now() - row.lastSpokeAt < SPEAKING_HOLD_MS)
@@ -1489,6 +1619,7 @@ function scheduleBackgroundRosterReload(
         loadedAt: Date.now(),
         loadedAll: nextLoadedAll,
         revision: prev?.revision ?? 0,
+        selfUserId: prev?.selfUserId ?? null,
         // Never shrink the high-water hint on a thin force/bg load — soft
         // getGroupCall under-count (1) used to wipe a larger prior hint.
         participantCountHint: Math.max(
@@ -1501,6 +1632,8 @@ function scheduleBackgroundRosterReload(
         // Must keep recent_speakers — SSE snapshots overlay speaking from here.
         // Dropping it left every mic grey after the first post-join reload.
         speakers: prev?.speakers,
+        leftAt: prev?.leftAt,
+        hasHiddenListeners: prev?.hasHiddenListeners,
       });
       bumpVoiceCallRevision(callId);
       // Background title warm — do not block the TDLib event loop on the
@@ -1676,7 +1809,8 @@ async function loadJoinedParticipants(
     if (!key) return;
     const order = typeof participant.order === "string" ? participant.order : "";
     if (!order) {
-      if (userId != null && pinnedSelfUserIds.has(userId)) {
+      const callSelfId = callMembersCache.get(callId)?.selfUserId ?? null;
+      if (userId != null && callSelfId != null && userId === callSelfId) {
         const prev = map.get(key);
         if (prev) {
           const isHandRaised = readHandRaised(participant);
@@ -1711,7 +1845,6 @@ async function loadJoinedParticipants(
     const isHandRaised = readHandRaised(participant);
     const canUnmuteSelf =
       readCanUnmuteSelf(participant) ?? prev?.canUnmuteSelf ?? true;
-    const isPinnedSelf = userId != null && pinnedSelfUserIds.has(userId);
     // Missing mute on a load chunk: keep prev, else muted — default unmuted
     // invented open-mic chrome when TDLib omitted the field on soft chunks.
     const mutedRaw =
@@ -1839,7 +1972,7 @@ export async function fetchChatVoiceParticipants(
   client: Client,
   chatId: number,
   groupCallId?: number | null,
-  options?: { forceReload?: boolean },
+  options?: { forceReload?: boolean; telegramUsername?: string },
 ): Promise<{
   ok: boolean;
   error: string | null;
@@ -1915,6 +2048,13 @@ export async function fetchChatVoiceParticipants(
 
   const participantCountHint = Number(groupCall.participant_count);
   const hasHiddenListeners = Boolean(groupCall.has_hidden_listeners);
+  // Resolve getMe before ingest so per-account join flags are attributed correctly
+  // (shared selfJoined previously mixed Сева ↔ Vsevolod on the same callId).
+  const selfUserId = await resolveSelfUserId(client);
+  if (selfUserId != null) {
+    const username = options?.telegramUsername?.trim();
+    if (username) setLiveChatSelfUserId(username, selfUserId);
+  }
   {
     const cached = ensureCallCache(callId, {
       uniqueId: groupCall.unique_id != null ? String(groupCall.unique_id) : undefined,
@@ -1927,7 +2067,13 @@ export async function fetchChatVoiceParticipants(
   // never reached the stream and green mics stayed grey while the dialog was
   // open (SSE snapshots with is_speaking=false overrode poll data).
   // speakersFromGroupCall runs inside ingest so lastSpokeAt hold is preserved.
-  ingestGroupCallUpdate({ _: "updateGroupCall", group_call: groupCall });
+  ingestGroupCallUpdate(
+    { _: "updateGroupCall", group_call: groupCall },
+    {
+      telegramUsername: options?.telegramUsername,
+      selfUserId,
+    },
+  );
   const speakers =
     callMembersCache.get(callId)?.speakers ?? speakersFromGroupCall(groupCall, undefined, callMembersCache.get(callId));
 
@@ -2029,6 +2175,7 @@ export async function fetchChatVoiceParticipants(
             loadedAt: Date.now(),
             loadedAll: nextLoadedAll,
             revision: prev?.revision ?? 0,
+            selfUserId: prev?.selfUserId ?? null,
             participantCountHint: Math.max(
               prev?.participantCountHint ?? 0,
               Number.isFinite(participantCountHint) && participantCountHint >= 0
@@ -2037,6 +2184,9 @@ export async function fetchChatVoiceParticipants(
               members.size,
             ),
             speakers: prev?.speakers ?? speakers,
+            leftAt: prev?.leftAt,
+            hasHiddenListeners:
+              prev?.hasHiddenListeners ?? hasHiddenListeners,
           });
           bumpVoiceCallRevision(callId);
           collected = applySpeakingOverlay(members, speakers);
@@ -2119,14 +2269,26 @@ export async function fetchChatVoiceParticipants(
     }
   }
 
-  const selfUserId = await resolveSelfUserId(client);
+  if (selfUserId != null) {
+    const ownerCache = ensureCallCache(callId);
+    adoptCallSelfUserId(ownerCache, selfUserId, collected);
+    // Drop prior-account rows tombstoned above + leftover synthetic injects.
+    collected = stripLeaveTombstones(collected, ownerCache);
+    collected = new Map(
+      [...collected.entries()].filter(([, row]) => {
+        if (row.order !== "\uffff") return true;
+        return row.userId === selfUserId;
+      }),
+    );
+  }
 
   // Listen-only / muted self is often omitted when has_hidden_listeners is set, and
   // updateGroupCallParticipant with empty order can drop us from the live cache.
   // While TDLib reports us as joined, always keep self visible in the roster —
   // including the solo-participant case where recent_speakers is empty.
+  const ownerCache = ensureCallCache(callId);
+  setAccountJoined(ownerCache, selfUserId, isJoined);
   if (isJoined && selfUserId != null) {
-    pinVoiceParticipantSelfUserId(selfUserId);
     const selfKey = participantKey(selfUserId, null);
     if (selfKey && !collected.has(selfKey)) {
       collected = new Map(collected);
@@ -2152,6 +2314,8 @@ export async function fetchChatVoiceParticipants(
         order: collected.get(selfKey)?.order || "\uffff",
       };
       if (cached) {
+        adoptCallSelfUserId(cached, selfUserId, collected);
+        setAccountJoined(cached, selfUserId, true);
         if (!cached.members.has(selfKey)) {
           cached.members.set(selfKey, selfRow);
         }
@@ -2162,14 +2326,17 @@ export async function fetchChatVoiceParticipants(
           loadedAt: Date.now(),
           loadedAll: false,
           revision: 0,
+          selfUserId,
+          selfJoinedByUserId: new Map([[selfUserId, true]]),
           participantCountHint: Number.isFinite(participantCountHint)
             ? Math.trunc(participantCountHint)
             : 0,
         });
       }
     }
-  } else if (!isJoined && selfUserId != null) {
-    pinnedSelfUserIds.delete(selfUserId);
+  } else if (selfUserId != null) {
+    // Spectator / after leave: never keep the listen-only inject in cache or paint.
+    collected = stripListenOnlySelfInjects(collected, selfUserId, ownerCache);
   }
 
   chatToGroupCallId.set(Math.trunc(chatId), callId);
@@ -2198,12 +2365,33 @@ export async function fetchChatVoiceParticipants(
     collected = stripLeaveTombstones(collected, callMembersCache.get(callId));
   }
   if (liveTdlibCount >= 2 && collected.size > liveTdlibCount) {
-    collected = trimCollectedToLiveCount(collected, speakers, liveTdlibCount);
+    collected = trimCollectedToLiveCount(
+      collected,
+      speakers,
+      liveTdlibCount,
+      selfUserId,
+    );
   }
   const hasOrderedCollected = [...collected.values()].some((r) =>
     Boolean(r.order),
   );
   const orderedRows = [...collected.values()].filter((row) => {
+    // Prior-account listen-only injects must never paint as remotes.
+    // Current-account injects only while TDLib reports this client joined —
+    // otherwise spectators see themselves without Join.
+    if (row.order === "\uffff") {
+      if (selfUserId == null || row.userId !== selfUserId) return false;
+      return isJoined;
+    }
+    // After leave / spectator: do not paint this account even if a stale ordered
+    // row lingered in the shared call cache.
+    if (
+      !isJoined &&
+      selfUserId != null &&
+      row.userId === selfUserId
+    ) {
+      return false;
+    }
     if (row.order) return true;
     if (isJoined && selfUserId != null && row.userId === selfUserId) return true;
     const key = participantKey(row.userId, row.chatId);
@@ -2227,7 +2415,10 @@ export async function fetchChatVoiceParticipants(
   const displayRows =
     orderedRows.length > 0 || rosterLoadedAll
       ? orderedRows
-      : [...collected.values()];
+      : [...collected.values()].filter((row) => {
+          if (selfUserId == null || row.userId !== selfUserId) return true;
+          return isJoined;
+        });
   // Soft polls must stay fast — await a short warm only for small painted sets so
   // the HTTP body is not all empty titles ("?"). Force reload awaits a full warm.
   // One warm promise only — racing a second getUser stampede freezes TDLib.
@@ -2254,7 +2445,8 @@ export async function fetchChatVoiceParticipants(
 
   const participants: VoiceParticipantRow[] = displayRows.map((row) => {
     const profile = peekParticipantProfile(row.userId, row.chatId);
-    const isSelf = selfUserId != null && row.userId === selfUserId;
+    const isSelf =
+      isJoined && selfUserId != null && row.userId === selfUserId;
     const paintedMuted = resolvePaintedMuted({
       muted: row.isMuted,
       // Live speaking only — hold must not clear mute chrome.
@@ -2351,7 +2543,9 @@ export function resolveCachedGroupCallIdForChat(
   return null;
 }
 
-export function getVoiceParticipantsRevision(groupCallId: number): number {
+export function getVoiceParticipantsRevision(
+  groupCallId: number,
+): number {
   return callMembersCache.get(Math.trunc(groupCallId))?.revision ?? 0;
 }
 
@@ -2359,7 +2553,10 @@ export function getVoiceParticipantsRevision(groupCallId: number): number {
  * Sync snapshot for SSE — uses profile cache only (no TDLib round-trips).
  * Titles may be empty until a full participants fetch warms profiles.
  */
-export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
+export function getVoiceParticipantsStreamSnapshot(
+  groupCallId: number,
+  telegramUsername?: string,
+): {
   revision: number;
   participant_count: number;
   participants: VoiceParticipantRow[];
@@ -2369,12 +2566,23 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
   if (!cached) {
     return { revision: 0, participant_count: 0, participants: [] };
   }
-  const selfUserId = cachedSelfUserId;
+  // Prefer per-account getMe (live chat cache). Never fall back to another
+  // account's cached.selfUserId when telegramUsername is known — that painted
+  // Сева as You / "Сева is streaming" for Vsevolod's session.
+  const usernameKey = telegramUsername?.trim() || "";
+  const fromUsername = usernameKey ? getLiveChatSelfUserId(usernameKey) : null;
+  const selfUserId = usernameKey
+    ? fromUsername
+    : (fromUsername ?? cached.selfUserId ?? null);
+  const selfJoined = isAccountJoined(cached, selfUserId);
   const nowMs = Date.now();
   // Mirror the poll path: overlay recent_speakers onto the live roster, and
   // union speaker stubs whenever the painted map is thin — chat-preview strip
   // relies on these faces when loadGroupCallParticipants is not allowed yet.
   let collected = stripLeaveTombstones(cached.members, cached);
+  if (!selfJoined && selfUserId != null) {
+    collected = stripListenOnlySelfInjects(collected, selfUserId, cached);
+  }
   if (cached.speakers && cached.speakers.size > 0) {
     collected = applySpeakingOverlay(collected, cached.speakers);
     // Persist speaking hold clocks onto members. Overlay is ephemeral; without
@@ -2418,8 +2626,22 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
     Boolean(r.order),
   );
   const orderedRows = [...collected.values()].filter((row) => {
+    // Prior-account listen-only injects must never paint as remotes.
+    // Current-account injects only while this client's TDLib session is joined.
+    if (row.order === "\uffff") {
+      if (selfUserId == null || row.userId !== selfUserId) return false;
+      return selfJoined;
+    }
+    if (
+      !selfJoined &&
+      selfUserId != null &&
+      row.userId === selfUserId
+    ) {
+      return false;
+    }
     if (row.order) return true;
-    if (selfUserId != null && row.userId === selfUserId) return true;
+    // Orderless self only while joined — otherwise SSE paints You for spectators.
+    if (selfJoined && selfUserId != null && row.userId === selfUserId) return true;
     const key = participantKey(row.userId, row.chatId);
     // Orderless stubs: live speakers / thin roster only — never leave tombstones.
     if (hasOrderedCollected) {
@@ -2442,12 +2664,16 @@ export function getVoiceParticipantsStreamSnapshot(groupCallId: number): {
   const displayRows =
     orderedRows.length > 0 || cached.loadedAll
       ? orderedRows
-      : [...collected.values()];
+      : [...collected.values()].filter((row) => {
+          if (selfUserId == null || row.userId !== selfUserId) return true;
+          return selfJoined;
+        });
   const participants: VoiceParticipantRow[] = displayRows
     .map((row) => {
       const key = participantKey(row.userId, row.chatId);
       const profile = key ? profileCache.get(key) : undefined;
-      const isSelf = selfUserId != null && row.userId === selfUserId;
+      const isSelf =
+        selfJoined && selfUserId != null && row.userId === selfUserId;
       const speaking = effectiveSpeaking(row, nowMs);
       return {
         user_id: row.userId,

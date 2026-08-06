@@ -220,10 +220,35 @@ export function MessageChatPrivateCallHost({
         : elapsedSec;
     stopAllMedia();
     const id = callIdRef.current;
-    await discardTelegramPrivateCall(id, { durationSec });
+    await discardTelegramPrivateCall(id, { durationSec, keepalive: true });
     setDropLeaving(false);
     onHangUp();
   }, [elapsedSec, onHangUp, stopAllMedia]);
+
+  // Tab/app close must discard — otherwise TDLib keeps the peer in the call.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const discardForUnload = () => {
+      if (hungUpRef.current) return;
+      const id = callIdRef.current;
+      if (id == null) return;
+      hungUpRef.current = true;
+      stopPrivateCallRingback();
+      stopAllMedia();
+      setActiveVoiceDock(null);
+      const durationSec =
+        connectedAtRef.current != null
+          ? Math.max(0, Math.floor((Date.now() - connectedAtRef.current) / 1000))
+          : 0;
+      void discardTelegramPrivateCall(id, { durationSec, keepalive: true });
+    };
+    window.addEventListener("pagehide", discardForUnload);
+    window.addEventListener("beforeunload", discardForUnload);
+    return () => {
+      window.removeEventListener("pagehide", discardForUnload);
+      window.removeEventListener("beforeunload", discardForUnload);
+    };
+  }, [stopAllMedia]);
 
   // Ringback only while waiting for answer — stop once peer starts key exchange.
   useEffect(() => {

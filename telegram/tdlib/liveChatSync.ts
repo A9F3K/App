@@ -472,7 +472,9 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
       return;
     }
     if (type === "updateGroupCall") {
-      ingestGroupCallUpdate(update);
+      ingestGroupCallUpdate(update, {
+        telegramUsername: record.telegramUsername,
+      });
       // Keep chat-list rings in sync with getGroupCall participant counts —
       // syncChats verify is one-shot and message upserts must not be the only
       // path that can clear/paint spectator live (Blox Fruits mid-call).

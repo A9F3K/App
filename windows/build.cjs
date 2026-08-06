@@ -36,6 +36,7 @@ const {
   ensureBrowserWindowAllowsOsCapture,
   ensureWebContentsAllowsOsCapture,
 } = require("./os-screenshot.cjs");
+const { registerDisplayMediaHandler } = require("./display-media.cjs");
 const preloadPath = path.join(__dirname, "preload.cjs");
 let mainWindowRef = null;
 const fs = require("fs");
@@ -2706,6 +2707,16 @@ app.whenReady().then(async () => {
   if (process.platform === "win32") {
     // Dark native chrome (title bar / menu area) so the OS-drawn separator under the menu reads closer to #111111.
     nativeTheme.themeSource = "dark";
+  }
+  // Voice chat screen share — Chromium getDisplayMedia needs an Electron handler.
+  try {
+    registerDisplayMediaHandler({
+      session: session.defaultSession,
+      getMainWindow: () => mainWindowRef,
+      log,
+    });
+  } catch (e) {
+    log(`display-media register: ${e?.message || e}`);
   }
   if (tryRelaunchFromCurrentJunction()) return;
   clearAppliedVersionMarkerIfMatched();

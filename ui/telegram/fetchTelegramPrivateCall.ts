@@ -85,10 +85,12 @@ export async function fetchTelegramPrivateCallStatus(
 
 export async function discardTelegramPrivateCall(
   callId?: number | null,
-  options?: { durationSec?: number | null },
+  options?: { durationSec?: number | null; keepalive?: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
   try {
     const durationSec = options?.durationSec;
+    // keepalive so hang-up survives tab/app close (otherwise the peer stays in-call).
+    const keepalive = options?.keepalive !== false;
     const response = await fetch(buildApiUrl("/api/telegram-messages-call-discard"), {
       method: "POST",
       credentials: "include",
@@ -103,6 +105,7 @@ export async function discardTelegramPrivateCall(
             ? Math.trunc(durationSec)
             : undefined,
       }),
+      keepalive,
     });
     const json = (await response.json().catch(() => null)) as
       | { ok?: boolean; error?: string }

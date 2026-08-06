@@ -1550,7 +1550,12 @@ export function MessageChatVoicePopover({
   const mediaSources = useMemo((): VoiceMediaStageSource[] => {
     const rows: VoiceMediaStageSource[] = [];
     const self = participants.find((row) => row.is_self);
-    const selfName = (self?.title || "").trim() || "You";
+    // Local tiles must not show a Hyperlinks / wrong-account display name.
+    // Prefer a TDLib-backed title (real user_id); otherwise plain "You".
+    const selfName =
+      self?.user_id != null && self.user_id > 0 && self.title.trim()
+        ? self.title.trim()
+        : "You";
 
     const tileChromeFor = (participant: TelegramChatVoiceParticipant | undefined) => {
       if (!participant) {

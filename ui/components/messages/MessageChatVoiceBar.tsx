@@ -135,7 +135,7 @@ export function MessageChatVoiceBar({
   onPresenceConfirmedChange,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
-  const { colorScheme, displayName, telegramUsername } = useTelegram();
+  const { colorScheme, telegramUsername } = useTelegram();
   const { isTelegramMessagesConnected } = useTelegramMessagesConnection();
   const [leaving, setLeaving] = useState(false);
   const [participants, setParticipants] = useState<TelegramChatVoiceParticipant[]>([]);
@@ -231,6 +231,8 @@ export function MessageChatVoiceBar({
   const lastGoodRemoteVideoAtRef = useRef(0);
   /** Skip identical auto-subscribe payloads — duplicates restarted audio-settle. */
   const lastRemoteVideoRequestSigRef = useRef("");
+  /** Endpoint from the latest menu unmute — wins over lastGood under cap_1. */
+  const preferredExplicitScreenEndpointRef = useRef<string | null>(null);
 
   const syncVoicePresence = useCallback(
     (
@@ -328,6 +330,7 @@ export function MessageChatVoiceBar({
   const softPollAbortRef = useRef<AbortController | null>(null);
   const micActiveRef = useRef(voiceSession.micActive);
   micActiveRef.current = voiceSession.micActive;
+  const micPressAtRef = useRef(0);
   const localSpeakingRef = useRef(voiceSession.localSpeaking);
   localSpeakingRef.current = voiceSession.localSpeaking;
   const remoteSpeakingRef = useRef(voiceSession.remoteSpeaking);
@@ -342,12 +345,13 @@ export function MessageChatVoiceBar({
   const unlockAudioRef = useRef(voiceSession.unlockAudio);
   unlockAudioRef.current = voiceSession.unlockAudio;
   const selfTitleRef = useRef("");
+  // Never use Hyperlinks displayName for the optimistic self row — it can be
+  // another linked account (Сева) while TDLib getMe is Vsevolod. Prefer @username
+  // or plain "You" until an ordered TDLib self title arrives.
   selfTitleRef.current =
-    (typeof displayName === "string" && displayName.trim()) ||
-    (typeof telegramUsername === "string" && telegramUsername.trim()
+    typeof telegramUsername === "string" && telegramUsername.trim()
       ? `@${telegramUsername.trim().replace(/^@/, "")}`
-      : "") ||
-    "";
+      : "";
 
   const onLeftVoiceRef = useRef(onLeftVoice);
   onLeftVoiceRef.current = onLeftVoice;
@@ -727,8 +731,11 @@ export function MessageChatVoiceBar({
                   typeof row.can_unmute_self === "boolean"
                     ? row.can_unmute_self
                     : prev.can_unmute_self,
-                // Keep roster is_self — thin speaking stubs must not promote others to self.
-                is_self: prev.is_self,
+                // Ordered TDLib rows own is_self. Thin speaking stubs must not
+                // promote others OR sticky-keep a wrong You (Сева vs Vsevolod).
+                is_self: !String(row.order ?? "").trim()
+                  ? Boolean(prev.is_self)
+                  : Boolean(row.is_self),
               }
             : {
                 ...row,
@@ -774,24 +781,10 @@ export function MessageChatVoiceBar({
           const volumePercent =
             prefs?.volumePercent ??
             (typeof row.volume_percent === "number" ? row.volume_percent : 100);
-          // volume_level=1 (0%) = muted-for-me — SFU omits them; never paint as
-          // hearable while UI unmute would lie.
+          // Prefer TDLib is_speaking for green mics (Telegram Desktop). The old
+          // "wait until mix RMS latched" gate left remotes grey while
+          // speakingCount>0 (silent_mix_heal / HTML sink flaps).
           if (volumePercent <= 0) {
-            for (const speakKey of rowSpeakKeys(row)) {
-              lastTdlibSpeakingAtRef.current.set(speakKey, now);
-            }
-            clearSpeakingHoldsForRow(row);
-            continue;
-          }
-          // After WebRTC join, green = hearable in the mix. TDLib is_speaking
-          // alone while the mix was never hearable painted unmuted speakers as
-          // live (Сева / СИГМА). Once mix energy latched this join, keep trusting
-          // TDLib pulses through brief RMS dips (HTML sink / pause flaps).
-          if (
-            joinedLocally &&
-            !remoteSpeakingRef.current &&
-            !heardRemoteMixRef.current
-          ) {
             for (const speakKey of rowSpeakKeys(row)) {
               lastTdlibSpeakingAtRef.current.set(speakKey, now);
             }
@@ -956,7 +949,7 @@ export function MessageChatVoiceBar({
           ? performance.now()
           : Date.now();
       const joinedLocally = voiceJoinedRef.current;
-      const withLocalSpeaking = incoming.map((row) => {
+      let withLocalSpeaking = incoming.map((row) => {
         if (!row.is_self || !joinedLocally) return row;
         return {
           ...row,
@@ -969,6 +962,12 @@ export function MessageChatVoiceBar({
           screen_sharing_video_info: null,
         };
       });
+      // Spectator / after local leave: never paint You from poll/SSE. Gateway
+      // listen-only injects and sticky TDLib is_joined used to re-add self after
+      // the leave effect stripped it.
+      if (!joinedLocally) {
+        withLocalSpeaking = withLocalSpeaking.filter((row) => !row.is_self);
+      }
       // Speaking map updates separately — never rebuild membership for a mic pulse.
       applySpeakingMap(withLocalSpeaking);
       seedRecentSpeakerFaces(withLocalSpeaking, { countHint });
@@ -977,11 +976,20 @@ export function MessageChatVoiceBar({
       let next = withLocalSpeaking;
       if (joinedLocally && !next.some((row) => row.is_self)) {
         const prevSelf = prev.find((row) => row.is_self);
+        // Only reuse a prior self title when it belongs to a real TDLib user_id.
+        // Untitled / synthetic optimistic rows used to sticky-keep Hyperlinks
+        // displayName (Сева) onto Vsevolod's local screencast label.
+        const stickyTitle =
+          prevSelf?.user_id != null &&
+          prevSelf.user_id > 0 &&
+          prevSelf.title.trim()
+            ? prevSelf.title.trim()
+            : "";
         next = [
           {
             user_id: prevSelf?.user_id ?? null,
             chat_id: prevSelf?.chat_id ?? null,
-            title: prevSelf?.title?.trim() || selfTitleRef.current || "You",
+            title: stickyTitle || selfTitleRef.current || "You",
             description: prevSelf?.description ?? "",
             emoji_status_custom_emoji_id: prevSelf?.emoji_status_custom_emoji_id ?? null,
             is_speaking: false,
@@ -1094,6 +1102,17 @@ export function MessageChatVoiceBar({
             // ghosts after leave. Ordered faces stay during thin preferMerge
             // (hidden listeners / incomplete load) unless tombstoned above.
             if (!String(row.order ?? "").trim()) return [];
+            // Never keep You while this web session is not in the call.
+            if (row.is_self && !joinedLocally) return [];
+            // Synthetic optimistic self without a TDLib user_id must not linger
+            // once an ordered remote roster arrives (that painted Сева from
+            // Hyperlinks displayName beside the real Vsevolod self).
+            if (row.is_self && (row.user_id == null || row.user_id <= 0)) {
+              const hasOrderedSelf = next.some(
+                (r) => r.is_self && r.user_id != null && r.user_id > 0,
+              );
+              if (hasOrderedSelf) return [];
+            }
             return [row];
           }
           // Thin recent_speakers stubs omit mute — never remute OR unmute from
@@ -1101,7 +1120,17 @@ export function MessageChatVoiceBar({
           const nextMuted = !String(inc.order ?? "").trim()
             ? Boolean(row.is_muted)
             : Boolean(inc.is_muted);
-          const nextTitle = inc.title.trim() || row.title;
+          // Drop Hyperlinks displayName sticky when an ordered TDLib self arrives
+          // with an empty title (profile still warming) — otherwise "Сева" stays
+          // on the screencast label after getMe is Vsevolod.
+          const promotingOrderedSelf =
+            Boolean(inc.is_self) &&
+            (row.user_id == null || row.user_id <= 0) &&
+            inc.user_id != null &&
+            inc.user_id > 0;
+          const nextTitle = promotingOrderedSelf
+            ? inc.title.trim() || selfTitleRef.current || "You"
+            : inc.title.trim() || row.title;
           const nextDescription = inc.description || row.description;
           const nextEmoji =
             inc.emoji_status_custom_emoji_id ?? row.emoji_status_custom_emoji_id;
@@ -1133,6 +1162,7 @@ export function MessageChatVoiceBar({
           return [{
             ...row,
             is_muted: nextMuted,
+            is_self: Boolean(inc.is_self),
             can_unmute_self:
               inc.can_unmute_self == null
                 ? (row.can_unmute_self ?? true)
@@ -1147,6 +1177,12 @@ export function MessageChatVoiceBar({
                 : row.volume_percent,
             video_info: nextVideo,
             screen_sharing_video_info: nextScreen,
+            user_id:
+              inc.user_id != null && inc.user_id > 0 ? inc.user_id : row.user_id,
+            chat_id:
+              inc.chat_id != null && inc.chat_id !== 0
+                ? inc.chat_id
+                : row.chat_id,
           }];
         });
         for (const inc of next) {
@@ -1170,7 +1206,19 @@ export function MessageChatVoiceBar({
       } else {
         next = next.map((row) => {
           const prevMatch = prevByKey.get(speakKey(row));
-          const title = row.title.trim() || prevMatch?.title || "";
+          const titleFromIncoming = row.title.trim();
+          // Do not sticky-keep another account's title onto a newly identified self.
+          const title =
+            titleFromIncoming ||
+            (prevMatch &&
+            prevMatch.user_id != null &&
+            row.user_id != null &&
+            prevMatch.user_id === row.user_id
+              ? prevMatch.title
+              : "") ||
+            (row.is_self ? selfTitleRef.current || "You" : "") ||
+            prevMatch?.title ||
+            "";
           const description = row.description || prevMatch?.description || "";
           const emoji =
             row.emoji_status_custom_emoji_id ??
@@ -2323,6 +2371,18 @@ export function MessageChatVoiceBar({
         next.push(row);
       };
       if (completeRequests.length > 0) {
+        // Prefer the endpoint the user just unmuted (2nd share under cap_1).
+        const preferredEndpoint =
+          preferredExplicitScreenEndpointRef.current?.trim() || "";
+        if (preferredEndpoint) {
+          const preferred = completeRequests.find(
+            (r) => r.endpointId === preferredEndpoint,
+          );
+          if (preferred) {
+            take(preferred);
+            preferredExplicitScreenEndpointRef.current = null;
+          }
+        }
         // SIM publishers only — mixing FID-only with SIM stalled mix audio.
         for (const prev of lastGood) {
           const match = completeRequests.find(
@@ -2333,6 +2393,17 @@ export function MessageChatVoiceBar({
         for (const row of completeRequests) take(row);
       } else {
         // No SIM: keep the live incomplete tile (sticky), else best screen.
+        const preferredEndpoint =
+          preferredExplicitScreenEndpointRef.current?.trim() || "";
+        if (preferredEndpoint) {
+          const preferred = incompleteRequests.find(
+            (r) => r.endpointId === preferredEndpoint,
+          );
+          if (preferred) {
+            take(preferred);
+            preferredExplicitScreenEndpointRef.current = null;
+          }
+        }
         for (const prev of lastGood) {
           const match = incompleteRequests.find(
             (r) => r.endpointId === prev.endpointId,
@@ -2665,9 +2736,13 @@ export function MessageChatVoiceBar({
         const existing = prev[key] ?? prefs;
         return { ...prev, [key]: { ...existing, muteScreen: nextMute } };
       });
-      // Unmute must arm video SDP even when mix RMS is quiet.
+      // Unmute must arm video SDP even when mix RMS is quiet; pass endpoint so
+      // a 2nd share wins over cap_1 sticky on the first unmuted screen.
       if (!nextMute) {
-        voiceSession.preferExplicitRemoteVideoSubscribe();
+        const endpoint =
+          participant.screen_sharing_video_info?.endpoint_id?.trim() || null;
+        preferredExplicitScreenEndpointRef.current = endpoint;
+        voiceSession.preferExplicitRemoteVideoSubscribe(endpoint);
       }
     },
     [ensureParticipantPrefs, voicePrefsAccountId, voiceSession],
@@ -2925,25 +3000,14 @@ export function MessageChatVoiceBar({
               setParticipants((prev) => {
                 const uid = row.user_id;
                 if (uid == null) return prev;
-                const optimistic = prev.find((p) => p.is_self);
                 let changed = false;
                 const next = prev.flatMap((p) => {
                   if (p.user_id === uid) {
-                    if (p.is_self && p.title === (optimistic?.title || p.title)) {
-                      return [p];
-                    }
+                    if (p.is_self) return [p];
                     changed = true;
-                    return [
-                      {
-                        ...p,
-                        is_self: true,
-                        title: optimistic?.title?.trim() || p.title,
-                        description: optimistic?.description || p.description,
-                        emoji_status_custom_emoji_id:
-                          optimistic?.emoji_status_custom_emoji_id ??
-                          p.emoji_status_custom_emoji_id,
-                      },
-                    ];
+                    // Keep TDLib title — never copy Hyperlinks displayName
+                    // (Сева) onto the real Telegram self (Vsevolod).
+                    return [{ ...p, is_self: true }];
                   }
                   if (p.is_self && p.user_id !== uid) {
                     changed = true;
@@ -2958,17 +3022,25 @@ export function MessageChatVoiceBar({
             // Missing / left participants and other non-retryable TDLib errors
             // must keep the key so we do not storm POST …/voice-participant-volume
             // (prod: 502 "Can't find group call participant" starved text I/O).
+            // Transient gateway/proxy 502 without a TDLib reason must retry —
+            // otherwise a peer who joins mid-call stays silent in the SFU mix.
             const nonRetryable =
               /Can't find group call participant/i.test(errText) ||
               /PARTICIPANT_ID_INVALID/i.test(errText) ||
               /USER_NOT_PARTICIPANT/i.test(errText) ||
               /GROUPCALL_INVALID/i.test(errText);
+            const transientGateway =
+              !nonRetryable &&
+              (/bad gateway/i.test(errText) ||
+                /\b502\b/.test(errText) ||
+                /ECONNRESET|ETIMEDOUT|fetch failed/i.test(errText));
             appWarn("[voice-participant-volume-nudge]", result.error, {
               chatId,
               groupCallId,
               userId: row.user_id,
               title: row.title,
               nonRetryable,
+              transientGateway,
             });
             if (!nonRetryable) {
               listenVolumeNudgeAttemptedRef.current.delete(key);
@@ -3817,6 +3889,9 @@ export function MessageChatVoiceBar({
       unlockThenJoin();
       return;
     }
+    const now = Date.now();
+    if (now - micPressAtRef.current < 280) return;
+    micPressAtRef.current = now;
     void voiceSession.toggleMic();
   }, [joined, unlockThenJoin, voiceSession]);
 

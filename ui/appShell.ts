@@ -23,6 +23,8 @@ export type DesktopOAuthBridge = {
     error?: string | null;
     sessionToken?: string | null;
   }>;
+  /** Set by windows/preload.cjs in the Electron shell. */
+  isElectronShell?: boolean;
 };
 
 declare global {
@@ -35,4 +37,11 @@ export function getDesktopOAuthBridge(): DesktopOAuthBridge | null {
   if (typeof window === "undefined") return null;
   const bridge = window.__HSP_DESKTOP__;
   return bridge && typeof bridge.openOAuthUrl === "function" ? bridge : null;
+}
+
+/** Packaged Windows/Electron app (not a normal browser tab). */
+export function isElectronDesktopShell(): boolean {
+  if (typeof window === "undefined") return false;
+  if (window.__HSP_DESKTOP__?.isElectronShell === true) return true;
+  return isDesktopAppShell();
 }

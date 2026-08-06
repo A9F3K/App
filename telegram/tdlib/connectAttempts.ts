@@ -2057,6 +2057,7 @@ export async function getChatVoiceParticipantsForUser(
     const { fetchChatVoiceParticipants } = await import("./voiceParticipants.js");
     const result = await fetchChatVoiceParticipants(record.client, chatId, groupCallId, {
       forceReload: Boolean(options?.forceReload),
+      telegramUsername,
     });
     patchLiveChatVideoChat(telegramUsername, chatId, {
       has_active_voice_chat: result.has_active_voice_chat,

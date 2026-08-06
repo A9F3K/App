@@ -227,7 +227,7 @@ const en = {
   "messages.voiceChat.controls.stopSharing": "Stop sharing",
   "messages.voiceChat.controls.settingsSoon": "Settings (soon)",
   "messages.voiceChat.errors.screenShareUnsupported":
-    "Screen sharing isn’t supported in this browser. Open the site in Chrome or Edge.",
+    "Screen sharing isn’t available here. Use Chrome, Edge, or the latest Hyperlinks desktop app.",
   "messages.voiceChat.errors.screenShareDenied":
     "Screen sharing was blocked. Allow screen capture and try again.",
   "messages.voiceChat.errors.screenShareCancelled": "Screen sharing was cancelled.",
@@ -663,7 +663,7 @@ const ru = {
   "messages.voiceChat.controls.stopSharing": "Остановить демонстрацию",
   "messages.voiceChat.controls.settingsSoon": "Настройки (скоро)",
   "messages.voiceChat.errors.screenShareUnsupported":
-    "Демонстрация экрана не поддерживается в этом браузере. Откройте сайт в Chrome или Edge.",
+    "Демонстрация экрана здесь недоступна. Используйте Chrome, Edge или актуальную версию приложения Hyperlinks.",
   "messages.voiceChat.errors.screenShareDenied":
     "Демонстрация экрана заблокирована. Разрешите захват экрана и попробуйте снова.",
   "messages.voiceChat.errors.screenShareCancelled": "Демонстрация экрана отменена.",
@@ -1065,7 +1065,7 @@ const zh = {
   "messages.voiceChat.controls.stopSharing": "停止共享",
   "messages.voiceChat.controls.settingsSoon": "设置（即将推出）",
   "messages.voiceChat.errors.screenShareUnsupported":
-    "此浏览器不支持屏幕共享。请在 Chrome 或 Edge 中打开网站。",
+    "此处无法屏幕共享。请使用 Chrome、Edge 或最新版 Hyperlinks 桌面应用。",
   "messages.voiceChat.errors.screenShareDenied":
     "屏幕共享被阻止。请允许屏幕捕获后重试。",
   "messages.voiceChat.errors.screenShareCancelled": "已取消屏幕共享。",

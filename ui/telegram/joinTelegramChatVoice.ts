@@ -24,7 +24,9 @@ export async function joinTelegramChatVoice(input: {
     return { ok: false, error: "invalid_audio_source" };
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
+  // Gateway can stall under voice-dialog load (prod: ice_recover → join_timeout
+  // while participants SSE also times out). Give TDLib join room to finish.
+  const timer = setTimeout(() => controller.abort(), 45_000);
   let response: Response;
   try {
     response = await fetch(buildApiUrl("/api/telegram-messages-voice-join"), {
