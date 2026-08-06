@@ -133,6 +133,10 @@ export async function fetchTelegramChatVoiceParticipants(
     voice_resolve_source?: string;
     loaded_all_participants?: boolean;
     has_hidden_listeners?: boolean;
+    video_chat?: {
+      has_participants?: boolean;
+      hasParticipants?: boolean;
+    } | null;
   };
   if (!response.ok || !json.ok) {
     return { ok: false, error: json.error ?? "participants_failed" };
@@ -180,10 +184,16 @@ export async function fetchTelegramChatVoiceParticipants(
   const participantCount = Math.max(rawCount, participants.length);
   // Prefer self-on-roster over sticky TDLib is_joined (false green rings).
   const voiceJoined = participants.some((row) => row.is_self);
+  const chatHasParticipantsRaw =
+    json.video_chat?.has_participants ?? json.video_chat?.hasParticipants;
+  const chatHasParticipants =
+    typeof chatHasParticipantsRaw === "boolean" ? chatHasParticipantsRaw : null;
   // Defense in depth: empty bound group calls must not paint as live even if a
   // stale gateway still sets has_active_voice_chat from is_active alone.
+  // Explicit has_participants=false matches Telegram Desktop (no list ring).
   const hasActiveVoiceChat =
     Boolean(json.has_active_voice_chat) &&
+    chatHasParticipants !== false &&
     (participantCount > 0 || participants.length > 0 || voiceJoined);
   return {
     ok: true,

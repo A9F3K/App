@@ -22,6 +22,7 @@ import {
   type TdChat,
   type TdMessage,
   voiceChatFromTdChat,
+  readTdVideoChat,
 } from "./chatPreview.js";
 import { previewSegmentsFromMessage } from "./formattedTextSegments.js";
 import { emojiStatusCustomIdFromChat } from "./emojiStatus.js";
@@ -369,11 +370,21 @@ export function patchLiveChatFromTdlib(
         // because stillJoined-only kept live only when *we* were in the call.
         // Clearing inactive leftovers is updateChatVideoChat / updateGroupCall /
         // verifyAndPatchVideoChat — not every chat-row refresh.
+        // Exception: explicit has_participants=false must clear live immediately
+        // (stale getGroupCall counts otherwise keep rings after the call ended).
+        const video = readTdVideoChat(chat);
         const voice = voiceChatFromTdChat(chat);
         const nextCallId = voice.voice_chat_group_call_id;
         if (nextCallId == null) {
           return {
             voice_chat_group_call_id: null,
+            has_active_voice_chat: false,
+            voice_chat_is_joined: false,
+          };
+        }
+        if (video.has_participants === false) {
+          return {
+            voice_chat_group_call_id: nextCallId,
             has_active_voice_chat: false,
             voice_chat_is_joined: false,
           };

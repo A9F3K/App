@@ -52,6 +52,7 @@ async function verifyAndPatchVideoChat(
   const state = await verifyGroupCallLiveState(
     client,
     candidate.voice_chat_group_call_id,
+    { chatId },
   );
   patchLiveChatVideoChat(record.telegramUsername, chatId, {
     has_active_voice_chat: state.live,
@@ -488,17 +489,34 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
         | undefined;
       const callId = normalizeTelegramGroupCallId(groupCall?.id) ?? 0;
       if (callId > 0 && groupCall) {
-        const live = groupCallLooksLive(groupCall);
+        const looksLive = groupCallLooksLive(groupCall);
         const list = getLiveChatList(record.telegramUsername) ?? [];
         for (const row of list) {
           if (row.voice_chat_group_call_id !== callId) continue;
+          if (!looksLive) {
+            patchLiveChatVideoChat(record.telegramUsername, row.telegram_chat_id, {
+              has_active_voice_chat: false,
+              voice_chat_group_call_id: callId,
+              voice_chat_is_joined: false,
+            });
+            continue;
+          }
           // Never set joined=true here — sticky TDLib is_joined painted green
           // while the web client was not in the call. Preserve an existing
           // client-owned joined flag while the call stays live.
-          patchLiveChatVideoChat(record.telegramUsername, row.telegram_chat_id, {
-            has_active_voice_chat: live,
+          if (row.has_active_voice_chat) {
+            patchLiveChatVideoChat(record.telegramUsername, row.telegram_chat_id, {
+              has_active_voice_chat: true,
+              voice_chat_group_call_id: callId,
+              voice_chat_is_joined: Boolean(row.voice_chat_is_joined),
+            });
+            continue;
+          }
+          // Inactive→live only after getChat.has_participants verify — raw
+          // getGroupCall counts alone painted leftover chats with no call.
+          void verifyAndPatchVideoChat(record, row.telegram_chat_id, {
+            has_active_voice_chat: false,
             voice_chat_group_call_id: callId,
-            voice_chat_is_joined: live ? Boolean(row.voice_chat_is_joined) : false,
           });
         }
       }

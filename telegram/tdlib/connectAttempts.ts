@@ -2360,7 +2360,9 @@ export async function leaveChatVoiceForUser(
 
     // Re-check live after leave — getChat metadata alone can still look "bound"
     // while participant_count=0 (false rings / Join strip).
-    const verified = await verifyGroupCallLiveState(record.client, callId);
+    const verified = await verifyGroupCallLiveState(record.client, callId, {
+      chatId,
+    });
     const voice = {
       has_active_voice_chat: verified.live,
       voice_chat_group_call_id: callId,

@@ -1039,7 +1039,9 @@ async function buildLiveRowsForChats(
     if (typeof callId !== "number" || !Number.isFinite(callId) || callId <= 0) {
       return row;
     }
-    const state = await verifyGroupCallLiveState(client, callId);
+    const state = await verifyGroupCallLiveState(client, callId, {
+      chatId: row.telegram_chat_id,
+    });
     if (!state.live) {
       return {
         ...row,

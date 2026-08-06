@@ -57,6 +57,10 @@ import {
   type VoiceMediaStageSource,
 } from "./MessageChatVoiceVideoPlane";
 import type { TelegramRemoteVideoSource } from "../../telegram/telegramGroupCallWebSession";
+import {
+  startVoiceConnectionTick,
+  stopVoiceConnectionTick,
+} from "../../telegram/voiceConnectionTick";
 import { MessageChatComposePill } from "./MessageChatComposePill";
 import {
   MessageChatVoiceMoreMenu,
@@ -189,6 +193,8 @@ const VOICE_SIZE_STORAGE_KEY = "hsp.voiceChatDialog.size.v1";
 const VOICE_OFFSET_STORAGE_KEY = "hsp.voiceChatDialog.offset.v1";
 const VOICE_SPEAKING_MIC_COLOR = "#34C759";
 const VOICE_MUTED_STATUS_COLOR = "#FF1111";
+/** Soft pastel red flash on mic undercover while ICE/media reconnects. */
+const VOICE_RECONNECT_MIC_UNDERCOVER = "#F5A8A8";
 /** How long an ephemeral chat message stays visible before fading out (ms). */
 const CHAT_MSG_TTL_MS = 6_000;
 
@@ -224,6 +230,16 @@ type Props = {
   screenSharing: boolean;
   onStartScreenShare: () => void;
   onStopScreenShare: () => void;
+  /**
+   * True while voice ICE / presentation transport is recovering — video
+   * reconnect overlay on screen/camera tiles.
+   */
+  mediaReconnecting?: boolean;
+  /**
+   * True while voice PC / ICE is recovering — pastel mic undercover flash and
+   * soft reconnect ticks instead of broken remote audio.
+   */
+  voiceReconnecting?: boolean;
   /** Localized screen-share / session failure shown above the controls. */
   sessionError?: string | null;
   onDropPress: () => void;
@@ -936,6 +952,8 @@ export function MessageChatVoicePopover({
   screenSharing,
   onStartScreenShare,
   onStopScreenShare,
+  mediaReconnecting = false,
+  voiceReconnecting = false,
   sessionError = null,
   onDropPress,
   dropLeaving,
@@ -958,6 +976,31 @@ export function MessageChatVoicePopover({
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
+  const [micReconnectFlashOn, setMicReconnectFlashOn] = useState(false);
+
+  useEffect(() => {
+    if (!voiceReconnecting || Platform.OS !== "web") {
+      setMicReconnectFlashOn(false);
+      stopVoiceConnectionTick();
+      return;
+    }
+    startVoiceConnectionTick();
+    setMicReconnectFlashOn(true);
+    const id = window.setInterval(() => {
+      setMicReconnectFlashOn((prev) => !prev);
+    }, 420);
+    return () => {
+      window.clearInterval(id);
+      setMicReconnectFlashOn(false);
+      stopVoiceConnectionTick();
+    };
+  }, [voiceReconnecting]);
+
+  const micUndercoverColor =
+    voiceReconnecting && micReconnectFlashOn
+      ? VOICE_RECONNECT_MIC_UNDERCOVER
+      : colors.undercover;
+  const connectionInterruptedLabel = t("messages.voiceChat.connectionEstablishing");
   const chatTitle = title.trim() || t("messages.voiceChat.active");
   const isPrivateCall = privateCall != null;
   // Prefer the strip's TDLib-backed count when the painted roster is still thin
@@ -2039,6 +2082,10 @@ export function MessageChatVoicePopover({
               fitSingleToContent={singleMedia}
               horizontalInsetPx={0}
               marginBottomPx={singleMedia ? 8 : 12}
+              connectionInterrupted={mediaReconnecting}
+              connectionInterruptedLabel={connectionInterruptedLabel}
+              connectionInterruptedBg={colors.secondary}
+              connectionInterruptedFg={colors.primary}
             />
           ) : null}
           {includeSidebarPips && sidebarPipSources.length > 0 ? (
@@ -2046,6 +2093,10 @@ export function MessageChatVoicePopover({
               sources={sidebarPipSources}
               active={videoStageActive}
               onSelect={setFocusedMediaId}
+              connectionInterrupted={mediaReconnecting}
+              connectionInterruptedLabel={connectionInterruptedLabel}
+              connectionInterruptedBg={colors.secondary}
+              connectionInterruptedFg={colors.primary}
             />
           ) : null}
           {renderParticipantRows()}
@@ -2312,7 +2363,7 @@ export function MessageChatVoicePopover({
         testId="mic"
         label={t("messages.voiceChat.controls.mic")}
         variant="simple"
-        undercoverColor={colors.undercover}
+        undercoverColor={micUndercoverColor}
         isLightTheme={isLightTheme}
         phaseOffset={0.38}
         onPress={() => {
@@ -2516,6 +2567,10 @@ export function MessageChatVoicePopover({
                 externalPips
                 horizontalInsetPx={0}
                 marginBottomPx={0}
+                connectionInterrupted={mediaReconnecting}
+                connectionInterruptedLabel={connectionInterruptedLabel}
+                connectionInterruptedBg={colors.secondary}
+                connectionInterruptedFg={colors.primary}
               />
             </View>
             <View

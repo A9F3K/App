@@ -111,7 +111,7 @@ export function readTdVideoChat(
  * Never paints `has_active_voice_chat` from TDLib chat.video_chat — leftovers stay
  * `is_active` / `has_participants` with participant_count=0 (kapibara groupCallId=10).
  * Live rings/strip require getGroupCall via verifyGroupCallLiveState (list sync +
- * updateChatVideoChat).
+ * updateChatVideoChat), gated by has_participants !== false.
  */
 export function voiceChatFromTdChat(chat: TdChat): {
   has_active_voice_chat: boolean;

@@ -1029,14 +1029,22 @@ export function MessageChatVoiceBar({
         next.length > 0 &&
         next.every((row) => !String(row.order ?? "").trim());
       // Authoritative shrink only when TDLib's participant_count has caught up to
-      // the smaller payload. An ordered listed=1 (often self-only) with hint still
-      // 5+ used to tombstone every remote and paint only "You" (prod SSE flaps).
+      // the smaller payload AND every row is ordered (full load). An ordered
+      // listed=1 (often self-only) with hint still 5+ used to tombstone every
+      // remote and paint only "You" (prod SSE flaps). Soft recent_speakers
+      // (orderless) with a matching undercount hint must never wipe a fuller
+      // force-reload paint.
+      const incomingLooksOrdered =
+        next.length > 0 &&
+        next.every((row) => Boolean(String(row.order ?? "").trim()));
       const hintConfirmsShrink = hint > 0 && hint <= next.length;
       const authoritativeShrink =
         !growsRoster &&
         next.length < prev.length &&
         next.length > 0 &&
-        hintConfirmsShrink;
+        hintConfirmsShrink &&
+        incomingLooksOrdered &&
+        !incomingLooksOrderless;
       const nowMs = Date.now();
       for (const [key, at] of leaveTombstonesRef.current) {
         if (nowMs - at >= LEAVE_TOMBSTONE_MS) leaveTombstonesRef.current.delete(key);
@@ -1225,8 +1233,10 @@ export function MessageChatVoiceBar({
           };
         });
         // Server soft payloads can still arrive oversized before the gateway
-        // trim lands — keep the painted roster at the TDLib floor.
-        if (hint >= 2 && next.length > hint) {
+        // trim lands — only clip orderless stubs to the TDLib floor. Never
+        // slice an ordered force-reload roster when hint briefly undercounts
+        // (that hid real participants: listed=6 → slice to hint=3).
+        if (hint >= 2 && next.length > hint && incomingLooksOrderless) {
           const ranked = [...next].sort((a, b) => {
             const score = (row: TelegramChatVoiceParticipant) =>
               (row.screen_sharing_video_info?.source_groups?.length ? 8 : 0) +
@@ -1271,10 +1281,17 @@ export function MessageChatVoiceBar({
 
       // Keep a TDLib floor for the strip label / reload. Follow the live server
       // hint when present — do not let ghost soft-merge rows raise it via
-      // next.length (listed=3 totalHint=4 with "?" titles).
+      // next.length (listed=3 totalHint=4 with "?" titles). When the painted
+      // roster is mostly ordered and larger than hint, raise the floor so a
+      // soft undercount cannot starve post-join force reloads.
+      const orderedPainted = next.filter((row) =>
+        Boolean(String(row.order ?? "").trim()),
+      ).length;
       const totalHint =
         hint > 0
-          ? hint
+          ? orderedPainted > hint
+            ? Math.max(hint, orderedPainted)
+            : hint
           : Math.max(rosterTotalHintRef.current, next.length);
       rosterTotalHintRef.current = totalHint;
       const nextCount = next.length;
@@ -2267,7 +2284,10 @@ export function MessageChatVoiceBar({
         return (hasSim ? 100 : 0) + fidCount * 20 + groups.length * 10;
       };
       const COMPLETE_SSRC_MIN = 100; // requires SIM
-      const MAX_REMOTE_VIDEOS = 2;
+      // Colibri: dual subscribe (screen+camera) reliably freezes the mix Opus
+      // m-line. Prefer one screen; camera only when nobody is sharing.
+      const hasScreenRequest = requests.some((r) => r.kind === "screen");
+      const MAX_REMOTE_VIDEOS = 1;
       const sortVideoRequests = (
         list: typeof requests,
       ): typeof requests =>
@@ -2275,13 +2295,16 @@ export function MessageChatVoiceBar({
           if (a.kind !== b.kind) return a.kind === "screen" ? -1 : 1;
           return scoreSsrcGroups(b.ssrcGroups) - scoreSsrcGroups(a.ssrcGroups);
         });
+      const pool = hasScreenRequest
+        ? requests.filter((r) => r.kind === "screen")
+        : requests;
       const completeRequests = sortVideoRequests(
-        requests.filter(
+        pool.filter(
           (r) => scoreSsrcGroups(r.ssrcGroups) >= COMPLETE_SSRC_MIN,
         ),
       );
       const incompleteRequests = sortVideoRequests(
-        requests.filter(
+        pool.filter(
           (r) => scoreSsrcGroups(r.ssrcGroups) < COMPLETE_SSRC_MIN,
         ),
       );
@@ -2423,11 +2446,13 @@ export function MessageChatVoiceBar({
         level: next.length > 0 ? "info" : "warn",
         note:
           next.length > 0
-            ? pendingGroups.length > 0 ||
-              requests.length > next.length ||
-              incompleteRequests.length > 0
-              ? "explicit_video_complete_ssrc_cap_2"
-              : "explicit_video_subscribe_cap_2"
+            ? hasScreenRequest
+              ? "explicit_video_screen_only_cap_1"
+              : pendingGroups.length > 0 ||
+                  requests.length > next.length ||
+                  incompleteRequests.length > 0
+                ? "explicit_video_complete_ssrc_cap_1"
+                : "explicit_video_subscribe_cap_1"
             : requests.length > 0
               ? "skipped_incomplete_ssrc_video — audio-first"
               : participantsRef.current.some(
@@ -2442,8 +2467,9 @@ export function MessageChatVoiceBar({
                 : "no video source_groups on roster — force-reload may still be pending",
       });
     };
-    const timer = window.setTimeout(applyRequests, hasVideoPublishers ? 600 : 2_500);
-    const retry = window.setTimeout(applyRequests, hasVideoPublishers ? 2_200 : 5_000);
+    // Faster first paint when a share is already on the roster (was 600/2200ms).
+    const timer = window.setTimeout(applyRequests, hasVideoPublishers ? 120 : 2_500);
+    const retry = window.setTimeout(applyRequests, hasVideoPublishers ? 900 : 5_000);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
@@ -2929,13 +2955,24 @@ export function MessageChatVoiceBar({
               });
               return;
             }
+            // Missing / left participants and other non-retryable TDLib errors
+            // must keep the key so we do not storm POST …/voice-participant-volume
+            // (prod: 502 "Can't find group call participant" starved text I/O).
+            const nonRetryable =
+              /Can't find group call participant/i.test(errText) ||
+              /PARTICIPANT_ID_INVALID/i.test(errText) ||
+              /USER_NOT_PARTICIPANT/i.test(errText) ||
+              /GROUPCALL_INVALID/i.test(errText);
             appWarn("[voice-participant-volume-nudge]", result.error, {
               chatId,
               groupCallId,
               userId: row.user_id,
               title: row.title,
+              nonRetryable,
             });
-            listenVolumeNudgeAttemptedRef.current.delete(key);
+            if (!nonRetryable) {
+              listenVolumeNudgeAttemptedRef.current.delete(key);
+            }
             return;
           }
           logPageDisplay("messages_voice_listen_volume_sfu_nudged", {
@@ -3548,17 +3585,36 @@ export function MessageChatVoiceBar({
           ) {
             return;
           }
-          // No growth after a joined force — accept the visible roster (even
-          // listed=1). Hint often includes hidden listeners Telegram never lists.
+          // No growth after a joined force. Accept when we've matched TDLib's
+          // total, or Telegram hides muted listeners so listed will never catch
+          // up. Do NOT stop early on listed < hint without has_hidden — that
+          // left half the call missing after two thin force passes.
           if (listed >= 1 && listed === lastForceListed) {
-            postJoinRosterLoadedRef.current = true;
-            logPageDisplay("messages_voice_dialog_postjoin_reload_accept_visible", {
+            const hidden =
+              Boolean(result.has_hidden_listeners) ||
+              hasHiddenListenersRef.current;
+            const caughtUp = hint > 0 && listed >= hint;
+            if (hidden || caughtUp || hint <= 0) {
+              postJoinRosterLoadedRef.current = true;
+              logPageDisplay("messages_voice_dialog_postjoin_reload_accept_visible", {
+                chatId,
+                listed,
+                hint,
+                attempt: attempts,
+                hasHidden: hidden,
+                level: "info",
+              });
+              return;
+            }
+            logPageDisplay("messages_voice_dialog_postjoin_reload_keep_forcing", {
               chatId,
               listed,
               hint,
               attempt: attempts,
-              level: "info",
+              level: "warn",
+              note: "listed still below TDLib count — keep force-reload",
             });
+            armRetry(2_500);
             return;
           }
           lastForceListed = listed;
@@ -4102,6 +4158,8 @@ export function MessageChatVoiceBar({
         screenSharing={voiceSession.screenSharing}
         onStartScreenShare={() => void onStartScreenShare()}
         onStopScreenShare={() => void onStopScreenShare()}
+        mediaReconnecting={voiceSession.mediaReconnecting}
+        voiceReconnecting={voiceSession.voiceReconnecting}
         sessionError={sessionErrorLabel}
         onDropPress={() => void onDropFromPopover()}
         dropLeaving={leaving}

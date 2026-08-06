@@ -285,6 +285,11 @@ type TileChromeProps = {
   accessibilityLabel?: string;
   /** Compact chrome for sidebar thumbs. */
   compact?: boolean;
+  /** ICE/media reconnect — secondary wash + primary label over the tile. */
+  connectionInterrupted?: boolean;
+  connectionInterruptedLabel?: string;
+  connectionInterruptedBg?: string;
+  connectionInterruptedFg?: string;
 };
 
 function MediaTile({
@@ -294,6 +299,10 @@ function MediaTile({
   onPress,
   accessibilityLabel,
   compact = false,
+  connectionInterrupted = false,
+  connectionInterruptedLabel = "",
+  connectionInterruptedBg = "#A1A1A1",
+  connectionInterruptedFg = "#000000",
 }: TileChromeProps) {
   const muted = Boolean(source.muted);
   const muteChrome = source.muteChrome ?? (muted ? "red" : undefined);
@@ -310,6 +319,36 @@ function MediaTile({
         active={active}
         objectFit="contain"
       />
+      {connectionInterrupted ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: 0,
+            bottom: 0,
+            backgroundColor: connectionInterruptedBg,
+            alignItems: "center",
+            justifyContent: "center",
+            paddingHorizontal: compact ? 6 : 10,
+            zIndex: 3,
+          }}
+        >
+          <Text
+            numberOfLines={2}
+            style={{
+              color: connectionInterruptedFg,
+              fontSize: compact ? 10 : 12,
+              lineHeight: compact ? 13 : 15,
+              textAlign: "center",
+              fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : undefined,
+            }}
+          >
+            {connectionInterruptedLabel}
+          </Text>
+        </View>
+      ) : null}
       <View
         pointerEvents="none"
         style={{
@@ -324,6 +363,7 @@ function MediaTile({
           paddingVertical: compact ? 4 : 6,
           backgroundColor: "rgba(0,0,0,0.55)",
           gap: 6,
+          zIndex: 4,
         }}
       >
         <Text
@@ -340,7 +380,7 @@ function MediaTile({
           {label || " "}
         </Text>
         <VoiceParticipantStateMicIcon
-          speaking={speaking && !muted}
+          speaking={speaking && !muted && !connectionInterrupted}
           muted={muted}
           color={muted ? micMutedColor : speaking ? SPEAKING_BORDER : "#ffffff"}
           size={micSize}
@@ -388,9 +428,23 @@ type MosaicProps = {
   onSelect: (id: string) => void;
   /** Parent sizes the stage (e.g. single-tile aspect box) — fill it instead of flex-grow. */
   fillParent?: boolean;
+  connectionInterrupted?: boolean;
+  connectionInterruptedLabel?: string;
+  connectionInterruptedBg?: string;
+  connectionInterruptedFg?: string;
 };
 
-function MosaicGrid({ sources, active, wide, onSelect, fillParent = false }: MosaicProps) {
+function MosaicGrid({
+  sources,
+  active,
+  wide,
+  onSelect,
+  fillParent = false,
+  connectionInterrupted = false,
+  connectionInterruptedLabel = "",
+  connectionInterruptedBg,
+  connectionInterruptedFg,
+}: MosaicProps) {
   const rows = mosaicRowSizes(sources.length, wide);
   let cursor = 0;
   const rowSources = rows.map((size) => {
@@ -425,6 +479,10 @@ function MosaicGrid({ sources, active, wide, onSelect, fillParent = false }: Mos
               source={source}
               active={active}
               speaking={Boolean(source.speaking) && !source.muted}
+              connectionInterrupted={connectionInterrupted}
+              connectionInterruptedLabel={connectionInterruptedLabel}
+              connectionInterruptedBg={connectionInterruptedBg}
+              connectionInterruptedFg={connectionInterruptedFg}
               onPress={() => onSelect(source.id)}
               accessibilityLabel={
                 source.label
@@ -443,6 +501,10 @@ export type VoiceMediaPipColumnProps = {
   sources: VoiceMediaStageSource[];
   active: boolean;
   onSelect: (id: string) => void;
+  connectionInterrupted?: boolean;
+  connectionInterruptedLabel?: string;
+  connectionInterruptedBg?: string;
+  connectionInterruptedFg?: string;
 };
 
 /** Right-column thumbs when a wide-stage tile is expanded. */
@@ -450,6 +512,10 @@ export function MessageChatVoiceMediaPipColumn({
   sources,
   active,
   onSelect,
+  connectionInterrupted = false,
+  connectionInterruptedLabel = "",
+  connectionInterruptedBg,
+  connectionInterruptedFg,
 }: VoiceMediaPipColumnProps) {
   if (Platform.OS !== "web" || !active || sources.length === 0) return null;
   return (
@@ -476,6 +542,10 @@ export function MessageChatVoiceMediaPipColumn({
             active={active}
             speaking={Boolean(source.speaking) && !source.muted}
             compact
+            connectionInterrupted={connectionInterrupted}
+            connectionInterruptedLabel={connectionInterruptedLabel}
+            connectionInterruptedBg={connectionInterruptedBg}
+            connectionInterruptedFg={connectionInterruptedFg}
             onPress={() => onSelect(source.id)}
             accessibilityLabel={
               source.label ? `Show ${source.label}` : "Show this screen share"
@@ -513,6 +583,11 @@ type StageProps = {
    * (capped by maxHeight) instead of a fixed empty band with letterbox gaps.
    */
   fitSingleToContent?: boolean;
+  /** Network/ICE interrupt — keep tiles visible with reconnect overlay. */
+  connectionInterrupted?: boolean;
+  connectionInterruptedLabel?: string;
+  connectionInterruptedBg?: string;
+  connectionInterruptedFg?: string;
 };
 
 function aspectRatioFromSource(source: VoiceMediaStageSource): number {
@@ -547,6 +622,10 @@ function MessageChatVoiceMediaStageInner({
   onFocusedIdChange,
   externalPips = false,
   fitSingleToContent = false,
+  connectionInterrupted = false,
+  connectionInterruptedLabel = "",
+  connectionInterruptedBg,
+  connectionInterruptedFg,
 }: StageProps) {
   const [focusedIdState, setFocusedIdState] = useState<string | null>(null);
   const focusedId = focusedIdProp !== undefined ? focusedIdProp : focusedIdState;
@@ -561,14 +640,20 @@ function MessageChatVoiceMediaStageInner({
 
   const liveSources = useMemo(
     () =>
-      sources.filter(
-        (row) =>
-          !streamLooksLikePlaceholderVideo(row.stream) &&
-          row.stream
+      sources.filter((row) => {
+        if (streamLooksLikePlaceholderVideo(row.stream)) return false;
+        // While reconnecting, keep stalled/muted tracks so the establishing
+        // overlay can cover the last frame instead of blanking the stage.
+        if (connectionInterrupted) {
+          return row.stream
             .getVideoTracks()
-            .some((t) => t.readyState === "live" && t.enabled && !t.muted),
-      ),
-    [sources],
+            .some((t) => t.readyState === "live" && t.enabled);
+        }
+        return row.stream
+          .getVideoTracks()
+          .some((t) => t.readyState === "live" && t.enabled && !t.muted);
+      }),
+    [sources, connectionInterrupted],
   );
 
   const sourceKey = liveSources.map((row) => row.id).join("|");
@@ -646,6 +731,10 @@ function MessageChatVoiceMediaStageInner({
             source={focused}
             active={active}
             speaking={Boolean(focused.speaking) && !focused.muted}
+            connectionInterrupted={connectionInterrupted}
+            connectionInterruptedLabel={connectionInterruptedLabel}
+            connectionInterruptedBg={connectionInterruptedBg}
+            connectionInterruptedFg={connectionInterruptedFg}
             onPress={() => setFocusedId(null)}
             accessibilityLabel={
               focused.label
@@ -679,6 +768,10 @@ function MessageChatVoiceMediaStageInner({
                     active={active}
                     speaking={Boolean(pip.speaking) && !pip.muted}
                     compact
+                    connectionInterrupted={connectionInterrupted}
+                    connectionInterruptedLabel={connectionInterruptedLabel}
+                    connectionInterruptedBg={connectionInterruptedBg}
+                    connectionInterruptedFg={connectionInterruptedFg}
                     onPress={() => setFocusedId(pip.id)}
                     accessibilityLabel={
                       pip.label ? `Show ${pip.label}` : "Show this screen share"
@@ -695,6 +788,10 @@ function MessageChatVoiceMediaStageInner({
           active={active}
           wide={wideLayout}
           fillParent={fitSingle}
+          connectionInterrupted={connectionInterrupted}
+          connectionInterruptedLabel={connectionInterruptedLabel}
+          connectionInterruptedBg={connectionInterruptedBg}
+          connectionInterruptedFg={connectionInterruptedFg}
           onSelect={(id) => {
             if (allowFocus) setFocusedId(id);
           }}

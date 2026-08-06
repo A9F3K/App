@@ -79,19 +79,57 @@ export function groupCallLooksLive(groupCall: GroupCallSnapshot | null | undefin
   return hasPeople;
 }
 
+/**
+ * Chat-list / strip paint gate. Telegram Desktop uses `video_chat.has_participants`
+ * for the avatar ring — stale getGroupCall participant_count can stay >0 after
+ * the call ends while has_participants flips false (prod: rings + voice preview
+ * on chats with no live call).
+ */
+export function groupCallLooksLiveForChat(
+  groupCall: GroupCallSnapshot | null | undefined,
+  chatHasParticipants: boolean | null | undefined,
+): boolean {
+  if (!groupCallLooksLive(groupCall)) return false;
+  // Explicit false from getChat / updateChatVideoChat wins over stale getGroupCall.
+  if (chatHasParticipants === false) return false;
+  return true;
+}
+
 /** Verify a chat-bound group call id before painting list rings / voice strip. */
 export async function verifyGroupCallLiveState(
   client: Client,
   groupCallId: number | null | undefined,
+  options?: { chatId?: number | null; chatHasParticipants?: boolean | null },
 ): Promise<{ live: boolean; isJoined: boolean }> {
   const callId = normalizeTelegramGroupCallId(groupCallId) ?? 0;
   if (callId <= 0) return { live: false, isJoined: false };
+  let chatHasParticipants =
+    options?.chatHasParticipants === undefined
+      ? null
+      : options.chatHasParticipants;
+  const chatId = options?.chatId;
+  if (
+    chatHasParticipants == null &&
+    chatId != null &&
+    Number.isFinite(chatId) &&
+    chatId !== 0
+  ) {
+    try {
+      const chat = (await client.invoke({
+        _: "getChat",
+        chat_id: chatId,
+      })) as TdChat;
+      chatHasParticipants = readTdVideoChat(chat).has_participants;
+    } catch {
+      /* keep null — fall through to getGroupCall only */
+    }
+  }
   try {
     const groupCall = (await client.invoke({
       _: "getGroupCall",
       group_call_id: callId,
     })) as GroupCallSnapshot;
-    const live = groupCallLooksLive(groupCall);
+    const live = groupCallLooksLiveForChat(groupCall, chatHasParticipants);
     return {
       live,
       isJoined: live && Boolean(groupCall.is_joined || groupCall.need_rejoin),
@@ -129,13 +167,16 @@ export async function resolveBoundGroupCallId(
     ? voiceChatFromTdChat(chat)
     : { has_active_voice_chat: false, voice_chat_group_call_id: null };
   const fromChat = voice.voice_chat_group_call_id ?? 0;
+  // Desktop hides the ring when has_participants is false — do not resurrect
+  // live paint from a stale getGroupCall / history probe on an empty shell.
+  const chatHasParticipants = video.has_participants;
   if (fromChat > 0) {
     try {
       const groupCall = (await client.invoke({
         _: "getGroupCall",
         group_call_id: fromChat,
       })) as GroupCallSnapshot;
-      if (groupCallLooksLive(groupCall)) {
+      if (groupCallLooksLiveForChat(groupCall, chatHasParticipants)) {
         return {
           callId: fromChat,
           source: "get_chat",
@@ -158,10 +199,24 @@ export async function resolveBoundGroupCallId(
         isJoined: Boolean(groupCall.is_joined),
         participantCount: Number(groupCall.participant_count) || 0,
         hasHiddenListeners: Boolean(groupCall.has_hidden_listeners),
+        chatHasParticipants,
       });
     } catch {
       /* treat as inactive and continue */
     }
+  }
+
+  // Empty leftover shell: keep bound id for Start, never paint live / probe history.
+  if (fromChat > 0 && chatHasParticipants === false) {
+    return {
+      callId: fromChat,
+      source: "get_chat",
+      videoChatRaw: video.raw,
+      voice: {
+        has_active_voice_chat: false,
+        voice_chat_group_call_id: fromChat,
+      },
+    };
   }
 
   const preferred = normalizeTelegramGroupCallId(preferredGroupCallId) ?? 0;
@@ -173,7 +228,7 @@ export async function resolveBoundGroupCallId(
       })) as GroupCallSnapshot;
       // Preferred ids from the client are often stale after switching chats —
       // require real presence, not bare is_active on an empty leftover call.
-      if (groupCallLooksLive(groupCall)) {
+      if (groupCallLooksLiveForChat(groupCall, chatHasParticipants)) {
         return {
           callId: preferred,
           source: "preferred",
@@ -233,7 +288,7 @@ export async function resolveBoundGroupCallId(
             })) as GroupCallSnapshot;
             // History recovery must see real presence — bare is_active on empty
             // leftovers otherwise reopens rings / Join after the call ended.
-            if (groupCallLooksLive(groupCall)) {
+            if (groupCallLooksLiveForChat(groupCall, chatHasParticipants)) {
               logGateway("voice_call_id_recovered_from_history", {
                 chatId,
                 groupCallId: startedId,
@@ -1250,29 +1305,39 @@ function mergeSpeakerStubsForDisplay(
   return next;
 }
 
-/** Drop excess soft-merge stubs so painted size cannot exceed live TDLib. */
+/** Drop excess soft-merge stubs so painted size cannot exceed live TDLib.
+ * Never drop ordered members — a soft undercount used to trim a full load
+ * (ordered=6, liveTdlib=3) and hide real participants. */
 function trimCollectedToLiveCount(
   members: Map<string, CollectedParticipant>,
   speakers: Map<string, CollectedParticipant> | undefined,
   liveCount: number,
 ): Map<string, CollectedParticipant> {
   if (members.size <= liveCount) return members;
-  const ranked = [...members.entries()].sort(([keyA, a], [keyB, b]) => {
+  const ordered = [...members.entries()].filter(([, row]) => Boolean(row.order));
+  const orderless = [...members.entries()].filter(([, row]) => !row.order);
+  if (ordered.length >= liveCount) {
+    return new Map(ordered);
+  }
+  const rankedOrderless = orderless.sort(([keyA, a], [keyB, b]) => {
     const score = (row: CollectedParticipant, key: string) => {
       let s = 0;
       if (row.screenInfo?.source_groups?.length) s += 16;
       if (row.videoInfo?.source_groups?.length) s += 8;
-      if (row.order) s += 8;
       if (speakers?.has(key)) s += 4;
       if (row.userId != null && pinnedSelfUserIds.has(row.userId)) s += 2;
-      if (row.isSpeaking || (row.lastSpokeAt != null && Date.now() - row.lastSpokeAt < SPEAKING_HOLD_MS)) {
+      if (
+        row.isSpeaking ||
+        (row.lastSpokeAt != null && Date.now() - row.lastSpokeAt < SPEAKING_HOLD_MS)
+      ) {
         s += 1;
       }
       return s;
     };
     return score(b, keyB) - score(a, keyA);
   });
-  return new Map(ranked.slice(0, liveCount));
+  const need = Math.max(0, liveCount - ordered.length);
+  return new Map([...ordered, ...rankedOrderless.slice(0, need)]);
 }
 
 /** Keep larger base roster; overlay fresher speaking flags from a partial reload. */
@@ -1720,10 +1785,21 @@ async function loadJoinedParticipants(
       noGrowthStreak = map.size > sizeBefore ? 0 : noGrowthStreak + 1;
       if (hasHidden && map.size > 0 && noGrowthStreak >= 2) {
         // Telegram Web stops on loaded_all / noGrowth with hidden listeners —
-        // listed will never equal participant_count. Accept any non-empty visible
-        // map after two quiet chunks (including solo self).
-        sawLoadedAll = true;
-        break;
+        // listed will never equal participant_count. Do not treat a solo/self
+        // seed (or thin recent_speakers) as complete after two quiet chunks —
+        // that left half the call missing while has_hidden_listeners stayed true.
+        const visibleFloor =
+          Number.isFinite(expected) && expected >= 2
+            ? Math.min(expected, Math.max(3, Math.ceil(expected * 0.5)))
+            : 3;
+        if (
+          loadedAll ||
+          map.size >= visibleFloor ||
+          noGrowthStreak >= 4
+        ) {
+          sawLoadedAll = true;
+          break;
+        }
       }
 
       if (loadedAll) {
@@ -1801,17 +1877,22 @@ export async function fetchChatVoiceParticipants(
     group_call_id: callId,
   })) as GroupCallSnapshot;
 
-  if (!groupCallLooksLive(groupCall)) {
-    // Keep sticky / bound id so Start voice can reuse the empty shell; only
-    // clear the live paint flag. Deleting the map forced clients into a
-    // "bordered preview, no Start" dead state for stale Telegram group calls.
-    chatToGroupCallId.set(Math.trunc(chatId), callId);
+  const chatHasParticipants = readTdVideoChat({
+    video_chat: resolved.videoChatRaw ?? undefined,
+  }).has_participants;
+
+  if (!groupCallLooksLiveForChat(groupCall, chatHasParticipants)) {
+    // Keep bound id so Start voice can reuse the empty shell; only clear live
+    // paint. Do NOT map chat→call for SSE — that streamed stale rosters after
+    // the call ended (inactive set still connected the participants stream).
+    chatToGroupCallId.delete(Math.trunc(chatId));
     logGateway("voice_participants_inactive", {
       chatId,
       groupCallId: callId,
       isActive: groupCall.is_active === true,
       isJoined: Boolean(groupCall.is_joined),
       participantCount: Number(groupCall.participant_count) || 0,
+      chatHasParticipants,
       resolveSource: resolved.source,
     });
     return {

@@ -35,6 +35,10 @@ export type TelegramVoiceSession = {
   joining: boolean;
   joined: boolean;
   mediaConnected: boolean;
+  /** ICE / presentation recover — show reconnect overlay on screen/video. */
+  mediaReconnecting: boolean;
+  /** Voice ICE recover — mute mix, pastel mic flash, soft reconnect ticks. */
+  voiceReconnecting: boolean;
   negotiating: boolean;
   error: string | null;
   /** Live remote camera / screen-share stream while someone is presenting. */
@@ -96,6 +100,8 @@ export function useTelegramVoiceSession({
   const [joining, setJoining] = useState(false);
   const [joined, setJoined] = useState(false);
   const [mediaConnected, setMediaConnected] = useState(false);
+  const [mediaReconnecting, setMediaReconnecting] = useState(false);
+  const [voiceReconnecting, setVoiceReconnecting] = useState(false);
   const [negotiating, setNegotiating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [remoteVideoStream, setRemoteVideoStream] = useState<MediaStream | null>(null);
@@ -118,6 +124,8 @@ export function useTelegramVoiceSession({
   const resetLocalUi = useCallback(() => {
     setJoined(false);
     setMediaConnected(false);
+    setMediaReconnecting(false);
+    setVoiceReconnecting(false);
     setNegotiating(false);
     setJoining(false);
     setMicActive(false);
@@ -271,28 +279,43 @@ export function useTelegramVoiceSession({
   }, [groupCallId]);
 
   // Keep remote audio while joined — including minimized strip / other menus
-  // (Swap/Trade/…). Do NOT disable when joined===false: that raced join SDP
+  // (Swap/Trade/…). Mute mix only while voice ICE is reconnecting so
+  // the soft reconnect tick can be heard instead of broken audio.
+  // Presentation-only recover keeps remote voice audible.
+  // Do NOT disable when joined===false: that raced join SDP
   // (playback_kick remoteAudioEnabled=false) and tore down WebAudio mid-apply.
   // Leaving/dispose is the only way to stop hearing.
   useEffect(() => {
     if (Platform.OS !== "web") return;
     if (!joined) return;
-    sessionRef.current?.setRemoteAudioEnabled(true);
-    sessionRef.current?.resumeRemoteAudio();
-  }, [joined, mediaConnected]);
+    const session = sessionRef.current;
+    if (!session) return;
+    if (voiceReconnecting) {
+      session.setRemoteAudioEnabled(false);
+      return;
+    }
+    session.setRemoteAudioEnabled(true);
+    session.resumeRemoteAudio();
+  }, [joined, mediaConnected, voiceReconnecting]);
 
   useEffect(() => {
     if (!joined || Platform.OS !== "web") return;
-    const id = window.setInterval(() => {
+    const tick = () => {
       const session = sessionRef.current;
       if (!session?.isJoined) {
         setMediaConnected(false);
+        setMediaReconnecting(false);
+        setVoiceReconnecting(false);
         setNegotiating(false);
         return;
       }
       setMediaConnected(session.isMediaConnected());
+      setMediaReconnecting(session.isMediaReconnecting());
+      setVoiceReconnecting(session.isVoiceReconnecting());
       setNegotiating(session.isNegotiating());
-    }, 1_500);
+    };
+    tick();
+    const id = window.setInterval(tick, 500);
     return () => window.clearInterval(id);
   }, [joined]);
 
@@ -578,6 +601,8 @@ export function useTelegramVoiceSession({
     joining,
     joined,
     mediaConnected,
+    mediaReconnecting,
+    voiceReconnecting,
     negotiating,
     error,
     remoteVideoStream,
