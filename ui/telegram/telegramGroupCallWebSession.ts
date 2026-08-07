@@ -495,6 +495,14 @@ export class TelegramGroupCallWebSession {
   private stripVideoInFlight = false;
   /** Screen/camera requests to restore after audio-only recover (needs full ssrcGroups). */
   private pendingRemoteVideoAfterRecover: TelegramRemoteVideoRequest[] = [];
+  /**
+   * One automatic remote-video restore after a mix stall per join. A second
+   * stall stays audio-only until the user unmutes (avoids drop↔resub loops).
+   */
+  private autoResubAfterMixStallUsed = false;
+  /** Bumped when VoiceBar must re-push roster video requests (sig would otherwise stick). */
+  private remoteVideoRepushEpoch = 0;
+  private remoteVideoRepushListeners = new Set<(epoch: number) => void>();
   private playbackCtx: AudioContext | null = null;
   private playbackSource: MediaStreamAudioSourceNode | null = null;
   /** Per-listener volume gain between remote mix and speakers (0–2 for 0–200%). */
@@ -773,6 +781,38 @@ export class TelegramGroupCallWebSession {
     };
   }
 
+  /**
+   * Fired when the session cleared remote video (mix stall / recover) or armed
+   * an explicit unmute with an empty request list — VoiceBar must re-apply
+   * roster publishers (request sig often unchanged).
+   */
+  onRemoteVideoRepushNeeded(listener: (epoch: number) => void): () => void {
+    this.remoteVideoRepushListeners.add(listener);
+    listener(this.remoteVideoRepushEpoch);
+    return () => {
+      this.remoteVideoRepushListeners.delete(listener);
+    };
+  }
+
+  private bumpRemoteVideoRepush(reason: string): void {
+    this.remoteVideoRepushEpoch += 1;
+    logPageDisplay("messages_voice_remote_video_repush", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      epoch: this.remoteVideoRepushEpoch,
+      reason,
+      level: "info",
+      note: "VoiceBar should re-apply roster video requests",
+    });
+    for (const listener of this.remoteVideoRepushListeners) {
+      try {
+        listener(this.remoteVideoRepushEpoch);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   /** Current live remote video stream, or null. */
   getLiveRemoteVideoStream(): MediaStream | null {
     const sources = this.getLiveRemoteVideoSources();
@@ -867,6 +907,7 @@ export class TelegramGroupCallWebSession {
     this.videoDropToRestoreMixCount = 0;
     this.audioRecoverAfterVideoDone = false;
     this.videoResubscribeAfterRecoverAttempts = 0;
+    this.autoResubAfterMixStallUsed = false;
     if (this.remoteVideoSdpBlockedAfterStall || this.remoteAudioStalledAfterVideo) {
       this.remoteVideoSdpBlockedAfterStall = false;
       this.remoteAudioStalledAfterVideo = false;
@@ -919,6 +960,9 @@ export class TelegramGroupCallWebSession {
       this.canArmExplicitRemoteVideoSdp()
     ) {
       this.queueRemoteVideoRenegotiation();
+    } else {
+      // Roster still has publishers but request sig is sticky — force VoiceBar.
+      this.bumpRemoteVideoRepush("explicit_unmute_await_roster");
     }
   }
 
@@ -1050,6 +1094,8 @@ export class TelegramGroupCallWebSession {
     ) {
       if (
         this.preferStableScreencast &&
+        !this.autoResubAfterMixStallUsed &&
+        !this.remoteVideoSdpBlockedAfterStall &&
         this.pendingRemoteVideoAfterRecover.length === 0
       ) {
         this.pendingRemoteVideoAfterRecover = this.requestedRemoteVideo.map(
@@ -1162,8 +1208,9 @@ export class TelegramGroupCallWebSession {
     ) {
       if (
         this.preferStableScreencast &&
-        (this.remoteVideoSdpBlockedAfterStall ||
-          this.remoteAudioStalledAfterVideo)
+        !this.autoResubAfterMixStallUsed &&
+        !this.remoteVideoSdpBlockedAfterStall &&
+        (this.remoteAudioStalledAfterVideo)
       ) {
         this.pendingRemoteVideoAfterRecover = normalized.map((r) => ({
           ...r,
@@ -1710,16 +1757,15 @@ export class TelegramGroupCallWebSession {
     if (!screenAlive) return false;
     // Video flood + flat mix: drop even with a high absolute packet floor.
     if (this.mixStarvedByVideoFlood(args)) return true;
-    // Absolute healthy floor that plateaus under light screen load is not a
-    // true Colibri stall — keep screen SDP and soft-heal the sink.
-    if (this.mixCounterLooksHealthyForScreen(args.inboundPackets)) {
-      return false;
-    }
+    // Absolute packet floors that plateau under live screen are still stalls —
+    // Colibri often freezes Opus at 30–70 while screen RTP continues. Sink
+    // heal cannot invent growth; drop video so the mix m-line can resume.
     // Brief grace for thin counters before first heal attempt.
     const graceMs = 4_500;
     if (
       (args.sinceVideoMs ?? 9_000) < graceMs &&
-      this.silentMixHealCount < 2
+      this.silentMixHealCount < 2 &&
+      !this.mixCounterLooksHealthyForScreen(args.inboundPackets)
     ) {
       return false;
     }
@@ -1856,11 +1902,12 @@ export class TelegramGroupCallWebSession {
             }, extraMs);
             return;
           }
-          // After recover / mix-drop, never open screen on a thin snapshot —
-          // that is what froze inboundPackets and left remotes silent.
+          // After recover / mix-drop, refuse thin SDP only when mix is not live.
+          // Hearable mix + thin getStats snapshot is common right after rejoin;
+          // aborting here left publishers invisible forever (Merix camera).
           const refuseThinAfterMixStress =
-            this.audioRecoverCount >= 1 ||
-            this.videoDropToRestoreMixCount >= 1;
+            !liveMix &&
+            (this.audioRecoverCount >= 1 || this.videoDropToRestoreMixCount >= 1);
           if (
             refuseThinAfterMixStress ||
             (!liveMix &&
@@ -2625,7 +2672,9 @@ export class TelegramGroupCallWebSession {
               ) {
                 // Video SDP removed — mix should resume without full rejoin.
               } else {
-                this.preferStableScreencast = true;
+                // No remote video left to keep — do not preferStable (re-arms
+                // pending refill / auto-resub from VoiceBar).
+                this.preferStableScreencast = false;
                 logPageDisplay("messages_voice_remote_audio_stalled_keep_video", {
                   chatId: this.input.chatId,
                   groupCallId: this.input.groupCallId,
@@ -2713,8 +2762,11 @@ export class TelegramGroupCallWebSession {
                 });
                 this.scheduleAudioRecoverAfterVideoStall();
               } else {
-                this.preferStableScreencast = true;
-                logPageDisplay("messages_voice_remote_audio_stalled_keep_video", {
+                // Flat mix, drop failed / no remote video left — audio-only.
+                this.preferStableScreencast = false;
+                this.pendingRemoteVideoAfterRecover = [];
+                this.remoteAudioStalledAfterVideo = true;
+                logPageDisplay("messages_voice_remote_audio_stalled_after_video", {
                   chatId: this.input.chatId,
                   groupCallId: this.input.groupCallId,
                   inboundBefore: inboundBefore.inboundPackets,
@@ -2723,11 +2775,11 @@ export class TelegramGroupCallWebSession {
                   videoGrowth,
                   inboundVideoPackets: stats.inboundVideoPackets,
                   recoverCount: this.audioRecoverCount,
-                  level: "warn",
+                  level: "error",
                   note:
-                    "mix plateau during video attach — keep both stages, heal sink",
+                    "mix plateau under screen, drop failed — audio-only recover (no auto screen restore)",
                 });
-                void this.healSilentMixDespiteRtp();
+                this.scheduleAudioRecoverAfterVideoStall();
               }
             } else if (audioStalled) {
               this.remoteAudioStalledAfterVideo = true;
@@ -2792,7 +2844,8 @@ export class TelegramGroupCallWebSession {
                       return;
                     }
                     if (screenAlive && laterAudioGrowth <= 2) {
-                      this.preferStableScreencast = true;
+                      // Flat under live screen — never re-arm auto-resub.
+                      this.preferStableScreencast = false;
                       const spikeSinceVideoMs =
                         this.postVideoRenegotiateAt > 0
                           ? Date.now() - this.postVideoRenegotiateAt
@@ -2807,8 +2860,8 @@ export class TelegramGroupCallWebSession {
                       // drop screen even with a high absolute packet floor.
                       if (
                         (spikeStarved ||
-                          (laterAudioGrowth <= 0 &&
-                            later.inboundVideoPackets >= 40 &&
+                          laterAudioGrowth <= 0 ||
+                          (later.inboundVideoPackets >= 40 &&
                             !this.mixRecentlyHearableForScreenProtect())) &&
                         this.dropRemoteVideoSdpToRestoreMix(
                           "post_video_spike_then_flat",
@@ -2878,7 +2931,9 @@ export class TelegramGroupCallWebSession {
                       this.postVideoSilenceTicks = 0;
                     }
                     if (screenAlive && laterAudioGrowth <= 0) {
-                      this.preferStableScreencast = true;
+                      // Flat under live screen — drop video first; never re-arm
+                      // one-shot resub via preferStableScreencast.
+                      this.preferStableScreencast = false;
                       const sinceVideoMs =
                         this.postVideoRenegotiateAt > 0
                           ? Date.now() - this.postVideoRenegotiateAt
@@ -2890,19 +2945,24 @@ export class TelegramGroupCallWebSession {
                         inboundVideoPackets: later.inboundVideoPackets,
                         sinceVideoMs,
                       });
-                      // trulyFrozen already excludes healthy packet floors /
-                      // recent hear / post-video join protect. Only drop when
-                      // the mix was never proven live and counters stay thin.
                       if (
-                        trulyFrozen &&
                         this.dropRemoteVideoSdpToRestoreMix(
-                          "post_video_flat_frozen_mix",
+                          trulyFrozen
+                            ? "post_video_flat_frozen_mix"
+                            : this.mixStarvedByVideoFlood({
+                                  audioGrowth: laterAudioGrowth,
+                                  videoGrowth: laterVideoGrowth,
+                                  inboundVideoPackets:
+                                    later.inboundVideoPackets,
+                                  sinceVideoMs,
+                                })
+                              ? "post_video_flat_video_flood"
+                              : "post_video_flat_starved_mix",
                         )
                       ) {
                         return;
                       }
-                      // Starved by video flood (flat audio + climbing H264) —
-                      // drop even when absolute floor looks "healthy".
+                      // Starved by video flood (flat audio + climbing H264).
                       if (
                         this.mixStarvedByVideoFlood({
                           audioGrowth: laterAudioGrowth,
@@ -2949,7 +3009,7 @@ export class TelegramGroupCallWebSession {
                           heardRemoteMixAudio: this.heardRemoteMixAudio,
                           level: "warn",
                           note:
-                            "flat mix with live screen — keep stage, soft-heal sink (do not strip screencast)",
+                            "flat mix drop skipped — soft-heal sink only (no auto screen restore)",
                         },
                       );
                       void this.healSilentMixDespiteRtp();
@@ -3696,10 +3756,44 @@ export class TelegramGroupCallWebSession {
           ) {
             return;
           }
-          // Keeping stage: prefer stable only while mix is still hearable.
-          this.preferStableScreencast = true;
+          if (!this.mixRecentlyHearableForScreenProtect()) {
+            // Drop failed and mix not recently hearable — stay audio-only.
+            this.preferStableScreencast = false;
+            this.remoteAudioStalledAfterVideo = true;
+            logPageDisplay(
+              "messages_voice_remote_audio_soft_silent_recover_rtp_stall",
+              {
+                chatId: this.input.chatId,
+                groupCallId: this.input.groupCallId,
+                rms: 0,
+                sinceVideoMs,
+                recoverCount: this.audioRecoverCount,
+                inboundPackets: probe.inboundPackets,
+                inboundVideoPackets: probe.inboundVideoPackets,
+                sink: this.remotePlaybackSink,
+                screens: this.lastAppliedRemoteVideoEndpoints,
+                level: "error",
+                note:
+                  "soft silence after recover — mix not hearable, audio-only (no auto screen restore)",
+              },
+            );
+            void this.recoverAudioOnlyAfterVideoStall().catch((err) => {
+              logPageDisplay("messages_voice_soft_silent_recover_fail", {
+                chatId: this.input.chatId,
+                groupCallId: this.input.groupCallId,
+                error: err instanceof Error ? err.message : String(err),
+                level: "error",
+              });
+            });
+            return;
+          }
+          // Keep stage for a moment if mix was recently hearable, but do not
+          // re-arm auto screen subscribe — that re-freezes audio in production.
+          this.preferStableScreencast = false;
+          this.remoteVideoSdpBlockedAfterStall = true;
+          this.autoResubAfterMixStallUsed = true;
           logPageDisplay(
-            "messages_voice_remote_audio_soft_silent_keep_video",
+            "messages_voice_remote_audio_soft_silent_keep_after_recover",
             {
               chatId: this.input.chatId,
               groupCallId: this.input.groupCallId,
@@ -3712,7 +3806,7 @@ export class TelegramGroupCallWebSession {
               screens: this.lastAppliedRemoteVideoEndpoints,
               level: "warn",
               note:
-                "soft silence after prior recover — mix recently hearable, heal sink",
+                "soft silence after prior recover — mix recently hearable, heal sink (no auto screen restore)",
             },
           );
           void this.healSilentMixDespiteRtp();
@@ -3785,7 +3879,9 @@ export class TelegramGroupCallWebSession {
           sinceVideoMs,
         });
         if (screenStillLive && !trulyFrozen) {
-          this.preferStableScreencast = true;
+          // Grace keep of the stage, but do not re-arm auto-resub /
+          // preferStable after a mix that already stalled once.
+          this.preferStableScreencast = false;
           // Keep postVideoRenegotiateAt armed — clearing it here permanently
           // disarmed soft-silent after one grace heal (prod: speaking latch +
           // grace → forever silent mix under live screen).
@@ -3805,7 +3901,7 @@ export class TelegramGroupCallWebSession {
               screens: this.lastAppliedRemoteVideoEndpoints,
               level: "warn",
               note:
-                "RMS quiet under screen during grace — keep stage, heal sink",
+                "RMS quiet under screen during grace — keep stage, heal sink (no auto-resub)",
             },
           );
           void this.healSilentMixDespiteRtp();
@@ -3818,13 +3914,6 @@ export class TelegramGroupCallWebSession {
           trulyFrozen &&
           this.dropRemoteVideoSdpToRestoreMix("soft_silent_frozen_mix")
         ) {
-          return;
-        }
-        if (screenStillLive && !trulyFrozen) {
-          // Proven-live or grace: keep painting screen, heal mix sink only.
-          this.preferStableScreencast = true;
-          this.postVideoSilenceTicks = 0;
-          void this.healSilentMixDespiteRtp();
           return;
         }
         // trulyFrozen but drop failed (no remote video left) — fall through
@@ -3972,16 +4061,15 @@ export class TelegramGroupCallWebSession {
     this.audioRecoverAfterVideoDone = true;
     this.remoteVideoSdpSubscribeEnabled = false;
     this.remoteVideoSdpBlockedAfterStall = true;
-    // Prefer stays false until the user explicitly unmutes a screencast.
+    // Prefer stays false until explicit unmute — never auto one-shot resub.
     this.preferStableScreencast = false;
+    this.autoResubAfterMixStallUsed = true;
     this.silentMixHealCount = 0;
     this.videoResubscribeAfterRecoverAttempts = 0;
     if (this.videoResubscribeAfterRecoverTimer) {
       clearTimeout(this.videoResubscribeAfterRecoverTimer);
       this.videoResubscribeAfterRecoverTimer = null;
     }
-    // Mix-protect clear empties pending and preferStable. Never invent a
-    // restore target from VoiceBar during rejoin — that re-froze Opus in prod.
     this.pendingRemoteVideoAfterRecover = [];
     this.requestedRemoteVideo = [];
     this.lastAppliedRemoteVideoEndpoints = [];
@@ -3999,7 +4087,7 @@ export class TelegramGroupCallWebSession {
       pendingVideo: 0,
       allowResub: false,
       level: "warn",
-      note: "rejoin without video SDP after mix RTP stall — audio-only until user unmutes screencast",
+      note: "rejoin without video SDP after mix RTP stall — audio-only until user unmutes",
     });
     try {
       this.markJoinLost("audio_stalled_after_video", {
@@ -4025,9 +4113,6 @@ export class TelegramGroupCallWebSession {
       this.remoteVideoSdpBlockedAfterStall = true;
       this.remoteVideoSdpSubscribeEnabled = false;
       this.notifyLocalMediaListeners();
-      // No auto-resub after recover — user must unmute screencast explicitly.
-      this.preferStableScreencast = false;
-      this.pendingRemoteVideoAfterRecover = [];
       logPageDisplay("messages_voice_remote_video_resubscribe_skip", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
@@ -4080,21 +4165,22 @@ export class TelegramGroupCallWebSession {
 
   /** Clear remote screen subscribe UI/state without SDP (used before audio-only rejoin). */
   private clearRemoteVideoSubscribeForMixStall(reason: string): void {
-    // Never auto-resub after a Colibri mix stall — restore→video SDP was the
-    // loop that left remotes silent. User must unmute screencast again.
     this.videoDropToRestoreMixCount += 1;
     this.mixPacketsAtLastVideoDrop = this.peakInboundAudioPackets;
     this.lastVideoDropToRestoreMixAt = Date.now();
     this.remoteVideoSdpSubscribeEnabled = false;
     this.preferStableScreencast = false;
     this.postVideoRenegotiateAt = 0;
-    this.postVideoSilenceTicks = 0;
+    this.postVideoSilenceArmed = 0;
     this.remoteAudioSettledForVideo = false;
     this.remoteAudioSettleArmed = false;
     this.remoteAudioSettleExtended = false;
     this.remoteAudioSettlePacketsAtExtend = 0;
     this.remoteAudioSettleRetryCount = 0;
     this.clearVideoRenegotiateAudioWait();
+    // Never auto one-shot resub after mix stall — screen returns only on
+    // explicit unmute (preferExplicitRemoteVideoSubscribe).
+    this.autoResubAfterMixStallUsed = true;
     this.pendingRemoteVideoAfterRecover = [];
     if (this.videoResubscribeAfterRecoverTimer) {
       clearTimeout(this.videoResubscribeAfterRecoverTimer);
@@ -4118,13 +4204,14 @@ export class TelegramGroupCallWebSession {
       pending: 0,
       allowResubscribe: false,
       level: "warn",
-      note: "clear remote screen — prefer audio-only until user re-unmutes screencast",
+      note: "clear remote video — audio-only until user re-unmutes screencast",
     });
   }
 
   /**
-   * Drop remote screen. Prefer in-place inactive video SDP (same PC) — full
-   * audio rejoin after a freeze often left inboundPackets=0 (both A/V dead).
+   * Drop remote screen to restore mix audio. Prefer in-place inactive video
+   * SDP (same PC) — full audio rejoin after a freeze often left
+   * inboundPackets=0. Does not auto-resubscribe video after mix recovers.
    * @returns true if a drop/strip/recover was started
    */
   private dropRemoteVideoSdpToRestoreMix(reason: string): boolean {
@@ -4150,8 +4237,8 @@ export class TelegramGroupCallWebSession {
 
   /**
    * Strip remote video m-lines to inactive on the current PeerConnection, wait
-   * for mix RTP growth, then stay audio-only or escalate to audio rejoin.
-   * Never auto-resub screen after a mix stall (that re-froze Opus).
+   * for mix RTP growth, then stay audio-only (or escalate to rejoin). Remote
+   * screen returns only on explicit unmute — never auto one-shot resub.
    */
   private async stripRemoteVideoSdpInPlaceThenMaybeRecover(
     reason: string,
@@ -4241,13 +4328,13 @@ export class TelegramGroupCallWebSession {
         level: mixGrew || mixAlive ? "info" : "warn",
         note:
           mixGrew || mixAlive
-            ? "mix resumed after in-place strip — stay audio-only until user re-unmutes screen"
+            ? "mix resumed after in-place strip — stay audio-only until user re-unmutes"
             : "mix still flat after strip — escalate audio-only rejoin",
       });
 
       if (mixGrew || mixAlive) {
         this.remoteAudioStalledAfterVideo = false;
-        // Mix-protect clear left prefer=false / pending=[] — do not auto-resub.
+        this.pendingRemoteVideoAfterRecover = [];
         return;
       }
 
@@ -4310,8 +4397,9 @@ export class TelegramGroupCallWebSession {
   }
 
   /**
-   * One-shot restore remote screens after an explicit unmute left pending.
-   * Mix-stall recover/strip no longer arm this — those stay audio-only until the user unmutes.
+   * Legacy auto one-shot remote-video restore after mix stall.
+   * Disabled: re-arming video SDP after recover/strip re-freezes inbound Opus.
+   * Explicit unmute uses preferExplicitRemoteVideoSubscribe instead.
    */
   private scheduleRemoteVideoResubscribeAfterAudioHealthy(): void {
     if (this.videoResubscribeAfterRecoverTimer) {
@@ -4319,136 +4407,38 @@ export class TelegramGroupCallWebSession {
       this.videoResubscribeAfterRecoverTimer = null;
     }
     if (this.pendingRemoteVideoAfterRecover.length === 0) return;
-    if (this.stripVideoInFlight || this.audioRecoverInFlight) {
-      this.videoResubscribeAfterRecoverTimer = setTimeout(() => {
-        this.videoResubscribeAfterRecoverTimer = null;
-        this.scheduleRemoteVideoResubscribeAfterAudioHealthy();
-      }, 800);
-      return;
-    }
-    if (this.videoResubscribeAfterRecoverAttempts >= 3) {
-      logPageDisplay("messages_voice_remote_video_resubscribe_skip", {
-        chatId: this.input.chatId,
-        groupCallId: this.input.groupCallId,
-        recoverCount: this.audioRecoverCount,
-        attempts: this.videoResubscribeAfterRecoverAttempts,
-        level: "warn",
-        note: "give up remote screen restore — mix never settled",
-      });
-      this.pendingRemoteVideoAfterRecover = [];
-      return;
-    }
-    const delayMs =
-      this.audioRecoverCount >= 2 || this.videoDropToRestoreMixCount >= 2
-        ? 3_600
-        : 2_200;
-    logPageDisplay("messages_voice_remote_video_resubscribe_armed", {
+    logPageDisplay("messages_voice_remote_video_resubscribe_skip", {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
       recoverCount: this.audioRecoverCount,
       pending: this.pendingRemoteVideoAfterRecover.length,
-      attempt: this.videoResubscribeAfterRecoverAttempts + 1,
-      delayMs,
       level: "info",
-      note: "will restore one remote screen once after mix settle",
+      note: "auto one-shot screen restore disabled — keep audio-only after mix stall",
     });
-    this.videoResubscribeAfterRecoverTimer = setTimeout(() => {
-      this.videoResubscribeAfterRecoverTimer = null;
-      void this.finishRemoteVideoResubscribeAfterRecover();
-    }, delayMs);
+    this.pendingRemoteVideoAfterRecover = [];
+    this.autoResubAfterMixStallUsed = true;
+    this.preferStableScreencast = false;
+    this.remoteVideoSdpBlockedAfterStall = true;
   }
 
   private async finishRemoteVideoResubscribeAfterRecover(): Promise<void> {
-    const allPending = this.pendingRemoteVideoAfterRecover;
-    if (allPending.length === 0) return;
-    if (!this.joined) {
-      this.pendingRemoteVideoAfterRecover = [];
-      return;
+    if (this.videoResubscribeAfterRecoverTimer) {
+      clearTimeout(this.videoResubscribeAfterRecoverTimer);
+      this.videoResubscribeAfterRecoverTimer = null;
     }
-    if (this.stripVideoInFlight || this.audioRecoverInFlight) {
-      this.scheduleRemoteVideoResubscribeAfterAudioHealthy();
-      return;
-    }
-    this.videoResubscribeAfterRecoverAttempts += 1;
-    if (!this.isMediaConnected() && !this.mixRtpPacketsAlive) {
-      this.scheduleRemoteVideoResubscribeAfterAudioHealthy();
-      return;
-    }
-    // Require *live* mix (RMS / unmute) or growing RTP — sticky getStats
-    // totals + latched "recently hearable" used to re-arm screen while audio
-    // was already frozen (inboundPackets stuck, RMS=0).
-    const connection = this.connection;
-    let inboundPackets = 0;
-    if (connection) {
-      try {
-        const stats = await this.logIceDiagnostics(
-          connection,
-          "resub_mix_gate",
-        );
-        inboundPackets = stats.inboundPackets;
-      } catch {
-        // fall through with 0
-      }
-    }
-    const liveMixNow =
-      this.hasLiveMixAudioForVideoSettle() || this.isRemoteAudioUnmuted();
-    let packetsGrew = false;
-    if (connection && typeof window !== "undefined") {
-      await new Promise<void>((resolve) => {
-        window.setTimeout(resolve, 700);
-      });
-      if (this.connection !== connection || !this.joined) {
-        this.pendingRemoteVideoAfterRecover = [];
-        return;
-      }
-      try {
-        const stats2 = await this.logIceDiagnostics(
-          connection,
-          "resub_mix_gate_growth",
-        );
-        packetsGrew = stats2.inboundPackets > inboundPackets;
-        inboundPackets = stats2.inboundPackets;
-      } catch {
-        // keep prior inboundPackets
-      }
-    }
-    const packetFloorOk =
-      inboundPackets >= 18 && (liveMixNow || packetsGrew);
-    if (!packetFloorOk) {
-      logPageDisplay("messages_voice_remote_video_resubscribe_wait_mix", {
-        chatId: this.input.chatId,
-        groupCallId: this.input.groupCallId,
-        inboundPackets,
-        liveMixNow,
-        packetsGrew,
-        attempt: this.videoResubscribeAfterRecoverAttempts,
-        level: "warn",
-        note: "defer screen restore — mix not live/growing after strip/recover",
-      });
-      this.scheduleRemoteVideoResubscribeAfterAudioHealthy();
-      return;
-    }
-    // Dual remote-screen restore often re-stalls Colibri mix; restore one and
-    // leave further shares for explicit unmute.
-    const pending = allPending.slice(0, 1);
-    this.pendingRemoteVideoAfterRecover = [];
-    this.remoteVideoSdpBlockedAfterStall = false;
-    this.remoteAudioStalledAfterVideo = false;
-    this.preferStableScreencast = true;
-    this.audioRecoverAfterVideoDone = false;
-    this.remoteVideoSdpSubscribeEnabled = true;
-    logPageDisplay("messages_voice_remote_video_resubscribe_start", {
+    if (this.pendingRemoteVideoAfterRecover.length === 0) return;
+    logPageDisplay("messages_voice_remote_video_resubscribe_skip", {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
       recoverCount: this.audioRecoverCount,
-      inboundPackets,
-      count: pending.length,
-      endpoints: pending.map((r) => r.endpointId).slice(0, 4),
-      skippedExtra: Math.max(0, allPending.length - pending.length),
+      pending: this.pendingRemoteVideoAfterRecover.length,
       level: "info",
-      note: "one-shot remote screen restore after mix healthy",
+      note: "finish one-shot screen restore disabled — explicit unmute required",
     });
-    this.setRequestedRemoteVideos(pending);
+    this.pendingRemoteVideoAfterRecover = [];
+    this.autoResubAfterMixStallUsed = true;
+    this.preferStableScreencast = false;
+    this.remoteVideoSdpBlockedAfterStall = true;
   }
 
   get isMicEnabled(): boolean {
@@ -5708,14 +5698,14 @@ export class TelegramGroupCallWebSession {
             recoverCount: this.audioRecoverCount,
             level: "error",
             note:
-              "post-video mix too thin for heal — one-shot audio recover (screen may resubscribe)",
+              "post-video mix too thin for heal — one-shot audio recover (audio-only)",
           });
           this.scheduleAudioRecoverAfterVideoStall();
         } else if (
           this.postVideoRenegotiateAt > 0 &&
           this.shouldSkipRecoverToKeepScreen(thinStarve)
         ) {
-          this.preferStableScreencast = true;
+          this.preferStableScreencast = false;
           if (this.dropRemoteVideoSdpToRestoreMix("silent_heal_thin_after_recover")) {
             return;
           }
@@ -5781,7 +5771,7 @@ export class TelegramGroupCallWebSession {
             return;
           }
           if (this.shouldSkipRecoverToKeepScreen(thinFrozenStarve)) {
-            this.preferStableScreencast = true;
+            this.preferStableScreencast = false;
             if (this.dropRemoteVideoSdpToRestoreMix("silent_heal_thin_frozen")) {
               return;
             }
@@ -5825,9 +5815,6 @@ export class TelegramGroupCallWebSession {
             growthCheck.inboundVideoPackets > 0 ||
             growthCheck.inboundVideoPackets > stats.inboundVideoPackets ||
             this.hasHealthyRemoteVideoMedia();
-          const healthyMixFloor = this.mixCounterLooksHealthyForScreen(
-            growthCheck.inboundPackets,
-          );
           const trulyFrozen = this.mixTrulyFrozenUnderLiveScreen({
             inboundPackets: growthCheck.inboundPackets,
             audioGrowth: growthCheck.inboundPackets - stats.inboundPackets,
@@ -5848,14 +5835,18 @@ export class TelegramGroupCallWebSession {
           ) {
             return;
           }
-          // First brief freeze after a *post-video* hear: one sink heal.
+          // First brief freeze after a *post-video* hear: one sink heal only.
+          // Absolute healthy floors with flat counters must not keep a dead
+          // Opus m-line forever (prod: packets stuck at ~70, RMS→0).
           if (
             screenAliveDuringHeal &&
             this.mixRecentlyHearableForScreenProtect() &&
             !trulyFrozen &&
             this.silentMixHealCount === 0
           ) {
-            this.preferStableScreencast = true;
+            // Keep stage for this sink heal only — do not preferStable (that
+            // re-arms auto video after a later stall).
+            this.preferStableScreencast = false;
             logPageDisplay("messages_voice_silent_mix_heal_keep_video", {
               chatId: this.input.chatId,
               groupCallId: this.input.groupCallId,
@@ -5866,28 +5857,29 @@ export class TelegramGroupCallWebSession {
               heardRemoteMixAudio: this.heardRemoteMixAudio,
               level: "warn",
               note:
-                "mix counter flat under screen during grace — keep stage, sink heal",
+                "mix counter flat under screen during grace — keep stage, sink heal (no auto-resub)",
             });
             // Fall through to sink rebuild below.
           } else if (
             screenAliveDuringHeal &&
-            healthyMixFloor &&
-            !trulyFrozen &&
-            this.silentMixHealCount === 0 &&
-            !this.mixStarvedByVideoFlood({
-              audioGrowth:
-                growthCheck.inboundPackets - stats.inboundPackets,
-              videoGrowth:
-                growthCheck.inboundVideoPackets - stats.inboundVideoPackets,
-              inboundVideoPackets: growthCheck.inboundVideoPackets,
-              sinceVideoMs:
-                this.postVideoRenegotiateAt > 0
-                  ? Date.now() - this.postVideoRenegotiateAt
-                  : 9_000,
-            })
+            (trulyFrozen ||
+              !this.mixRecentlyHearableForScreenProtect(4_000) ||
+              this.silentMixHealCount > 0)
           ) {
-            this.preferStableScreencast = true;
-            logPageDisplay("messages_voice_silent_mix_heal_keep_video", {
+            // Flat mix under live screen outside brief grace — drop video
+            // (audio-only until explicit unmute). Do not preferStable.
+            this.preferStableScreencast = false;
+            if (
+              this.dropRemoteVideoSdpToRestoreMix(
+                trulyFrozen
+                  ? "silent_heal_frozen_drop_video"
+                  : "silent_heal_flat_under_screen",
+              )
+            ) {
+              return;
+            }
+            this.remoteAudioStalledAfterVideo = true;
+            logPageDisplay("messages_voice_silent_mix_heal_escalate", {
               chatId: this.input.chatId,
               groupCallId: this.input.groupCallId,
               inboundBefore: stats.inboundPackets,
@@ -5895,11 +5887,12 @@ export class TelegramGroupCallWebSession {
               inboundVideoPackets: growthCheck.inboundVideoPackets,
               recoverCount: this.audioRecoverCount,
               heardRemoteMixAudio: this.heardRemoteMixAudio,
-              level: "warn",
+              level: "error",
               note:
-                "healthy mix floor under light screen — keep stage, sink heal",
+                "flat mix under screen — drop failed, audio-only recover (no auto screen restore)",
             });
-            // Fall through to sink rebuild below.
+            this.scheduleAudioRecoverAfterVideoStall();
+            return;
           } else if (
             this.shouldSkipRecoverToKeepScreen({
               audioGrowth:
@@ -5913,7 +5906,7 @@ export class TelegramGroupCallWebSession {
                   : 9_000,
             })
           ) {
-            this.preferStableScreencast = true;
+            this.preferStableScreencast = false;
             if (
               this.dropRemoteVideoSdpToRestoreMix("silent_heal_frozen_after_recover")
             ) {
@@ -6091,26 +6084,31 @@ export class TelegramGroupCallWebSession {
               sinceVideoMs,
             })
           ) {
-            // Prefer drop remote video over keep-forever when Opus is flat.
+            // Flat mix after max sink heals — drop screen or stay audio-only.
+            // Do not preferStable (that re-armed auto-resub and re-froze Opus).
+            this.preferStableScreencast = false;
             if (
-              starved &&
               this.dropRemoteVideoSdpToRestoreMix(
-                "silent_heal_final_video_flood",
+                starved
+                  ? "silent_heal_final_video_flood"
+                  : "silent_heal_final_flat_mix",
               )
             ) {
               return;
             }
-            this.preferStableScreencast = true;
-            logPageDisplay("messages_voice_silent_mix_heal_keep_video", {
+            this.remoteAudioStalledAfterVideo = true;
+            logPageDisplay("messages_voice_silent_mix_heal_escalate", {
               chatId: this.input.chatId,
               groupCallId: this.input.groupCallId,
               inboundPackets: after.inboundPackets,
               inboundVideoPackets: after.inboundVideoPackets,
               recoverCount: this.audioRecoverCount,
               heardRemoteMixAudio: this.heardRemoteMixAudio,
-              level: "warn",
-              note: "heal failed after prior recover — keep stage (no recover flicker)",
+              level: "error",
+              note:
+                "heal failed with flat mix — audio-only recover (no auto screen restore)",
             });
+            this.scheduleAudioRecoverAfterVideoStall();
             return;
           }
           this.remoteAudioStalledAfterVideo = true;
@@ -8454,6 +8452,9 @@ export class TelegramGroupCallWebSession {
     this.screenShareIceProtect = false;
     this.presentationAudioIsSystem = false;
     this.preferStableScreencast = false;
+    this.autoResubAfterMixStallUsed = false;
+    this.remoteVideoRepushEpoch = 0;
+    this.remoteVideoRepushListeners.clear();
     this.softSilentVideoCheckInFlight = false;
     this.lastVideoFramesDecoded = 0;
     this.lastVideoFpsCheckAt = 0;

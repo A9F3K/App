@@ -2223,6 +2223,7 @@ export function MessageChatVoiceBar({
   const setRemoteVideoRequests = voiceSession.setRemoteVideoRequests;
   const setParticipantListenVolumes = voiceSession.setParticipantListenVolumes;
   const voiceJoined = voiceSession.joined;
+  const remoteVideoRepushEpoch = voiceSession.remoteVideoRepushEpoch;
   const remoteVideoSourceKey = useMemo(() => {
     const muteSig = Object.entries(participantMediaPrefs)
       .map(
@@ -2248,6 +2249,11 @@ export function MessageChatVoiceBar({
       lastRemoteVideoRequestSigRef.current = "";
       setRemoteVideoRequests([]);
       return;
+    }
+    // Session cleared video (mix stall) or armed unmute with empty pending —
+    // force re-apply even when roster video signatures did not change.
+    if (remoteVideoRepushEpoch > 0) {
+      lastRemoteVideoRequestSigRef.current = "";
     }
     let cancelled = false;
     let stickyExpireTimer: number | null = null;
@@ -2547,7 +2553,7 @@ export function MessageChatVoiceBar({
       window.clearTimeout(retry);
       if (stickyExpireTimer != null) window.clearTimeout(stickyExpireTimer);
     };
-  }, [chatId, remoteVideoSourceKey, setRemoteVideoRequests, voiceJoined]);
+  }, [chatId, remoteVideoRepushEpoch, remoteVideoSourceKey, setRemoteVideoRequests, voiceJoined]);
 
   const displayParticipants = useMemo(() => {
     return participants.map((row) => {

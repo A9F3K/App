@@ -73,6 +73,11 @@ export type TelegramVoiceSession = {
    * endpoint so a 2nd unmute wins over cap_1 sticky on the first share.
    */
   preferExplicitRemoteVideoSubscribe: (preferredEndpointId?: string | null) => void;
+  /**
+   * Bumps when the session clears remote video (mix stall) or arms an unmute
+   * with an empty request list — VoiceBar must re-apply roster publishers.
+   */
+  remoteVideoRepushEpoch: number;
   /** Local WebAudio listen volumes for the mixed remote track (0–200%). */
   setParticipantListenVolumes: (input: {
     volumes: Record<string, number>;
@@ -107,6 +112,7 @@ export function useTelegramVoiceSession({
   const [error, setError] = useState<string | null>(null);
   const [remoteVideoStream, setRemoteVideoStream] = useState<MediaStream | null>(null);
   const [remoteVideoSources, setRemoteVideoSources] = useState<TelegramRemoteVideoSource[]>([]);
+  const [remoteVideoRepushEpoch, setRemoteVideoRepushEpoch] = useState(0);
   const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const sessionRef = useRef<TelegramGroupCallWebSession | null>(null);
@@ -124,6 +130,7 @@ export function useTelegramVoiceSession({
   const joinLostUnsubRef = useRef<(() => void) | null>(null);
   const videoUnsubRef = useRef<(() => void) | null>(null);
   const videoSourcesUnsubRef = useRef<(() => void) | null>(null);
+  const videoRepushUnsubRef = useRef<(() => void) | null>(null);
   const localMediaUnsubRef = useRef<(() => void) | null>(null);
 
   const resetLocalUi = useCallback(() => {
@@ -142,6 +149,7 @@ export function useTelegramVoiceSession({
     setRemoteSpeaking(false);
     setRemoteVideoStream(null);
     setRemoteVideoSources([]);
+    setRemoteVideoRepushEpoch(0);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     micActiveRef.current = false;
@@ -159,6 +167,8 @@ export function useTelegramVoiceSession({
     videoUnsubRef.current = null;
     videoSourcesUnsubRef.current?.();
     videoSourcesUnsubRef.current = null;
+    videoRepushUnsubRef.current?.();
+    videoRepushUnsubRef.current = null;
     localMediaUnsubRef.current?.();
     localMediaUnsubRef.current = null;
     const session = sessionRef.current;
@@ -186,6 +196,7 @@ export function useTelegramVoiceSession({
       joinLostUnsubRef.current?.();
       videoUnsubRef.current?.();
       videoSourcesUnsubRef.current?.();
+      videoRepushUnsubRef.current?.();
       localMediaUnsubRef.current?.();
       speakingUnsubRef.current = session.onLocalSpeakingChange((speaking) => {
         setLocalSpeaking(speaking);
@@ -205,6 +216,7 @@ export function useTelegramVoiceSession({
         setRemoteSpeaking(false);
         setRemoteVideoStream(null);
         setRemoteVideoSources([]);
+        setRemoteVideoRepushEpoch(0);
         setLocalCameraStream(null);
         setLocalScreenStream(null);
         micActiveRef.current = false;
@@ -229,6 +241,9 @@ export function useTelegramVoiceSession({
           return sources;
         });
       });
+      videoRepushUnsubRef.current = session.onRemoteVideoRepushNeeded((epoch) => {
+        setRemoteVideoRepushEpoch(epoch);
+      });
       localMediaUnsubRef.current = session.onLocalMediaChange((state) => {
         setCameraActive(state.cameraActive);
         setScreenSharing(state.screenSharing);
@@ -251,6 +266,8 @@ export function useTelegramVoiceSession({
     videoUnsubRef.current = null;
     videoSourcesUnsubRef.current?.();
     videoSourcesUnsubRef.current = null;
+    videoRepushUnsubRef.current?.();
+    videoRepushUnsubRef.current = null;
     localMediaUnsubRef.current?.();
     localMediaUnsubRef.current = null;
     sessionRef.current?.dispose();
@@ -263,6 +280,7 @@ export function useTelegramVoiceSession({
     setError(null);
     setRemoteVideoStream(null);
     setRemoteVideoSources([]);
+    setRemoteVideoRepushEpoch(0);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     setScreenSharing(false);
@@ -629,6 +647,10 @@ export function useTelegramVoiceSession({
     joinLostUnsubRef.current = null;
     videoUnsubRef.current?.();
     videoUnsubRef.current = null;
+    videoSourcesUnsubRef.current?.();
+    videoSourcesUnsubRef.current = null;
+    videoRepushUnsubRef.current?.();
+    videoRepushUnsubRef.current = null;
     localMediaUnsubRef.current?.();
     localMediaUnsubRef.current = null;
     sessionRef.current?.dispose();
@@ -658,6 +680,7 @@ export function useTelegramVoiceSession({
     error,
     remoteVideoStream,
     remoteVideoSources,
+    remoteVideoRepushEpoch,
     localCameraStream,
     localScreenStream,
     unlockAudio,
