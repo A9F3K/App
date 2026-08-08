@@ -90,6 +90,36 @@ function catalogLocaleFromRequest(request: AnyRequest): FeedCatalogLocale {
   return FEED_CATALOG_FALLBACK_LOCALE;
 }
 
+/** Browser hydrate / light clients: skip feed so auth unlocks without waiting on catalog. */
+function wantsSkipFeed(request: AnyRequest): boolean {
+  try {
+    const rawUrl = (request as { url?: string }).url ?? "";
+    if (!rawUrl) return false;
+    const url = new URL(rawUrl, "http://localhost");
+    const v = url.searchParams.get("skip_feed");
+    return v === "1" || v === "true";
+  } catch {
+    return false;
+  }
+}
+
+/** Cap feed bootstrap so cold session does not serialize behind a slow catalog query. */
+const FEED_BOOTSTRAP_BUDGET_MS = 450;
+
+async function withBudget<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), ms);
+      }),
+    ]);
+  } finally {
+    if (timer != null) clearTimeout(timer);
+  }
+}
+
 async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | void> {
   const preflight = authApiPreflightResponse(request);
   if (preflight) {
@@ -162,22 +192,33 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
   }
 
   await touchSession(sha256Hex(token));
-  const displayName = await getDisplayNameForUsername(row.telegram_username);
-  const wallet = await getDefaultWalletByUsername(row.telegram_username);
-  const telegramMessagesConnected = await isTelegramMessagesConnected(row.telegram_username);
-  const telegramMessagesConn = telegramMessagesConnected
-    ? await getConnection(row.telegram_username)
-    : null;
+  const skipFeed = wantsSkipFeed(request);
   const catalogLocale = catalogLocaleFromRequest(request);
-  let feed_items: Awaited<ReturnType<typeof bootstrapAuthenticatedFeedItems>> = [];
-  try {
-    feed_items = await bootstrapAuthenticatedFeedItems({
-      telegramUsername: row.telegram_username,
-      catalogLocale,
-    });
-  } catch {
-    feed_items = [];
-  }
+
+  const [displayName, wallet, telegramMessagesConnected] = await Promise.all([
+    getDisplayNameForUsername(row.telegram_username),
+    getDefaultWalletByUsername(row.telegram_username),
+    isTelegramMessagesConnected(row.telegram_username),
+  ]);
+
+  type FeedItems = Awaited<ReturnType<typeof bootstrapAuthenticatedFeedItems>>;
+  const feedPromise: Promise<FeedItems> = skipFeed
+    ? Promise.resolve([])
+    : withBudget(
+        bootstrapAuthenticatedFeedItems({
+          telegramUsername: row.telegram_username,
+          catalogLocale,
+        }).catch(() => [] as FeedItems),
+        FEED_BOOTSTRAP_BUDGET_MS,
+        [],
+      );
+
+  const [telegramMessagesConn, feed_items] = await Promise.all([
+    telegramMessagesConnected
+      ? getConnection(row.telegram_username)
+      : Promise.resolve(null),
+    feedPromise,
+  ]);
   const feedFields = { feed_items };
   const telegramMessagesFields = {
     telegram_messages_connected: telegramMessagesConnected,

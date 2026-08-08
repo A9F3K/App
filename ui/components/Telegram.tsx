@@ -35,6 +35,7 @@ import {
 } from "./telegramWebApp";
 import type { TelegramLayoutStartupSnapshot } from "./telegramWebApp";
 import { buildApiUrl } from "../../api/_base";
+import { takeFreshAuthSessionPayload, waitForAuthSessionCache } from "../../auth/lastAuthSessionCache";
 import { appError, appLog } from "../../shared/appLog";
 import {
   readStoredManualAppTheme,
@@ -399,7 +400,29 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
     try {
-      const response = await fetch(buildApiUrl("/api/auth/session"), {
+      // AuthProvider nests inside TelegramProvider, so wait for Auth's session GET
+      // instead of racing a duplicate request on cold start.
+      const cached =
+        takeFreshAuthSessionPayload() ?? (await waitForAuthSessionCache(3_000));
+      if (cached) {
+        if (!cached.authenticated) {
+          setBrowserSessionChecked(true);
+          return false;
+        }
+        setTelegramUsername(cached.telegram_username ?? null);
+        setDisplayName(
+          typeof cached.display_name === "string" && cached.display_name.trim()
+            ? cached.display_name.trim()
+            : null,
+        );
+        setHasWallet(typeof cached.has_wallet === "boolean" ? cached.has_wallet : null);
+        setWalletRequired(Boolean(cached.wallet_required));
+        setWallet((cached.wallet as TelegramContextValue["wallet"]) ?? null);
+        setStatus("ok");
+        setBrowserSessionChecked(true);
+        return true;
+      }
+      const response = await fetch(buildApiUrl("/api/auth/session?skip_feed=1"), {
         method: "GET",
         credentials: "include",
       });

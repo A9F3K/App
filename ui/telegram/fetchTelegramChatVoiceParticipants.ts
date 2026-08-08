@@ -53,21 +53,33 @@ const FORCE_RELOAD_TIMEOUT_MS = 12_000;
 function parseVideoInfo(raw: unknown): TelegramChatVoiceVideoInfo | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const item = raw as Record<string, unknown>;
-  const endpoint =
-    typeof item.endpoint_id === "string" ? item.endpoint_id.trim() : "";
-  const groups = Array.isArray(item.source_groups) ? item.source_groups : [];
+  const endpointRaw =
+    typeof item.endpoint_id === "string"
+      ? item.endpoint_id
+      : typeof item.endpointId === "string"
+        ? item.endpointId
+        : "";
+  const endpoint = endpointRaw.trim();
+  const groups = Array.isArray(item.source_groups)
+    ? item.source_groups
+    : Array.isArray(item.sourceGroups)
+      ? item.sourceGroups
+      : [];
   const sourceGroups = groups
     .map((group) => {
       if (!group || typeof group !== "object" || Array.isArray(group)) return null;
       const g = group as Record<string, unknown>;
       const semantics =
         typeof g.semantics === "string" && g.semantics.trim() ? g.semantics.trim() : "";
-      const sourceIds = Array.isArray(g.source_ids)
+      const idsRaw = Array.isArray(g.source_ids)
         ? g.source_ids
-            .map((id) => Number(id))
-            .filter((id) => Number.isFinite(id) && id !== 0)
-            .map((id) => Math.trunc(id))
-        : [];
+        : Array.isArray(g.sourceIds)
+          ? g.sourceIds
+          : [];
+      const sourceIds = idsRaw
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id !== 0)
+        .map((id) => Math.trunc(id));
       if (!semantics || sourceIds.length === 0) return null;
       return { semantics, source_ids: sourceIds };
     })
@@ -178,10 +190,13 @@ export async function fetchTelegramChatVoiceParticipants(
     : [];
   const voiceCallId = normalizeTelegramGroupCallId(json.voice_chat_group_call_id);
   const rawCount = Number.isFinite(Number(json.participant_count))
-    ? Number(json.participant_count)
-    : participants.length;
-  // TDLib getChat often reports participant_count=0 while still returning rows.
-  const participantCount = Math.max(rawCount, participants.length);
+    ? Math.trunc(Number(json.participant_count))
+    : 0;
+  // Soft flashes of participant_count=0/1 still need a listed floor. Once TDLib
+  // reports a real total (≥2), trust it alone — max(raw, length) used to raise
+  // the strip/dialog label when recent_speakers stubs outnumbered the call.
+  const participantCount =
+    rawCount >= 2 ? rawCount : Math.max(rawCount, participants.length);
   // Prefer self-on-roster over sticky TDLib is_joined (false green rings).
   const voiceJoined = participants.some((row) => row.is_self);
   const chatHasParticipantsRaw =

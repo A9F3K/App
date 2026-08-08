@@ -1,10 +1,11 @@
 import { useEffect, useRef, type ComponentType } from "react";
 import type { ViewProps } from "react-native";
-import { View } from "react-native";
+import { ActivityIndicator, View } from "react-native";
 import { useAuth } from "../auth/AuthContext";
 import { WelcomeContent } from "../ui/components/WelcomeContent";
 import { getBuildDisplaySnapshot, logPageDisplay } from "../ui/pageDisplayLog";
 import { HomeAuthenticatedScreen } from "../ui/screens/HomeAuthenticatedScreen";
+import { dark } from "../ui/theme";
 
 /** react-native-web forwards this to the DOM; RN `View` typings omit it. */
 const ShellView = View as ComponentType<ViewProps & { suppressHydrationWarning?: boolean }>;
@@ -47,8 +48,15 @@ export default function Index() {
     return (
       <ShellView
         suppressHydrationWarning
-        style={{ flex: 1, backgroundColor: INDEX_WEB_HYDRATE_BG }}
-      />
+        style={{
+          flex: 1,
+          backgroundColor: INDEX_WEB_HYDRATE_BG,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <ActivityIndicator size="large" color={dark.primary} />
+      </ShellView>
     );
   }
 

@@ -417,7 +417,7 @@ export function AuthenticatedHomeFeedPanel({
     const trimmed = typeof initData === "string" ? initData.trim() : "";
     if (trimmed !== "") return `post:${trimmed}:${welcomeFeedCatalogLocale}`;
     if (!authReady || !isAuthenticated) return null;
-    // Cookie web auth: feed_items already ship in GET /api/auth/session (~700ms).
+    // Cookie web auth: feed_items may ship in GET /api/auth/session (budgeted); else /api/feed.
     if (Array.isArray(sessionFeedItems) && sessionFeedItems.length > 0) return null;
     return `get:${welcomeFeedCatalogLocale}`;
   }, [initData, status, welcomeFeedCatalogLocale, authReady, isAuthenticated, sessionFeedItems]);

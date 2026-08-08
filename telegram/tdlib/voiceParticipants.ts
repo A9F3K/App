@@ -340,8 +340,19 @@ export async function resolveBoundGroupCallId(
 
 type TdParticipantVideoInfo = {
   endpoint_id?: string;
-  source_groups?: Array<{ semantics?: string; source_ids?: number[] }>;
+  endpointId?: string;
+  source_groups?: Array<{
+    semantics?: string;
+    source_ids?: number[];
+    sourceIds?: number[];
+  }>;
+  sourceGroups?: Array<{
+    semantics?: string;
+    source_ids?: number[];
+    sourceIds?: number[];
+  }>;
   is_paused?: boolean;
+  isPaused?: boolean;
 };
 
 type GroupCallParticipantUpdate = {
@@ -358,7 +369,9 @@ type GroupCallParticipantUpdate = {
   volume_level?: number;
   order?: string;
   video_info?: TdParticipantVideoInfo | null;
+  videoInfo?: TdParticipantVideoInfo | null;
   screen_sharing_video_info?: TdParticipantVideoInfo | null;
+  screenSharingVideoInfo?: TdParticipantVideoInfo | null;
 };
 
 /** True/false when TDLib sent a mute flag; null when omitted (do not invent). */
@@ -458,28 +471,20 @@ function ratchetParticipantCountHint(
 ): void {
   if (!Number.isFinite(nextHint) || nextHint < 0) return;
   const hint = Math.trunc(nextHint);
-  const listed = cached.members.size;
   const prev = cached.participantCountHint;
   // Soft getGroupCall often flashes participant_count=0/1 before the real
   // total. Ignore that collapse. Otherwise follow live TDLib up and down so a
   // leftover high-water (7) cannot stick after the call drops to 6.
+  // Never floor on members.size — recent_speakers stubs used to raise the
+  // sticky hint (5 → 11/12) and inflate strip/dialog labels + SSE counts.
   if (hint <= 1 && prev > hint) {
-    cached.participantCountHint = Math.max(prev, listed);
     return;
   }
-  if (!cached.loadedAll) {
-    if (hint >= 2) {
-      cached.participantCountHint = Math.max(hint, listed);
-      return;
-    }
-    cached.participantCountHint = Math.max(prev, hint, listed);
+  if (hint >= 2) {
+    cached.participantCountHint = hint;
     return;
   }
-  if (hint >= listed) {
-    cached.participantCountHint = Math.max(hint, listed);
-    return;
-  }
-  cached.participantCountHint = hint;
+  cached.participantCountHint = Math.max(prev, hint);
 }
 
 /** Strip / SSE headline: live TDLib count, with a soft-undercount floor. */
@@ -533,26 +538,61 @@ function normalizeVideoInfo(
   raw: TdParticipantVideoInfo | null | undefined,
 ): VoiceParticipantVideoInfo | null {
   if (!raw || typeof raw !== "object") return null;
-  const endpoint = typeof raw.endpoint_id === "string" ? raw.endpoint_id.trim() : "";
-  const groups = Array.isArray(raw.source_groups) ? raw.source_groups : [];
+  const endpointRaw =
+    typeof raw.endpoint_id === "string"
+      ? raw.endpoint_id
+      : typeof raw.endpointId === "string"
+        ? raw.endpointId
+        : "";
+  const endpoint = endpointRaw.trim();
+  const groups = Array.isArray(raw.source_groups)
+    ? raw.source_groups
+    : Array.isArray(raw.sourceGroups)
+      ? raw.sourceGroups
+      : [];
   const sourceGroups = groups
     .map((group) => {
       const semantics =
         typeof group?.semantics === "string" && group.semantics.trim()
           ? group.semantics.trim()
           : "";
-      const sourceIds = Array.isArray(group?.source_ids)
+      const idsRaw = Array.isArray(group?.source_ids)
         ? group.source_ids
-            .map((id) => Number(id))
-            .filter((id) => Number.isFinite(id) && id !== 0)
-            .map((id) => Math.trunc(id))
-        : [];
+        : Array.isArray(group?.sourceIds)
+          ? group.sourceIds
+          : [];
+      const sourceIds = idsRaw
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id !== 0)
+        .map((id) => Math.trunc(id));
       if (!semantics || sourceIds.length === 0) return null;
       return { semantics, source_ids: sourceIds };
     })
     .filter((group): group is { semantics: string; source_ids: number[] } => group != null);
   if (!endpoint && sourceGroups.length === 0) return null;
   return { endpoint_id: endpoint, source_groups: sourceGroups };
+}
+
+/**
+ * Read camera/screen from a TDLib participant update.
+ * - Field omitted → keep previous (partial / camelCase-only builds).
+ * - Explicit null → clear (share stopped).
+ * - Object → normalize (snake or camel).
+ */
+function readParticipantVideoInfo(
+  participant: GroupCallParticipantUpdate,
+  kind: "camera" | "screen",
+  previous: VoiceParticipantVideoInfo | null | undefined,
+): VoiceParticipantVideoInfo | null {
+  const snake = kind === "camera" ? "video_info" : "screen_sharing_video_info";
+  const camel = kind === "camera" ? "videoInfo" : "screenSharingVideoInfo";
+  const hasSnake = Object.prototype.hasOwnProperty.call(participant, snake);
+  const hasCamel = Object.prototype.hasOwnProperty.call(participant, camel);
+  if (!hasSnake && !hasCamel) return previous ?? null;
+  const raw = hasSnake
+    ? participant[snake as "video_info" | "screen_sharing_video_info"]
+    : participant[camel as "videoInfo" | "screenSharingVideoInfo"];
+  return normalizeVideoInfo(raw ?? null);
 }
 
 type ProfileCacheEntry = {
@@ -866,8 +906,8 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       participant.is_speaking ?? (participant as { isSpeaking?: boolean }).isSpeaking,
     );
     const prev = cached.members.get(key);
-    const videoInfo = normalizeVideoInfo(participant.video_info);
-    const screenInfo = normalizeVideoInfo(participant.screen_sharing_video_info);
+    const videoInfo = readParticipantVideoInfo(participant, "camera", prev?.videoInfo);
+    const screenInfo = readParticipantVideoInfo(participant, "screen", prev?.screenInfo);
     // Missing mute field: keep prior. Brand-new without prior → muted — default
     // unmuted invented open-mic chrome on soft ingest (vs Telegram Desktop).
     const mutedFromTdlib =
@@ -894,8 +934,7 @@ export function ingestGroupCallParticipantUpdate(update: Record<string, unknown>
       isSpeaking || (lastSpokeAt != null && now - lastSpokeAt < SPEAKING_HOLD_MS);
     speakingBecameTrue = effNext && !effPrev;
     speakingBecameFalse = effPrev && !effNext;
-    // Trust TDLib nulls — sticky keep made stopped shares keep a green icon and
-    // inflated self as a publisher so remote screencasts never requested.
+    // Explicit null clears; omitted fields keep prior via readParticipantVideoInfo.
     const nextVideo = videoInfo;
     const nextScreen = screenInfo;
     // Immediate SSE when a camera/screencast endpoint newly appears OR clears.
@@ -1495,9 +1534,15 @@ function mergeParticipantMaps(
             canUnmuteSelf: row.canUnmuteSelf ?? prev.canUnmuteSelf ?? true,
             volumeLevel: row.volumeLevel ?? prev.volumeLevel ?? 10000,
             order: row.order || prev.order,
-            // Trust TDLib nulls — do not sticky-keep cleared camera/screen.
-            videoInfo: row.videoInfo,
-            screenInfo: row.screenInfo,
+            // Orderless stubs omit media — keep prior endpoints. Ordered nulls clear.
+            videoInfo:
+              !row.order && !row.videoInfo && prev.videoInfo
+                ? prev.videoInfo
+                : row.videoInfo,
+            screenInfo:
+              !row.order && !row.screenInfo && prev.screenInfo
+                ? prev.screenInfo
+                : row.screenInfo,
           }
         : {
             ...row,
@@ -1622,13 +1667,17 @@ function scheduleBackgroundRosterReload(
         selfUserId: prev?.selfUserId ?? null,
         // Never shrink the high-water hint on a thin force/bg load — soft
         // getGroupCall under-count (1) used to wipe a larger prior hint.
-        participantCountHint: Math.max(
-          prev?.participantCountHint ?? 0,
-          Number.isFinite(participantCountHint) && participantCountHint >= 0
-            ? Math.trunc(participantCountHint)
-            : 0,
-          members.size,
-        ),
+        // Do not floor on members.size — stubs must not raise the strip count.
+        participantCountHint: (() => {
+          const live =
+            Number.isFinite(participantCountHint) && participantCountHint >= 0
+              ? Math.trunc(participantCountHint)
+              : 0;
+          const prevHint = prev?.participantCountHint ?? 0;
+          if (live <= 1 && prevHint > live) return prevHint;
+          if (live >= 2) return live;
+          return Math.max(prevHint, live);
+        })(),
         // Must keep recent_speakers — SSE snapshots overlay speaking from here.
         // Dropping it left every mic grey after the first post-join reload.
         speakers: prev?.speakers,
@@ -1839,8 +1888,8 @@ async function loadJoinedParticipants(
     }
     const prev = map.get(key);
     const isSpeaking = Boolean(participant.is_speaking);
-    const videoInfo = normalizeVideoInfo(participant.video_info);
-    const screenInfo = normalizeVideoInfo(participant.screen_sharing_video_info);
+    const videoInfo = readParticipantVideoInfo(participant, "camera", prev?.videoInfo);
+    const screenInfo = readParticipantVideoInfo(participant, "screen", prev?.screenInfo);
     const mutedFromTdlib = readMutedForAllUsers(participant);
     const isHandRaised = readHandRaised(participant);
     const canUnmuteSelf =
@@ -1864,7 +1913,7 @@ async function loadJoinedParticipants(
           ? normalizeVolumeLevel(participant.volume_level, prev?.volumeLevel ?? 10000)
           : (prev?.volumeLevel ?? 10000),
       order,
-      // Trust TDLib nulls — do not sticky-keep cleared camera/screen.
+      // Explicit null clears; omitted fields keep prior via readParticipantVideoInfo.
       videoInfo,
       screenInfo,
     });
@@ -2176,13 +2225,16 @@ export async function fetchChatVoiceParticipants(
             loadedAll: nextLoadedAll,
             revision: prev?.revision ?? 0,
             selfUserId: prev?.selfUserId ?? null,
-            participantCountHint: Math.max(
-              prev?.participantCountHint ?? 0,
-              Number.isFinite(participantCountHint) && participantCountHint >= 0
-                ? Math.trunc(participantCountHint)
-                : 0,
-              members.size,
-            ),
+            participantCountHint: (() => {
+              const live =
+                Number.isFinite(participantCountHint) && participantCountHint >= 0
+                  ? Math.trunc(participantCountHint)
+                  : 0;
+              const prevHint = prev?.participantCountHint ?? 0;
+              if (live <= 1 && prevHint > live) return prevHint;
+              if (live >= 2) return live;
+              return Math.max(prevHint, live);
+            })(),
             speakers: prev?.speakers ?? speakers,
             leftAt: prev?.leftAt,
             hasHiddenListeners:
@@ -2491,6 +2543,14 @@ export async function fetchChatVoiceParticipants(
     listedCount,
   );
   const mutedRows = participants.filter((p) => p.is_muted);
+  const screenRows = participants.filter(
+    (p) =>
+      !p.is_self &&
+      Boolean(
+        p.screen_sharing_video_info?.endpoint_id ||
+          (p.screen_sharing_video_info?.source_groups?.length ?? 0) > 0,
+      ),
+  );
   logGateway("voice_participants_resolved", {
     chatId,
     groupCallId: callId,
@@ -2501,6 +2561,11 @@ export async function fetchChatVoiceParticipants(
     mutedCount: mutedRows.length,
     unmutedCount: participants.filter((p) => !p.is_muted).length,
     mutedTitles: mutedRows.map((p) => p.title || "?").slice(0, 8),
+    screenPublishers: screenRows.length,
+    screenEndpoints: screenRows
+      .map((p) => p.screen_sharing_video_info?.endpoint_id || "")
+      .filter(Boolean)
+      .slice(0, 4),
     isJoined,
     hasHiddenListeners,
     usedCache: callMembersCache.has(callId),
@@ -2622,6 +2687,18 @@ export function getVoiceParticipantsStreamSnapshot(
       collected = stripLeaveTombstones(collected, cached);
     }
   }
+  const liveHint =
+    Number.isFinite(cached.participantCountHint) && cached.participantCountHint >= 0
+      ? Math.trunc(cached.participantCountHint)
+      : 0;
+  if (liveHint >= 2 && collected.size > liveHint) {
+    collected = trimCollectedToLiveCount(
+      collected,
+      cached.speakers,
+      liveHint,
+      selfUserId,
+    );
+  }
   const hasOrderedCollected = [...collected.values()].some((r) =>
     Boolean(r.order),
   );
@@ -2700,11 +2777,9 @@ export function getVoiceParticipantsStreamSnapshot(
     });
   participants.sort(compareVoiceParticipantRows);
   const listed = participants.length;
-  const count = resolveDisplayParticipantCount(
-    cached.participantCountHint,
-    cached.participantCountHint,
-    listed,
-  );
+  // Sticky hint is now TDLib-only (never raised by stub listed). Passing it as
+  // both live + sticky matches resolveDisplayParticipantCount's "trust ≥2".
+  const count = resolveDisplayParticipantCount(liveHint, liveHint, listed);
   return {
     revision: cached.revision,
     participant_count: count > 0 ? count : listed,

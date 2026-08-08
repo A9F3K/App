@@ -346,9 +346,6 @@ function RootContent() {
     }
     return !isInTelegram || isExpanded;
   }, [pathname, isInTelegram, layoutStartup, isExpanded]);
-  const isRootBootstrapPending =
-    (pathname === "/" || pathname === "" || pathname == null) &&
-    (!authHydrated || !authReady);
 
   if (Platform.OS === "web" && !webHydrationReady) {
     return (
@@ -376,7 +373,7 @@ function RootContent() {
         },
       ]}
     >
-      {showGlobalLogoBar && !isRootBootstrapPending ? <GlobalLogoBarWithFallback /> : null}
+      {showGlobalLogoBar ? <GlobalLogoBarWithFallback /> : null}
       {Platform.OS === "web" ? (
         <View style={styles.mainShell}>
           <Stack

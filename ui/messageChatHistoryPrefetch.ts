@@ -21,7 +21,10 @@ import {
   shouldPrefetchHistoryAroundUnread,
 } from "./components/messages/chatOpenSession";
 import { logPageDisplay } from "./pageDisplayLog";
-import { isChatListSyncInProgress } from "./components/messages/chatListSyncStatus";
+import {
+  isChatListSyncInProgress,
+  subscribeChatListSyncStatus,
+} from "./components/messages/chatListSyncStatus";
 import {
   isVoiceDialogUiOpen,
   subscribeVoiceDialogUiOpen,
@@ -308,7 +311,7 @@ function enqueueBackgroundPrefetch(
   if (!Number.isFinite(chatId)) return;
   // Always queue while the open chat loads — drain resumes when it finishes.
   // Skipping enqueue here previously burned MessageChatRow's one-shot prefetch.
-  if (isChatListSyncInProgress()) return;
+  // List sync: still enqueue (esp. front/open neighbors); drain waits until sync clears.
   if (isVoiceDialogUiOpen()) return;
 
   const freshMs = spec.previewOnly ? PREVIEW_FRESH_MS : undefined;
@@ -404,7 +407,6 @@ export function isOpenChatHistoryLoading(): boolean {
 export function prefetchChatHistory(
   chat: Pick<MessageChatRowData, "telegram_chat_id" | "peer_user_id" | "unread_count">,
 ): void {
-  if (isChatListSyncInProgress()) return;
   enqueueBackgroundPrefetch(
     chat.telegram_chat_id,
     chat.peer_user_id ?? null,
@@ -512,5 +514,8 @@ export function clearQueuedHistoryPrefetchForVoiceDialog(): void {
 if (typeof window !== "undefined") {
   subscribeVoiceDialogUiOpen((open) => {
     if (open) clearQueuedHistoryPrefetchForVoiceDialog();
+  });
+  subscribeChatListSyncStatus(() => {
+    if (!isChatListSyncInProgress()) scheduleBackgroundDrain();
   });
 }

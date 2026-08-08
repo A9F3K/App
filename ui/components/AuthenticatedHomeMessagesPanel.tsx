@@ -25,6 +25,7 @@ import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from ".
 import { MessageChatListSearchField } from "./messages/MessageChatListSearchField";
 import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
 import {
+  getChatListSyncStatus,
   setChatListSyncStatus,
   type ChatListSyncStatus,
 } from "./messages/chatListSyncStatus";
@@ -36,7 +37,6 @@ import {
 } from "./messages/chatListScrollMetrics";
 import {
   CHAT_LIST_VIRTUALIZE_MIN_ROWS,
-  pruneTier3ChatRows,
   resolveChatListTier,
   resolveChatListVirtualWindow,
   sortChatRowsTierAware,
@@ -615,7 +615,6 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const [chatListScrollTick, setChatListScrollTick] = useState(0);
   const chatListScrollRafRef = useRef<number | null>(null);
   const chatListVirtualStickyRef = useRef({ startIndex: 0, endIndex: 0 });
-  const chatListPruneTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chatListVirtualWindowRef = useRef<ReturnType<typeof resolveChatListVirtualWindow> | null>(null);
   const loadChatsRef = useRef<
     (options?: { allowAvatarResync?: boolean; silent?: boolean; forceFull?: boolean }) => Promise<void>
@@ -642,6 +641,10 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       };
       if (json.chatListSync) {
         applyChatListSync(json.chatListSync);
+      }
+      // Gateway pages more into cache — pull the expanded snapshot into the UI.
+      if (!isVoiceDialogUiOpen()) {
+        void loadChatsRef.current({ silent: true, forceFull: true });
       }
     } catch {
       /* poll / SSE will pick up background pages */
@@ -1198,15 +1201,29 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       setGatewayWarming(false);
     }
     void (async () => {
-      // Paint the first chat list as soon as TDLib has rows. Do NOT await gateway
-      // resync first — that blocked the list for 3–4s behind history/voice work
-      // and left "No chats yet" / spinner up too long (logs: resync 3717ms then
-      // first chats_poll_updated).
+      // Paint the first chat list ASAP — do not await gateway resync first.
       await loadChats({ silent: true, forceFull: true });
       void (async () => {
         await triggerGatewayResync("initial_mount");
         if (isVoiceDialogUiOpen()) {
           deferredSilentChatLoadRef.current = true;
+          return;
+        }
+        // Skip a second full download only when the first paint already matches
+        // gateway cache size (or cache is unknown and we already have rows).
+        const sync = getChatListSyncStatus();
+        const count = chatsCountRef.current;
+        const cached =
+          typeof sync?.cachedCount === "number" && sync.cachedCount > 0
+            ? sync.cachedCount
+            : null;
+        const incomplete =
+          count === 0 ||
+          (cached != null && cached > count) ||
+          sync?.inProgress === true ||
+          sync?.tier3InProgress === true;
+        if (!incomplete) {
+          setGatewayWarming(false);
           return;
         }
         await loadChats({ silent: true, forceFull: true });
@@ -1502,30 +1519,6 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     chatListVirtualWindow.topSpacerPx,
     displayChats.length,
   ]);
-
-  useEffect(() => {
-    if (!chatListVirtualWindow.enabled) return;
-    if (chatListPruneTimerRef.current) {
-      clearTimeout(chatListPruneTimerRef.current);
-    }
-    chatListPruneTimerRef.current = setTimeout(() => {
-      chatListPruneTimerRef.current = null;
-      if (isVoiceDialogUiOpen()) return;
-      const window = chatListVirtualWindowRef.current;
-      if (!window?.enabled) return;
-      setChats((prev) => {
-        const sorted = sortChatRowsTierAware(prev);
-        const pruned = pruneTier3ChatRows(sorted, window, chatListRowStride);
-        return chatsChanged(prev, pruned) ? pruned : prev;
-      });
-    }, 350);
-    return () => {
-      if (chatListPruneTimerRef.current) {
-        clearTimeout(chatListPruneTimerRef.current);
-        chatListPruneTimerRef.current = null;
-      }
-    };
-  }, [chatListRowStride, chatListVirtualWindow.enabled, chatListVirtualWindow.endIndex, chatListVirtualWindow.startIndex]);
 
   const positionedComplete = chatListSync?.positionedComplete === true;
   const tier3Available = chatListSync?.tier3Available === true;

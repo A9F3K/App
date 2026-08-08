@@ -125,7 +125,8 @@ export function WelcomeContent() {
       const startedAt = Date.now();
       logPageDisplay("welcome_telegram_oidc_session_probe", { source });
       try {
-        const sessionUrl = buildApiUrl("/api/auth/session");
+        // AuthContext already owns cold-start session; skip_feed keeps OAuth probes cheap.
+        const sessionUrl = buildApiUrl("/api/auth/session?skip_feed=1");
         const response = await fetch(sessionUrl, {
           method: "GET",
           credentials: "include",
@@ -156,12 +157,6 @@ export function WelcomeContent() {
     },
     [signIn],
   );
-
-  useEffect(() => {
-    if (!hasWelcomeBrowserAuthContext() || typeof document === "undefined") return;
-    if (isActuallyInTelegram()) return;
-    void probeBrowserSession("mount");
-  }, [probeBrowserSession]);
 
   useEffect(() => {
     if (!hasWelcomeBrowserAuthContext() || typeof document === "undefined") return;

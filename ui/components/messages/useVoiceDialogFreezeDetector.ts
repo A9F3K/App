@@ -41,9 +41,13 @@ export function installGlobalVoiceFreezeLogger(): () => void {
       }
     ).PerformanceObserver;
     if (PO) {
+      // Never buffered:true — that replays the whole page longtask history and
+      // can freeze the tab when voice debug is toggled mid-session.
+      const observeStartedAt = performance.now();
       const obs = new PO((list) => {
         if (disposed) return;
         for (const entry of list.getEntries()) {
+          if (entry.startTime < observeStartedAt) continue;
           if (entry.duration < 200) continue;
           const mem = (performance as PerformanceWithMemory).memory;
           logPageDisplay("voice_global_longtask", {
@@ -58,7 +62,7 @@ export function installGlobalVoiceFreezeLogger(): () => void {
           });
         }
       });
-      obs.observe({ type: "longtask", buffered: true });
+      obs.observe({ type: "longtask", buffered: false });
       longtaskObserver = obs;
     }
   } catch {
@@ -148,10 +152,20 @@ export function useVoiceDialogFreezeDetector(
         }
       ).PerformanceObserver;
       if (PO) {
+        // buffered:true replayed every longtask since page load on each dialog
+        // open (identical startTimeMs spam in prod logs) and kicked stall-recover
+        // WebAudio rebuilds during Join — that interrupted remote streams.
+        const observeStartedAt = performance.now();
+        let lastLogAt = 0;
         const obs = new PO((list) => {
           if (disposed) return;
           for (const entry of list.getEntries()) {
+            if (entry.startTime < observeStartedAt) continue;
             if (entry.duration < 200) continue;
+            const now = performance.now();
+            // Cap log spam under freeze storms (each logPageDisplay is sync work).
+            if (now - lastLogAt < 400 && entry.duration < 1200) continue;
+            lastLogAt = now;
             const mem = (performance as PerformanceWithMemory).memory;
             logPageDisplay("voice_dialog_longtask", {
               durationMs: Math.round(entry.duration),
@@ -170,7 +184,7 @@ export function useVoiceDialogFreezeDetector(
             kickIfSevere(entry.duration);
           }
         });
-        obs.observe({ type: "longtask", buffered: true });
+        obs.observe({ type: "longtask", buffered: false });
         longtaskObserver = obs;
       }
     } catch {

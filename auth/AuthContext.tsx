@@ -2,6 +2,11 @@ import React, { createContext, useCallback, useContext, useEffect, useLayoutEffe
 import { buildApiUrl } from "../api/_base";
 import { clearDesktopSessionToken } from "./desktopSessionToken";
 import { installDesktopAuthFetch } from "./installDesktopAuthFetch";
+import {
+  clearAuthSessionPayloadCache,
+  rememberAuthSessionPayload,
+} from "./lastAuthSessionCache";
+import { kickEagerTelegramMessagesWarmup } from "./eagerTelegramMessagesWarmup";
 import { useAppStrings } from "../locales/AppStringsContext";
 import { logPageDisplay } from "../ui/pageDisplayLog";
 
@@ -40,6 +45,20 @@ type SessionJson = {
   authenticated?: boolean;
   feed_items?: unknown;
   telegram_messages_connected?: boolean;
+  telegram_username?: string;
+  display_name?: string;
+  has_wallet?: boolean;
+  wallet_required?: boolean;
+  wallet?: {
+    id?: string | number;
+    wallet_address?: string;
+    wallet_blockchain?: string;
+    wallet_net?: string;
+    type?: string;
+    label?: string | null;
+    is_default?: boolean;
+    source?: string;
+  } | null;
 };
 
 function parseSessionResponse(json: SessionJson, responseOk: boolean) {
@@ -49,6 +68,21 @@ function parseSessionResponse(json: SessionJson, responseOk: boolean) {
   const telegramMessagesConnected =
     authenticated && json.telegram_messages_connected === true ? true : authenticated ? false : null;
   return { authenticated, feedItems, telegramMessagesConnected };
+}
+
+function cacheSessionPayload(json: SessionJson, authenticated: boolean): void {
+  if (!authenticated) {
+    rememberAuthSessionPayload({ authenticated: false });
+    return;
+  }
+  rememberAuthSessionPayload({
+    authenticated: true,
+    telegram_username: json.telegram_username,
+    display_name: json.display_name,
+    has_wallet: json.has_wallet,
+    wallet_required: json.wallet_required,
+    wallet: json.wallet ?? null,
+  });
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -86,6 +120,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         json,
         response.ok,
       );
+      cacheSessionPayload(json, authenticated);
+      // Kick gateway warmup before setState → Home commit (can block effects ~3s).
+      if (authenticated && telegramMessagesConnected === true) {
+        kickEagerTelegramMessagesWarmup("auth_session");
+      }
       writeAuthHint(authenticated ? "in" : "out");
       setAuthenticated(authenticated);
       setSessionFeedItems(authenticated && feedItems && feedItems.length > 0 ? feedItems : null);
@@ -160,6 +199,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setAuthReady(true);
     setSessionFeedItems(null);
     setSessionTelegramMessagesConnected(null);
+    clearAuthSessionPayloadCache();
     dispatchAuthLifecycleEvent("hsp-auth-signed-out");
     clearDesktopSessionToken();
     // App logout clears the OAuth cookie only; Telegram MTProto link stays in DB for relogin.

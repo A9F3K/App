@@ -24,7 +24,10 @@ import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
 import { logPageDisplay } from "../../pageDisplayLog";
 import type { TelegramChatVoiceParticipant } from "../../telegram/fetchTelegramChatVoiceParticipants";
-import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
+import {
+  MessageChatAvatarSlot,
+  MESSAGE_CHAT_JOINED_VOICE_RING_COLOR,
+} from "./MessageChatAvatarSlot";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { resolveTelegramUserAvatarUrl } from "./resolveTelegramUserAvatarUrl";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
@@ -279,6 +282,18 @@ type Props = {
   onParticipantToggleMuteVoice?: (participant: TelegramChatVoiceParticipant) => void;
   onParticipantToggleMuteVideo?: (participant: TelegramChatVoiceParticipant) => void;
   onParticipantToggleMuteScreen?: (participant: TelegramChatVoiceParticipant) => void;
+  /**
+   * Screencast endpoints paused after mix-protect drop — show as screen-muted
+   * until the user unmutes (or local share re-arms).
+   */
+  mixPausedScreenEndpoints?: string[];
+  /**
+   * Peers the user muted-screen this join (or auto-show skipped). Default
+   * subscribe-mute must not paint as "you muted them".
+   */
+  deniedScreenPeerKeys?: string[];
+  /** Peers opted into for screen this join (auto-show or menu unmute). */
+  wantedScreenPeerKeys?: string[];
 };
 
 export type VoiceChatMessage = {
@@ -533,11 +548,8 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           height: MESSAGE_AVATAR_PX,
           alignItems: "center",
           justifyContent: "center",
-          borderRadius: MESSAGE_AVATAR_PX / 2,
-          borderWidth: 2,
-          borderColor: speaking ? VOICE_SPEAKING_MIC_COLOR : "transparent",
-          backgroundColor: colors.background,
-          overflow: "hidden",
+          // Match chat list: square face + 1px highlight; speaking ring outside.
+          overflow: "visible",
           flexShrink: 0,
         }}
       >
@@ -550,6 +562,11 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
           // Must be high/critical — normal is paused while the voice UI gate is
           // open (see MessageChatAvatarImage), which left letter fallbacks forever.
           fetchPriority="high"
+          borderColor={
+            speaking ? MESSAGE_CHAT_JOINED_VOICE_RING_COLOR : undefined
+          }
+          activeVoiceRing={speaking}
+          joinedVoiceRing={speaking}
         />
       </ProfileOpenHitTarget>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />
@@ -971,8 +988,40 @@ export function MessageChatVoicePopover({
   onParticipantToggleMuteVoice,
   onParticipantToggleMuteVideo,
   onParticipantToggleMuteScreen,
+  mixPausedScreenEndpoints = [],
+  deniedScreenPeerKeys = [],
+  wantedScreenPeerKeys = [],
 }: Props) {
   const { t, tf, locale } = useAppStrings();
+  const deniedScreenKeySet = useMemo(
+    () => new Set(deniedScreenPeerKeys),
+    [deniedScreenPeerKeys],
+  );
+  const wantedScreenKeySet = useMemo(
+    () => new Set(wantedScreenPeerKeys),
+    [wantedScreenPeerKeys],
+  );
+  const isScreenLocallyOff = useCallback(
+    (participant: TelegramChatVoiceParticipant) => {
+      const key = voiceParticipantPrefsKey(participant);
+      const screenEndpoint =
+        participant.screen_sharing_video_info?.endpoint_id?.trim() || "";
+      if (screenEndpoint && mixPausedScreenEndpoints.includes(screenEndpoint)) {
+        return true;
+      }
+      if (deniedScreenKeySet.has(key)) return true;
+      const prefs = participantMediaPrefs[key];
+      // Default subscribe-mute is internal — only paint muted after opt-in then off.
+      if (wantedScreenKeySet.has(key) && prefs?.muteScreen === true) return true;
+      return false;
+    },
+    [
+      deniedScreenKeySet,
+      wantedScreenKeySet,
+      mixPausedScreenEndpoints,
+      participantMediaPrefs,
+    ],
+  );
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
@@ -1003,12 +1052,13 @@ export function MessageChatVoicePopover({
   const connectionInterruptedLabel = t("messages.voiceChat.connectionEstablishing");
   const chatTitle = title.trim() || t("messages.voiceChat.active");
   const isPrivateCall = privateCall != null;
-  // Prefer the strip's TDLib-backed count when the painted roster is still thin
-  // (listed=5 while participant_count=6 hid the screencaster and under-labeled).
-  const totalParticipantCount = Math.max(
-    participants.length,
-    Number.isFinite(participantCount) ? Math.max(0, Math.trunc(participantCount!)) : 0,
-  );
+  // VoiceBar passes resolveVoiceBarParticipantPreview's displayTotal (TDLib
+  // floor). Do not re-max with participants.length — soft-merge ghosts used to
+  // raise "5 participants" → "11" / "12" in the open dialog.
+  const totalParticipantCount =
+    Number.isFinite(participantCount) && (participantCount as number) > 0
+      ? Math.max(0, Math.trunc(participantCount as number))
+      : participants.length;
   const participantCountLabel = isPrivateCall
     ? privateCall.statusText?.trim() || t("messages.privateCall.calling")
     : totalParticipantCount > 0
@@ -2027,7 +2077,7 @@ export function MessageChatVoicePopover({
           liteName={!rosterPaintReady}
           localScreenSharing={screenSharing}
           voiceLocallyOff={volumePercent <= 0}
-          screenLocallyOff={prefs?.muteScreen === true}
+          screenLocallyOff={isScreenLocallyOff(participant)}
           videoLocallyOff={Boolean(prefs?.muteVideo)}
           onOpenMenu={
             participant.is_self || !onParticipantVolumeChange
@@ -2637,8 +2687,9 @@ export function MessageChatVoicePopover({
               0,
         );
         const muteVideo = Boolean(prefs?.muteVideo);
-        // Default unmuted for active shares — only true when user muted in menu.
-        const muteScreen = prefs?.muteScreen === true;
+        // Default unmuted for active shares — only true when user muted in menu
+        // or session paused the screen after mix-protect drop.
+        const muteScreen = isScreenLocallyOff(participantMenuTarget);
         // Listen preference — mute is allowed before they publish (preemptive).
         const voiceOn = volumePercent > 0;
         const videoOn = !muteVideo;

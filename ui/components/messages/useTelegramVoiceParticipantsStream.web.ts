@@ -20,21 +20,33 @@ function parseStreamVideoInfo(
 ): TelegramChatVoiceParticipant["video_info"] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const item = raw as Record<string, unknown>;
-  const endpoint =
-    typeof item.endpoint_id === "string" ? item.endpoint_id.trim() : "";
-  const groups = Array.isArray(item.source_groups) ? item.source_groups : [];
+  const endpointRaw =
+    typeof item.endpoint_id === "string"
+      ? item.endpoint_id
+      : typeof item.endpointId === "string"
+        ? item.endpointId
+        : "";
+  const endpoint = endpointRaw.trim();
+  const groups = Array.isArray(item.source_groups)
+    ? item.source_groups
+    : Array.isArray(item.sourceGroups)
+      ? item.sourceGroups
+      : [];
   const sourceGroups = groups
     .map((group) => {
       if (!group || typeof group !== "object" || Array.isArray(group)) return null;
       const g = group as Record<string, unknown>;
       const semantics =
         typeof g.semantics === "string" && g.semantics.trim() ? g.semantics.trim() : "";
-      const sourceIds = Array.isArray(g.source_ids)
+      const idsRaw = Array.isArray(g.source_ids)
         ? g.source_ids
-            .map((id) => Number(id))
-            .filter((id) => Number.isFinite(id) && id !== 0)
-            .map((id) => Math.trunc(id))
-        : [];
+        : Array.isArray(g.sourceIds)
+          ? g.sourceIds
+          : [];
+      const sourceIds = idsRaw
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id !== 0)
+        .map((id) => Math.trunc(id));
       if (!semantics || sourceIds.length === 0) return null;
       return { semantics, source_ids: sourceIds };
     })
@@ -90,11 +102,15 @@ function parseParticipantsPayload(raw: string): VoiceParticipantsStreamSnapshot 
           .filter((row): row is TelegramChatVoiceParticipant => row != null)
       : [];
     const groupCallId = Number(data.group_call_id);
+    const rawCount = Number.isFinite(Number(data.participant_count))
+      ? Math.trunc(Number(data.participant_count))
+      : 0;
     return {
       revision: Math.trunc(revision),
-      participant_count: Number.isFinite(Number(data.participant_count))
-        ? Math.max(Math.trunc(Number(data.participant_count)), participants.length)
-        : participants.length,
+      // Trust TDLib once it reports a real total — max(count, length) inflated
+      // strip labels when soft SSE stubs outgrew the call (5 → 11/12).
+      participant_count:
+        rawCount >= 2 ? rawCount : Math.max(rawCount, participants.length),
       participants,
       group_call_id:
         Number.isFinite(groupCallId) && groupCallId > 0 ? Math.trunc(groupCallId) : null,

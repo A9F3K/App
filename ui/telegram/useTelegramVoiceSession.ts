@@ -78,6 +78,11 @@ export type TelegramVoiceSession = {
    * with an empty request list — VoiceBar must re-apply roster publishers.
    */
   remoteVideoRepushEpoch: number;
+  /**
+   * Screencast endpoints paused after mix-protect drop. Treat as screen-muted
+   * for subscribe/UI until preferExplicitRemoteVideoSubscribe clears them.
+   */
+  mixPausedScreenEndpoints: string[];
   /** Local WebAudio listen volumes for the mixed remote track (0–200%). */
   setParticipantListenVolumes: (input: {
     volumes: Record<string, number>;
@@ -113,6 +118,9 @@ export function useTelegramVoiceSession({
   const [remoteVideoStream, setRemoteVideoStream] = useState<MediaStream | null>(null);
   const [remoteVideoSources, setRemoteVideoSources] = useState<TelegramRemoteVideoSource[]>([]);
   const [remoteVideoRepushEpoch, setRemoteVideoRepushEpoch] = useState(0);
+  const [mixPausedScreenEndpoints, setMixPausedScreenEndpoints] = useState<
+    string[]
+  >([]);
   const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const sessionRef = useRef<TelegramGroupCallWebSession | null>(null);
@@ -131,6 +139,7 @@ export function useTelegramVoiceSession({
   const videoUnsubRef = useRef<(() => void) | null>(null);
   const videoSourcesUnsubRef = useRef<(() => void) | null>(null);
   const videoRepushUnsubRef = useRef<(() => void) | null>(null);
+  const mixPausedUnsubRef = useRef<(() => void) | null>(null);
   const localMediaUnsubRef = useRef<(() => void) | null>(null);
 
   const resetLocalUi = useCallback(() => {
@@ -150,6 +159,7 @@ export function useTelegramVoiceSession({
     setRemoteVideoStream(null);
     setRemoteVideoSources([]);
     setRemoteVideoRepushEpoch(0);
+    setMixPausedScreenEndpoints([]);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     micActiveRef.current = false;
@@ -169,6 +179,8 @@ export function useTelegramVoiceSession({
     videoSourcesUnsubRef.current = null;
     videoRepushUnsubRef.current?.();
     videoRepushUnsubRef.current = null;
+    mixPausedUnsubRef.current?.();
+    mixPausedUnsubRef.current = null;
     localMediaUnsubRef.current?.();
     localMediaUnsubRef.current = null;
     const session = sessionRef.current;
@@ -197,6 +209,7 @@ export function useTelegramVoiceSession({
       videoUnsubRef.current?.();
       videoSourcesUnsubRef.current?.();
       videoRepushUnsubRef.current?.();
+      mixPausedUnsubRef.current?.();
       localMediaUnsubRef.current?.();
       speakingUnsubRef.current = session.onLocalSpeakingChange((speaking) => {
         setLocalSpeaking(speaking);
@@ -217,6 +230,7 @@ export function useTelegramVoiceSession({
         setRemoteVideoStream(null);
         setRemoteVideoSources([]);
         setRemoteVideoRepushEpoch(0);
+        setMixPausedScreenEndpoints([]);
         setLocalCameraStream(null);
         setLocalScreenStream(null);
         micActiveRef.current = false;
@@ -244,6 +258,17 @@ export function useTelegramVoiceSession({
       videoRepushUnsubRef.current = session.onRemoteVideoRepushNeeded((epoch) => {
         setRemoteVideoRepushEpoch(epoch);
       });
+      mixPausedUnsubRef.current = session.onMixPausedScreensChange((endpoints) => {
+        setMixPausedScreenEndpoints((prev) => {
+          if (
+            prev.length === endpoints.length &&
+            prev.every((id, i) => id === endpoints[i])
+          ) {
+            return prev;
+          }
+          return endpoints;
+        });
+      });
       localMediaUnsubRef.current = session.onLocalMediaChange((state) => {
         setCameraActive(state.cameraActive);
         setScreenSharing(state.screenSharing);
@@ -268,6 +293,8 @@ export function useTelegramVoiceSession({
     videoSourcesUnsubRef.current = null;
     videoRepushUnsubRef.current?.();
     videoRepushUnsubRef.current = null;
+    mixPausedUnsubRef.current?.();
+    mixPausedUnsubRef.current = null;
     localMediaUnsubRef.current?.();
     localMediaUnsubRef.current = null;
     sessionRef.current?.dispose();
@@ -281,6 +308,7 @@ export function useTelegramVoiceSession({
     setRemoteVideoStream(null);
     setRemoteVideoSources([]);
     setRemoteVideoRepushEpoch(0);
+    setMixPausedScreenEndpoints([]);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     setScreenSharing(false);
@@ -416,17 +444,44 @@ export function useTelegramVoiceSession({
     }
     let joinWatchdog: ReturnType<typeof setTimeout> | null = null;
     try {
+      // 45s: createOffer + ICE gather + joinVideoChat routinely exceeds 20s when
+      // the main thread is busy (emoji/history). Timing out without abort left a
+      // zombie PeerConnection that raced the retry and cut remote media.
+      const JOIN_WATCHDOG_MS = 45_000;
       const joinedOk = await Promise.race([
-        session.ensureJoinedListenOnly(startMuted).then(() => true as const),
+        session
+          .ensureJoinedListenOnly(startMuted)
+          .then(() => true as const)
+          .catch((err: unknown) => {
+            // Watchdog abort rejects joinInternal — already counted as timeout.
+            if (err instanceof Error && err.message === "join_aborted") {
+              return false as const;
+            }
+            throw err;
+          }),
         new Promise<false>((resolve) => {
-          joinWatchdog = setTimeout(() => resolve(false), 20_000);
+          joinWatchdog = setTimeout(() => resolve(false), JOIN_WATCHDOG_MS);
         }),
       ]);
       if (joinWatchdog) {
         clearTimeout(joinWatchdog);
         joinWatchdog = null;
       }
+      // Late success: join finished just after the race — keep the media.
+      if (!joinedOk && session.isJoined) {
+        setJoined(true);
+        joinedRef.current = true;
+        setMediaConnected(session.isMediaConnected());
+        setNegotiating(session.isNegotiating());
+        session.setRemoteAudioEnabled(true);
+        session.resumeRemoteAudio();
+        const enabled = session.isMicEnabled;
+        micActiveRef.current = enabled;
+        setMicActive(enabled);
+        return true;
+      }
       if (!joinedOk) {
+        session.abortInFlightJoin("voice_join_timeout");
         setError("voice_join_timeout");
         appWarn("[voice-session-join]", "voice_join_timeout", { chatId, groupCallId });
         return false;
@@ -446,6 +501,15 @@ export function useTelegramVoiceSession({
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "voice_join_failed";
+      if (message === "join_aborted") {
+        setError("voice_join_timeout");
+        appWarn("[voice-session-join]", "voice_join_timeout", {
+          chatId,
+          groupCallId,
+          note: "join_aborted",
+        });
+        return false;
+      }
       setError(message);
       appWarn("[voice-session-join]", message, { chatId, groupCallId });
       return false;
@@ -651,6 +715,8 @@ export function useTelegramVoiceSession({
     videoSourcesUnsubRef.current = null;
     videoRepushUnsubRef.current?.();
     videoRepushUnsubRef.current = null;
+    mixPausedUnsubRef.current?.();
+    mixPausedUnsubRef.current = null;
     localMediaUnsubRef.current?.();
     localMediaUnsubRef.current = null;
     sessionRef.current?.dispose();
@@ -681,6 +747,7 @@ export function useTelegramVoiceSession({
     remoteVideoStream,
     remoteVideoSources,
     remoteVideoRepushEpoch,
+    mixPausedScreenEndpoints,
     localCameraStream,
     localScreenStream,
     unlockAudio,
