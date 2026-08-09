@@ -25,6 +25,10 @@ import { appModalSheetStyles } from "../AppModalSheet";
 import { logPageDisplay } from "../../pageDisplayLog";
 import type { TelegramChatVoiceParticipant } from "../../telegram/fetchTelegramChatVoiceParticipants";
 import {
+  resolveTelegramDisplayName,
+  stripInvisibleDisplayNameChars,
+} from "../../../shared/telegramDisplayName";
+import {
   MessageChatAvatarSlot,
   MESSAGE_CHAT_JOINED_VOICE_RING_COLOR,
 } from "./MessageChatAvatarSlot";
@@ -84,6 +88,69 @@ export function voiceParticipantPrefsKey(
     return `c:${Math.trunc(participant.chat_id)}`;
   }
   return "unknown";
+}
+
+/** Visible roster / menu label — never "?" for a warming empty TDLib title. */
+export function formatVoiceParticipantTitle(
+  participant: Pick<
+    TelegramChatVoiceParticipant,
+    "title" | "user_id" | "chat_id" | "is_self"
+  >,
+  selfLabel = "You",
+): string {
+  if (participant.is_self) {
+    const visible = stripInvisibleDisplayNameChars(participant.title ?? "").trim();
+    return visible || selfLabel;
+  }
+  const resolved = resolveTelegramDisplayName({
+    name: participant.title,
+    userId: participant.user_id,
+  });
+  if (resolved !== "User") return resolved;
+  if (participant.chat_id != null && Number.isFinite(participant.chat_id) && participant.chat_id !== 0) {
+    return `Chat ${Math.abs(Math.trunc(participant.chat_id))}`;
+  }
+  return "Participant";
+}
+
+/**
+ * True when we are not subscribed to their screencast (or mix-protect paused it).
+ * Default muteScreen=true without an explicit opt-in must read as off — otherwise
+ * the menu shows "Mute screen" / green share while Colibri never gets video SDP.
+ */
+export function isVoiceParticipantScreenLocallyOff(params: {
+  participant: Pick<TelegramChatVoiceParticipant, "user_id" | "chat_id" | "screen_sharing_video_info">;
+  prefs?: { muteScreen?: boolean } | null;
+  wantedScreenKeys: ReadonlySet<string> | Iterable<string>;
+  deniedScreenKeys: ReadonlySet<string> | Iterable<string>;
+  mixPausedScreenEndpoints: readonly string[];
+}): boolean {
+  const key = voiceParticipantPrefsKey(params.participant);
+  const screenEndpoint =
+    params.participant.screen_sharing_video_info?.endpoint_id?.trim() || "";
+  if (screenEndpoint && params.mixPausedScreenEndpoints.includes(screenEndpoint)) {
+    // Mix-protect temporary pause must not paint mute chrome when the user
+    // still wants the share (auto-show / unmute). Session restores SDP; chrome
+    // mute follows prefs only (Сева glance→auto-muted was this path).
+    const wanted =
+      params.wantedScreenKeys instanceof Set
+        ? params.wantedScreenKeys
+        : new Set(params.wantedScreenKeys);
+    if (!wanted.has(key) || params.prefs?.muteScreen !== false) {
+      return true;
+    }
+  }
+  const denied =
+    params.deniedScreenKeys instanceof Set
+      ? params.deniedScreenKeys
+      : new Set(params.deniedScreenKeys);
+  if (denied.has(key)) return true;
+  const wanted =
+    params.wantedScreenKeys instanceof Set
+      ? params.wantedScreenKeys
+      : new Set(params.wantedScreenKeys);
+  if (!wanted.has(key)) return true;
+  return params.prefs?.muteScreen !== false;
 }
 
 const WINDOW_ICON_SIZE_PX = 15;
@@ -433,12 +500,7 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   const { colorScheme } = useTelegram();
   const { t } = useAppStrings();
   const { openProfileSheet } = useProfileSheet();
-  const title =
-    participant.title.trim() ||
-    (participant.is_self ? "You" : "") ||
-    (participant.user_id != null ? `User ${participant.user_id}` : "") ||
-    (participant.chat_id != null ? `Chat ${Math.abs(participant.chat_id)}` : "") ||
-    "Participant";
+  const title = formatVoiceParticipantTitle(participant);
   const description = participant.description.trim();
   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
   // Admin mute → red. Local volume 0% (muted for you) → red. User turned their
@@ -1004,16 +1066,13 @@ export function MessageChatVoicePopover({
   const isScreenLocallyOff = useCallback(
     (participant: TelegramChatVoiceParticipant) => {
       const key = voiceParticipantPrefsKey(participant);
-      const screenEndpoint =
-        participant.screen_sharing_video_info?.endpoint_id?.trim() || "";
-      if (screenEndpoint && mixPausedScreenEndpoints.includes(screenEndpoint)) {
-        return true;
-      }
-      if (deniedScreenKeySet.has(key)) return true;
-      const prefs = participantMediaPrefs[key];
-      // Default subscribe-mute is internal — only paint muted after opt-in then off.
-      if (wantedScreenKeySet.has(key) && prefs?.muteScreen === true) return true;
-      return false;
+      return isVoiceParticipantScreenLocallyOff({
+        participant,
+        prefs: participantMediaPrefs[key],
+        wantedScreenKeys: wantedScreenKeySet,
+        deniedScreenKeys: deniedScreenKeySet,
+        mixPausedScreenEndpoints,
+      });
     },
     [
       deniedScreenKeySet,

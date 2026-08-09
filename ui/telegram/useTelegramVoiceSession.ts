@@ -83,6 +83,11 @@ export type TelegramVoiceSession = {
    * for subscribe/UI until preferExplicitRemoteVideoSubscribe clears them.
    */
   mixPausedScreenEndpoints: string[];
+  /**
+   * Latest mix-protect pause followed live remote video (not a zero-RTP ghost).
+   * VoiceBar must soft-mute without failover / failed-endpoint bans.
+   */
+  mixProtectDropHadLiveVideo: boolean;
   /** Local WebAudio listen volumes for the mixed remote track (0–200%). */
   setParticipantListenVolumes: (input: {
     volumes: Record<string, number>;
@@ -121,6 +126,8 @@ export function useTelegramVoiceSession({
   const [mixPausedScreenEndpoints, setMixPausedScreenEndpoints] = useState<
     string[]
   >([]);
+  const [mixProtectDropHadLiveVideo, setMixProtectDropHadLiveVideo] =
+    useState(false);
   const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const sessionRef = useRef<TelegramGroupCallWebSession | null>(null);
@@ -160,6 +167,7 @@ export function useTelegramVoiceSession({
     setRemoteVideoSources([]);
     setRemoteVideoRepushEpoch(0);
     setMixPausedScreenEndpoints([]);
+    setMixProtectDropHadLiveVideo(false);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     micActiveRef.current = false;
@@ -259,6 +267,11 @@ export function useTelegramVoiceSession({
         setRemoteVideoRepushEpoch(epoch);
       });
       mixPausedUnsubRef.current = session.onMixPausedScreensChange((endpoints) => {
+        setMixProtectDropHadLiveVideo(
+          endpoints.length > 0
+            ? session.getLastMixProtectDropHadLiveVideo()
+            : false,
+        );
         setMixPausedScreenEndpoints((prev) => {
           if (
             prev.length === endpoints.length &&
@@ -309,6 +322,7 @@ export function useTelegramVoiceSession({
     setRemoteVideoSources([]);
     setRemoteVideoRepushEpoch(0);
     setMixPausedScreenEndpoints([]);
+    setMixProtectDropHadLiveVideo(false);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     setScreenSharing(false);
@@ -748,6 +762,7 @@ export function useTelegramVoiceSession({
     remoteVideoSources,
     remoteVideoRepushEpoch,
     mixPausedScreenEndpoints,
+    mixProtectDropHadLiveVideo,
     localCameraStream,
     localScreenStream,
     unlockAudio,

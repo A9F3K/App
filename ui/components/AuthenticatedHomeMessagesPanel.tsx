@@ -525,6 +525,11 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
    * load + gatewayWarming=false on the first frame flashes "No chats yet".
    */
   const [listBootstrapPending, setListBootstrapPending] = useState(true);
+  /**
+   * True after a successful chat-list fetch returned 0 rows while connected.
+   * Avoids flashing `messages.empty` when chats wipe during reconnect races.
+   */
+  const [emptyListConfirmed, setEmptyListConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chatListSearchQuery, setChatListSearchQuery] = useState("");
   const [remoteSearchChatIds, setRemoteSearchChatIds] = useState<number[]>([]);
@@ -537,6 +542,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   /** Keep applyChats urgent while the list is still empty (hard-reload first paint). */
   const chatsCountRef = useRef(0);
   chatsCountRef.current = chats.length;
+  const emptyUnchangedForceRef = useRef(false);
 
   useEffect(() => {
     if (selectedChatId == null || selectedChat == null) return;
@@ -709,10 +715,17 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     forceFull?: boolean;
   }) => {
     if (!isAuthenticated || !isTelegramMessagesConnected) {
-      setChats([]);
+      // Keep painted rows on brief disconnect — wiping flashed "No chats yet"
+      // while status/warmup raced. Only clear on logout.
+      if (!isAuthenticated) {
+        setChats([]);
+        setEmptyListConfirmed(false);
+        setListBootstrapPending(false);
+      } else {
+        setListBootstrapPending(true);
+      }
       setError(null);
       setLoading(false);
-      setListBootstrapPending(false);
       setGatewayWarming(false);
       return;
     }
@@ -808,6 +821,15 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           lastLiveRevisionRef.current = json.revision;
         }
         applyChatListSync(json.chatListSync);
+        // Cold paint: an "unchanged" with no rows must not clear bootstrap and
+        // leave emptyListConfirmed=false (infinite spinner / delayed list).
+        if (chatsCountRef.current === 0 && !emptyUnchangedForceRef.current) {
+          emptyUnchangedForceRef.current = true;
+          setEmptyListConfirmed(false);
+          queueMicrotask(() => {
+            void loadChatsRef.current({ silent: false, forceFull: true });
+          });
+        }
         unchangedPollStreakRef.current += 1;
         if (options?.silent && pollCountRef.current % 10 === 0) {
           logPageDisplay("messages_chats_poll_unchanged", {
@@ -930,6 +952,9 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           queueMicrotask(() => syncAuthenticatedHomeSelectedChat(next));
           if (rows.length > 0) {
             setGatewayWarming(false);
+            setEmptyListConfirmed(false);
+          } else if (prev.length === 0) {
+            setEmptyListConfirmed(true);
           }
           if (options?.silent) {
             if (changed) {
@@ -986,6 +1011,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         logPageDisplay("messages_chats_error", { message, elapsedMs: Date.now() - started });
         setError(message);
         setChats([]);
+        // Let the error UI render — otherwise !emptyListConfirmed keeps spinner.
+        setEmptyListConfirmed(true);
       } else {
         logPageDisplay("messages_chats_poll_error", {
           message,
@@ -1726,20 +1753,23 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     );
   }
 
-  if ((loading || gatewayWarming || listBootstrapPending) && chats.length === 0) {
-    return (
-      <View style={[listShellStyle, { paddingVertical: 24, alignItems: "center" }]}>
-        <ActivityIndicator size="small" color={colors.primary} />
-      </View>
-    );
-  }
-
   if (error && chats.length === 0) {
     return (
       <View style={[listShellStyle, { paddingVertical: 16 }]}>
         <Text style={{ textAlign: "center", color: colors.secondary, fontSize: 15, lineHeight: 20 }}>
           {t("messages.loadError")}
         </Text>
+      </View>
+    );
+  }
+
+  if (
+    chats.length === 0 &&
+    (loading || gatewayWarming || listBootstrapPending || !emptyListConfirmed)
+  ) {
+    return (
+      <View style={[listShellStyle, { paddingVertical: 24, alignItems: "center" }]}>
+        <ActivityIndicator size="small" color={colors.primary} />
       </View>
     );
   }

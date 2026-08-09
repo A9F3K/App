@@ -72,15 +72,16 @@ const PRESENCE_SYNC_CONCURRENCY = 8;
 const MEMBER_COUNT_SYNC_CONCURRENCY = 6;
 
 /** First paint: positioned main-list chats after all pins. */
-export const INITIAL_POSITIONED_SYNC_LIMIT = 40;
+export const INITIAL_POSITIONED_SYNC_LIMIT = 120;
 /** @deprecated Use INITIAL_POSITIONED_SYNC_LIMIT — kept for client constant parity. */
 export const INITIAL_MAIN_CHAT_SYNC_LIMIT = INITIAL_POSITIONED_SYNC_LIMIT;
 /** Each deferred page after the initial snapshot. */
-export const BACKGROUND_CHAT_SYNC_PAGE_SIZE = 35;
+export const BACKGROUND_CHAT_SYNC_PAGE_SIZE = 80;
 /** Unpositioned supplementary chats per on-demand batch. */
-export const TIER3_CHAT_SYNC_BATCH_SIZE = 25;
-const BACKGROUND_CHAT_SYNC_PAGE_DELAY_MS = 2_500;
-const BACKGROUND_CHAT_SYNC_START_DELAY_MS = 1_500;
+export const TIER3_CHAT_SYNC_BATCH_SIZE = 40;
+/** Keep background pages snappy — 2.5s gaps made ~300 chats feel "lazy". */
+const BACKGROUND_CHAT_SYNC_PAGE_DELAY_MS = 350;
+const BACKGROUND_CHAT_SYNC_START_DELAY_MS = 200;
 
 export type SyncChatThreadsOptions = {
   /** Cap main-list chats (skips archive and full pagination when set). */

@@ -25,7 +25,7 @@ import { isWelcomeLayoutRoute } from "../isWelcomeLayoutRoute";
 import { useResolvedPathname } from "../useResolvedPathname";
 
 const LOGO_HEIGHT = 32;
-/** Welcome header glyph height — matches `assets/HyperlinksSpaceLogo.svg` (94×31). */
+/** Welcome header glyph height — matches `assets/hslogo*.svg` (94×31). */
 const WELCOME_LOGO_HEIGHT = 31;
 /** When also in phone TMA, use a smaller 24px header glyph; width alone is not enough (see `useCompactHeaderGlyph`). */
 const HEADER_NARROW_MAX_WIDTH = 480;
@@ -100,7 +100,7 @@ function WelcomeMarketingBarContent({
   const { t } = useAppStrings();
   const { triggerHaptic } = useTelegram();
   const colors = useColors();
-  // Dark: HyperlinksSpaceLogo.svg (white wordmark). Light: HyperlinksSpaceLogoWhiteTheme.svg (black).
+  // Dark: hslogo dark (white wordmark). Light: hslogo light (black wordmark).
   const logoTextColor = colors.primary;
   const wordmarkWidth = LOGO_WORDMARK_ASPECT * wordmarkHeight;
 

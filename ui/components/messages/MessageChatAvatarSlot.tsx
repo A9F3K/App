@@ -23,6 +23,9 @@ const VOICE_RING_GREEN_BRIGHT = "#7AE28A";
 const VOICE_RING_GREEN_DEEP = "#1F8F3A";
 export const MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR = VOICE_RING_BLUE;
 export const MESSAGE_CHAT_JOINED_VOICE_RING_COLOR = VOICE_RING_GREEN;
+/** Outward extent of the live/speaking ring past the face (gap + stroke). */
+export const MESSAGE_CHAT_VOICE_RING_OUTSET_PX =
+  VOICE_RING_GAP_PX + VOICE_RING_WIDTH_PX;
 
 /** Web: animate gradient stop colors in place — no transform/rotation on the ring. */
 function ensureActiveVoiceRingCss(): void {

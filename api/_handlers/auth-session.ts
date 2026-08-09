@@ -195,12 +195,6 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
   const skipFeed = wantsSkipFeed(request);
   const catalogLocale = catalogLocaleFromRequest(request);
 
-  const [displayName, wallet, telegramMessagesConnected] = await Promise.all([
-    getDisplayNameForUsername(row.telegram_username),
-    getDefaultWalletByUsername(row.telegram_username),
-    isTelegramMessagesConnected(row.telegram_username),
-  ]);
-
   type FeedItems = Awaited<ReturnType<typeof bootstrapAuthenticatedFeedItems>>;
   const feedPromise: Promise<FeedItems> = skipFeed
     ? Promise.resolve([])
@@ -213,12 +207,20 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
         [],
       );
 
-  const [telegramMessagesConn, feed_items] = await Promise.all([
-    telegramMessagesConnected
-      ? getConnection(row.telegram_username)
-      : Promise.resolve(null),
-    feedPromise,
-  ]);
+  // Overlap wallet/profile/connected/feed/connection — do not serialize
+  // getConnection behind the first batch (cold session felt "lazy").
+  const connectedPromise = isTelegramMessagesConnected(row.telegram_username);
+  const connectionPromise = connectedPromise.then((connected) =>
+    connected ? getConnection(row.telegram_username) : Promise.resolve(null),
+  );
+  const [displayName, wallet, telegramMessagesConnected, feed_items, telegramMessagesConn] =
+    await Promise.all([
+      getDisplayNameForUsername(row.telegram_username),
+      getDefaultWalletByUsername(row.telegram_username),
+      connectedPromise,
+      feedPromise,
+      connectionPromise,
+    ]);
   const feedFields = { feed_items };
   const telegramMessagesFields = {
     telegram_messages_connected: telegramMessagesConnected,

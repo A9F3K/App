@@ -36,6 +36,17 @@ function writeAuthHint(value: AuthHint): void {
   }
 }
 
+function readAuthHint(): AuthHint | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = window.localStorage.getItem(AUTH_HINT_STORAGE_KEY);
+    if (value === "in" || value === "out") return value;
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 function dispatchAuthLifecycleEvent(name: "hsp-auth-signed-in" | "hsp-auth-signed-out"): void {
   if (typeof document === "undefined") return;
   document.dispatchEvent(new CustomEvent(name));
@@ -87,11 +98,9 @@ function cacheSessionPayload(json: SessionJson, authenticated: boolean): void {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { welcomeFeedCatalogLocale } = useAppStrings();
-  // SSR / first paint: keep default state. Do not read the stored auth hint before session:
-  // a stale "in" hint flashed `HomeAuthenticatedScreen` before `GET /api/auth/session` returned
-  // (welcome blink) and could participate in client/server tree mismatch (React #418). Session
-  // is the only source of truth for initial `isAuthenticated`; we still `writeAuthHint` after
-  // bootstrap and on signIn/signOut for a soft cache only.
+  // SSR / first client render: unauthenticated spinner (matches server HTML — no React #418).
+  // After hydrate, a stored "in" hint unlocks Home immediately while session GET confirms;
+  // session remains the source of truth and can flip back to welcome if the cookie expired.
   const [isAuthenticated, setAuthenticated] = useState(false);
   const [authReady, setAuthReady] = useState(false);
   const [authHydrated, setAuthHydrated] = useState(false);
@@ -102,14 +111,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useLayoutEffect(() => {
     installDesktopAuthFetch();
+    if (readAuthHint() === "in") {
+      setAuthenticated(true);
+      // Start gateway warmup before session returns — Home effects can lag seconds.
+      kickEagerTelegramMessagesWarmup("auth_hint");
+    }
     setAuthHydrated(true);
   }, []);
 
   const refreshAuthSession = useCallback(async () => {
     const startedAt = Date.now();
-    const sessionUrl = buildApiUrl(
-      `/api/auth/session?catalog_locale=${encodeURIComponent(welcomeFeedCatalogLocale)}`,
-    );
+    // skip_feed: unlock auth without waiting on catalog bootstrap (feed panel uses /api/feed).
+    const sessionUrl = buildApiUrl("/api/auth/session?skip_feed=1");
     try {
       const response = await fetch(sessionUrl, {
         method: "GET",
@@ -127,7 +140,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       writeAuthHint(authenticated ? "in" : "out");
       setAuthenticated(authenticated);
-      setSessionFeedItems(authenticated && feedItems && feedItems.length > 0 ? feedItems : null);
+      // skip_feed returns []; keep prior session feed only when still signed in.
+      if (!authenticated) {
+        setSessionFeedItems(null);
+      } else if (feedItems && feedItems.length > 0) {
+        setSessionFeedItems(feedItems);
+      }
       setSessionTelegramMessagesConnected(telegramMessagesConnected);
       logPageDisplay("auth_session_refresh", {
         ok: response.ok,
@@ -136,6 +154,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         telegramMessagesConnected,
         elapsedMs: Date.now() - startedAt,
         feedItemCount: feedItems?.length ?? null,
+        skipFeed: true,
       });
       return authenticated;
     } catch (error) {
@@ -147,7 +166,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setAuthReady(true);
     }
-  }, [welcomeFeedCatalogLocale]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

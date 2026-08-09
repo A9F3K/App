@@ -1,11 +1,11 @@
 /**
  * 32×32 logo matching Dart GlobalLogoBar asset (HyperlinksSpace.svg).
- * Inline SVG paths to avoid asset transformer; fill #1AAA11.
+ * Inline SVG paths to avoid asset transformer; fill #00E05A.
  */
 import React from "react";
 import Svg, { Path } from "react-native-svg";
 
-export const HYPERLINKS_SPACE_LOGO_GREEN = "#1AAA11";
+export const HYPERLINKS_SPACE_LOGO_GREEN = "#00E05A";
 
 const LOGO_SIZE = 32;
 
@@ -17,13 +17,13 @@ export function HyperlinksSpaceLogo({
   height?: number;
 }) {
   return (
-    <Svg width={width} height={height} viewBox="0 0 24 24" fill="none">
+    <Svg width={width} height={height} viewBox="0 0 28.5301 29.6462" fill="none">
       <Path
-        d="M6 24L13.2 19.2L17.28 24H24V0H22.8V22.8H18L6 7.2V24Z"
+        d="M7.13281 29.0756L15.6917 24.2257L20.2565 29.6462H28.5301V1.11719H27.1036V28.2198H21.3977L7.13281 10.5318V29.0756Z"
         fill={HYPERLINKS_SPACE_LOGO_GREEN}
       />
       <Path
-        d="M18 0L10.8 4.8L6.72 0H0V24H1.2V1.2H6L18 16.8V0Z"
+        d="M21.3973 1.68777L12.5531 6.5377L7.98832 1.11719H0V29.6462H1.42649V2.54364H7.13243L21.3973 21.3728V1.68777Z"
         fill={HYPERLINKS_SPACE_LOGO_GREEN}
       />
     </Svg>

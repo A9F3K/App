@@ -409,7 +409,8 @@ function RootContent() {
           />
         ) : null
       }
-      {authHydrated && authReady && (isAuthenticated || isWelcomeLayoutRoute(pathname, auth)) ? (
+      {authHydrated &&
+      (isAuthenticated || (authReady && isWelcomeLayoutRoute(pathname, auth))) ? (
         <>
           <TelegramConnectFooterStrip />
           <FloatingShield />

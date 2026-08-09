@@ -13,9 +13,8 @@ const ShellView = View as ComponentType<ViewProps & { suppressHydrationWarning?:
  * Root URL `http://localhost:3000/` (path `/`): welcome when signed out, main app when signed in.
  * Same URL for both — only session state chooses the screen; legacy `/home` redirects here.
  *
- * Waits for `authHydrated` + `authReady` (session `GET` finished); no optimistic route from
- * `localStorage` so we do not flash the authenticated home when the server session is missing.
- * When the session is valid, we show home after bootstrap.
+ * After client hydrate, a stored auth hint may unlock Home before session GET finishes
+ * (avoids the multi-second spinner/"lazy load" feel). Session still confirms or flips to welcome.
  */
 /** Stable first paint on web so server HTML and client hydration match (avoids React #418). */
 const INDEX_WEB_HYDRATE_BG = "#000000";
@@ -27,10 +26,12 @@ export default function Index() {
   useEffect(() => {
     const variant = !authHydrated
       ? "bootstrap_pending_hydration"
-      : !authReady
+      : !authReady && !isAuthenticated
         ? "bootstrap_pending_auth"
       : isAuthenticated
-        ? "home_authenticated"
+        ? authReady
+          ? "home_authenticated"
+          : "home_authenticated_optimistic"
         : "welcome";
     if (lastLoggedVariantRef.current === variant) return;
     lastLoggedVariantRef.current = variant;
@@ -44,7 +45,8 @@ export default function Index() {
     });
   }, [authHydrated, authReady, isAuthenticated]);
 
-  if (!authHydrated || !authReady) {
+  // Spinner only until hydrate, or until session when we have no signed-in hint.
+  if (!authHydrated || (!authReady && !isAuthenticated)) {
     return (
       <ShellView
         suppressHydrationWarning

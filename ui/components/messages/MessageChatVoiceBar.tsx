@@ -21,6 +21,7 @@ import { useTelegram } from "../Telegram";
 import {
   MessageChatAvatarSlot,
   MESSAGE_CHAT_JOINED_VOICE_RING_COLOR,
+  MESSAGE_CHAT_VOICE_RING_OUTSET_PX,
 } from "./MessageChatAvatarSlot";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { resolveTelegramUserAvatarUrl } from "./resolveTelegramUserAvatarUrl";
@@ -28,7 +29,16 @@ import {
   MessageChatLeaveVoiceIcon,
   MessageChatMicIcon,
 } from "./MessageChatVoiceIcons";
-import { MessageChatVoicePopover, type VoiceChatMessage, voiceParticipantPrefsKey } from "./MessageChatVoicePopover";
+import {
+  formatVoiceParticipantTitle,
+  MessageChatVoicePopover,
+  type VoiceChatMessage,
+  voiceParticipantPrefsKey,
+} from "./MessageChatVoicePopover";
+import {
+  isEffectivelyBlankDisplayName,
+  stripInvisibleDisplayNameChars,
+} from "../../../shared/telegramDisplayName";
 import { MessageChatVoiceVideoPlane } from "./MessageChatVoiceVideoPlane";
 import { setTelegramChatVoiceParticipantVolume } from "../../telegram/setTelegramChatVoiceParticipantVolume";
 import {
@@ -47,6 +57,7 @@ import type { TelegramVoiceCallMessage } from "../../telegram/sendTelegramChatVo
 import { useVoiceDialogFreezeDetector } from "./useVoiceDialogFreezeDetector";
 import {
   MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+  MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_DIVIDER_PX,
   MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
   MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX,
   MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
@@ -258,6 +269,15 @@ export function MessageChatVoiceBar({
   const explicitScreenWantedKeysRef = useRef<Set<string>>(new Set());
   /** User muted a peer's screen this join — do not auto-show that peer again. */
   const userDeniedScreenKeysRef = useRef<Set<string>>(new Set());
+  /**
+   * Endpoints that failed after auto/explicit subscribe (0 video RTP / mix-protect).
+   * Skip on the next auto-show pick so a stale ghost (e.g. ".") does not block Сева.
+   */
+  const failedAutoScreenEndpointsRef = useRef<Set<string>>(new Set());
+  /** After a live H264 share froze the mix — stop auto-picking other screens. */
+  const autoScreenBlockedAfterLiveMixStallRef = useRef(false);
+  /** First time we saw each screen endpoint this join — prefer newer publishers. */
+  const screenEndpointFirstSeenAtRef = useRef<Map<string, number>>(new Map());
   /** Mirror of denied keys for roster/menu chrome (refs alone do not re-render). */
   const [deniedScreenPeerKeys, setDeniedScreenPeerKeys] = useState<string[]>([]);
   /** Peers we opted into for screen this join (auto-show or menu unmute). */
@@ -644,7 +664,17 @@ export function MessageChatVoiceBar({
     if (row.is_self) return "self";
     if (row.user_id != null && row.user_id > 0) return `u:${row.user_id}`;
     if (row.chat_id != null && row.chat_id !== 0) return `c:${row.chat_id}`;
-    return `t:${row.title}`;
+    const order = String(row.order ?? "").trim();
+    if (order) return `o:${order}`;
+    const endpoint =
+      row.screen_sharing_video_info?.endpoint_id?.trim() ||
+      row.video_info?.endpoint_id?.trim() ||
+      "";
+    if (endpoint) return `e:${endpoint}`;
+    const title = row.title.trim();
+    // Never key multiple untitled stubs as `t:` — Map merge swapped names onto "?".
+    if (title) return `t:${title}`;
+    return `anon:${row.user_id ?? "x"}:${row.chat_id ?? "x"}:${endpoint || "_"}`;
   }, []);
 
   /** Prefer stable u:/c: keys — SSE stubs often lack user_id while the roster has it. */
@@ -716,7 +746,9 @@ export function MessageChatVoiceBar({
       // Green mic = TDLib/SSE is_speaking (+ hold), extended by mix RMS for
       // recent faces when SSE speakingCount stays 0 after WebRTC join.
       const now = Date.now();
-      const holdMs = 8_000;
+      // Short hold — 8s left multiple faces green after they stopped talking
+      // (SSE speakingCount flopped while holds kept painting wrong mics).
+      const holdMs = 2_500;
       let soonestExpiry = 0;
       const next: Record<string, true> = {};
       const joinedLocally = voiceJoinedRef.current;
@@ -1158,8 +1190,14 @@ export function MessageChatVoiceBar({
             inc.user_id != null &&
             inc.user_id > 0;
           const nextTitle = promotingOrderedSelf
-            ? inc.title.trim() || selfTitleRef.current || "You"
-            : inc.title.trim() || row.title;
+            ? (!isEffectivelyBlankDisplayName(inc.title)
+                ? stripInvisibleDisplayNameChars(inc.title).trim()
+                : "") ||
+              selfTitleRef.current ||
+              "You"
+            : (!isEffectivelyBlankDisplayName(inc.title)
+                ? stripInvisibleDisplayNameChars(inc.title).trim()
+                : "") || row.title;
           const nextDescription = inc.description || row.description;
           const nextEmoji =
             inc.emoji_status_custom_emoji_id ?? row.emoji_status_custom_emoji_id;
@@ -1238,7 +1276,9 @@ export function MessageChatVoiceBar({
       } else {
         next = next.map((row) => {
           const prevMatch = prevByKey.get(speakKey(row));
-          const titleFromIncoming = row.title.trim();
+          const titleFromIncoming = isEffectivelyBlankDisplayName(row.title)
+            ? ""
+            : stripInvisibleDisplayNameChars(row.title).trim();
           // Do not sticky-keep another account's title onto a newly identified self.
           const title =
             titleFromIncoming ||
@@ -1403,12 +1443,12 @@ export function MessageChatVoiceBar({
               row.volume_percent <= 0,
           ).length,
           popoverOpen: popoverOpenRef.current,
-          titles: next.slice(0, 6).map((row) => row.title || "?"),
+          titles: next.slice(0, 6).map((row) => formatVoiceParticipantTitle(row)),
           volumes: next
             .filter((row) => !row.is_self)
             .slice(0, 6)
             .map((row) => ({
-              title: row.title || "?",
+              title: formatVoiceParticipantTitle(row),
               muted: row.is_muted,
               volume: row.volume_percent ?? null,
             })),
@@ -1416,7 +1456,7 @@ export function MessageChatVoiceBar({
             .filter((row) => row.screen_sharing_video_info?.endpoint_id)
             .slice(0, 4)
             .map((row) => ({
-              title: row.title || "?",
+              title: formatVoiceParticipantTitle(row),
               endpoint: row.screen_sharing_video_info?.endpoint_id,
               groups: row.screen_sharing_video_info?.source_groups?.length ?? 0,
             })),
@@ -1568,7 +1608,32 @@ export function MessageChatVoiceBar({
       const fillsTitles =
         snapshot.participants.some((row) => Boolean(row.title.trim())) &&
         participantsRef.current.some((row) => !row.title.trim() && !row.is_self);
-      const rosterThin = hint > listed || expandsRoster || fillsTitles;
+      // Screencast/camera endpoints must not wait the 3s open-dialog coalesce —
+      // that left crossed mute-chrome from join until a late force-reload.
+      const bringsRemoteMedia = snapshot.participants.some((row) => {
+        if (row.is_self) return false;
+        const screen = row.screen_sharing_video_info;
+        const camera = row.video_info;
+        const hasScreen = Boolean(
+          screen?.endpoint_id?.trim() || (screen?.source_groups?.length ?? 0) > 0,
+        );
+        const hasCamera = Boolean(
+          camera?.endpoint_id?.trim() || (camera?.source_groups?.length ?? 0) > 0,
+        );
+        if (!hasScreen && !hasCamera) return false;
+        const prev = participantsRef.current.find(
+          (p) => participantSpeakKey(p) === participantSpeakKey(row),
+        );
+        if (!prev) return true;
+        return (
+          voiceVideoInfoSignature(prev.screen_sharing_video_info) !==
+            voiceVideoInfoSignature(screen) ||
+          voiceVideoInfoSignature(prev.video_info) !==
+            voiceVideoInfoSignature(camera)
+        );
+      });
+      const rosterThin =
+        hint > listed || expandsRoster || fillsTitles || bringsRemoteMedia;
       // Expanding the painted roster mid-SDP (listed 3→7 during join_attempt) caused
       // voice_dialog_longtask / stuck UI. Keep speaking live; defer membership until
       // WebRTC is up (or Join was never armed).
@@ -1578,12 +1643,12 @@ export function MessageChatVoiceBar({
         (voiceJoinedRef.current &&
           !voiceSessionJoinedRef.current &&
           joinAttemptsRef.current < 3);
-      if ((expandsRoster || fillsTitles) && !joinBusy) {
+      if ((expandsRoster || fillsTitles || bringsRemoteMedia) && !joinBusy) {
         cancelStreamRosterFlush();
         flushPendingStreamSnap();
         return;
       }
-      if ((expandsRoster || fillsTitles) && joinBusy) {
+      if ((expandsRoster || fillsTitles || bringsRemoteMedia) && joinBusy) {
         // Always keep the newest pending snap — a prior thin timer used to
         // swallow expands (new joiner never painted until soft poll, which timed out).
         cancelStreamRosterFlush();
@@ -1621,7 +1686,7 @@ export function MessageChatVoiceBar({
         flushPendingStreamSnap();
       }, minMs - sinceLast);
     },
-    [applySpeakingMap, cancelStreamRosterFlush, flushPendingStreamSnap, seedRecentSpeakerFaces],
+    [applySpeakingMap, cancelStreamRosterFlush, flushPendingStreamSnap, participantSpeakKey, seedRecentSpeakerFaces],
   );
 
   useEffect(() => {
@@ -1893,8 +1958,10 @@ export function MessageChatVoiceBar({
   // identity; otherwise, if exactly one unmuted remote exists, light them while
   // mix RMS is hot. Never invent unmute / speaking for the whole roster from
   // mixed-track energy (that painted every face open-mic vs Telegram Desktop).
-  const MIX_SPEAKING_GRACE_MS = 18_000;
-  const MIX_SPEAKING_HOLD_MS = 2_400;
+  // Keep grace short — an 18s window re-lit every recent speaker whenever mix
+  // RMS pulsed, so wrong green mics stacked (Blox: speakingCount=6 from 2 marks).
+  const MIX_SPEAKING_GRACE_MS = 3_500;
+  const MIX_SPEAKING_HOLD_MS = 1_800;
   const extendMixSpeakingHolds = useCallback(() => {
     if (!voiceJoinedRef.current || !remoteSpeakingRef.current) return;
     heardRemoteMixRef.current = true;
@@ -1915,13 +1982,17 @@ export function MessageChatVoiceBar({
         (typeof row.volume_percent === "number" ? row.volume_percent : 100)
       );
     };
+    const lastTdlibAt = (row: TelegramChatVoiceParticipant) => {
+      let best = 0;
+      for (const key of rowSpeakKeys(row)) {
+        best = Math.max(best, lastTdlibSpeakingAtRef.current.get(key) ?? 0);
+      }
+      return best;
+    };
     // TDLib-backed identity only — do not invent from speakingByKey/hold (loops).
     const isTdlibRecentSpeaker = (row: TelegramChatVoiceParticipant) => {
-      const keys = rowSpeakKeys(row);
-      return keys.some((key) => {
-        const seen = lastTdlibSpeakingAtRef.current.get(key) ?? 0;
-        return seen > 0 && now - seen < graceMs;
-      });
+      const seen = lastTdlibAt(row);
+      return seen > 0 && now - seen < graceMs;
     };
     let targets = remotes.filter(
       (row) =>
@@ -1930,6 +2001,20 @@ export function MessageChatVoiceBar({
         isTdlibRecentSpeaker(row),
     );
     let mixSource: "tdlib_hold" | "solo" = "tdlib_hold";
+    if (targets.length > 1) {
+      // Mix energy is one bit — never paint every recent face green at once.
+      let bestRow = targets[0]!;
+      let bestAt = lastTdlibAt(bestRow);
+      for (let i = 1; i < targets.length; i += 1) {
+        const row = targets[i]!;
+        const at = lastTdlibAt(row);
+        if (at > bestAt || (at === bestAt && row.is_speaking && !bestRow.is_speaking)) {
+          bestRow = row;
+          bestAt = at;
+        }
+      }
+      targets = [bestRow];
+    }
     if (targets.length === 0) {
       const unmutedRemotes = remotes.filter((row) => {
         if (row.is_muted) return false;
@@ -1940,15 +2025,34 @@ export function MessageChatVoiceBar({
       targets = unmutedRemotes;
       mixSource = "solo";
     }
+    const targetKeys = new Set<string>();
     for (const row of targets) {
       for (const key of rowSpeakKeys(row)) {
         speakingHoldUntilRef.current.set(key, now + holdMs);
         mixCarrySpeakingKeysRef.current.add(key);
+        targetKeys.add(key);
       }
+    }
+    // Drop mix-carried greens on non-targets so wrong faces clear when someone
+    // else talks (do not touch fresh TDLib holds from applySpeakingMap).
+    for (const key of [...mixCarrySpeakingKeysRef.current]) {
+      if (targetKeys.has(key)) continue;
+      const tdlibAt = lastTdlibSpeakingAtRef.current.get(key) ?? 0;
+      const stillTdlibPulse = tdlibAt > 0 && now - tdlibAt < 1_200;
+      if (stillTdlibPulse) continue;
+      mixCarrySpeakingKeysRef.current.delete(key);
+      speakingHoldUntilRef.current.delete(key);
     }
     setSpeakingByKey((prev) => {
       let changed = false;
       const next = { ...prev };
+      for (const key of Object.keys(next)) {
+        if (key === "self" || targetKeys.has(key)) continue;
+        const until = speakingHoldUntilRef.current.get(key) ?? 0;
+        if (until > now) continue;
+        delete next[key];
+        changed = true;
+      }
       for (const row of targets) {
         for (const key of rowSpeakKeys(row)) {
           if (!next[key]) {
@@ -2257,9 +2361,9 @@ export function MessageChatVoiceBar({
     void refreshParticipantsRef.current();
   }, [voiceSession.joined]);
 
-  // Auto-show the first live remote screencast on join (Telegram-like). Cameras
-  // stay opt-in — full video SDP can freeze Colibri mix; mix-protect still drops
-  // a bad screen and user mute is sticky for this join.
+  // Auto-show the best live remote screencast (Telegram-like). Cameras stay
+  // opt-in. Soft-start 180p + constraints throttle in the session limit mix
+  // freeze risk; after a live stall we soft-pause and stop auto-picking.
   const setRemoteVideoRequests = voiceSession.setRemoteVideoRequests;
   const preferExplicitRemoteVideoSubscribe =
     voiceSession.preferExplicitRemoteVideoSubscribe;
@@ -2267,6 +2371,7 @@ export function MessageChatVoiceBar({
   const voiceJoined = voiceSession.joined;
   const remoteVideoRepushEpoch = voiceSession.remoteVideoRepushEpoch;
   const mixPausedScreenEndpoints = voiceSession.mixPausedScreenEndpoints;
+  const mixProtectDropHadLiveVideo = voiceSession.mixProtectDropHadLiveVideo;
   const mixPausedScreenSet = useMemo(
     () => new Set(mixPausedScreenEndpoints),
     [mixPausedScreenEndpoints],
@@ -2291,18 +2396,114 @@ export function MessageChatVoiceBar({
     );
   }, [participants, participantMediaPrefs, mixPausedScreenEndpoints]);
 
+  // Mix-protect pause handling:
+  // - Ghost (0 video RTP): revoke + ban endpoint so auto-show can pick next.
+  // - Live H264 that froze Opus: keep unmuted intent + preferred endpoint so
+  //   one-shot restore can re-open the stage. Flipping muteScreen left Сева
+  //   looking "automatically muted" after a brief successful paint.
+  useEffect(() => {
+    if (!voiceJoined || Platform.OS !== "web") return;
+    if (mixPausedScreenSet.size === 0) return;
+    const liveStall = mixProtectDropHadLiveVideo;
+    let revoked = false;
+    for (const row of participantsRef.current) {
+      if (row.is_self) continue;
+      const endpoint = row.screen_sharing_video_info?.endpoint_id?.trim() || "";
+      if (!endpoint || !mixPausedScreenSet.has(endpoint)) continue;
+      if (!liveStall) {
+        failedAutoScreenEndpointsRef.current.add(endpoint);
+        autoScreenBlockedAfterLiveMixStallRef.current = false;
+        const key = voiceParticipantPrefsKey(row);
+        if (explicitScreenWantedKeysRef.current.delete(key)) {
+          revoked = true;
+        }
+        const cur = participantMediaPrefsRef.current[key];
+        if (cur && cur.muteScreen === false) {
+          const next = { ...cur, muteScreen: true };
+          participantMediaPrefsRef.current = {
+            ...participantMediaPrefsRef.current,
+            [key]: next,
+          };
+          revoked = true;
+        }
+        if (
+          preferredExplicitScreenEndpointRef.current &&
+          preferredExplicitScreenEndpointRef.current === endpoint
+        ) {
+          preferredExplicitScreenEndpointRef.current = null;
+        }
+      } else {
+        // Live stall: keep muteScreen=false + wanted key so VoiceBar / session
+        // one-shot restore can re-subscribe when mix is healthy again.
+        const key = voiceParticipantPrefsKey(row);
+        if (!explicitScreenWantedKeysRef.current.has(key)) {
+          explicitScreenWantedKeysRef.current.add(key);
+          revoked = true;
+        }
+        const cur = participantMediaPrefsRef.current[key];
+        if (cur && cur.muteScreen !== false) {
+          participantMediaPrefsRef.current = {
+            ...participantMediaPrefsRef.current,
+            [key]: { ...cur, muteScreen: false },
+          };
+          revoked = true;
+        } else if (!cur) {
+          participantMediaPrefsRef.current = {
+            ...participantMediaPrefsRef.current,
+            [key]: {
+              volumePercent:
+                typeof row.volume_percent === "number" ? row.volume_percent : 100,
+              muteScreen: false,
+              muteVideo: true,
+            },
+          };
+          revoked = true;
+        }
+        preferredExplicitScreenEndpointRef.current = endpoint;
+      }
+    }
+    if (!revoked && !liveStall) return;
+    if (revoked) {
+      setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
+      setParticipantMediaPrefs({ ...participantMediaPrefsRef.current });
+    }
+    logPageDisplay(
+      liveStall
+        ? "messages_voice_remote_screen_soft_pause_live"
+        : "messages_voice_remote_screen_auto_show_failover",
+      {
+        chatId,
+        paused: [...mixPausedScreenSet].slice(0, 4),
+        failed: [...failedAutoScreenEndpointsRef.current].slice(0, 4),
+        level: "info",
+        note: liveStall
+          ? "live screen paused for mix — keep unmuted chrome, await restore"
+          : "revoked paused ghost share — will auto-show next candidate",
+      },
+    );
+  }, [voiceJoined, mixPausedScreenSet, mixProtectDropHadLiveVideo, chatId]);
+
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") {
       userDeniedScreenKeysRef.current.clear();
-      // Bail when already empty — `[] !== []` would re-render forever if this
-      // effect's deps include an unstable identity (voiceSession object).
+      failedAutoScreenEndpointsRef.current.clear();
+      autoScreenBlockedAfterLiveMixStallRef.current = false;
+      screenEndpointFirstSeenAtRef.current.clear();
       setDeniedScreenPeerKeys((prev) => (prev.length === 0 ? prev : []));
       setWantedScreenPeerKeys((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    if (autoScreenBlockedAfterLiveMixStallRef.current) {
       return;
     }
     const alreadyShowing = participantsRef.current.some((row) => {
       if (row.is_self) return false;
       if (!participantHasScreenPublisher(row)) return false;
+      const endpoint = row.screen_sharing_video_info?.endpoint_id?.trim() || "";
+      if (endpoint && mixPausedScreenSet.has(endpoint)) return false;
+      if (endpoint && failedAutoScreenEndpointsRef.current.has(endpoint)) {
+        return false;
+      }
       const key = voiceParticipantPrefsKey(row);
       if (!explicitScreenWantedKeysRef.current.has(key)) return false;
       const prefs = participantMediaPrefsRef.current[key];
@@ -2315,67 +2516,98 @@ export function MessageChatVoiceBar({
       endpoint: string;
       title: string;
       score: number;
+      firstSeenAt: number;
+      hasGroups: boolean;
     };
+    const now = Date.now();
     const cands: ScreenCand[] = [];
     for (const row of participantsRef.current) {
       if (row.is_self) continue;
       const screen = row.screen_sharing_video_info;
-      if (!screen?.source_groups?.length) continue;
+      // Endpoint-only publishers still show muted share chrome — must opt-in
+      // immediately; source_groups arrive on the next force-reload / SSE.
+      if (!participantHasScreenPublisher(row) || !screen) continue;
       const endpoint =
         screen.endpoint_id?.trim() ||
         `screen-${row.user_id ?? row.chat_id ?? "x"}`;
       if (mixPausedScreenSet.has(endpoint)) continue;
+      if (failedAutoScreenEndpointsRef.current.has(endpoint)) continue;
       const key = voiceParticipantPrefsKey(row);
       if (userDeniedScreenKeysRef.current.has(key)) continue;
-      const groups = screen.source_groups;
+      const groups = screen.source_groups ?? [];
       const hasSim = groups.some((g) => g.semantics.toUpperCase() === "SIM");
       const fidCount = groups.filter((g) => g.semantics.toUpperCase() === "FID").length;
+      let firstSeenAt = screenEndpointFirstSeenAtRef.current.get(endpoint);
+      if (firstSeenAt == null) {
+        firstSeenAt = now;
+        screenEndpointFirstSeenAtRef.current.set(endpoint, firstSeenAt);
+      }
+      const score =
+        (hasSim ? 100 : 0) +
+        fidCount * 20 +
+        groups.length * 10 +
+        (screen.endpoint_id?.trim() ? 5 : 0) +
+        (row.is_speaking ? 25 : 0) +
+        (row.order && row.order.trim() ? 5 : 0);
       cands.push({
         key,
         endpoint,
-        title: row.title || String(row.user_id ?? row.chat_id ?? "?"),
-        score: (hasSim ? 100 : 0) + fidCount * 20 + groups.length * 10,
+        title: formatVoiceParticipantTitle(row),
+        score,
+        firstSeenAt,
+        hasGroups: groups.length > 0,
       });
     }
     if (cands.length === 0) return;
-    cands.sort((a, b) => b.score - a.score);
-    const best = cands[0]!;
-    explicitScreenWantedKeysRef.current.add(best.key);
+    cands.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.hasGroups !== b.hasGroups) return a.hasGroups ? -1 : 1;
+      return b.firstSeenAt - a.firstSeenAt;
+    });
+    const pick = cands[0];
+    // Always unmute chrome + arm subscribe for the best publisher. Waiting for
+    // SIM+FID left crossed-out share icons from join until manual unmute.
+    explicitScreenWantedKeysRef.current.add(pick.key);
     setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
-    preferredExplicitScreenEndpointRef.current = best.endpoint;
-    // Sync ref before preferExplicit → repush → applyRequests. Waiting for
-    // setState left muteScreen=true on the first pass (crossed share icon +
-    // empty video requests until the next paint).
-    const existing = participantMediaPrefsRef.current[best.key] ?? {
-      volumePercent: 100,
-      muteVideo: true,
-      muteScreen: true,
-    };
-    const nextPrefs = { ...existing, muteScreen: false };
+    const existingPrefs =
+      participantMediaPrefsRef.current[pick.key] ?? {
+        volumePercent: 100,
+        muteVideo: true,
+        muteScreen: true,
+      };
+    const nextPrefs = { ...existingPrefs, muteScreen: false };
     participantMediaPrefsRef.current = {
       ...participantMediaPrefsRef.current,
-      [best.key]: nextPrefs,
+      [pick.key]: nextPrefs,
     };
     setParticipantMediaPrefs((prev) => {
-      const cur = prev[best.key] ?? existing;
+      const cur = prev[pick.key] ?? existingPrefs;
       if (cur.muteScreen === false) return prev;
-      return { ...prev, [best.key]: { ...cur, muteScreen: false } };
+      return { ...prev, [pick.key]: { ...cur, muteScreen: false } };
     });
-    preferExplicitRemoteVideoSubscribe(best.endpoint);
+    preferredExplicitScreenEndpointRef.current = pick.endpoint;
+    preferExplicitRemoteVideoSubscribe(pick.endpoint);
     logPageDisplay("messages_voice_remote_screen_auto_show", {
       chatId,
-      endpoint: best.endpoint,
-      title: best.title,
+      title: pick.title,
+      endpoint: pick.endpoint,
+      score: pick.score,
+      hasGroups: pick.hasGroups,
       candidates: cands.length,
+      candidateTitles: cands.slice(0, 4).map((c) => c.title),
       level: "info",
-      note: "join/first-share — auto unmute one screencast (cameras stay opt-in)",
+      note: pick.hasGroups
+        ? pick.score >= 100
+          ? "auto-subscribe best live screencast at soft 180p; mix-protect may throttle"
+          : "auto-show incomplete SSRC — muted chrome cleared; await SIM or sticky incomplete"
+        : "auto-show endpoint-only — muted chrome cleared; await source_groups",
     });
   }, [
     voiceJoined,
     remoteVideoSourceKey,
     mixPausedScreenSet,
-    preferExplicitRemoteVideoSubscribe,
     chatId,
+    preferExplicitRemoteVideoSubscribe,
   ]);
 
   useEffect(() => {
@@ -2384,6 +2616,9 @@ export function MessageChatVoiceBar({
       lastGoodRemoteVideoAtRef.current = 0;
       lastRemoteVideoRequestSigRef.current = "";
       explicitScreenWantedKeysRef.current.clear();
+      failedAutoScreenEndpointsRef.current.clear();
+      autoScreenBlockedAfterLiveMixStallRef.current = false;
+      screenEndpointFirstSeenAtRef.current.clear();
       preferredExplicitScreenEndpointRef.current = null;
       setWantedScreenPeerKeys((prev) => (prev.length === 0 ? prev : []));
       setRemoteVideoRequests([]);
@@ -2450,7 +2685,7 @@ export function MessageChatVoiceBar({
           });
         } else if (screen?.endpoint_id?.trim() && screenAllowed) {
           pendingGroups.push({
-            user: row.title || String(row.user_id ?? row.chat_id ?? "?"),
+            user: formatVoiceParticipantTitle(row),
             kind: "screen",
             endpoint: screen.endpoint_id,
           });
@@ -2466,7 +2701,7 @@ export function MessageChatVoiceBar({
           });
         } else if (camera?.endpoint_id?.trim() && cameraAllowed) {
           pendingGroups.push({
-            user: row.title || String(row.user_id ?? row.chat_id ?? "?"),
+            user: formatVoiceParticipantTitle(row),
             kind: "camera",
             endpoint: camera.endpoint_id,
           });
@@ -2909,14 +3144,15 @@ export function MessageChatVoiceBar({
       const pausedForMix = Boolean(
         endpoint && voiceSession.mixPausedScreenEndpoints.includes(endpoint),
       );
-      // Match roster/menu chrome: default subscribe-mute is not "user muted".
-      // Only treat as muted when the user denied, mix-protect paused, or they
-      // opted in then turned the share off.
       const optedIn = explicitScreenWantedKeysRef.current.has(key);
+      // Default (not opted in) must count as muted — otherwise the first menu
+      // tap denied the share while the UI already looked "on", and video never
+      // subscribed (prod: auto_show_skip + muteScreen chrome mismatch).
       const effectivelyMuted =
         userDeniedScreenKeysRef.current.has(key) ||
         pausedForMix ||
-        (optedIn && cur.muteScreen);
+        !optedIn ||
+        cur.muteScreen !== false;
       const nextMute = !effectivelyMuted;
       if (nextMute) {
         explicitScreenWantedKeysRef.current.delete(key);
@@ -2924,6 +3160,9 @@ export function MessageChatVoiceBar({
       } else {
         userDeniedScreenKeysRef.current.delete(key);
         explicitScreenWantedKeysRef.current.add(key);
+        // Manual unmute retries even after mix-protect marked the endpoint failed.
+        if (endpoint) failedAutoScreenEndpointsRef.current.delete(endpoint);
+        autoScreenBlockedAfterLiveMixStallRef.current = false;
       }
       setDeniedScreenPeerKeys([...userDeniedScreenKeysRef.current]);
       setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
@@ -2971,8 +3210,8 @@ export function MessageChatVoiceBar({
     });
   }, [participants, ensureParticipantPrefs]);
 
-  // Intentionally no auto-show-on-share: Colibri freezes mix Opus when remote
-  // screen SDP opens automatically. User unmutes from the participant menu.
+  // Auto-show first live remote screencast (opt-in keys + muteScreen=false).
+  // Mix-protect may still drop video if Colibri freezes Opus; user can unmute.
 
   // Push local listen volumes into the WebRTC mix GainNode. TDLib volume_level
   // also gates SFU mix contribution — volume_level=1 (0%) mutes that peer for
@@ -3303,10 +3542,10 @@ export function MessageChatVoiceBar({
     // Any gap vs TDLib means the roster is incomplete — listed=5 hint=6 used
     // to skip force-reload and hide the screencaster (no video_info rows).
     if (hint > listed) return true;
-    // Any untitled non-self row ("?" / blank) needs another force pass.
+    // Any untitled non-self row (blank / invisible) needs another force pass.
     if (
       participantsRef.current.some(
-        (row) => !row.is_self && !row.title.trim(),
+        (row) => !row.is_self && isEffectivelyBlankDisplayName(row.title),
       )
     ) {
       return true;
@@ -3360,7 +3599,7 @@ export function MessageChatVoiceBar({
       // never from a soft recent_speakers subset (listed=3 while hint=9).
       if (listed <= 0) return false;
       const emptyTitles = participantsRef.current.filter(
-        (row) => !row.is_self && !row.title.trim(),
+        (row) => !row.is_self && isEffectivelyBlankDisplayName(row.title),
       ).length;
       // Keep forcing while TDLib count is higher or names are still blank —
       // loaded_all with listed=5/hint=8 left "?" rows and missing people.
@@ -3466,7 +3705,7 @@ export function MessageChatVoiceBar({
             hasHidden: result.has_hidden_listeners,
             screenPublishers: screenPublishers.length,
             screens: screenPublishers.slice(0, 4).map((row) => ({
-              title: row.title || "?",
+              title: formatVoiceParticipantTitle(row),
               endpoint: row.screen_sharing_video_info?.endpoint_id ?? "",
               groups: row.screen_sharing_video_info?.source_groups?.length ?? 0,
             })),
@@ -3869,7 +4108,7 @@ export function MessageChatVoiceBar({
             hasHidden: result.has_hidden_listeners,
             screenPublishers: screenPublishers.length,
             screens: screenPublishers.slice(0, 4).map((row) => ({
-              title: row.title || "?",
+              title: formatVoiceParticipantTitle(row),
               endpoint: row.screen_sharing_video_info?.endpoint_id ?? "",
               groups: row.screen_sharing_video_info?.source_groups?.length ?? 0,
             })),
@@ -4307,11 +4546,14 @@ export function MessageChatVoiceBar({
               >
                 {stackedParticipants.map((participant, index) => {
                   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
-                  const participantTitle = participant.title.trim() || "?";
+                  const participantTitle = formatVoiceParticipantTitle(participant);
                   const speaking = Boolean(
                     rowSpeakKeys(participant).some((k) => speakingByKey[k]),
                   );
                   const avatarPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_PX;
+                  const dividerPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_DIVIDER_PX;
+                  const ringOutsetPx = MESSAGE_CHAT_VOICE_RING_OUTSET_PX;
+                  const isLast = index >= stackedParticipants.length - 1;
                   return (
                     <View
                       key={
@@ -4320,7 +4562,12 @@ export function MessageChatVoiceBar({
                           : `c:${participant.chat_id}`
                       }
                       style={{
-                        marginLeft: index === 0 ? 0 : -MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
+                        marginLeft:
+                          index === 0
+                            ? 0
+                            : -MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
+                        // Leftmost stays on top (chat-list style); right-edge
+                        // seam divider masks this face's speaking ring.
                         zIndex: stackedParticipants.length - index,
                         width: avatarPx,
                         height: avatarPx,
@@ -4343,6 +4590,22 @@ export function MessageChatVoiceBar({
                         activeVoiceRing={speaking}
                         joinedVoiceRing={speaking}
                       />
+                      {!isLast ? (
+                        <View
+                          pointerEvents="none"
+                          style={{
+                            position: "absolute",
+                            // 1px seam into the face + full right speaking ring
+                            // so the green stroke never overlays the next avatar.
+                            left: avatarPx - dividerPx,
+                            top: -ringOutsetPx,
+                            width: dividerPx + ringOutsetPx,
+                            height: avatarPx + ringOutsetPx * 2,
+                            backgroundColor: colors.background,
+                            zIndex: 40,
+                          }}
+                        />
+                      ) : null}
                     </View>
                   );
                 })}
