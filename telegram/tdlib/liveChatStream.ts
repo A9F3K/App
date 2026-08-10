@@ -17,7 +17,9 @@ export function serveLiveChatRevisionStream(
   res: http.ServerResponse,
   telegramUsername: string,
   sinceRevision: number | null,
+  lifecycle?: { onOpen?: () => void; onClose?: () => void },
 ): void {
+  lifecycle?.onOpen?.();
   res.statusCode = 200;
   res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -57,6 +59,7 @@ export function serveLiveChatRevisionStream(
     clearInterval(heartbeat);
     clearTimeout(maxLifetime);
     unsubscribe();
+    lifecycle?.onClose?.();
     logGateway("chats_stream_closed", { telegramUsername, lastRevision: lastSentRevision });
   };
 

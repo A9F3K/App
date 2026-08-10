@@ -35,9 +35,48 @@ const GROUP_CALL_VIDEO_MAX_HEIGHT_SOFT = 180;
 const GROUP_CALL_VIDEO_MAX_HEIGHT_AFTER_STALL = 360;
 /**
  * Min time after video SDP before Opus-hard-freeze recover may tear the stage.
- * Shorter than paint grace — sink heal cannot unfreeze a flat Opus counter.
+ * Must stay well above paint grace — a 5s recover killed painting screens
+ * (prod Blox: soft attach → Full escalate → Opus flat → stage gone).
  */
-const OPUS_HARD_FREEZE_RECOVER_AFTER_MS = 5_000;
+const OPUS_HARD_FREEZE_RECOVER_AFTER_MS = 45_000;
+/**
+ * Wait this long after video SDP before treating "Opus flat + no H264 yet" as
+ * a hard freeze. Colibri often needs several seconds for the first video
+ * packets; a 1s check with a peak-vs-snapshot baseline false-recovered and
+ * sticky-blocked the stage (prod Blox: Сева screen never visible).
+ */
+const OPUS_NO_H264_RECOVER_AFTER_MS = 4_500;
+/**
+ * After Opus stays flat under a painting screen this long, briefly pause
+ * ReceiverVideoConstraints (empty on-stage) so Colibri can resume mix RTP
+ * without tearing the video m-line. Faster than hard recover / SDP strip.
+ */
+/**
+ * Classic attach-baseline freeze (packets never leave renegotiate baseline)
+ * trips hard-freeze immediately; pause must open before flat_recheck's
+ * soft-heal (~3.5s) or we sink-heal a dead mix under live H264. Spike-plateau
+ * hard-freeze still waits for {@link OPUS_POST_VIDEO_SPIKE_PLATEAU_MIN_WATCH_MS}.
+ */
+const OPUS_CONSTRAINTS_PAUSE_HEAL_AFTER_MS = 2_800;
+/** How long on-stage stays empty during a constraints pause heal. */
+const OPUS_CONSTRAINTS_PAUSE_HEAL_MS = 2_400;
+/**
+ * Packets that may still arrive while video SDP settles after the freeze
+ * baseline snapshot. Prod Blox: pre_video=83 → stuck at 88; +1 slack never
+ * tripped hard-freeze, so soft-silent kept the stage with sink-only heals
+ * while the mix stayed dead under growing H264.
+ */
+const OPUS_HARD_FREEZE_PACKET_SLACK = 12;
+/**
+ * After video SDP, mix often spikes a few packets then freezes while H264
+ * climbs (prod: 102→120 then inboundPackets stuck, inboundAudio flat). Classic
+ * hard-freeze (packets ≤ baseline+slack) never trips. Treat that plateau as
+ * hard-frozen once the watch has been armed long enough and packets stop
+ * advancing.
+ */
+const OPUS_POST_VIDEO_SPIKE_PLATEAU_MS = 2_800;
+/** Min time since video renegotiate before spike-plateau hard-freeze can trip. */
+const OPUS_POST_VIDEO_SPIKE_PLATEAU_MIN_WATCH_MS = 3_200;
 /**
  * STUN so the join payload includes a public srflx address. Host-only LAN
  * candidates (192.168/10/172.16) are unreachable from Telegram's SFU — without
@@ -481,6 +520,12 @@ export class TelegramGroupCallWebSession {
    */
   private mixProtectScreenAutoRestorePending = false;
   private mixProtectScreenAutoRestoreUsed = false;
+  /**
+   * Last mix-protect drop had live H264 (not a ghost share). VoiceBar uses
+   * this with {@link getMixProtectScreenAutoRestorePending} to keep unmute
+   * chrome only when a one-shot restore is armed.
+   */
+  private lastMixProtectDropHadLiveVideo = false;
   /** Consecutive near-zero RMS samples after {@link postVideoRenegotiateAt}. */
   private postVideoSilenceTicks = 0;
   /**
@@ -533,6 +578,11 @@ export class TelegramGroupCallWebSession {
    * stricter auto path (explicit=false in logs → delayed / thin refuse).
    */
   private explicitVideoSubscribeSession = false;
+  /**
+   * Auto-show (not menu unmute) — needs a healthier mix floor before first
+   * video SDP; menu unmute keeps the shorter explicit settle.
+   */
+  private explicitVideoSubscribeFromAutoShow = false;
   /** Prefer this screen endpoint on the next subscribe (2nd unmute under cap_1). */
   private preferredExplicitVideoEndpointId: string | null = null;
   /**
@@ -540,6 +590,13 @@ export class TelegramGroupCallWebSession {
    * a freeze often left inboundPackets=0 — both A/V dead.
    */
   private stripVideoInFlight = false;
+  /**
+   * ReceiverVideoConstraints pause heal in flight (empty on-stage → restore).
+   * Also referenced by recover gates that previously read an undeclared field.
+   */
+  private constraintsThrottleInFlight = false;
+  /** One constraints-pause heal per video SDP attach (reset on renegotiate). */
+  private constraintsPauseHealUsedAtVideoAttach = false;
   /** Screen/camera requests to restore after audio-only recover (needs full ssrcGroups). */
   private pendingRemoteVideoAfterRecover: TelegramRemoteVideoRequest[] = [];
   /**
@@ -619,6 +676,11 @@ export class TelegramGroupCallWebSession {
    * pre-renegotiate snapshot.
    */
   private peakInboundAudioPackets = 0;
+  /**
+   * Wall clock when inbound mix packets last advanced (for spike-then-plateau
+   * hard-freeze after video SDP).
+   */
+  private lastMixPacketAdvanceAt = 0;
   /** Wall clock when the remote mix track last unmuted. */
   private remoteAudioUnmutedAt = 0;
   private silentMixHealInFlight = false;
@@ -868,6 +930,16 @@ export class TelegramGroupCallWebSession {
     return [...this.mixPausedScreenEndpoints];
   }
 
+  /** Whether the latest mix-protect drop paused a live screencast (vs ghost). */
+  getLastMixProtectDropHadLiveVideo(): boolean {
+    return this.lastMixProtectDropHadLiveVideo;
+  }
+
+  /** True when mix-protect drop armed a one-shot screen restore. */
+  getMixProtectScreenAutoRestorePending(): boolean {
+    return this.mixProtectScreenAutoRestorePending;
+  }
+
   private setMixPausedScreenEndpoints(endpoints: string[]): void {
     const next = [
       ...new Set(
@@ -962,11 +1034,15 @@ export class TelegramGroupCallWebSession {
    * RTP is hearable — immediate preferExplicit after recover re-froze Opus.
    */
   private schedulePreferExplicitWhenMixHealthy(reason: string): void {
-    if (
+    const mixProtectRestoreReady =
+      this.mixProtectScreenAutoRestorePending &&
+      this.heardRemoteMixAudio &&
+      this.isMediaConnected();
+    const mixFullyHealthy =
       this.heardRemoteMixAudio &&
       this.mixRtpPacketsAlive &&
-      this.isMediaConnected()
-    ) {
+      this.isMediaConnected();
+    if (mixProtectRestoreReady || mixFullyHealthy) {
       this.preferExplicitWhenMixHealthyPending = false;
       if (this.preferExplicitWhenMixHealthyTimer) {
         clearTimeout(this.preferExplicitWhenMixHealthyTimer);
@@ -979,7 +1055,9 @@ export class TelegramGroupCallWebSession {
         requested: this.requestedRemoteVideo.length,
         reason,
         level: "info",
-        note: "prefer explicit remote video — mix already healthy",
+        note: mixProtectRestoreReady
+          ? "prefer explicit remote video — mix-protect restore (hearable + connected)"
+          : "prefer explicit remote video — mix already healthy",
       });
       this.preferExplicitRemoteVideoSubscribe();
       return;
@@ -1009,11 +1087,18 @@ export class TelegramGroupCallWebSession {
   private maybeFlushPreferExplicitWhenMixHealthy(): void {
     if (!this.preferExplicitWhenMixHealthyPending) return;
     if (!this.joined) return;
-    if (
-      !this.heardRemoteMixAudio ||
-      !this.mixRtpPacketsAlive ||
-      !this.isMediaConnected()
-    ) {
+    // One-shot mix-protect restore: RMS hearable + PC connected is enough.
+    // Requiring mixRtpPacketsAlive after audio-only rejoin left restore stuck
+    // (join resets packet latches; constraints-only forever, no stage).
+    const mixProtectRestoreReady =
+      this.mixProtectScreenAutoRestorePending &&
+      this.heardRemoteMixAudio &&
+      this.isMediaConnected();
+    const mixFullyHealthy =
+      this.heardRemoteMixAudio &&
+      this.mixRtpPacketsAlive &&
+      this.isMediaConnected();
+    if (!mixProtectRestoreReady && !mixFullyHealthy) {
       if (this.preferExplicitWhenMixHealthyTimer) return;
       this.preferExplicitWhenMixHealthyTimer = setTimeout(() => {
         this.preferExplicitWhenMixHealthyTimer = null;
@@ -1056,7 +1141,10 @@ export class TelegramGroupCallWebSession {
    * while remotes are publishing). Clears a prior stall sticky-block and arms
    * video SDP; optional endpoint wins over cap_1 sticky on the first share.
    */
-  preferExplicitRemoteVideoSubscribe(preferredEndpointId?: string | null): void {
+  preferExplicitRemoteVideoSubscribe(
+    preferredEndpointId?: string | null,
+    opts?: { autoShow?: boolean },
+  ): void {
     const preferred =
       typeof preferredEndpointId === "string" && preferredEndpointId.trim()
         ? preferredEndpointId.trim()
@@ -1079,6 +1167,8 @@ export class TelegramGroupCallWebSession {
     }
     this.explicitVideoSubscribeArmed = true;
     this.explicitVideoSubscribeSession = true;
+    // Menu unmute / local-share clear auto-show; VoiceBar auto-show sets it.
+    this.explicitVideoSubscribeFromAutoShow = Boolean(opts?.autoShow);
     // Menu unmute always gets another SDP chance after drop↔recover spirals.
     this.videoDropToRestoreMixCount = 0;
     this.audioRecoverAfterVideoDone = false;
@@ -1838,8 +1928,12 @@ export class TelegramGroupCallWebSession {
     const liveMix = this.hasLiveMixAudioForVideoSettle();
     // Auto-subscribe needs a healthier floor than menu unmute — opening screen
     // at ~28 packets (prod) froze Opus immediately after attach.
-    const settleMs =
-      liveMix && this.isMediaConnected()
+    const autoShow = this.explicitVideoSubscribeFromAutoShow;
+    const settleMs = autoShow
+      ? liveMix && this.isMediaConnected()
+        ? 3_200
+        : 4_000
+      : liveMix && this.isMediaConnected()
         ? this.explicitVideoSubscribeSession
           ? 1_400
           : 2_000
@@ -1855,6 +1949,7 @@ export class TelegramGroupCallWebSession {
       liveMix,
       mediaConnected: this.isMediaConnected(),
       explicit: this.explicitVideoSubscribeSession,
+      autoShow,
       level: "info",
       note: "defer first video SDP until mixed audio RTP stays healthy",
     });
@@ -1878,6 +1973,29 @@ export class TelegramGroupCallWebSession {
   }
 
   /**
+   * Live getStats Opus is meaningfully below the session peak (dying mix).
+   * Before screen SDP, auto-show + hearable mix ignores getStats dips
+   * (peak 23 → live 1 → 12) so ~20pk joins can open screencast; mix protect
+   * after video renegotiate still uses the raw live≪peak signal.
+   */
+  private isLiveMixWellBelowPeakForSettle(
+    livePackets: number,
+    liveMix: boolean,
+    opts?: { autoShow?: boolean; hearable?: boolean }
+  ): boolean {
+    const peak = this.peakInboundAudioPackets;
+    const raw =
+      liveMix &&
+      peak >= 16 &&
+      livePackets + OPUS_HARD_FREEZE_PACKET_SLACK < peak;
+    if (!raw) return false;
+    if (opts?.autoShow && opts?.hearable && liveMix && peak >= 16) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Inbound mix packet counter has a solid floor — a brief pause in growth
    * while screencast RTP climbs is usually quiet audio, not a dead m-line.
    */
@@ -1888,41 +2006,234 @@ export class TelegramGroupCallWebSession {
   }
 
   /**
-   * Opus inbound counter has not advanced since video SDP was applied.
-   * Strip/constraints cannot unfreeze that m-line — only audio-only rejoin.
+   * Opus inbound counter has not advanced meaningfully since video SDP.
+   * Allows a small settle slack (renegotiate often advances a few packets
+   * then freezes). Also treats a brief post-attach spike then plateau
+   * (prod: 102→120 then stuck while H264 climbs) as hard-frozen — classic
+   * slack alone misses that because 120 > baseline+12.
+   * Strip/constraints pause / drop restore the mix m-line.
    */
   private isOpusHardFrozenSinceVideoRenegotiate(inboundPackets: number): boolean {
     if (this.postVideoRenegotiateAt <= 0) return false;
     if (this.inboundPacketsAtVideoRenegotiate <= 0) return false;
-    return inboundPackets <= this.inboundPacketsAtVideoRenegotiate + 1;
+    const baseline = this.inboundPacketsAtVideoRenegotiate;
+    const packets = Math.max(0, inboundPackets, this.peakInboundAudioPackets);
+    if (packets <= baseline + OPUS_HARD_FREEZE_PACKET_SLACK) {
+      return true;
+    }
+    // Spike-then-stuck: a few packets after video SDP, then no further advance
+    // while the watch is still armed. Cap how far above baseline counts as a
+    // "brief spike" so healthy continuous mix growth never trips this.
+    const aboveBaseline = packets - baseline;
+    if (aboveBaseline > OPUS_HARD_FREEZE_PACKET_SLACK + 36) {
+      return false;
+    }
+    const sinceVideoMs = Date.now() - this.postVideoRenegotiateAt;
+    if (sinceVideoMs < OPUS_POST_VIDEO_SPIKE_PLATEAU_MIN_WATCH_MS) {
+      return false;
+    }
+    const advanceAt =
+      this.lastMixPacketAdvanceAt > 0
+        ? this.lastMixPacketAdvanceAt
+        : this.postVideoRenegotiateAt;
+    return Date.now() - advanceAt >= OPUS_POST_VIDEO_SPIKE_PLATEAU_MS;
   }
 
-  /** Opus flat long enough that keep-screen + sink heal is futile. */
+  /**
+   * Opus flat long enough that keep-screen + sink heal is futile — but never
+   * while the stage is still painting. getStats Opus plateaus under live H264
+   * are common; tearing the stage then left users with a vanished screencast.
+   */
   private shouldRecoverOpusHardFrozenUnderScreen(inboundPackets: number): boolean {
     if (!this.isOpusHardFrozenSinceVideoRenegotiate(inboundPackets)) return false;
     if (this.postVideoRenegotiateAt <= 0) return false;
+    if (
+      this.remoteVideoStillInPaintGrace() ||
+      this.hasHealthyRemoteVideoMedia() ||
+      this.lastAppliedRemoteVideoEndpoints.length > 0
+    ) {
+      return false;
+    }
     return Date.now() - this.postVideoRenegotiateAt >= OPUS_HARD_FREEZE_RECOVER_AFTER_MS;
+  }
+
+  /**
+   * Opus flat under a live screen long enough to try an empty on-stage pause
+   * (keeps the video m-line; only stops Colibri forwarding H264 briefly).
+   */
+  private shouldPauseConstraintsToHealMix(inboundPackets: number): boolean {
+    if (this.constraintsThrottleInFlight) return false;
+    if (this.constraintsPauseHealUsedAtVideoAttach) return false;
+    if (!this.isOpusHardFrozenSinceVideoRenegotiate(inboundPackets)) return false;
+    if (this.postVideoRenegotiateAt <= 0) return false;
+    // Paint grace must not block this — empty on-stage keeps the video m-line
+    // and is the only non-destructive way to unstick Opus under live H264
+    // (prod: paintGrace held sink-only heals for ~20s while packets stuck at 30).
+    if (
+      this.requestedRemoteVideo.length === 0 &&
+      this.lastAppliedRemoteVideoEndpoints.length === 0
+    ) {
+      return false;
+    }
+    return (
+      Date.now() - this.postVideoRenegotiateAt >= OPUS_CONSTRAINTS_PAUSE_HEAL_AFTER_MS
+    );
+  }
+
+  /**
+   * Briefly clear on-stage endpoints so Colibri can resume Opus without SDP
+   * strip. Re-arms soft constraints if mix packets grow; otherwise returns
+   * false so the caller can drop/strip.
+   */
+  private async pauseRemoteVideoConstraintsToHealMix(
+    reason: string,
+  ): Promise<boolean> {
+    if (
+      this.constraintsThrottleInFlight ||
+      this.stripVideoInFlight ||
+      this.audioRecoverInFlight
+    ) {
+      return true;
+    }
+    if (this.constraintsPauseHealUsedAtVideoAttach) return false;
+    const channel = this.dataChannel;
+    const connection = this.connection;
+    if (!channel || channel.readyState !== "open" || !connection || !this.joined) {
+      return false;
+    }
+    this.constraintsThrottleInFlight = true;
+    this.constraintsPauseHealUsedAtVideoAttach = true;
+    try {
+      const before = await this.logIceDiagnostics(
+        connection,
+        "constraints_pause_heal_0",
+      );
+      const message = {
+        colibriClass: "ReceiverVideoConstraints",
+        defaultConstraints: { maxHeight: 0 },
+        constraints: {},
+        onStageEndpoints: [] as string[],
+      };
+      channel.send(JSON.stringify(message));
+      logPageDisplay("messages_voice_video_constraints_pause_heal", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        reason,
+        inboundPackets: before.inboundPackets,
+        pauseMs: OPUS_CONSTRAINTS_PAUSE_HEAL_MS,
+        level: "warn",
+        note: "empty on-stage — try restore Opus without tearing video SDP",
+      });
+      await new Promise<void>((resolve) => {
+        if (typeof window === "undefined") {
+          resolve();
+          return;
+        }
+        window.setTimeout(resolve, OPUS_CONSTRAINTS_PAUSE_HEAL_MS);
+      });
+      if (this.connection !== connection || !this.joined) return false;
+      const after = await this.logIceDiagnostics(
+        connection,
+        "constraints_pause_heal_after",
+      );
+      const audioGrowth = after.inboundPackets - before.inboundPackets;
+      const mixGrew =
+        audioGrowth >= 4 ||
+        this.mixRecentlyHearableForScreenProtect(2_500);
+      logPageDisplay("messages_voice_video_constraints_pause_heal_result", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        reason,
+        inboundBefore: before.inboundPackets,
+        inboundAfter: after.inboundPackets,
+        audioGrowth,
+        mixGrew,
+        level: mixGrew ? "info" : "warn",
+        note: mixGrew
+          ? "mix advanced during constraints pause — restore soft on-stage"
+          : "mix still frozen after constraints pause — caller may drop SDP",
+      });
+      if (mixGrew) {
+        // Reset freeze baseline from the live counter (not session peak —
+        // peak>snapshot falsely trips isOpusHardFrozenSinceVideoRenegotiate).
+        this.inboundPacketsAtVideoRenegotiate = Math.max(
+          0,
+          after.inboundPackets,
+        );
+        this.postVideoSilenceTicks = 0;
+        this.sendReceiverVideoConstraints();
+        this.queueRemotePlayback("constraints-pause-heal");
+        return true;
+      }
+      return false;
+    } catch (err) {
+      logPageDisplay("messages_voice_video_constraints_pause_heal_fail", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        reason,
+        error: err instanceof Error ? err.message : String(err),
+        level: "error",
+      });
+      return false;
+    } finally {
+      this.constraintsThrottleInFlight = false;
+    }
+  }
+
+  /**
+   * Constraints pause did not revive Opus (or early freeze fired before pause).
+   * Prefer empty on-stage pause first; keep painting / healthy screens and only
+   * hard-recover after pause exhaust + grace. Prod early_opus_freeze tore the
+   * screencast ~3.5s after attach while framesDecoded was still climbing.
+   */
+  private escalateAfterFailedConstraintsPauseHeal(reason: string): void {
+    if (!this.joined) return;
+    const hasScreen =
+      this.requestedRemoteVideo.length > 0 ||
+      this.lastAppliedRemoteVideoEndpoints.length > 0;
+    if (
+      hasScreen &&
+      !this.constraintsPauseHealUsedAtVideoAttach &&
+      !this.constraintsThrottleInFlight &&
+      !this.stripVideoInFlight &&
+      !this.audioRecoverInFlight
+    ) {
+      void this.pauseRemoteVideoConstraintsToHealMix(reason).then((healed) => {
+        if (healed || !this.joined) return;
+        this.escalateAfterFailedConstraintsPauseHeal(`${reason}_pause_failed`);
+      });
+      return;
+    }
+    if (
+      this.remoteVideoStillInPaintGrace() ||
+      this.hasHealthyRemoteVideoMedia() ||
+      (hasScreen &&
+        this.postVideoRenegotiateAt > 0 &&
+        Date.now() - this.postVideoRenegotiateAt <
+          OPUS_HARD_FREEZE_RECOVER_AFTER_MS)
+    ) {
+      void this.healSilentMixDespiteRtp();
+      return;
+    }
+    if (this.recoverAudioAfterOpusFrozenAtVideoSdp(reason)) return;
+    if (this.dropRemoteVideoSdpToRestoreMix(reason)) return;
+    void this.healSilentMixDespiteRtp();
   }
 
   private remoteVideoConstraintMaxHeight(): number {
     if (this.videoDropToRestoreMixCount > 0) {
       return GROUP_CALL_VIDEO_MAX_HEIGHT_AFTER_STALL;
     }
-    // Soft 180 until mix is hearable *after* video SDP. Jumping to Full(720)
-    // on first subscribe freezes Opus (prod Blox: log said soft 180p, then
-    // constraints maxHeight=720 → inboundPackets stuck while H264 climbed).
-    if (this.postVideoRenegotiateAt <= 0) {
-      return GROUP_CALL_VIDEO_MAX_HEIGHT_SOFT;
-    }
-    if (!this.mixRecentlyHearableForScreenProtect(12_000)) {
-      return GROUP_CALL_VIDEO_MAX_HEIGHT_SOFT;
-    }
-    return GROUP_CALL_VIDEO_MAX_HEIGHT;
+    // Never auto Full(720) for remote receive. Soft→720 on a mix-energy blip
+    // froze Opus then hard-recover tore the stage (prod Blox: glance then gone).
+    return GROUP_CALL_VIDEO_MAX_HEIGHT_SOFT;
   }
 
   /**
    * Arm one-shot screen restore and rejoin listen-only. Prefer this over
    * constraints-throttle → SDP strip when Opus already froze at renegotiate.
+   * Refuse while the stage is still painting or video looks healthy — early
+   * freeze must not ban the screencast.
    */
   private recoverAudioAfterOpusFrozenAtVideoSdp(reason: string): boolean {
     if (
@@ -1933,6 +2244,40 @@ export class TelegramGroupCallWebSession {
     }
     if (this.stripVideoInFlight || this.constraintsThrottleInFlight) {
       return true;
+    }
+    const hasScreen =
+      this.requestedRemoteVideo.length > 0 ||
+      this.lastAppliedRemoteVideoEndpoints.length > 0;
+    const sinceVideoMs =
+      this.postVideoRenegotiateAt > 0
+        ? Date.now() - this.postVideoRenegotiateAt
+        : 0;
+    const pauseExhausted =
+      this.constraintsPauseHealUsedAtVideoAttach &&
+      sinceVideoMs >=
+        OPUS_CONSTRAINTS_PAUSE_HEAL_AFTER_MS +
+          OPUS_CONSTRAINTS_PAUSE_HEAL_MS +
+          5_000;
+    if (
+      this.remoteVideoStillInPaintGrace() ||
+      this.hasHealthyRemoteVideoMedia() ||
+      (hasScreen && !pauseExhausted)
+    ) {
+      logPageDisplay("messages_voice_opus_frozen_recover_deferred", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        reason,
+        sinceVideoMs,
+        paintGrace: this.remoteVideoStillInPaintGrace(),
+        healthyVideo: this.hasHealthyRemoteVideoMedia(),
+        pauseUsed: this.constraintsPauseHealUsedAtVideoAttach,
+        pauseExhausted,
+        screens: this.lastAppliedRemoteVideoEndpoints,
+        level: "warn",
+        note:
+          "keep screencast — sink/pause heal only until paint grace / pause exhaust",
+      });
+      return false;
     }
     this.preferStableScreencast = false;
     const packetsAtVideo = this.inboundPacketsAtVideoRenegotiate;
@@ -1947,7 +2292,7 @@ export class TelegramGroupCallWebSession {
       allowResub: this.mixProtectScreenAutoRestorePending,
       level: "error",
       note:
-        "Opus flat since video SDP — skip strip, audio recover (restore if armed)",
+        "Opus flat since video SDP — skip strip, audio recover (no auto-show restore)",
     });
     this.scheduleAudioRecoverAfterVideoStall();
     return true;
@@ -2045,13 +2390,19 @@ export class TelegramGroupCallWebSession {
       args.videoGrowth > 0 ||
       this.hasHealthyRemoteVideoMedia();
     if (!screenAlive) return false;
+    // Opus never advanced past the post-video baseline — real Colibri freeze
+    // (prod: stuck at 30 / spike→plateau under H264). Check BEFORE paint grace:
+    // a painting screen must not mask a dead mix m-line for 20s.
+    if (this.isOpusHardFrozenSinceVideoRenegotiate(args.inboundPackets)) {
+      const sinceMs = args.sinceVideoMs ?? 9_000;
+      return sinceMs >= OPUS_CONSTRAINTS_PAUSE_HEAL_AFTER_MS;
+    }
     // Fresh paint: do not treat flat mix counters as a stall yet.
     if (this.remoteVideoStillInPaintGrace()) {
       return false;
     }
-    // Active H264 growth with a plateaued Opus counter is almost always a
-    // Chrome getStats artifact (prod: packets stuck at 267 while frames climb).
-    // Do not classify that as a frozen mix — sink heal only.
+    // Active H264 growth with a plateaued *high* Opus counter is often a
+    // Chrome getStats artifact (packets stuck at 267 while frames climb).
     if (args.videoGrowth > 0 && this.hasHealthyRemoteVideoMedia()) {
       return false;
     }
@@ -2093,52 +2444,85 @@ export class TelegramGroupCallWebSession {
           "audio_settle_gate",
         );
         const liveMix = this.hasLiveMixAudioForVideoSettle();
+        const livePackets = stats.inboundPackets;
         const effectivePackets = Math.max(
-          stats.inboundPackets,
+          livePackets,
           this.peakInboundAudioPackets,
         );
-        // Always take a second sample before first video SDP. Floor uses peak
-        // because Chromium getStats snapshots oscillate (13->2) while peak climbs
-        // (Vespiol: hearable mix + settle_abort left screen requested forever).
-        const floorNeed = this.explicitVideoSubscribeSession
+        // Peak masks Chromium getStats oscillation (13→2) while climb continues.
+        // But peak alone is not live health: prod auto-show saw peak=40 with
+        // live=5 (mix already thinning) and still called floorMet / opened SDP.
+        // Hearable auto-show: getStats also flickers 23→1 while RMS is fine —
+        // do not treat that as live≪peak or screen never opens (settle_abort).
+        const liveWellBelowPeak = this.isLiveMixWellBelowPeakForSettle(
+          livePackets,
+          liveMix,
+          {
+            autoShow: this.explicitVideoSubscribeFromAutoShow,
+            hearable: this.heardRemoteMixAudio,
+          },
+        );
+        // Always take a second sample before first video SDP.
+        // Auto-show floors must match real Colibri mix rates (~15–25 pk on
+        // hearable joins). Requiring 40+ left screen SDP aborted forever
+        // (prod: peak=23 RMS=0.25 → settle_abort, no screencast).
+        // Use peak only when live is not well-below-peak (oscillation-safe).
+        const floorNeed = this.explicitVideoSubscribeFromAutoShow
           ? liveMix
-            ? 28
-            : 45
-          : liveMix
-            ? 40
-            : 55;
-        const floorMet = liveMix && effectivePackets >= floorNeed;
+            ? 16
+            : 40
+          : this.explicitVideoSubscribeSession
+            ? liveMix
+              ? 28
+              : 45
+            : liveMix
+              ? 40
+              : 55;
+        const floorPackets =
+          this.explicitVideoSubscribeFromAutoShow && liveWellBelowPeak
+            ? livePackets
+            : effectivePackets;
+        const floorMet =
+          liveMix && !liveWellBelowPeak && floorPackets >= floorNeed;
         this.remoteAudioSettleExtended = true;
-        this.remoteAudioSettlePacketsAtExtend = stats.inboundPackets;
+        this.remoteAudioSettlePacketsAtExtend = livePackets;
         this.remoteAudioSettlePeakAtExtend = this.peakInboundAudioPackets;
-        const extraMs = floorMet
-          ? liveMix
-            ? this.explicitVideoSubscribeSession
-              ? 900
-              : 1_600
-            : 2_000
-          : liveMix
-            ? this.explicitVideoSubscribeSession
-              ? 900
-              : 1_800
-            : 2_200;
+        const extraMs = this.explicitVideoSubscribeFromAutoShow
+          ? floorMet
+            ? 1_800
+            : 2_400
+          : floorMet
+            ? liveMix
+              ? this.explicitVideoSubscribeSession
+                ? 900
+                : 1_600
+              : 2_000
+            : liveMix
+              ? this.explicitVideoSubscribeSession
+                ? 900
+                : 1_800
+              : 2_200;
         logPageDisplay("messages_voice_remote_video_audio_settle_extend", {
           chatId: this.input.chatId,
           groupCallId: this.input.groupCallId,
-          inboundPackets: stats.inboundPackets,
+          inboundPackets: livePackets,
           peakInboundAudio: this.peakInboundAudioPackets,
           effectivePackets,
+          liveWellBelowPeak,
           liveMix,
           heardRemoteMixAudio: this.heardRemoteMixAudio,
           explicit: this.explicitVideoSubscribeSession,
+          autoShow: this.explicitVideoSubscribeFromAutoShow,
           floorMet,
           extraMs,
           level: floorMet ? "info" : "warn",
-          note: floorMet
-            ? "floor met — second sample for mix growth before screen SDP"
-            : liveMix
-              ? "mix hearable but RTP snapshot thin — delay first video SDP once more"
-              : "mix not hearable yet — delay first video SDP (do not open on packet floor alone)",
+          note: liveWellBelowPeak
+            ? "live RTP well below peak — delay screen SDP (mix already thinning)"
+            : floorMet
+              ? "floor met — second sample for mix growth before screen SDP"
+              : liveMix
+                ? "mix hearable but RTP snapshot thin — delay first video SDP once more"
+                : "mix not hearable yet — delay first video SDP (do not open on packet floor alone)",
         });
         this.pendingVideoRenegotiateOnAudio = setTimeout(() => {
           void this.finishRemoteAudioSettleForVideo();
@@ -2156,54 +2540,101 @@ export class TelegramGroupCallWebSession {
         const packetsAtExtend = this.remoteAudioSettlePacketsAtExtend;
         const peakAtExtend = this.remoteAudioSettlePeakAtExtend;
         const liveMix = this.hasLiveMixAudioForVideoSettle();
+        const livePackets = stats.inboundPackets;
         const effectivePackets = Math.max(
-          stats.inboundPackets,
+          livePackets,
           this.peakInboundAudioPackets,
         );
+        const liveWellBelowPeak = this.isLiveMixWellBelowPeakForSettle(
+          livePackets,
+          liveMix,
+          {
+            autoShow: this.explicitVideoSubscribeFromAutoShow,
+            hearable: this.heardRemoteMixAudio,
+          },
+        );
         const snapshotRegressed =
-          packetsAtExtend > 0 && stats.inboundPackets + 2 < packetsAtExtend;
+          packetsAtExtend > 0 && livePackets + 2 < packetsAtExtend;
         const peakHealthyVsExtend =
           this.peakInboundAudioPackets + 1 >=
           Math.max(peakAtExtend, packetsAtExtend);
-        // Ignore getStats counter resets when peak stayed healthy under live mix.
+        // Ignore brief getStats dips when peak still climbs — but never ignore
+        // live≪peak (prod: peak=40 live=5 → packetsRegressed=false → thin SDP).
         const packetsRegressed =
-          snapshotRegressed && !(liveMix && peakHealthyVsExtend);
+          liveWellBelowPeak ||
+          (snapshotRegressed &&
+            !(liveMix && peakHealthyVsExtend && !liveWellBelowPeak));
         const growthNeed =
-          this.explicitVideoSubscribeSession && liveMix ? 6 : 8;
+          this.explicitVideoSubscribeFromAutoShow
+            ? 6
+            : this.explicitVideoSubscribeSession && liveMix
+              ? 6
+              : 8;
+        // Prefer live growth; peak growth only when live is not collapsing.
         const packetsGrew =
           packetsAtExtend <= 0 ||
-          stats.inboundPackets >= packetsAtExtend + growthNeed ||
+          livePackets >= packetsAtExtend + growthNeed ||
           (liveMix &&
+            !liveWellBelowPeak &&
             this.peakInboundAudioPackets >=
               Math.max(peakAtExtend, packetsAtExtend) + growthNeed);
-        const regressBlocks = packetsRegressed && !liveMix;
-        const autoFloor =
-          this.explicitVideoSubscribeSession && liveMix
+        // Auto-show: live≪peak blocks even when RMS latch says liveMix.
+        const regressBlocks =
+          (packetsRegressed && !liveMix) ||
+          (this.explicitVideoSubscribeFromAutoShow && liveWellBelowPeak);
+        const autoFloor = this.explicitVideoSubscribeFromAutoShow
+          ? liveMix
+            ? 16
+            : 40
+          : this.explicitVideoSubscribeSession && liveMix
             ? 22
             : this.explicitVideoSubscribeSession
               ? 30
               : 45;
-        const hardFloor =
-          this.explicitVideoSubscribeSession && liveMix
+        const hardFloor = this.explicitVideoSubscribeFromAutoShow
+          ? liveMix
+            ? 28
+            : 55
+          : this.explicitVideoSubscribeSession && liveMix
             ? 36
             : this.explicitVideoSubscribeSession
               ? 45
               : 55;
+        const floorPackets =
+          this.explicitVideoSubscribeFromAutoShow && liveWellBelowPeak
+            ? livePackets
+            : effectivePackets;
+        const autoShowHearableFloor =
+          this.explicitVideoSubscribeFromAutoShow &&
+          liveMix &&
+          !liveWellBelowPeak &&
+          this.heardRemoteMixAudio &&
+          floorPackets >= autoFloor;
         const mixPacketFloorOk =
-          effectivePackets >= hardFloor ||
-          (liveMix && packetsGrew && effectivePackets >= autoFloor) ||
-          (liveMix &&
-            this.explicitVideoSubscribeSession &&
-            this.mixCounterLooksHealthyForScreen(effectivePackets) &&
-            (packetsGrew || peakHealthyVsExtend));
+          !liveWellBelowPeak &&
+          (floorPackets >= hardFloor ||
+            (liveMix && packetsGrew && floorPackets >= autoFloor) ||
+            autoShowHearableFloor ||
+            (liveMix &&
+              this.explicitVideoSubscribeSession &&
+              !this.explicitVideoSubscribeFromAutoShow &&
+              this.mixCounterLooksHealthyForScreen(effectivePackets) &&
+              (packetsGrew || peakHealthyVsExtend)));
         const mixOk =
           !regressBlocks &&
           mixPacketFloorOk &&
           (packetsGrew ||
+            floorPackets >= hardFloor ||
+            autoShowHearableFloor ||
             (liveMix &&
               this.explicitVideoSubscribeSession &&
+              !this.explicitVideoSubscribeFromAutoShow &&
               this.mixCounterLooksHealthyForScreen(effectivePackets)));
-        const maxSettleRetries = this.explicitVideoSubscribeSession ? 3 : 10;
+        const maxSettleRetries = this.explicitVideoSubscribeFromAutoShow
+          ? 6
+          : this.explicitVideoSubscribeSession
+            ? 3
+            : 10;
         if (!mixOk && this.remoteAudioSettleRetryCount < maxSettleRetries) {
           this.remoteAudioSettleRetryCount += 1;
           this.remoteAudioSettleExtended = false;
@@ -2212,9 +2643,10 @@ export class TelegramGroupCallWebSession {
           logPageDisplay("messages_voice_remote_video_audio_settle_defer", {
             chatId: this.input.chatId,
             groupCallId: this.input.groupCallId,
-            inboundPackets: stats.inboundPackets,
+            inboundPackets: livePackets,
             peakInboundAudio: this.peakInboundAudioPackets,
             effectivePackets,
+            liveWellBelowPeak,
             packetsAtExtend,
             peakAtExtend,
             packetsRegressed,
@@ -2226,7 +2658,9 @@ export class TelegramGroupCallWebSession {
             retry: this.remoteAudioSettleRetryCount,
             extraMs,
             level: "warn",
-            note: "mix still thin/regressing — keep screen requests, retry settle",
+            note: liveWellBelowPeak
+              ? "live RTP below peak — keep screen requests, retry settle"
+              : "mix still thin/regressing — keep screen requests, retry settle",
           });
           this.pendingVideoRenegotiateOnAudio = setTimeout(() => {
             void this.finishRemoteAudioSettleForVideo();
@@ -2286,28 +2720,38 @@ export class TelegramGroupCallWebSession {
             }, extraMs);
             return;
           }
-          // Explicit + hearable mix: allow thin SDP. Aborting left the first
-          // share "wanted" forever and the second publisher looked muted (cap_1).
+          // Explicit + hearable mix: allow thin SDP for menu unmute only.
+          // Auto-show must not open on peak alone (prod: peak=40 live=5 → freeze).
           const explicitHearableAllow =
             this.explicitVideoSubscribeSession &&
+            !this.explicitVideoSubscribeFromAutoShow &&
             liveMix &&
-            (this.mixCounterLooksHealthyForScreen(effectivePackets) ||
-              this.peakInboundAudioPackets >= 12 ||
-              stats.inboundPackets >= 12);
+            !liveWellBelowPeak &&
+            (this.mixCounterLooksHealthyForScreen(livePackets) ||
+              livePackets >= 12);
           const refuseThinAfterMixStress =
             !liveMix &&
             (this.audioRecoverCount >= 1 || this.videoDropToRestoreMixCount >= 1);
-          const refuseThinAuto =
-            !this.explicitVideoSubscribeSession && effectivePackets < 50;
+          // Auto-show abort: only block true live≪peak or never-heard mixes.
+          // Do not require 50pk / growth — Colibri often plateaus ~16–25 while
+          // RMS is healthy (prod: peak=23 → refuseThinAuto forever).
+          const refuseThinAuto = this.explicitVideoSubscribeFromAutoShow
+            ? liveWellBelowPeak ||
+              (!this.heardRemoteMixAudio && floorPackets < autoFloor) ||
+              (!liveMix && livePackets < 12)
+            : !this.explicitVideoSubscribeSession && effectivePackets < 50;
           const refuseThinNoGrowth =
             packetsAtExtend > 0 &&
             !packetsGrew &&
             !explicitHearableAllow &&
-            !liveMix;
+            !autoShowHearableFloor &&
+            (!liveMix ||
+              (this.explicitVideoSubscribeFromAutoShow && liveWellBelowPeak));
           if (
             refuseThinNoGrowth ||
             refuseThinAuto ||
             refuseThinAfterMixStress ||
+            liveWellBelowPeak ||
             (!liveMix &&
               (!this.remoteSpeaking ||
                 effectivePackets < 25 ||
@@ -2315,14 +2759,16 @@ export class TelegramGroupCallWebSession {
           ) {
             const canRearm =
               liveMix &&
+              !liveWellBelowPeak &&
               this.requestedRemoteVideo.length > 0 &&
               this.remoteAudioSettleAbortRearmCount < 2;
             logPageDisplay("messages_voice_remote_video_audio_settle_abort", {
               chatId: this.input.chatId,
               groupCallId: this.input.groupCallId,
-              inboundPackets: stats.inboundPackets,
+              inboundPackets: livePackets,
               peakInboundAudio: this.peakInboundAudioPackets,
               effectivePackets,
+              liveWellBelowPeak,
               packetsAtExtend,
               packetsRegressed,
               packetsGrew,
@@ -2332,16 +2778,19 @@ export class TelegramGroupCallWebSession {
               dropCount: this.videoDropToRestoreMixCount,
               requested: this.requestedRemoteVideo.length,
               explicit: this.explicitVideoSubscribeSession,
+              autoShow: this.explicitVideoSubscribeFromAutoShow,
               rearm: canRearm,
               rearmCount: this.remoteAudioSettleAbortRearmCount,
               level: "warn",
-              note: canRearm
-                ? "refuse flat thin screen SDP — re-arm settle while mix hearable"
-                : refuseThinAuto
-                  ? "refuse thin auto screen SDP — unmute or wait for healthier mix"
-                  : refuseThinAfterMixStress
-                    ? "refuse thin screen SDP after mix recover/drop — keep hearing"
-                    : "mix not healthy enough for screen — keep audio-only this join",
+              note: liveWellBelowPeak
+                ? "refuse screen SDP — live mix RTP below peak (keep hearing)"
+                : canRearm
+                  ? "refuse flat thin screen SDP — re-arm settle while mix hearable"
+                  : refuseThinAuto
+                    ? "refuse thin auto screen SDP — unmute or wait for healthier mix"
+                    : refuseThinAfterMixStress
+                      ? "refuse thin screen SDP after mix recover/drop — keep hearing"
+                      : "mix not healthy enough for screen — keep audio-only this join",
             });
             this.remoteAudioSettledForVideo = false;
             this.remoteAudioSettleArmed = false;
@@ -2349,6 +2798,21 @@ export class TelegramGroupCallWebSession {
             this.remoteAudioSettlePacketsAtExtend = 0;
             this.remoteAudioSettlePeakAtExtend = 0;
             this.remoteAudioSettleRetryCount = 0;
+            // Auto-show aborted before SDP: pause those endpoints so VoiceBar
+            // does not immediately re-arm settle on a thinning mix.
+            if (
+              this.explicitVideoSubscribeFromAutoShow &&
+              (liveWellBelowPeak || refuseThinAuto)
+            ) {
+              const endpoints = this.requestedRemoteVideo.map((r) => r.endpointId);
+              if (endpoints.length > 0) {
+                this.setMixPausedScreenEndpoints([
+                  ...new Set([...this.mixPausedScreenEndpoints, ...endpoints]),
+                ]);
+              }
+              this.remoteVideoSdpSubscribeEnabled = false;
+              this.explicitVideoSubscribeFromAutoShow = false;
+            }
             if (canRearm) {
               this.remoteAudioSettleAbortRearmCount += 1;
               this.pendingVideoRenegotiateOnAudio = setTimeout(() => {
@@ -2985,12 +3449,19 @@ export class TelegramGroupCallWebSession {
     // Empty wanted = in-place strip — do not arm post-video stall watch.
     if (wanted.length > 0) {
       this.postVideoRenegotiateAt = Date.now();
+      this.lastMixPacketAdvanceAt = Date.now();
+      // Freeze baseline = live getStats at renegotiate. Session peak is often
+      // higher than the oscillating snapshot (prod: peak=50, snap=26) and made
+      // isOpusHardFrozenSinceVideoRenegotiate trip immediately after attach.
       this.inboundPacketsAtVideoRenegotiate = Math.max(
         0,
-        this.peakInboundAudioPackets,
+        inboundBefore.inboundPackets > 0
+          ? inboundBefore.inboundPackets
+          : this.peakInboundAudioPackets,
       );
       this.postVideoSilenceTicks = 0;
       this.firstRemoteVideoFrameAt = 0;
+      this.constraintsPauseHealUsedAtVideoAttach = false;
       // Pre-video silence heals must not burn the post-video freeze grace
       // (prod: healCount=4 before screen → flat_recheck skipped 10s window).
       this.silentMixHealCount = 0;
@@ -3000,6 +3471,7 @@ export class TelegramGroupCallWebSession {
       this.inboundPacketsAtVideoRenegotiate = 0;
       this.postVideoSilenceTicks = 0;
       this.firstRemoteVideoFrameAt = 0;
+      this.lastMixPacketAdvanceAt = 0;
     }
     this.sendReceiverVideoConstraints();
     this.pullRemoteMediaTracks(connection);
@@ -3008,6 +3480,88 @@ export class TelegramGroupCallWebSession {
     this.queueRemotePlayback("post-video-renegotiate");
     if (wanted.length === 0) return;
     if (typeof window !== "undefined") {
+      const maybeRecoverNoH264 = (stats: {
+        inboundPackets: number;
+        inboundVideoPackets: number;
+        outboundPackets: number;
+      }): boolean => {
+        const audioGrowth =
+          stats.inboundPackets - inboundBefore.inboundPackets;
+        const outboundGrowth =
+          stats.outboundPackets - inboundBefore.outboundPackets;
+        // Opus froze at video SDP before any H264 arrived (prod Blox:
+        // packets stuck at 52, inboundVideo=0, outbound still climbing).
+        if (
+          (inboundBefore.inboundPackets > 20 ||
+            this.peakInboundAudioPackets > 20 ||
+            this.heardRemoteMixAudio ||
+            this.mixRtpPacketsAlive) &&
+          this.isOpusHardFrozenSinceVideoRenegotiate(stats.inboundPackets) &&
+          stats.inboundVideoPackets === 0 &&
+          outboundGrowth > 5 &&
+          audioGrowth <= 0 &&
+          !this.screenSharing &&
+          Date.now() - this.postVideoRenegotiateAt >= OPUS_NO_H264_RECOVER_AFTER_MS &&
+          this.recoverAudioAfterOpusFrozenAtVideoSdp(
+            "opus_frozen_at_video_sdp_no_h264",
+          )
+        ) {
+          return true;
+        }
+        return false;
+      };
+      // Early mix-protect: Opus often spikes a few packets after video SDP then
+      // freezes while H264 climbs. Wait past the constraints-pause window so we
+      // pause on-stage first — hard drop at ~3.5s banned live screens (prod).
+      window.setTimeout(() => {
+        if (this.connection !== connection || !this.joined) return;
+        if (this.postVideoRenegotiateAt <= 0) return;
+        if (this.stripVideoInFlight || this.audioRecoverInFlight) return;
+        void this.logIceDiagnostics(
+          connection,
+          "post_video_renegotiate_early_freeze",
+        ).then((stats) => {
+          if (this.connection !== connection || !this.joined) return;
+          if (this.postVideoRenegotiateAt <= 0) return;
+          const videoLive =
+            stats.inboundVideoPackets > 0 ||
+            this.hasHealthyRemoteVideoMedia();
+          if (!videoLive) return;
+          if (this.mixRecentlyHearableForScreenProtect(2_000)) return;
+          if (
+            this.remoteVideoStillInPaintGrace() ||
+            this.hasHealthyRemoteVideoMedia()
+          ) {
+            // Still painting — sink heal only; do not tear the stage.
+            void this.healSilentMixDespiteRtp();
+            return;
+          }
+          const advanceAt =
+            this.lastMixPacketAdvanceAt > 0
+              ? this.lastMixPacketAdvanceAt
+              : this.postVideoRenegotiateAt;
+          const stalledMs = Date.now() - advanceAt;
+          const frozen =
+            stalledMs >= 2_000 ||
+            this.isOpusHardFrozenSinceVideoRenegotiate(stats.inboundPackets);
+          if (!frozen) return;
+          logPageDisplay("messages_voice_remote_video_early_opus_freeze", {
+            chatId: this.input.chatId,
+            groupCallId: this.input.groupCallId,
+            inboundPackets: stats.inboundPackets,
+            baseline: this.inboundPacketsAtVideoRenegotiate,
+            stalledMs,
+            inboundVideoPackets: stats.inboundVideoPackets,
+            level: "warn",
+            note:
+              "Opus flat under live H264 — pause/sink heal first (keep screen)",
+          });
+          this.escalateAfterFailedConstraintsPauseHeal(
+            "post_video_early_opus_freeze",
+          );
+        });
+      }, 8_000);
+
       window.setTimeout(() => {
         if (this.connection !== connection || !this.joined) return;
         void this.logIceDiagnostics(connection, "post_video_renegotiate_1s").then(
@@ -3030,23 +3584,25 @@ export class TelegramGroupCallWebSession {
               stats.inboundVideoPackets - inboundBefore.inboundVideoPackets;
             const outboundGrowth =
               stats.outboundPackets - inboundBefore.outboundPackets;
-            // Opus froze at video SDP before any H264 arrived (prod Blox:
-            // packets stuck at 52, inboundVideo=0, outbound still climbing).
+            // At 1s only observe — first H264 often arrives later. Schedule a
+            // deferred no-H264 recover instead of tearing the stage here.
             if (
-              (inboundBefore.inboundPackets > 20 ||
-                this.peakInboundAudioPackets > 20 ||
-                this.heardRemoteMixAudio ||
-                this.mixRtpPacketsAlive) &&
-              this.isOpusHardFrozenSinceVideoRenegotiate(stats.inboundPackets) &&
               stats.inboundVideoPackets === 0 &&
-              outboundGrowth > 5 &&
               audioGrowth <= 0 &&
-              !this.screenSharing &&
-              this.recoverAudioAfterOpusFrozenAtVideoSdp(
-                "opus_frozen_at_video_sdp_no_h264",
-              )
+              outboundGrowth > 5 &&
+              this.isOpusHardFrozenSinceVideoRenegotiate(stats.inboundPackets)
             ) {
-              return;
+              window.setTimeout(() => {
+                if (this.connection !== connection || !this.joined) return;
+                if (this.postVideoRenegotiateAt <= 0) return;
+                void this.logIceDiagnostics(
+                  connection,
+                  "post_video_renegotiate_no_h264",
+                ).then((later) => {
+                  if (this.connection !== connection || !this.joined) return;
+                  if (maybeRecoverNoH264(later)) return;
+                });
+              }, Math.max(0, OPUS_NO_H264_RECOVER_AFTER_MS - 1_000));
             }
             // Hard stall must not fire when mix was already healthy and merely
             // paused packet growth for ~1s while video attaches — that tore down
@@ -3072,17 +3628,23 @@ export class TelegramGroupCallWebSession {
               this.hasHealthyRemoteVideoMedia() ||
               this.screenSharing ||
               this.presentationConnection != null;
-            // Classic Colibri stall: mix counter freezes at a *thin* floor while
-            // video RTP climbs. A healthy absolute floor that briefly stops
-            // growing (quiet talker / stats plateau) must NOT count as stall —
-            // that tore working mix+screencast (prod: packets=41 flat → drop →
-            // recover loop). Prolonged RMS silence still heals via soft watch.
+            // Classic Colibri stall: mix counter freezes while video RTP climbs.
+            // Do NOT require a thin absolute floor (<15) — prod froze at 92pk
+            // after a healthy settle while H264 climbed; the <15 guard skipped
+            // drop and left RMS=0 under a painting stage.
             const mixPlateauWhileVideo =
               hadHealthyAudioBefore &&
               audioGrowth <= (screenPainting ? 0 : 2) &&
               videoGrowth > 15 &&
-              stats.inboundPackets < 15 &&
-              !this.mixRecentlyHearableForScreenProtect();
+              !this.mixRecentlyHearableForScreenProtect(2_000) &&
+              (stats.inboundPackets < 15 ||
+                this.isOpusHardFrozenSinceVideoRenegotiate(
+                  stats.inboundPackets,
+                ) ||
+                (this.inboundPacketsAtVideoRenegotiate > 0 &&
+                  stats.inboundPackets <=
+                    this.inboundPacketsAtVideoRenegotiate +
+                      OPUS_HARD_FREEZE_PACKET_SLACK));
             // Mix collapsed to a trickle after we already heard it this join
             // (prod: settle gate 42pk → renegotiate 2pk → stuck 4pk + video flood).
             // Do NOT treat thin-but-still-growing counters during screen attach as
@@ -3168,14 +3730,40 @@ export class TelegramGroupCallWebSession {
                 inboundVideoPackets: stats.inboundVideoPackets,
                 sinceVideoMs: sinceVideoForPlateau,
               });
+              const softPlateauHardFrozen =
+                this.isOpusHardFrozenSinceVideoRenegotiate(
+                  stats.inboundPackets,
+                );
+              // Pause Colibri before soft-keep: bare screenPainting must not
+              // bury heal while Opus is hard-frozen under climbing H264
+              // (prod: 102→120 spike then flat, framesDecoded climbing).
+              if (
+                !needsAudioRejoin &&
+                softPlateauHardFrozen &&
+                this.shouldPauseConstraintsToHealMix(stats.inboundPackets)
+              ) {
+                void this.pauseRemoteVideoConstraintsToHealMix(
+                  "watchdog_hard_freeze_under_screen",
+                ).then((healed) => {
+                  if (healed || !this.joined) return;
+                  this.escalateAfterFailedConstraintsPauseHeal(
+                    "watchdog_constraints_pause_failed",
+                  );
+                });
+                return;
+              }
               const softPlateauKeepScreen =
                 !needsAudioRejoin &&
                 !starvedByVideo &&
+                !softPlateauHardFrozen &&
                 !this.shouldRecoverOpusHardFrozenUnderScreen(
                   stats.inboundPackets,
                 ) &&
                 (audioGrowth > 0 ||
-                  this.mixRecentlyHearableForScreenProtect(4_000));
+                  this.mixRecentlyHearableForScreenProtect(4_000) ||
+                  videoGrowth > 0 ||
+                  this.remoteVideoStillInPaintGrace() ||
+                  screenPainting);
               if (softPlateauKeepScreen) {
                 this.preferStableScreencast = true;
                 logPageDisplay("messages_voice_remote_audio_stalled_keep_video", {
@@ -3195,13 +3783,22 @@ export class TelegramGroupCallWebSession {
                 void this.healSilentMixDespiteRtp();
               } else if (
                 !needsAudioRejoin &&
-                (this.isOpusHardFrozenSinceVideoRenegotiate(stats.inboundPackets)
-                  ? this.recoverAudioAfterOpusFrozenAtVideoSdp(
-                      "opus_frozen_at_video_sdp_plateau",
-                    )
-                  : this.dropRemoteVideoSdpToRestoreMix(
-                      "post_video_plateau_thin_mix",
-                    ))
+                this.shouldRecoverOpusHardFrozenUnderScreen(
+                  stats.inboundPackets,
+                ) &&
+                this.recoverAudioAfterOpusFrozenAtVideoSdp(
+                  "opus_frozen_at_video_sdp_plateau",
+                )
+              ) {
+                // Stage already dead — audio-only until user re-unmutes.
+              } else if (
+                !needsAudioRejoin &&
+                !screenPainting &&
+                !this.remoteVideoStillInPaintGrace() &&
+                videoGrowth <= 0 &&
+                this.dropRemoteVideoSdpToRestoreMix(
+                  "post_video_plateau_thin_mix",
+                )
               ) {
                 // Remote video cleared — audio-only until user re-unmutes.
               } else if (needsAudioRejoin) {
@@ -3262,11 +3859,10 @@ export class TelegramGroupCallWebSession {
               });
               this.scheduleAudioRecoverAfterVideoStall();
             } else if (audioGrowth > 5 && videoGrowth < 40) {
-              // Meaningful mix growth without a video flood — disarm soft RMS.
-              // Brief post-attach spikes (e.g. +10 pk) while video climbs used
-              // to clear the watch and leave Opus frozen (prod: 33→43 then stuck).
-              this.postVideoRenegotiateAt = 0;
-              this.postVideoSilenceTicks = 0;
+              // Meaningful mix growth without a video flood — keep the soft
+              // watch armed. Clearing here missed spike-then-plateau freezes
+              // (prod: 102→120 then inboundPackets stuck while H264 climbed).
+              // Spike-plateau hard-freeze + constraints pause heal the mix.
             } else if (
               audioGrowth > 5 &&
               videoGrowth >= 40 &&
@@ -3302,11 +3898,36 @@ export class TelegramGroupCallWebSession {
                       laterVideoGrowth > 0 ||
                       this.hasHealthyRemoteVideoMedia();
                     if (laterAudioGrowth > 5 && laterVideoGrowth < 40) {
-                      this.postVideoRenegotiateAt = 0;
-                      this.postVideoSilenceTicks = 0;
+                      // Keep watch — brief growth is not proof the mix stays
+                      // healthy under screen (prod spike→plateau under H264).
                       return;
                     }
                     if (screenAlive && laterAudioGrowth <= 2) {
+                      const spikeSinceVideoMs =
+                        this.postVideoRenegotiateAt > 0
+                          ? Date.now() - this.postVideoRenegotiateAt
+                          : 9_000;
+                      // Hard-frozen Opus under H264: pause Colibri before paint
+                      // grace soft-heal (prod: 102→120 then flat while screen
+                      // paints — sink heal cannot invent RTP).
+                      if (
+                        this.isOpusHardFrozenSinceVideoRenegotiate(
+                          later.inboundPackets,
+                        ) &&
+                        this.shouldPauseConstraintsToHealMix(
+                          later.inboundPackets,
+                        )
+                      ) {
+                        void this.pauseRemoteVideoConstraintsToHealMix(
+                          "spike_recheck_hard_freeze",
+                        ).then((healed) => {
+                          if (healed || !this.joined) return;
+                          this.escalateAfterFailedConstraintsPauseHeal(
+                            "spike_recheck_constraints_pause_failed",
+                          );
+                        });
+                        return;
+                      }
                       // Fresh paint: flat Opus getStats is common while H264
                       // attaches — soft-heal only (prod: spike then glance→gone).
                       if (this.remoteVideoStillInPaintGrace()) {
@@ -3326,10 +3947,6 @@ export class TelegramGroupCallWebSession {
                         void this.healSilentMixDespiteRtp();
                         return;
                       }
-                      const spikeSinceVideoMs =
-                        this.postVideoRenegotiateAt > 0
-                          ? Date.now() - this.postVideoRenegotiateAt
-                          : 9_000;
                       const spikeStarved = this.mixStarvedByVideoFlood({
                         audioGrowth: laterAudioGrowth,
                         videoGrowth: laterVideoGrowth,
@@ -3415,33 +4032,94 @@ export class TelegramGroupCallWebSession {
                       return;
                     }
                     if (laterAudioGrowth > 5 && laterVideoGrowth < 40) {
-                      this.postVideoRenegotiateAt = 0;
-                      this.postVideoSilenceTicks = 0;
+                      // Soft-heal only — keep watch armed. Spike→plateau still
+                      // needs constraints pause after
+                      // OPUS_POST_VIDEO_SPIKE_PLATEAU_MS (prod: 102→120 then
+                      // flat while H264 climbed).
+                      return;
                     }
                     if (screenAlive && laterAudioGrowth <= 0) {
                       const sinceVideoMs =
                         this.postVideoRenegotiateAt > 0
                           ? Date.now() - this.postVideoRenegotiateAt
                           : 9_000;
-                      // Opus flat since video SDP — keep-screen + sink heal never
-                      // restores mix (prod Blox: packets stuck at 31, H264↑).
+                      // Attach-baseline Opus freeze under live H264: pause
+                      // on-stage even during paint grace — sink heal cannot
+                      // invent RTP (prod: 83→88 then flat while H264 climbed).
                       if (
-                        this.shouldRecoverOpusHardFrozenUnderScreen(
+                        this.isOpusHardFrozenSinceVideoRenegotiate(
                           later.inboundPackets,
                         ) &&
-                        this.recoverAudioAfterOpusFrozenAtVideoSdp(
-                          "opus_frozen_at_video_sdp_flat_paint",
+                        this.shouldPauseConstraintsToHealMix(
+                          later.inboundPackets,
                         )
                       ) {
+                        this.preferStableScreencast = false;
+                        logPageDisplay(
+                          "messages_voice_remote_video_flat_constraints_pause",
+                          {
+                            chatId: this.input.chatId,
+                            groupCallId: this.input.groupCallId,
+                            inboundBefore: baselinePackets,
+                            inboundAfter: later.inboundPackets,
+                            audioGrowth: laterAudioGrowth,
+                            videoGrowth: laterVideoGrowth,
+                            inboundVideoPackets: later.inboundVideoPackets,
+                            sinceVideoMs,
+                            level: "warn",
+                            note:
+                              "Opus flat since video SDP under growing H264 — pause on-stage to heal mix",
+                          },
+                        );
+                        void this.pauseRemoteVideoConstraintsToHealMix(
+                          "post_video_flat_opus_hard_frozen",
+                        ).then((healed) => {
+                          if (healed || !this.joined) return;
+                          this.escalateAfterFailedConstraintsPauseHeal(
+                            "post_video_flat_constraints_pause_failed",
+                          );
+                        });
                         return;
                       }
-                      // Fresh decode window / growing H264: do not strip a
-                      // painting screencast just because Opus getStats
-                      // plateaued (prod Vespiol: framesDecoded climbing →
-                      // post_video_flat_frozen_mix).
+                      // Hard-frozen but pause window not open yet — wait; do
+                      // not fall through to flat_soft_heal (prod: soft-heal at
+                      // 3.5s while Opus stuck at baseline under climbing H264).
                       if (
-                        this.remoteVideoStillInPaintGrace() ||
-                        laterVideoGrowth > 0
+                        this.isOpusHardFrozenSinceVideoRenegotiate(
+                          later.inboundPackets,
+                        ) &&
+                        !this.constraintsPauseHealUsedAtVideoAttach
+                      ) {
+                        logPageDisplay(
+                          "messages_voice_remote_video_flat_wait_pause",
+                          {
+                            chatId: this.input.chatId,
+                            groupCallId: this.input.groupCallId,
+                            inboundBefore: baselinePackets,
+                            inboundAfter: later.inboundPackets,
+                            audioGrowth: laterAudioGrowth,
+                            videoGrowth: laterVideoGrowth,
+                            inboundVideoPackets: later.inboundVideoPackets,
+                            sinceVideoMs,
+                            level: "warn",
+                            note:
+                              "Opus attach-frozen under screen — wait for constraints pause window",
+                          },
+                        );
+                        void this.healSilentMixDespiteRtp();
+                        return;
+                      }
+                      // Fresh decode window / growing H264: do not strip or
+                      // audio-recover a painting screencast just because Opus
+                      // getStats plateaued (prod Blox: glance then recover-gone).
+                      // Skip this sink-only path when attach-baseline freeze is
+                      // already confirmed — paint grace must not bury mix death.
+                      if (
+                        !this.isOpusHardFrozenSinceVideoRenegotiate(
+                          later.inboundPackets,
+                        ) &&
+                        (this.remoteVideoStillInPaintGrace() ||
+                          laterVideoGrowth > 0)
                       ) {
                         logPageDisplay(
                           "messages_voice_remote_video_flat_paint_grace",
@@ -3685,6 +4363,7 @@ export class TelegramGroupCallWebSession {
       const silentCtx = sharedSilentAudioCtx ?? getVoiceAutoplayAudioContext();
       if (inboundPackets > this.peakInboundAudioPackets) {
         this.peakInboundAudioPackets = inboundPackets;
+        this.lastMixPacketAdvanceAt = Date.now();
       }
       if (inboundPackets >= 8) {
         this.mixRtpPacketsAlive = true;
@@ -4419,6 +5098,9 @@ export class TelegramGroupCallWebSession {
       // Sustained freeze under live screen: drop video SDP so Opus resumes
       // (audio-only until user re-unmutes screencast) — healthier than PC rejoin.
       if (mixRtpFrozen) {
+        const hardFrozen = this.isOpusHardFrozenSinceVideoRenegotiate(
+          after.inboundPackets,
+        );
         const trulyFrozen = this.mixTrulyFrozenUnderLiveScreen({
           inboundPackets: after.inboundPackets,
           audioGrowth,
@@ -4426,25 +5108,100 @@ export class TelegramGroupCallWebSession {
           inboundVideoPackets: after.inboundVideoPackets,
           sinceVideoMs,
         });
-        // Live / growing screencast + flat Opus counters: treat as getStats
-        // plateau. Never drop or rejoin while the stage is still painting or
-        // H264 packets are still climbing in this sample window.
+        // Attach-baseline Opus freeze under live H264: pause on-stage first
+        // (do not treat growing video as a harmless getStats plateau).
         if (
           screenStillLive &&
-          (!trulyFrozen ||
-            this.remoteVideoStillInPaintGrace() ||
-            videoGrowth > 0)
+          hardFrozen &&
+          this.shouldPauseConstraintsToHealMix(after.inboundPackets)
         ) {
+          this.preferStableScreencast = false;
+          this.postVideoSilenceTicks = 0;
+          logPageDisplay(
+            "messages_voice_remote_audio_soft_silent_constraints_pause",
+            {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              rms: 0,
+              sinceVideoMs,
+              audioGrowth,
+              videoGrowth,
+              inboundPackets: after.inboundPackets,
+              inboundVideoPackets: after.inboundVideoPackets,
+              screens: this.lastAppliedRemoteVideoEndpoints,
+              level: "warn",
+              note:
+                "Opus flat since video SDP under live H264 — pause on-stage to heal mix",
+            },
+          );
+          void this.pauseRemoteVideoConstraintsToHealMix(
+            "soft_silent_opus_hard_frozen",
+          ).then((healed) => {
+            if (healed || !this.joined) return;
+            this.escalateAfterFailedConstraintsPauseHeal(
+              "soft_silent_constraints_pause_failed",
+            );
+          });
+          return;
+        }
+        // Pause already tried (or not eligible) and Opus still attach-frozen —
+        // skip strip; recover audio-only (auto-show does not one-shot restore).
+        if (
+          screenStillLive &&
+          hardFrozen &&
+          this.constraintsPauseHealUsedAtVideoAttach &&
+          !this.constraintsThrottleInFlight &&
+          sinceVideoMs >=
+            OPUS_CONSTRAINTS_PAUSE_HEAL_AFTER_MS + OPUS_CONSTRAINTS_PAUSE_HEAL_MS
+        ) {
+          this.preferStableScreencast = false;
+          this.postVideoSilenceTicks = 0;
           if (
-            this.shouldRecoverOpusHardFrozenUnderScreen(after.inboundPackets) &&
             this.recoverAudioAfterOpusFrozenAtVideoSdp(
-              "opus_frozen_at_video_sdp_soft_silent",
+              "soft_silent_opus_hard_frozen",
             )
           ) {
             return;
           }
-          // Grace keep of the stage, but do not re-arm auto-resub /
-          // preferStable after a mix that already stalled once.
+        }
+        // Hard-frozen but pause window not open yet — sink heal and wait;
+        // do not fall through to audio-only recover (that tore screens early).
+        if (screenStillLive && hardFrozen) {
+          this.preferStableScreencast = false;
+          this.postVideoSilenceTicks = 0;
+          logPageDisplay(
+            "messages_voice_remote_audio_soft_silent_wait_pause",
+            {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              rms: 0,
+              sinceVideoMs,
+              audioGrowth,
+              videoGrowth,
+              inboundPackets: after.inboundPackets,
+              inboundVideoPackets: after.inboundVideoPackets,
+              sink: this.remotePlaybackSink,
+              screens: this.lastAppliedRemoteVideoEndpoints,
+              pauseUsed: this.constraintsPauseHealUsedAtVideoAttach,
+              level: "warn",
+              note:
+                "Opus attach-frozen under screen — wait for constraints pause / drop window",
+            },
+          );
+          void this.healSilentMixDespiteRtp();
+          return;
+        }
+        // Live / growing screencast + flat Opus counters: treat as getStats
+        // plateau only when NOT attach-baseline frozen.
+        if (
+          screenStillLive &&
+          !hardFrozen &&
+          (!trulyFrozen ||
+            this.remoteVideoStillInPaintGrace() ||
+            videoGrowth > 0)
+        ) {
+          // Keep painting stage — do not hard-recover while H264 is live
+          // (recover tore auto-shown screens within seconds of attach).
           this.preferStableScreencast = false;
           // Keep postVideoRenegotiateAt armed — clearing it here permanently
           // disarmed soft-silent after one grace heal (prod: speaking latch +
@@ -4473,11 +5230,15 @@ export class TelegramGroupCallWebSession {
           return;
         }
         // Confirmed Colibri stall with stale video — drop screen SDP.
+        // Skip while decode is still healthy; drop/recover here is what made
+        // live screencasts vanish after the soft-attach window.
         if (
           screenStillLive &&
           trulyFrozen &&
           !this.remoteVideoStillInPaintGrace() &&
-          (this.isOpusHardFrozenSinceVideoRenegotiate(after.inboundPackets)
+          videoGrowth <= 0 &&
+          !this.hasHealthyRemoteVideoMedia() &&
+          (this.shouldRecoverOpusHardFrozenUnderScreen(after.inboundPackets)
             ? this.recoverAudioAfterOpusFrozenAtVideoSdp(
                 "opus_frozen_at_video_sdp_under_h264",
               )
@@ -4488,6 +5249,7 @@ export class TelegramGroupCallWebSession {
         // trulyFrozen but drop failed (no remote video left) — fall through
         // to audio-only recover; do not keep painting a silent screen.
         this.postVideoRenegotiateAt = 0;
+        this.lastMixPacketAdvanceAt = 0;
         this.postVideoSilenceTicks = 0;
         this.remoteAudioStalledAfterVideo = true;
         logPageDisplay(
@@ -4522,6 +5284,7 @@ export class TelegramGroupCallWebSession {
         return;
       }
       this.postVideoRenegotiateAt = 0;
+      this.lastMixPacketAdvanceAt = 0;
       this.remoteAudioStalledAfterVideo = true;
       logPageDisplay(
         "messages_voice_remote_audio_soft_silent_recover_despite_video",
@@ -4756,20 +5519,26 @@ export class TelegramGroupCallWebSession {
     return [];
   }
 
-  /** Clear remote screen subscribe UI/state without SDP (used before audio-only rejoin). */
+  /**
+   * Clear remote screen subscribe UI/state without SDP (used before audio-only rejoin).
+   */
   private clearRemoteVideoSubscribeForMixStall(reason: string): void {
     const wasExplicit = this.explicitVideoSubscribeSession;
+    const wasAutoShow = this.explicitVideoSubscribeFromAutoShow;
     const screenSnapshot = this.snapshotPendingScreenForRecover();
     const preferredForRestore =
       this.preferredExplicitVideoEndpointId ||
       screenSnapshot[0]?.endpointId ||
       null;
+    const hadLiveVideo =
+      this.firstRemoteVideoFrameAt > 0 || this.hasHealthyRemoteVideoMedia();
     this.videoDropToRestoreMixCount += 1;
     this.mixPacketsAtLastVideoDrop = this.peakInboundAudioPackets;
     this.lastVideoDropToRestoreMixAt = Date.now();
     this.remoteVideoSdpSubscribeEnabled = false;
     this.preferStableScreencast = false;
     this.postVideoRenegotiateAt = 0;
+    this.lastMixPacketAdvanceAt = 0;
     this.firstRemoteVideoFrameAt = 0;
     this.postVideoSilenceTicks = 0;
     this.remoteAudioSettledForVideo = false;
@@ -4800,13 +5569,20 @@ export class TelegramGroupCallWebSession {
     this.clearRemoteVideoStream();
     this.notifyVideoListeners();
     this.notifyRemoteVideoSourceListeners(true);
-    this.setMixPausedScreenEndpoints(pausedEndpoints);
-    this.bumpRemoteVideoRepush("mix_protect_drop");
+    // Auto-show screens that froze Opus must not one-shot restore — VoiceBar
+    // would keep muteScreen=false and re-push the same endpoint after recover
+    // (prod: screencast interrupted + mix stayed dead / thinned).
     const armOneShotRestore =
       wasExplicit &&
+      !wasAutoShow &&
       Boolean(preferredForRestore) &&
       !this.mixProtectScreenAutoRestoreUsed &&
       !this.mixProtectScreenAutoRestorePending;
+    // Always report live H264 truth; VoiceBar only keeps unmute chrome when
+    // restore is also armed (see MessageChatVoiceBar mix-protect effect).
+    this.lastMixProtectDropHadLiveVideo = hadLiveVideo;
+    // Arm restore BEFORE notifying paused endpoints — the React listener reads
+    // getMixProtectScreenAutoRestorePending synchronously on that callback.
     if (armOneShotRestore && preferredForRestore) {
       this.mixProtectScreenAutoRestorePending = true;
       this.preferredExplicitVideoEndpointId = preferredForRestore;
@@ -4814,6 +5590,8 @@ export class TelegramGroupCallWebSession {
         this.pendingRemoteVideoAfterRecover = screenSnapshot;
       }
     }
+    this.setMixPausedScreenEndpoints(pausedEndpoints);
+    this.bumpRemoteVideoRepush("mix_protect_drop");
     logPageDisplay("messages_voice_remote_video_drop_restore_mix", {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
@@ -4824,10 +5602,14 @@ export class TelegramGroupCallWebSession {
       paused: pausedEndpoints.slice(0, 4),
       allowResubscribe: armOneShotRestore,
       preferred: preferredForRestore,
+      autoShow: wasAutoShow,
+      hadLiveVideo,
       level: "warn",
       note: armOneShotRestore
         ? "clear remote video — one-shot restore when mix healthy"
-        : "clear remote video — audio-only until user re-unmutes screencast",
+        : wasAutoShow
+          ? "clear remote video — auto-show will not restore (audio-only until user unmutes)"
+          : "clear remote video — audio-only until user re-unmutes screencast",
     });
   }
 
@@ -6060,6 +6842,7 @@ export class TelegramGroupCallWebSession {
                   void this.evaluateSoftSilentKeepVideo(sinceVideo);
                 } else {
                   this.postVideoRenegotiateAt = 0;
+                  this.lastMixPacketAdvanceAt = 0;
                   this.remoteAudioStalledAfterVideo = true;
                   logPageDisplay(
                     "messages_voice_remote_audio_soft_stalled_after_video",
@@ -6085,6 +6868,7 @@ export class TelegramGroupCallWebSession {
               // silent again right after (prod: hear spike then frozen Opus).
               if (!this.hasHealthyRemoteVideoMedia()) {
                 this.postVideoRenegotiateAt = 0;
+                this.lastMixPacketAdvanceAt = 0;
               }
             }
           }
@@ -6169,6 +6953,7 @@ export class TelegramGroupCallWebSession {
               void this.evaluateSoftSilentKeepVideo(sinceVideoMs);
             } else {
               this.postVideoRenegotiateAt = 0;
+              this.lastMixPacketAdvanceAt = 0;
               this.remoteAudioStalledAfterVideo = true;
               logPageDisplay(
                 "messages_voice_remote_audio_soft_stalled_after_video",
@@ -6266,7 +7051,8 @@ export class TelegramGroupCallWebSession {
     if (
       this.silentMixHealInFlight ||
       this.audioRecoverInFlight ||
-      this.stripVideoInFlight
+      this.stripVideoInFlight ||
+      this.constraintsThrottleInFlight
     ) {
       return;
     }
@@ -6466,26 +7252,80 @@ export class TelegramGroupCallWebSession {
                 ? Date.now() - this.postVideoRenegotiateAt
                 : 9_000,
           });
-          // Flat Opus + live/growing screen: keep the stage and sink-heal.
-          // Prod bug: paintGrace + silentMixHealCount>0 fell through to
-          // audio-only recover and killed an attached screencast.
+          const hardFrozen = this.isOpusHardFrozenSinceVideoRenegotiate(
+            growthCheck.inboundPackets,
+          );
           if (
             screenAliveDuringHeal &&
+            hardFrozen &&
+            this.shouldPauseConstraintsToHealMix(growthCheck.inboundPackets)
+          ) {
+            this.preferStableScreencast = false;
+            logPageDisplay("messages_voice_silent_mix_heal_constraints_pause", {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              inboundBefore: stats.inboundPackets,
+              inboundAfter: growthCheck.inboundPackets,
+              inboundVideoPackets: growthCheck.inboundVideoPackets,
+              videoGrowth: videoGrowthDuringHeal,
+              recoverCount: this.audioRecoverCount,
+              healCount: this.silentMixHealCount,
+              level: "warn",
+              note:
+                "Opus flat since video SDP — pause on-stage before sink-only loop",
+            });
+            void this.pauseRemoteVideoConstraintsToHealMix(
+              "silent_mix_heal_opus_hard_frozen",
+            ).then((healed) => {
+              if (healed || !this.joined) return;
+              this.escalateAfterFailedConstraintsPauseHeal(
+                "silent_heal_constraints_pause_failed",
+              );
+            });
+            return;
+          }
+          // Flat Opus + live/growing screen: keep the stage and sink-heal
+          // only when this is NOT an attach-baseline Colibri freeze.
+          if (
+            screenAliveDuringHeal &&
+            !hardFrozen &&
             (!trulyFrozen ||
               this.remoteVideoStillInPaintGrace() ||
               videoGrowthDuringHeal > 0)
           ) {
+            this.preferStableScreencast = false;
+            logPageDisplay("messages_voice_silent_mix_heal_keep_video", {
+              chatId: this.input.chatId,
+              groupCallId: this.input.groupCallId,
+              inboundBefore: stats.inboundPackets,
+              inboundAfter: growthCheck.inboundPackets,
+              inboundVideoPackets: growthCheck.inboundVideoPackets,
+              videoGrowth: videoGrowthDuringHeal,
+              recoverCount: this.audioRecoverCount,
+              heardRemoteMixAudio: this.heardRemoteMixAudio,
+              paintGrace: this.remoteVideoStillInPaintGrace(),
+              healCount: this.silentMixHealCount,
+              level: "warn",
+              note:
+                "mix counter flat under live screen — keep stage, sink heal (no auto-resub)",
+            });
+            // Fall through to sink rebuild below.
+          } else if (
+            screenAliveDuringHeal &&
+            hardFrozen &&
+            !this.shouldPauseConstraintsToHealMix(growthCheck.inboundPackets)
+          ) {
+            // Pause already used or window not open — do not audio-recover yet;
+            // soft-silent / flat recheck will drop SDP once eligible.
+            this.preferStableScreencast = false;
             if (
-              this.shouldRecoverOpusHardFrozenUnderScreen(
-                growthCheck.inboundPackets,
-              ) &&
-              this.recoverAudioAfterOpusFrozenAtVideoSdp(
-                "opus_frozen_at_video_sdp_silent_heal",
+              this.constraintsPauseHealUsedAtVideoAttach &&
+              this.dropRemoteVideoSdpToRestoreMix(
+                "silent_heal_opus_hard_frozen_drop",
               )
             ) {
               return;
             }
-            this.preferStableScreencast = false;
             logPageDisplay("messages_voice_silent_mix_heal_keep_video", {
               chatId: this.input.chatId,
               groupCallId: this.input.groupCallId,
@@ -6726,19 +7566,66 @@ export class TelegramGroupCallWebSession {
             videoGrowth > 0 ||
             this.hasHealthyRemoteVideoMedia() ||
             this.lastAppliedRemoteVideoEndpoints.length > 0;
-          // Prod: after 4 sink heals, Opus getStats stayed flat at 231 while
-          // H264 kept climbing — silent_mix_heal_final_keep_video left the
-          // user with screen and no voice. Opus hard-freeze recovers first.
+          // Prefer keep-stage while H264 is still painting — unless Opus has
+          // been hard-frozen at the post-video baseline (sink heals are futile).
+          const hardFrozenFinal = this.isOpusHardFrozenSinceVideoRenegotiate(
+            after.inboundPackets,
+          );
           if (
-            this.shouldRecoverOpusHardFrozenUnderScreen(after.inboundPackets) &&
-            this.recoverAudioAfterOpusFrozenAtVideoSdp(
-              "opus_frozen_silent_heal_final_under_h264",
-            )
+            screenAlive &&
+            hardFrozenFinal &&
+            this.shouldPauseConstraintsToHealMix(after.inboundPackets)
           ) {
+            this.preferStableScreencast = false;
+            logPageDisplay(
+              "messages_voice_silent_mix_heal_final_constraints_pause",
+              {
+                chatId: this.input.chatId,
+                groupCallId: this.input.groupCallId,
+                inboundPackets: after.inboundPackets,
+                inboundVideoPackets: after.inboundVideoPackets,
+                audioGrowth,
+                videoGrowth,
+                healCount: this.silentMixHealCount,
+                level: "warn",
+                note:
+                  "max sink heals + Opus flat since video SDP — pause on-stage",
+              },
+            );
+            void this.pauseRemoteVideoConstraintsToHealMix(
+              "silent_heal_final_opus_hard_frozen",
+            ).then((healed) => {
+              if (healed || !this.joined) return;
+              this.escalateAfterFailedConstraintsPauseHeal(
+                "silent_heal_final_constraints_pause_failed",
+              );
+            });
             return;
           }
           if (
             screenAlive &&
+            hardFrozenFinal &&
+            this.constraintsPauseHealUsedAtVideoAttach
+          ) {
+            this.preferStableScreencast = false;
+            if (
+              this.recoverAudioAfterOpusFrozenAtVideoSdp(
+                "silent_heal_final_opus_hard_frozen",
+              )
+            ) {
+              return;
+            }
+            if (
+              this.dropRemoteVideoSdpToRestoreMix(
+                "silent_heal_final_opus_hard_frozen",
+              )
+            ) {
+              return;
+            }
+          }
+          if (
+            screenAlive &&
+            !hardFrozenFinal &&
             (!trulyFrozen ||
               this.remoteVideoStillInPaintGrace() ||
               videoGrowth > 0)
@@ -8251,6 +9138,7 @@ export class TelegramGroupCallWebSession {
     // blocked via remoteVideoSdpBlockedAfterStall for the rest of this join.
     this.audioRecoverInFlight = false;
     this.postVideoRenegotiateAt = 0;
+    this.lastMixPacketAdvanceAt = 0;
     this.postVideoSilenceTicks = 0;
 
     // Resume autoplay/silent AudioContext in the Join turn before we create the
@@ -9190,6 +10078,7 @@ export class TelegramGroupCallWebSession {
     this.mixPausedScreenListeners.clear();
     this.mixProtectScreenAutoRestorePending = false;
     this.mixProtectScreenAutoRestoreUsed = false;
+    this.lastMixProtectDropHadLiveVideo = false;
     this.firstRemoteVideoFrameAt = 0;
     this.peakInboundAudioPackets = 0;
     this.remoteAudioUnmutedAt = 0;
@@ -9236,6 +10125,7 @@ export class TelegramGroupCallWebSession {
     this.remoteVideoSdpBlockedAfterStall = false;
     this.explicitVideoSubscribeArmed = false;
     this.explicitVideoSubscribeSession = false;
+    this.explicitVideoSubscribeFromAutoShow = false;
     this.preferredExplicitVideoEndpointId = null;
     this.audioRecoverAfterVideoDone = false;
     this.audioRecoverInFlight = false;
@@ -9249,7 +10139,10 @@ export class TelegramGroupCallWebSession {
     this.autoResubAfterMixStallUsed = false;
     this.mixProtectScreenAutoRestorePending = false;
     this.mixProtectScreenAutoRestoreUsed = false;
+    this.lastMixProtectDropHadLiveVideo = false;
     this.firstRemoteVideoFrameAt = 0;
+    this.constraintsThrottleInFlight = false;
+    this.constraintsPauseHealUsedAtVideoAttach = false;
     this.remoteVideoRepushEpoch = 0;
     this.remoteVideoRepushListeners.clear();
     this.softSilentVideoCheckInFlight = false;
@@ -9257,6 +10150,7 @@ export class TelegramGroupCallWebSession {
     this.lastVideoFpsCheckAt = 0;
     this.videoLowFpsConstraintRetries = 0;
     this.postVideoRenegotiateAt = 0;
+    this.lastMixPacketAdvanceAt = 0;
     this.postVideoSilenceTicks = 0;
     if (this.videoResubscribeAfterRecoverTimer) {
       clearTimeout(this.videoResubscribeAfterRecoverTimer);
@@ -9269,6 +10163,7 @@ export class TelegramGroupCallWebSession {
     this.stripVideoInFlight = false;
     this.pendingRemoteVideoAfterRecover = [];
     this.postVideoRenegotiateAt = 0;
+    this.lastMixPacketAdvanceAt = 0;
     this.postVideoSilenceTicks = 0;
     this.remoteAudioEnabled = false;
     if (this.localStream) {

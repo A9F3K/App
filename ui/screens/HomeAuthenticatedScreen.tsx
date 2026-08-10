@@ -525,6 +525,11 @@ async function executeWalletServerRegistration(
     if (!response.ok || !json?.ok) {
       const errStr = json?.error != null ? String(json.error) : null;
       logPageDisplay("wallet_create_flow", { flow: "register_rejected", status: response.status, err: errStr });
+      if (errStr === "kms_wrap_failed" || errStr === "kms_encrypt_failed") {
+        throw new Error(
+          "Wallet encryption service (Cloud KMS) failed. Billing or KMS access may be disabled — check GCP, then tap Retry.",
+        );
+      }
       const gateway = response.status >= 502 && response.status <= 504;
       if (gateway) {
         logPageDisplay("wallet_create_flow", { flow: "register_retry_status_after_gateway", status: response.status });
@@ -1053,6 +1058,27 @@ export function HomeAuthenticatedScreen() {
         }
 
         const mod = pendingServerRegModule;
+        /**
+         * After a gateway outage remount, `pendingServerRegModule` is often null while the UI still
+         * shows the provisional address + “Finishing on the server”. Status alone cannot recreate
+         * the envelope — drop the stuck pending flag so `useLayoutEffect` can start a fresh create.
+         */
+        if (!mod && sidePollTick >= 3) {
+          logPageDisplay("wallet_create_flow", {
+            flow: "side_poll_abandon_no_pending_payload",
+            tick: sidePollTick,
+            note: "status_reachable_but_register_payload_lost",
+          });
+          recovered = true;
+          provisionalWalletVisibleRef.current = false;
+          pendingServerRegRef.current = null;
+          clearPendingServerRegModuleStore();
+          setCreatedWalletAddress(null);
+          setStep("idle");
+          setServerOnlyRetry(false);
+          setHomeBootstrap({ serverRegPending: false, provisionalAddress: null });
+          return;
+        }
         const shouldPostRegister =
           mod != null &&
           sameTonAddressForPoll(mod.walletAddress, expectAddr) &&
@@ -1076,7 +1102,11 @@ export function HomeAuthenticatedScreen() {
             mod.registerInit,
             SIDE_REGISTER_POST_TIMEOUT_MS,
           );
-          const json = (await response.json().catch(() => ({}))) as { ok?: boolean; wallet?: unknown };
+          const json = (await response.json().catch(() => ({}))) as {
+            ok?: boolean;
+            wallet?: unknown;
+            error?: unknown;
+          };
           if (cancelled || recovered) {
             return;
           }
@@ -1092,6 +1122,27 @@ export function HomeAuthenticatedScreen() {
                 tick: sidePollTick,
               });
             }
+          }
+          const errStr =
+            json && typeof json === "object" && "error" in json && json.error != null
+              ? String(json.error)
+              : null;
+          if (errStr === "kms_wrap_failed" || errStr === "kms_encrypt_failed") {
+            logPageDisplay("wallet_create_flow", {
+              flow: "side_register_kms_failed",
+              tick: sidePollTick,
+            });
+            recovered = true;
+            provisionalWalletVisibleRef.current = false;
+            pendingServerRegRef.current = null;
+            clearPendingServerRegModuleStore();
+            setHomeBootstrap({ serverRegPending: false });
+            setServerOnlyRetry(true);
+            setFlowError(
+              "Wallet encryption service (Cloud KMS) failed. Billing or KMS access may be disabled — check GCP, then tap Retry.",
+            );
+            setStep("done");
+            return;
           }
           logPageDisplay("wallet_create_flow", {
             flow: "side_register_retry_response",

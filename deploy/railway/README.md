@@ -61,6 +61,11 @@ Select your project and the **tdlib-gateway** service (or create an empty servic
 | `TELEGRAM_API_HASH` | Yes | From https://my.telegram.org/apps |
 | `TDLIB_GATEWAY_SECRET` | Yes | Long random string; **same value on Vercel** |
 | `TDLIB_DB_ROOT` | Yes | `/data/tdlib` |
+| `TDLIB_STORAGE_MODE` | No | `slim` (default) = auth-only on disk, fetch chats from Telegram; `full` = classic multi-GB local TDLib DB |
+| `TDLIB_RESTORE_MODE` | No | `lazy` (default) = open clients on demand; `eager` = restore all sessions at boot |
+| `TDLIB_CLIENT_IDLE` | No | `auto` (default) / `off` — unload idle in-memory clients |
+| `TDLIB_CLIENT_IDLE_MS` | No | `900000` (15m) — close unused clients; auth stays on disk |
+| `TDLIB_CLIENT_IDLE_CHECK_MS` | No | `60000` — idle sweeper interval |
 | `TDLIB_GATEWAY_HOST` | Yes | `0.0.0.0` |
 | `NODE_ENV` | Yes | `production` |
 

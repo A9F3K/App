@@ -800,10 +800,10 @@ export function MessageChatVoiceBar({
               }
             : {
                 ...row,
-                // New orderless stubs omit mute — stay muted until ordered TDLib
-                // data (default unmuted invented open mics vs Telegram Desktop).
+                // New orderless stubs omit mute — stay unmuted until ordered
+                // TDLib data (default muted painted silent faces as call-muted).
                 is_muted: !String(row.order ?? "").trim()
-                  ? true
+                  ? false
                   : Boolean(row.is_muted),
               },
         );
@@ -1266,9 +1266,9 @@ export function MessageChatVoiceBar({
             merged.push({
               ...inc,
               is_speaking: false,
-              // Unknown mute on soft stubs → muted until an ordered update
-              // (default unmuted invented open-mic chrome vs Telegram Desktop).
-              is_muted: orderless ? true : Boolean(inc.is_muted),
+              // Unknown mute on soft stubs → unmuted until an ordered update
+              // (default muted painted silent non-streaming faces as call-muted).
+              is_muted: orderless ? false : Boolean(inc.is_muted),
             });
           }
         }
@@ -1331,9 +1331,9 @@ export function MessageChatVoiceBar({
           }
           // Orderless recent_speakers stubs must not invent mute either way —
           // keep the prior TDLib mute until an ordered participant update lands.
-          // Unknown (no prior) → muted — matches Telegram Desktop until load.
+          // Unknown (no prior) → unmuted (soft default muted painted false mute).
           const nextMuted = !String(row.order ?? "").trim()
-            ? Boolean(prevMatch?.is_muted ?? true)
+            ? Boolean(prevMatch?.is_muted ?? false)
             : Boolean(row.is_muted);
           return {
             ...row,
@@ -2372,6 +2372,8 @@ export function MessageChatVoiceBar({
   const remoteVideoRepushEpoch = voiceSession.remoteVideoRepushEpoch;
   const mixPausedScreenEndpoints = voiceSession.mixPausedScreenEndpoints;
   const mixProtectDropHadLiveVideo = voiceSession.mixProtectDropHadLiveVideo;
+  const mixProtectScreenAutoRestorePending =
+    voiceSession.mixProtectScreenAutoRestorePending;
   const mixPausedScreenSet = useMemo(
     () => new Set(mixPausedScreenEndpoints),
     [mixPausedScreenEndpoints],
@@ -2398,21 +2400,28 @@ export function MessageChatVoiceBar({
 
   // Mix-protect pause handling:
   // - Ghost (0 video RTP): revoke + ban endpoint so auto-show can pick next.
-  // - Live H264 that froze Opus: keep unmuted intent + preferred endpoint so
-  //   one-shot restore can re-open the stage. Flipping muteScreen left Сева
-  //   looking "automatically muted" after a brief successful paint.
+  // - Live H264 that froze Opus + one-shot restore armed: keep unmuted intent.
+  // - Live H264 without restore (e.g. auto-show): ban endpoint + block further
+  //   auto-show so VoiceBar does not re-push the screen that killed the mix.
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") return;
     if (mixPausedScreenSet.size === 0) return;
     const liveStall = mixProtectDropHadLiveVideo;
+    const expectsRestore = liveStall && mixProtectScreenAutoRestorePending;
     let revoked = false;
     for (const row of participantsRef.current) {
       if (row.is_self) continue;
       const endpoint = row.screen_sharing_video_info?.endpoint_id?.trim() || "";
       if (!endpoint || !mixPausedScreenSet.has(endpoint)) continue;
-      if (!liveStall) {
+      if (!expectsRestore) {
         failedAutoScreenEndpointsRef.current.add(endpoint);
-        autoScreenBlockedAfterLiveMixStallRef.current = false;
+        if (liveStall) {
+          // Live screen froze Opus and session will not auto-restore —
+          // stop auto-show for this join (user can unmute manually).
+          autoScreenBlockedAfterLiveMixStallRef.current = true;
+        } else {
+          autoScreenBlockedAfterLiveMixStallRef.current = false;
+        }
         const key = voiceParticipantPrefsKey(row);
         if (explicitScreenWantedKeysRef.current.delete(key)) {
           revoked = true;
@@ -2433,8 +2442,7 @@ export function MessageChatVoiceBar({
           preferredExplicitScreenEndpointRef.current = null;
         }
       } else {
-        // Live stall: keep muteScreen=false + wanted key so VoiceBar / session
-        // one-shot restore can re-subscribe when mix is healthy again.
+        // Live stall with restore armed: keep muteScreen=false + wanted key.
         const key = voiceParticipantPrefsKey(row);
         if (!explicitScreenWantedKeysRef.current.has(key)) {
           explicitScreenWantedKeysRef.current.add(key);
@@ -2462,26 +2470,36 @@ export function MessageChatVoiceBar({
         preferredExplicitScreenEndpointRef.current = endpoint;
       }
     }
-    if (!revoked && !liveStall) return;
+    if (!revoked && !expectsRestore) return;
     if (revoked) {
       setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
       setParticipantMediaPrefs({ ...participantMediaPrefsRef.current });
     }
     logPageDisplay(
-      liveStall
+      expectsRestore
         ? "messages_voice_remote_screen_soft_pause_live"
-        : "messages_voice_remote_screen_auto_show_failover",
+        : liveStall
+          ? "messages_voice_remote_screen_mix_stall_ban"
+          : "messages_voice_remote_screen_auto_show_failover",
       {
         chatId,
         paused: [...mixPausedScreenSet].slice(0, 4),
         failed: [...failedAutoScreenEndpointsRef.current].slice(0, 4),
         level: "info",
-        note: liveStall
+        note: expectsRestore
           ? "live screen paused for mix — keep unmuted chrome, await restore"
-          : "revoked paused ghost share — will auto-show next candidate",
+          : liveStall
+            ? "live screen froze mix — ban endpoint, no auto-restore (audio-only)"
+            : "revoked paused ghost share — will auto-show next candidate",
       },
     );
-  }, [voiceJoined, mixPausedScreenSet, mixProtectDropHadLiveVideo, chatId]);
+  }, [
+    voiceJoined,
+    mixPausedScreenSet,
+    mixProtectDropHadLiveVideo,
+    mixProtectScreenAutoRestorePending,
+    chatId,
+  ]);
 
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") {
@@ -2524,8 +2542,6 @@ export function MessageChatVoiceBar({
     for (const row of participantsRef.current) {
       if (row.is_self) continue;
       const screen = row.screen_sharing_video_info;
-      // Endpoint-only publishers still show muted share chrome — must opt-in
-      // immediately; source_groups arrive on the next force-reload / SSE.
       if (!participantHasScreenPublisher(row) || !screen) continue;
       const endpoint =
         screen.endpoint_id?.trim() ||
@@ -2536,7 +2552,9 @@ export function MessageChatVoiceBar({
       if (userDeniedScreenKeysRef.current.has(key)) continue;
       const groups = screen.source_groups ?? [];
       const hasSim = groups.some((g) => g.semantics.toUpperCase() === "SIM");
-      const fidCount = groups.filter((g) => g.semantics.toUpperCase() === "FID").length;
+      const fidCount = groups.filter((g) =>
+        g.semantics.toUpperCase() === "FID",
+      ).length;
       let firstSeenAt = screenEndpointFirstSeenAtRef.current.get(endpoint);
       if (firstSeenAt == null) {
         firstSeenAt = now;
@@ -2565,8 +2583,22 @@ export function MessageChatVoiceBar({
       return b.firstSeenAt - a.firstSeenAt;
     });
     const pick = cands[0];
-    // Always unmute chrome + arm subscribe for the best publisher. Waiting for
-    // SIM+FID left crossed-out share icons from join until manual unmute.
+    // Prefer complete SSRC (SIM+FID) so Colibri video SDP is less likely to
+    // freeze Opus. Incomplete publishers stay muted until groups arrive or
+    // the user unmutes manually.
+    if (!pick.hasGroups || pick.score < 100) {
+      logPageDisplay("messages_voice_remote_screen_auto_show_wait_ssrc", {
+        chatId,
+        title: pick.title,
+        endpoint: pick.endpoint,
+        score: pick.score,
+        hasGroups: pick.hasGroups,
+        candidates: cands.length,
+        level: "info",
+        note: "defer auto-show until SIM+FID source_groups are ready",
+      });
+      return;
+    }
     explicitScreenWantedKeysRef.current.add(pick.key);
     setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
     const existingPrefs =
@@ -2575,10 +2607,9 @@ export function MessageChatVoiceBar({
         muteVideo: true,
         muteScreen: true,
       };
-    const nextPrefs = { ...existingPrefs, muteScreen: false };
     participantMediaPrefsRef.current = {
       ...participantMediaPrefsRef.current,
-      [pick.key]: nextPrefs,
+      [pick.key]: { ...existingPrefs, muteScreen: false },
     };
     setParticipantMediaPrefs((prev) => {
       const cur = prev[pick.key] ?? existingPrefs;
@@ -2586,7 +2617,7 @@ export function MessageChatVoiceBar({
       return { ...prev, [pick.key]: { ...cur, muteScreen: false } };
     });
     preferredExplicitScreenEndpointRef.current = pick.endpoint;
-    preferExplicitRemoteVideoSubscribe(pick.endpoint);
+    preferExplicitRemoteVideoSubscribe(pick.endpoint, { autoShow: true });
     logPageDisplay("messages_voice_remote_screen_auto_show", {
       chatId,
       title: pick.title,
@@ -2596,11 +2627,8 @@ export function MessageChatVoiceBar({
       candidates: cands.length,
       candidateTitles: cands.slice(0, 4).map((c) => c.title),
       level: "info",
-      note: pick.hasGroups
-        ? pick.score >= 100
-          ? "auto-subscribe best live screencast at soft 180p; mix-protect may throttle"
-          : "auto-show incomplete SSRC — muted chrome cleared; await SIM or sticky incomplete"
-        : "auto-show endpoint-only — muted chrome cleared; await source_groups",
+      note:
+        "auto-subscribe best live screencast at soft 180p; mix-protect may drop if Opus freezes",
     });
   }, [
     voiceJoined,

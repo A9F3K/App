@@ -72,7 +72,10 @@ export type TelegramVoiceSession = {
    * mix RMS is quiet (and clear a prior stall sticky-block). Pass the screen
    * endpoint so a 2nd unmute wins over cap_1 sticky on the first share.
    */
-  preferExplicitRemoteVideoSubscribe: (preferredEndpointId?: string | null) => void;
+  preferExplicitRemoteVideoSubscribe: (
+    preferredEndpointId?: string | null,
+    opts?: { autoShow?: boolean },
+  ) => void;
   /**
    * Bumps when the session clears remote video (mix stall) or arms an unmute
    * with an empty request list — VoiceBar must re-apply roster publishers.
@@ -85,9 +88,15 @@ export type TelegramVoiceSession = {
   mixPausedScreenEndpoints: string[];
   /**
    * Latest mix-protect pause followed live remote video (not a zero-RTP ghost).
-   * VoiceBar must soft-mute without failover / failed-endpoint bans.
+   * VoiceBar must soft-mute without failover / failed-endpoint bans when a
+   * one-shot restore is also pending.
    */
   mixProtectDropHadLiveVideo: boolean;
+  /**
+   * Session armed a one-shot screen restore after mix-protect drop. When false
+   * with a live drop, VoiceBar should ban the endpoint (not keep unmute chrome).
+   */
+  mixProtectScreenAutoRestorePending: boolean;
   /** Local WebAudio listen volumes for the mixed remote track (0–200%). */
   setParticipantListenVolumes: (input: {
     volumes: Record<string, number>;
@@ -128,6 +137,10 @@ export function useTelegramVoiceSession({
   >([]);
   const [mixProtectDropHadLiveVideo, setMixProtectDropHadLiveVideo] =
     useState(false);
+  const [
+    mixProtectScreenAutoRestorePending,
+    setMixProtectScreenAutoRestorePending,
+  ] = useState(false);
   const [localCameraStream, setLocalCameraStream] = useState<MediaStream | null>(null);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const sessionRef = useRef<TelegramGroupCallWebSession | null>(null);
@@ -168,6 +181,7 @@ export function useTelegramVoiceSession({
     setRemoteVideoRepushEpoch(0);
     setMixPausedScreenEndpoints([]);
     setMixProtectDropHadLiveVideo(false);
+    setMixProtectScreenAutoRestorePending(false);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     micActiveRef.current = false;
@@ -267,10 +281,17 @@ export function useTelegramVoiceSession({
         setRemoteVideoRepushEpoch(epoch);
       });
       mixPausedUnsubRef.current = session.onMixPausedScreensChange((endpoints) => {
-        setMixProtectDropHadLiveVideo(
-          endpoints.length > 0
+        const hadLive =
+          typeof session.getLastMixProtectDropHadLiveVideo === "function"
             ? session.getLastMixProtectDropHadLiveVideo()
-            : false,
+            : false;
+        const restorePending =
+          typeof session.getMixProtectScreenAutoRestorePending === "function"
+            ? session.getMixProtectScreenAutoRestorePending()
+            : false;
+        setMixProtectDropHadLiveVideo(endpoints.length > 0 ? hadLive : false);
+        setMixProtectScreenAutoRestorePending(
+          endpoints.length > 0 ? restorePending : false,
         );
         setMixPausedScreenEndpoints((prev) => {
           if (
@@ -323,6 +344,7 @@ export function useTelegramVoiceSession({
     setRemoteVideoRepushEpoch(0);
     setMixPausedScreenEndpoints([]);
     setMixProtectDropHadLiveVideo(false);
+    setMixProtectScreenAutoRestorePending(false);
     setLocalCameraStream(null);
     setLocalScreenStream(null);
     setScreenSharing(false);
@@ -691,8 +713,14 @@ export function useTelegramVoiceSession({
   }, []);
 
   const preferExplicitRemoteVideoSubscribe = useCallback(
-    (preferredEndpointId?: string | null) => {
-      sessionRef.current?.preferExplicitRemoteVideoSubscribe(preferredEndpointId);
+    (
+      preferredEndpointId?: string | null,
+      opts?: { autoShow?: boolean },
+    ) => {
+      sessionRef.current?.preferExplicitRemoteVideoSubscribe(
+        preferredEndpointId,
+        opts,
+      );
     },
     [],
   );
@@ -763,6 +791,7 @@ export function useTelegramVoiceSession({
     remoteVideoRepushEpoch,
     mixPausedScreenEndpoints,
     mixProtectDropHadLiveVideo,
+    mixProtectScreenAutoRestorePending,
     localCameraStream,
     localScreenStream,
     unlockAudio,

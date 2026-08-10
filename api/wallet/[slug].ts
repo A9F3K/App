@@ -66,7 +66,19 @@ async function router(
       headers: { 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
-  return handler(request);
+  const result = await handler(request);
+  // Handlers return a Web Response. When Vercel also passes a Node `res`,
+  // leaving it open hangs until FUNCTION_INVOCATION_TIMEOUT.
+  if (res && result instanceof Response) {
+    const text = await result.text();
+    const contentType =
+      result.headers.get('content-type') ?? 'application/json; charset=utf-8';
+    res.setHeader('Content-Type', contentType);
+    res.status(result.status);
+    res.end(text);
+    return;
+  }
+  return result;
 }
 
 export default router;

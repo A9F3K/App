@@ -4,7 +4,15 @@ import { randomUUID } from "crypto";
 import type { Client } from "tdl";
 import * as tdl from "tdl";
 import { getTdjson } from "prebuilt-tdlib";
-import { getTdlibDbRoot, getTelegramApiCredentials, getTdlibUserDir } from "./env.js";
+import { getTdlibDbRoot, getTdlibRestoreMode, getTdlibStorageMode, getTelegramApiCredentials, getTdlibUserDir } from "./env.js";
+import {
+  clearGatewayUserIdleState,
+  pinGatewayUserSession,
+  registerClientIdleHooks,
+  touchGatewayUserActivity,
+  unpinGatewayUserSession,
+  waitForGatewayUserUnload,
+} from "./clientIdle.js";
 import { logGateway } from "./gatewayLog.js";
 import { classifyTdlibSendError } from "../../shared/telegramSendError.js";
 import { TELEGRAM_THREAD_NO_AVATAR } from "../../shared/telegramThreadConstants.js";
@@ -94,12 +102,26 @@ function createTdlibClient(telegramUsername: string, hook?: (client: Client) => 
   }
   ensureTdlConfigured();
   const { databaseDirectory, filesDirectory } = ensureUserDirs(telegramUsername);
+  const storageMode = getTdlibStorageMode();
+  // Slim: auth keys stay on disk; chats/messages are fetched from Telegram into RAM
+  // (and our short-lived liveChatCache), not duplicated into multi-GB SQLite.
+  const useLocalCaches = storageMode === "full";
   const client = tdl.createClient({
     apiId: creds.apiId,
     apiHash: creds.apiHash,
     databaseDirectory,
     filesDirectory,
     useTestDc: false,
+    tdlibParameters: {
+      use_message_database: useLocalCaches,
+      use_chat_info_database: useLocalCaches,
+      use_file_database: useLocalCaches,
+      use_secret_chats: false,
+      system_language_code: "en",
+      application_version: "1.0",
+      device_model: "HyperlinksSpaceProgram",
+      system_version: "gateway",
+    },
   });
   hook?.(client);
   return client;
@@ -341,6 +363,18 @@ async function finalizeReady(record: AttemptRecord): Promise<void> {
     return;
   }
 
+  // Mark ready before the initial chat sync. Large TDLib DBs (multi-GB) can take longer
+  // than restore timeouts; streams/API need the session usable during warm-up.
+  record.authState = "ready";
+  record.qrLink = null;
+  record.error = null;
+  clearStoredAuthMethod(record.telegramUsername);
+  attachLiveChatSync(record);
+  logConnectEvent(record, "connect_ready", {
+    chatCount: record.chatCount ?? 0,
+    syncPending: true,
+  });
+
   try {
     record.chatCount = await syncChatThreads(client, record.telegramUsername, {
       maxMainChats: INITIAL_MAIN_CHAT_SYNC_LIMIT,
@@ -349,19 +383,14 @@ async function finalizeReady(record: AttemptRecord): Promise<void> {
       skipMemberCounts: true,
       replaceCache: true,
     });
+    logConnectEvent(record, "connect_initial_sync_done", { chatCount: record.chatCount ?? 0 });
   } catch (err) {
     const message = err instanceof Error ? err.message : "sync_failed";
     logConnectEvent(record, "connect_sync_warning", { message });
     record.chatCount = 0;
   }
 
-  record.authState = "ready";
-  record.qrLink = null;
-  record.error = null;
-  clearStoredAuthMethod(record.telegramUsername);
-  attachLiveChatSync(record);
   scheduleBackgroundChatSync(client, record.telegramUsername);
-  logConnectEvent(record, "connect_ready", { chatCount: record.chatCount ?? 0 });
 }
 
 async function waitForAuthState(
@@ -763,9 +792,21 @@ async function disposeAttemptAsync(attemptId: string): Promise<void> {
   await new Promise((r) => setTimeout(r, 300));
 }
 
+/** Soft-close in-memory TDLib client; keep on-disk auth for later wake. */
+export async function softUnloadGatewayUserSession(telegramUsername: string): Promise<void> {
+  const attemptId = activeByUser.get(telegramUsername);
+  if (!attemptId) {
+    clearGatewayUserIdleState(telegramUsername);
+    return;
+  }
+  await disposeAttemptAsync(attemptId);
+  clearGatewayUserIdleState(telegramUsername);
+}
+
 export async function disconnectUserSession(telegramUsername: string): Promise<void> {
   const attemptId = activeByUser.get(telegramUsername);
-  if (attemptId) disposeAttempt(attemptId);
+  if (attemptId) await disposeAttemptAsync(attemptId);
+  clearGatewayUserIdleState(telegramUsername);
 
   const base = getTdlibUserDir(telegramUsername);
   if (fs.existsSync(base)) {
@@ -806,8 +847,13 @@ export async function ensureGatewayUserSession(
   telegramUsername: string,
   timeoutMs: number,
 ): Promise<AttemptRecord | null> {
+  await waitForGatewayUserUnload(telegramUsername);
+
   const active = getActiveRecord(telegramUsername);
-  if (active?.client && active.authState === "ready") return active;
+  if (active?.client && active.authState === "ready") {
+    touchGatewayUserActivity(telegramUsername);
+    return active;
+  }
 
   if (!hasPersistedTdlibSession(telegramUsername)) {
     return active;
@@ -819,11 +865,18 @@ export async function ensureGatewayUserSession(
   const promise = (async () => {
     try {
       let record = getActiveRecord(telegramUsername);
-      if (record?.client && record.authState === "ready") return record;
+      if (record?.client && record.authState === "ready") {
+        touchGatewayUserActivity(telegramUsername);
+        return record;
+      }
       if (!record || record.authState === "failed") {
         await startConnectAttempt(telegramUsername);
       }
-      return await waitForUserSessionReady(telegramUsername, timeoutMs);
+      const ready = await waitForUserSessionReady(telegramUsername, timeoutMs);
+      if (ready?.client && ready.authState === "ready") {
+        touchGatewayUserActivity(telegramUsername);
+      }
+      return ready;
     } finally {
       sessionRestoreInflight.delete(telegramUsername);
     }
@@ -1320,16 +1373,32 @@ export function requestBackgroundChatSync(
   return { started: !wasInProgress, inProgress: true };
 }
 
-/** After gateway restart, reload TDLib sessions from disk so live updates resume. */
+/** After gateway restart: lazy = remember disks only; eager = open every session now. */
 export function restorePersistedGatewaySessions(): void {
   const usernames = listPersistedSessionUsernames();
+  const restoreMode = getTdlibRestoreMode();
+
+  registerClientIdleHooks({
+    listLiveUsernames: () => [...activeByUser.keys()],
+    softUnloadUser: softUnloadGatewayUserSession,
+    isSessionRestoreInflight: (telegramUsername) => sessionRestoreInflight.has(telegramUsername),
+  });
 
   if (usernames.length === 0) {
-    logGateway("connect_restore_sessions_none", { tdlibDbRoot: getTdlibDbRoot() });
+    logGateway("connect_restore_sessions_none", { tdlibDbRoot: getTdlibDbRoot(), restoreMode });
     return;
   }
 
-  logGateway("connect_restore_sessions_start", { count: usernames.length });
+  if (restoreMode === "lazy") {
+    logGateway("connect_restore_sessions_lazy", {
+      count: usernames.length,
+      note: "Clients open on demand; auth remains on disk.",
+      sample: usernames.slice(0, 8),
+    });
+    return;
+  }
+
+  logGateway("connect_restore_sessions_start", { count: usernames.length, restoreMode });
 
   for (const telegramUsername of usernames) {
     void (async () => {
@@ -1507,7 +1576,9 @@ export async function createPrivateCallForSession(
     return { ok: false, error: "session_not_ready" };
   }
   const { createPrivateCallForUser } = await import("./privateCall.js");
-  return createPrivateCallForUser(record.client, telegramUsername, userId, options);
+  const result = await createPrivateCallForUser(record.client, telegramUsername, userId, options);
+  if (result.ok) pinGatewayUserSession(telegramUsername, "private_call");
+  return result;
 }
 
 export async function getPrivateCallForSession(
@@ -1538,7 +1609,9 @@ export async function discardPrivateCallForSession(
     return { ok: false, error: "session_not_ready" };
   }
   const { discardPrivateCallForUser } = await import("./privateCall.js");
-  return discardPrivateCallForUser(record.client, telegramUsername, callId, durationSec);
+  const result = await discardPrivateCallForUser(record.client, telegramUsername, callId, durationSec);
+  if (result.ok) unpinGatewayUserSession(telegramUsername, "private_call");
+  return result;
 }
 
 export async function acceptPrivateCallForSession(
@@ -1553,7 +1626,9 @@ export async function acceptPrivateCallForSession(
     return { ok: false, error: "session_not_ready" };
   }
   const { acceptPrivateCallForUser } = await import("./privateCall.js");
-  return acceptPrivateCallForUser(record.client, telegramUsername, callId);
+  const result = await acceptPrivateCallForUser(record.client, telegramUsername, callId);
+  if (result.ok) pinGatewayUserSession(telegramUsername, "private_call");
+  return result;
 }
 
 export async function sendPrivateCallSignalingForSession(
@@ -2176,7 +2251,9 @@ export async function joinChatVoiceForUser(
 
   try {
     const { joinChatVoiceForUser: joinVoice } = await import("./voiceJoin.js");
-    return await joinVoice(record.client, chatId, groupCallId, joinParameters);
+    const result = await joinVoice(record.client, chatId, groupCallId, joinParameters);
+    if (result.ok) pinGatewayUserSession(telegramUsername, "voice");
+    return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : "join_failed";
     return { ok: false, error: message, join_payload: "" };
@@ -2370,6 +2447,7 @@ export async function leaveChatVoiceForUser(
       voice_chat_is_joined: false,
     };
     patchLiveChatVideoChat(telegramUsername, chatId, voice);
+    unpinGatewayUserSession(telegramUsername, "voice");
     return {
       ok: true,
       error: null,

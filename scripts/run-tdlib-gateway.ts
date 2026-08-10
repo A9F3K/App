@@ -5,6 +5,7 @@
 import { loadEnv } from "./load-env.js";
 import { startTdlibGatewayServer } from "../telegram/tdlib/gatewayServer.js";
 import { getTelegramApiCredentials } from "../telegram/tdlib/env.js";
+import { pruneTdlibDiskBeforeRestore } from "../telegram/tdlib/diskPrune.js";
 
 loadEnv();
 
@@ -15,6 +16,9 @@ if (!creds) {
   );
   process.exit(1);
 }
+
+// Volume often fills with TDLib media under */files; ENOSPC crash-loops the gateway.
+pruneTdlibDiskBeforeRestore();
 
 startTdlibGatewayServer();
 

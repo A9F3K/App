@@ -4369,6 +4369,16 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
     if (cacheHit || cachePaintable) {
       applyCachedHistoryPage(cached!, { replace: true });
+      // applyCachedHistoryPage only setStates — messagesCountRef updates on the
+      // next messages effect. Sync now so the deferred path does not treat a
+      // successful cache paint as "unpainted" and flip loadingInitial (that
+      // blocked history SSE for the whole revalidate window → lazy live stream).
+      if (cached!.messages.length > 0) {
+        messagesCountRef.current = Math.max(
+          messagesCountRef.current,
+          cached!.messages.length,
+        );
+      }
       lastLiveSignatureRef.current = chatLiveSignature(chat);
       lastMessageTailSigRef.current = chatMessageTailSignature(chat);
       logPageDisplay("messages_history_cache_hit", {
@@ -4667,11 +4677,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
         // Instant paint path: any usable cache must not block first paint on a
         // multi-second char-budget fetch. Revalidate after idle / short delay.
+        // Do not set loadingInitial on cacheHit — that gated history SSE off
+        // for the full revalidate (prod: no messages_history_stream_connect
+        // until after 3s+ fetch while chat already painted from cache).
         if (previewFresh || cachePaintable || cacheHit) {
-          const paintedAlready = messagesCountRef.current > 0;
-          if (cacheHit && !paintedAlready) {
-            setLoadingInitial(true);
-          }
           scheduleDeferred(() => {
             void runNetworkLoad().finally(() => {
               if (!cancelled) setLoadingInitial(false);
@@ -4914,8 +4923,10 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   ]);
 
   useTelegramChatHistoryStream({
-    enabled:
-      shouldLoadHistory && isAuthenticated && isTelegramMessagesConnected && !loadingInitial,
+    // Connect as soon as the session is ready — do not wait for loadingInitial.
+    // Cache-hit opens used to keep loadingInitial true through revalidate and
+    // deferred live history until HTTP finished (felt like lazy stream on open).
+    enabled: shouldLoadHistory && isAuthenticated && isTelegramMessagesConnected,
     chatId: chat.telegram_chat_id,
     getSinceRevision: () => historyStreamRevisionRef.current || null,
     onRevision: (revision) => {

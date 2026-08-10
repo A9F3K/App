@@ -407,6 +407,8 @@ const en = {
     "Wallet setup is taking too long. Check your connection, update Telegram, or try again.",
   "home.wallet.errorWalletKeyGenerationSlow":
     "Wallet key generation is taking too long. Update Telegram, try a different client, or tap Retry.",
+  "home.wallet.errorKmsWrapFailed":
+    "Wallet encryption service (Cloud KMS) failed. Billing or KMS access may be disabled — check GCP, then tap Retry.",
   "home.wallet.finishingServer":
     "Finishing on the server (saving the row). You can wait or close the app; your address is already shown.",
   "home.wallet.generatingKeys": "Generating your wallet keys…",
@@ -843,6 +845,8 @@ const ru = {
     "Настройка кошелька занимает слишком много времени. Проверьте соединение, обновите Telegram и попробуйте снова.",
   "home.wallet.errorWalletKeyGenerationSlow":
     "Генерация ключей кошелька занимает слишком много времени. Обновите Telegram, смените клиент или нажмите «Повторить».",
+  "home.wallet.errorKmsWrapFailed":
+    "Сбой шифрования кошелька (Cloud KMS). Возможно, отключена оплата или доступ к KMS в GCP — проверьте и нажмите «Повторить».",
   "home.wallet.finishingServer":
     "Завершение на сервере (сохранение записи). Можно подождать или закрыть приложение — адрес уже показан.",
   "home.wallet.generatingKeys": "Генерация ключей кошелька…",
@@ -1223,6 +1227,8 @@ const zh = {
   "home.wallet.errorServerBusy": "钱包服务器超时（繁忙或冷启动）。请点「重试」，或稍等几秒后再试。",
   "home.wallet.errorSetupBudget": "钱包设置耗时过长。请检查网络连接、更新 Telegram，或重试。",
   "home.wallet.errorWalletKeyGenerationSlow": "钱包密钥生成耗时过长。请更新 Telegram、尝试其他客户端，或点「重试」。",
+  "home.wallet.errorKmsWrapFailed":
+    "钱包加密服务（Cloud KMS）失败。可能已禁用计费或 KMS 访问 — 请检查 GCP，然后点「重试」。",
   "home.wallet.finishingServer": "正在服务器上完成（保存记录）。你可以等待或关闭应用；地址已显示。",
   "home.wallet.generatingKeys": "正在生成钱包密钥…",
   "home.wallet.loggedInAs": "你已通过 Telegram 登录为 @{{username}}。",
@@ -1312,6 +1318,8 @@ export function translateFlowErrorForDisplay(locale: AppLocale, message: string)
       "home.wallet.errorSetupBudget",
     "Wallet key generation is taking too long. Update Telegram, try a different client, or tap Retry.":
       "home.wallet.errorWalletKeyGenerationSlow",
+    "Wallet encryption service (Cloud KMS) failed. Billing or KMS access may be disabled — check GCP, then tap Retry.":
+      "home.wallet.errorKmsWrapFailed",
   };
   const key = exact[message];
   if (key) return getAppString(locale, key);

@@ -44,6 +44,7 @@ import {
   resumeExistingSession,
   hasPersistedTdlibSession,
   listPersistedSessionUsernames,
+  ensureGatewayUserSession,
   RESYNC_HTTP_SESSION_WAIT_MS,
   RESYNC_RESTORE_SESSION_WAIT_MS,
   searchChatsForUser,
@@ -73,6 +74,12 @@ import {
   deleteChatMessagesForUser,
   resolvePublicChatForUser,
 } from "./connectAttempts.js";
+import {
+  pinGatewayUserSession,
+  startClientIdleSweeper,
+  touchGatewayUserActivity,
+  unpinGatewayUserSession,
+} from "./clientIdle.js";
 
 function readJson(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -429,12 +436,27 @@ export function startTdlibGatewayServer(): http.Server {
             sendJson(res, 400, { ok: false, error: "username_required" });
             return;
           }
+          touchGatewayUserActivity(telegramUsername);
           const sinceRevisionRaw = url.searchParams.get("sinceRevision");
           const sinceRevision =
             sinceRevisionRaw != null && sinceRevisionRaw.trim() !== ""
               ? Number(sinceRevisionRaw)
               : null;
-          const revision = getLiveChatListRevision(telegramUsername);
+          let revision = getLiveChatListRevision(telegramUsername);
+          let chats = getLiveChatList(telegramUsername);
+          const needsWake =
+            hasPersistedTdlibSession(telegramUsername) &&
+            (revision <= 0 || !chats || chats.length === 0);
+          if (needsWake) {
+            const woken = await ensureGatewayUserSession(
+              telegramUsername,
+              RESYNC_HTTP_SESSION_WAIT_MS,
+            );
+            if (woken?.client && woken.authState === "ready") {
+              revision = getLiveChatListRevision(telegramUsername);
+              chats = getLiveChatList(telegramUsername);
+            }
+          }
           if (
             sinceRevision != null &&
             Number.isFinite(sinceRevision) &&
@@ -450,7 +472,6 @@ export function startTdlibGatewayServer(): http.Server {
             });
             return;
           }
-          const chats = getLiveChatList(telegramUsername);
           const currentRevision = getLiveChatListRevision(telegramUsername);
           const missingPreviewCount = (chats ?? []).filter(
             (row) => typeof row.subtitle !== "string" || row.subtitle.trim().length === 0,
@@ -463,6 +484,7 @@ export function startTdlibGatewayServer(): http.Server {
             revision: currentRevision,
             missingPreviewCount,
             missingAvatarCount,
+            woken: needsWake,
             firstId: first?.telegram_chat_id ?? null,
             firstUserId: safeTelegramUserIdForLog(first?.peer_user_id) ?? null,
             firstTitle: first?.title?.trim() || null,
@@ -473,6 +495,7 @@ export function startTdlibGatewayServer(): http.Server {
             revision: currentRevision,
             chats: chats ?? [],
             chatListSync: buildChatListSyncStatus(telegramUsername),
+            warming: needsWake && (chats?.length ?? 0) === 0,
           });
           return;
         }
@@ -519,6 +542,13 @@ export function startTdlibGatewayServer(): http.Server {
             res,
             telegramUsername,
             sinceRevision != null && Number.isFinite(sinceRevision) ? sinceRevision : null,
+            {
+              onOpen: () => {
+                pinGatewayUserSession(telegramUsername, "chats_stream");
+                void ensureGatewayUserSession(telegramUsername, RESYNC_HTTP_SESSION_WAIT_MS);
+              },
+              onClose: () => unpinGatewayUserSession(telegramUsername, "chats_stream"),
+            },
           );
           return;
         }
@@ -552,6 +582,13 @@ export function startTdlibGatewayServer(): http.Server {
             telegramUsername,
             Math.trunc(chatId),
             sinceRevision != null && Number.isFinite(sinceRevision) ? sinceRevision : null,
+            {
+              onOpen: () => {
+                pinGatewayUserSession(telegramUsername, "messages_stream");
+                void ensureGatewayUserSession(telegramUsername, RESYNC_HTTP_SESSION_WAIT_MS);
+              },
+              onClose: () => unpinGatewayUserSession(telegramUsername, "messages_stream"),
+            },
           );
           return;
         }
@@ -1992,6 +2029,7 @@ export function startTdlibGatewayServer(): http.Server {
   server.listen(port, host, () => {
     logGateway("listening", { url: `http://${host}:${port}` });
     restorePersistedGatewaySessions();
+    startClientIdleSweeper();
   });
 
   return server;

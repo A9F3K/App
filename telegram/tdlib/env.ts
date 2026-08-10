@@ -5,6 +5,51 @@ export function getTdlibDbRoot(): string {
   return path.resolve(root);
 }
 
+/**
+ * `slim` — persist only MTProto auth on disk; do not mirror chats/messages/files
+ * into SQLite (Telegram remains source of truth; fetch on demand into RAM).
+ * `full` — classic TDLib Desktop-style local DB (multi-GB per heavy user).
+ */
+export type TdlibStorageMode = "slim" | "full";
+
+export function getTdlibStorageMode(): TdlibStorageMode {
+  const raw = (process.env.TDLIB_STORAGE_MODE || "slim").trim().toLowerCase();
+  return raw === "full" ? "full" : "slim";
+}
+
+/**
+ * `lazy` — only open TDLib when a user hits the API (mass scale).
+ * `eager` — restore every on-disk session at gateway boot (legacy).
+ */
+export type TdlibRestoreMode = "lazy" | "eager";
+
+export function getTdlibRestoreMode(): TdlibRestoreMode {
+  const raw = (process.env.TDLIB_RESTORE_MODE || "lazy").trim().toLowerCase();
+  return raw === "eager" ? "eager" : "lazy";
+}
+
+/** Idle unload disabled when `TDLIB_CLIENT_IDLE=off` or idle ms is 0. */
+export function isTdlibClientIdleEnabled(): boolean {
+  const flag = (process.env.TDLIB_CLIENT_IDLE || "auto").trim().toLowerCase();
+  if (flag === "off" || flag === "0" || flag === "false") return false;
+  return getTdlibClientIdleMs() > 0;
+}
+
+/** Close unused in-memory TDLib clients after this idle window (auth stays on disk). */
+export function getTdlibClientIdleMs(): number {
+  const raw = (process.env.TDLIB_CLIENT_IDLE_MS || "900000").trim();
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return 900_000;
+  return n;
+}
+
+export function getTdlibClientIdleCheckMs(): number {
+  const raw = (process.env.TDLIB_CLIENT_IDLE_CHECK_MS || "60000").trim();
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 5_000) return 60_000;
+  return n;
+}
+
 export function getTdlibUserDir(telegramUsername: string): string {
   const safe = telegramUsername.replace(/[^a-zA-Z0-9._-]/g, "_");
   return path.join(getTdlibDbRoot(), safe);
