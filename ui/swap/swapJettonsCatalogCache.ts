@@ -230,3 +230,9 @@ export function invalidateSwapJettonsCatalog(): void {
   resetCatalog();
   flushNow();
 }
+
+export function findSwapJettonByAddress(address: string): SwapJetton | null {
+  const key = address.trim().toLowerCase();
+  if (!key) return null;
+  return jettons.find((j) => j.address?.toLowerCase() === key) ?? null;
+}

@@ -30,7 +30,7 @@ export type ChooseCurrencyRow = {
   rate: string;
   networks: string;
   marketCap: string;
-  /** Numeric USD market cap used for descending sort (0 when unknown). */
+  /** Volume-adjusted USD rank score for descending sort (0 when unknown / excluded). */
   marketCapUsd: number;
   volume: string;
   /**

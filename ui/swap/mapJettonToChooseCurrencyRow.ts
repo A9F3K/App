@@ -6,8 +6,13 @@ import {
   formatSwapTokenPriceUsd,
   formatSwapUsdCompact,
 } from "./formatSwapTokenMarketValue";
+import { jettonImpersonatesKnownBrand } from "./jettonImpersonatesKnownBrand";
 import { jettonUsesStolenUsdtBranding } from "./jettonStolenUsdtBranding";
-import { resolveJettonMarketCapUsd } from "./resolveJettonMarketCapUsd";
+import {
+  jettonFailsVolumeToMcapFilter,
+  resolveJettonMarketCapRankUsd,
+  resolveJettonMarketCapUsd,
+} from "./resolveJettonMarketCapUsd";
 import type { SwapAccountJettonBalance, SwapJetton } from "./swapJettonsTypes";
 
 const DLLR_SYMBOL = "DLLR";
@@ -42,12 +47,26 @@ export function mapJettonToChooseCurrencyRow(
   const symbol = normalizeJettonLabel(jetton.symbol ?? "");
   const address = jetton.address?.toLowerCase();
   if (!symbol || !address || symbol.toUpperCase() === DLLR_SYMBOL) return null;
+  // Brand lookalikes (e.g. preOPENAI) — hide entirely, do not merely demote.
+  if (jettonImpersonatesKnownBrand(jetton)) return null;
+
+  const stolenUsdt = jettonUsesStolenUsdtBranding(jetton);
+  // Extreme mcap/volume fantasies — hide; soft demotion handles thinner books.
+  if (
+    !stolenUsdt &&
+    jettonFailsVolumeToMcapFilter({
+      verification: jetton.verification,
+      market_stats: jetton.market_stats,
+    })
+  ) {
+    return null;
+  }
 
   const stats = jetton.market_stats;
   const balanceRaw = balanceByAddress.get(address);
-  const stolenUsdt = jettonUsesStolenUsdtBranding(jetton);
   const resolvedCap = stolenUsdt ? null : resolveJettonMarketCapUsd(jetton);
-  const marketCapUsd = resolvedCap ?? 0;
+  // Sort by volume-adjusted rank (target ≈ 1% daily turnover); display stays trusted mcap.
+  const marketCapUsd = stolenUsdt ? 0 : resolveJettonMarketCapRankUsd(jetton);
   const name = normalizeJettonLabel(jetton.name ?? "") || symbol;
 
   return {

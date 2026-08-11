@@ -12,7 +12,12 @@ export const MESSAGE_CHAT_LIST_SEARCH_VERTICAL_INSET_PX = 10;
 export const MESSAGE_CHAT_LIST_SEARCH_MARGIN_BELOW_PX = 5;
 /** Overlapping participant avatars in the voice strip. */
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_PX = 28;
-export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX = 10;
+/**
+ * Negative margin between stacked faces. Keep ~3/4 of each avatar visible
+ * (overlap ≈ 1/4 of {@link MESSAGE_CHAT_VOICE_BAR_AVATAR_PX}); larger values
+ * clipped faces to roughly half in the strip preview.
+ */
+export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX = 7;
 /** 1px background seam between stacked faces (covers speaking rings in the overlap). */
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_DIVIDER_PX = 1;
 export const MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS = 5;

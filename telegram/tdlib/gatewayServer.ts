@@ -325,10 +325,16 @@ export function startTdlibGatewayServer(): http.Server {
             sendJson(res, 400, { ok: false, error: "username_and_query_required" });
             return;
           }
+          const messageSearchWithBudget = Promise.race([
+            searchMessagesChatIdsForUser(telegramUsername, query),
+            new Promise<number[]>((resolve) => {
+              setTimeout(() => resolve([]), 6_000);
+            }),
+          ]);
           const [contacts, chats, messageChatIds] = await Promise.all([
             searchContactsForUser(telegramUsername, query),
             searchChatsForUser(telegramUsername, query),
-            searchMessagesChatIdsForUser(telegramUsername, query),
+            messageSearchWithBudget,
           ]);
           const byChatId = new Map<
             number,

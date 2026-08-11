@@ -361,26 +361,24 @@ async function discoverPrivateChatsByChatSearch(
   for (const query of queries) {
     const trimmed = query.trim();
     if (!trimmed) continue;
-    for (const chatList of [{ _: "chatListMain" as const }, { _: "chatListArchive" as const }]) {
-      try {
-        const result = (await client.invoke({
-          _: "searchChats",
-          chat_list: chatList,
-          query: trimmed,
-          limit: 20,
-        })) as { chat_ids?: number[] };
-        for (const chatId of result.chat_ids ?? []) {
-          if (collected.has(chatId)) continue;
-          try {
-            const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
-            collected.set(chatId, chat);
-          } catch {
-            /* skip unreadable chat */
-          }
+    try {
+      // TDLib `searchChats` is offline query+limit only (no chat_list).
+      const result = (await client.invoke({
+        _: "searchChats",
+        query: trimmed,
+        limit: 20,
+      })) as { chat_ids?: number[] };
+      for (const chatId of result.chat_ids ?? []) {
+        if (collected.has(chatId)) continue;
+        try {
+          const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+          collected.set(chatId, chat);
+        } catch {
+          /* skip unreadable chat */
         }
-      } catch {
-        /* skip failed search */
       }
+    } catch {
+      /* skip failed search */
     }
   }
   return [...collected.values()];

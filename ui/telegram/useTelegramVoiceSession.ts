@@ -51,11 +51,14 @@ export type TelegramVoiceSession = {
   /** Start getUserMedia during the Join click (before SDP). */
   prefetchMic: () => void;
   /**
-   * Resolves true when the WebRTC join succeeded (or was already joined).
+   * Resolves when the WebRTC join finishes (or was already joined).
    * Pass `startMuted: false` when the account is already unmuted in the call
    * (another client) so web join does not remute and paint a red self mic.
+   * On failure, `error` is set synchronously so callers can honor FLOOD_WAIT.
    */
-  joinListen: (opts?: { startMuted?: boolean }) => Promise<boolean>;
+  joinListen: (opts?: {
+    startMuted?: boolean;
+  }) => Promise<{ ok: boolean; error?: string | null }>;
   /**
    * Force TDLib rejoin while keeping (or restoring) mic state. Used when mute /
    * speaking / in-call messages fail with GROUPCALL_JOIN_MISSING despite a live PC.
@@ -70,7 +73,7 @@ export type TelegramVoiceSession = {
   /**
    * User unmuted a screencast in the participant menu — arm video SDP even when
    * mix RMS is quiet (and clear a prior stall sticky-block). Pass the screen
-   * endpoint so a 2nd unmute wins over cap_1 sticky on the first share.
+   * endpoint so a 2nd unmute wins over sticky first share under the cap.
    */
   preferExplicitRemoteVideoSubscribe: (
     preferredEndpointId?: string | null,
@@ -433,10 +436,12 @@ export function useTelegramVoiceSession({
     return () => window.clearInterval(id);
   }, [joined]);
 
-  const joinListen = useCallback(async (opts?: { startMuted?: boolean }): Promise<boolean> => {
-    if (Platform.OS !== "web") return false;
+  const joinListen = useCallback(async (opts?: {
+    startMuted?: boolean;
+  }): Promise<{ ok: boolean; error?: string | null }> => {
+    if (Platform.OS !== "web") return { ok: false, error: "unsupported" };
     const session = sessionRef.current;
-    if (!session) return false;
+    if (!session) return { ok: false, error: "no_session" };
     const startMuted = opts?.startMuted !== false;
     if (session.isJoined) {
       setJoined(true);
@@ -445,13 +450,13 @@ export function useTelegramVoiceSession({
       setNegotiating(session.isNegotiating());
       session.setRemoteAudioEnabled(true);
       session.resumeRemoteAudio();
-      return true;
+      return { ok: true };
     }
     if (session.isNegotiating()) {
       setJoined(false);
       joinedRef.current = false;
       setNegotiating(true);
-      return false;
+      return { ok: false, error: "negotiating" };
     }
 
     setMediaConnected(false);
@@ -514,13 +519,13 @@ export function useTelegramVoiceSession({
         const enabled = session.isMicEnabled;
         micActiveRef.current = enabled;
         setMicActive(enabled);
-        return true;
+        return { ok: true };
       }
       if (!joinedOk) {
         session.abortInFlightJoin("voice_join_timeout");
         setError("voice_join_timeout");
         appWarn("[voice-session-join]", "voice_join_timeout", { chatId, groupCallId });
-        return false;
+        return { ok: false, error: "voice_join_timeout" };
       }
       setJoined(true);
       joinedRef.current = true;
@@ -534,7 +539,7 @@ export function useTelegramVoiceSession({
       const enabled = session.isMicEnabled;
       micActiveRef.current = enabled;
       setMicActive(enabled);
-      return true;
+      return { ok: true };
     } catch (err) {
       const message = err instanceof Error ? err.message : "voice_join_failed";
       if (message === "join_aborted") {
@@ -544,11 +549,11 @@ export function useTelegramVoiceSession({
           groupCallId,
           note: "join_aborted",
         });
-        return false;
+        return { ok: false, error: "voice_join_timeout" };
       }
       setError(message);
       appWarn("[voice-session-join]", message, { chatId, groupCallId });
-      return false;
+      return { ok: false, error: message };
     } finally {
       if (joinWatchdog) clearTimeout(joinWatchdog);
       setJoining(false);

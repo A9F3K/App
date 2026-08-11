@@ -70,6 +70,21 @@ import { setActiveVoiceDock } from "./activeVoiceDockStore";
 const JOIN_BUTTON_HEIGHT_PX = 30;
 const JOIN_BUTTON_TEXT_INSET_PX = 30;
 
+/** TDLib / Telegram FLOOD_WAIT — "Too Many Requests: retry after 32". */
+function parseTelegramFloodWaitMs(
+  message: string | null | undefined,
+): number | null {
+  if (!message) return null;
+  const match =
+    message.match(/retry after\s+(\d+)/i) ||
+    message.match(/FLOOD_WAIT[_\s:-]*(\d+)/i);
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  // Cap so a huge wait does not look like a hung UI forever.
+  return Math.min(Math.max(Math.ceil(seconds) * 1000 + 500, 1_500), 120_000);
+}
+
 function voiceVideoInfoSignature(
   info: TelegramChatVoiceParticipant["video_info"] | null | undefined,
 ): string {
@@ -260,11 +275,16 @@ export function MessageChatVoiceBar({
   const lastGoodRemoteVideoAtRef = useRef(0);
   /** Skip identical auto-subscribe payloads — duplicates restarted audio-settle. */
   const lastRemoteVideoRequestSigRef = useRef("");
-  /** Endpoint from the latest menu unmute — wins over lastGood under cap_1. */
+  /** Endpoint from the latest menu unmute — wins over lastGood under cap. */
   const preferredExplicitScreenEndpointRef = useRef<string | null>(null);
   /**
+   * Auto-show already committed setRequestedVideoChannels for these endpoints
+   * (telegram-tt). Do not re-prefer / re-push until leave, deny, or failover.
+   */
+  const autoScreenCommittedEndpointsRef = useRef<Set<string>>(new Set());
+  /**
    * Peers whose screen/camera this session should subscribe (menu unmute or
-   * join-time auto-show for the first live screencast).
+   * join-time auto-show for live screencasts).
    */
   const explicitScreenWantedKeysRef = useRef<Set<string>>(new Set());
   /** User muted a peer's screen this join — do not auto-show that peer again. */
@@ -481,7 +501,8 @@ export function MessageChatVoiceBar({
         startMuted,
         preserveUnmuted: !startMuted,
       });
-      const ok = await joinListenRef.current({ startMuted });
+      const joinResult = await joinListenRef.current({ startMuted });
+      const ok = joinResult.ok;
       inFlight = false;
       logPageDisplay(
         ok ? "messages_voice_webrtc_join_ok" : "messages_voice_webrtc_join_fail",
@@ -490,6 +511,7 @@ export function MessageChatVoiceBar({
           groupCallId,
           attempt: joinAttemptsRef.current,
           popoverOpen: popoverOpenRef.current,
+          error: ok ? null : joinResult.error ?? null,
           level: ok ? "info" : "warn",
         },
       );
@@ -531,12 +553,20 @@ export function MessageChatVoiceBar({
         }
         return;
       }
-      const delayMs = Math.min(2000 * 2 ** Math.min(attempt - 1, 2), 12_000);
+      // Telegram FLOOD_WAIT / "Too Many Requests: retry after N" must be honored —
+      // retrying in 2s burns the budget and leaves screencast auto-show dead
+      // (webrtcJoined=false while roster already lists screen publishers).
+      const floodWaitMs = parseTelegramFloodWaitMs(joinResult.error);
+      const delayMs =
+        floodWaitMs ??
+        Math.min(2000 * 2 ** Math.min(attempt - 1, 2), 12_000);
       logPageDisplay("messages_voice_webrtc_join_retry", {
         chatId,
         groupCallId,
         attempt,
         delayMs,
+        floodWaitMs: floodWaitMs ?? null,
+        error: joinResult.error ?? null,
         level: "warn",
       });
       timer = setTimeout(() => {
@@ -2370,6 +2400,7 @@ export function MessageChatVoiceBar({
   const setParticipantListenVolumes = voiceSession.setParticipantListenVolumes;
   const voiceJoined = voiceSession.joined;
   const remoteVideoRepushEpoch = voiceSession.remoteVideoRepushEpoch;
+  const remoteVideoSources = voiceSession.remoteVideoSources;
   const mixPausedScreenEndpoints = voiceSession.mixPausedScreenEndpoints;
   const mixProtectDropHadLiveVideo = voiceSession.mixProtectDropHadLiveVideo;
   const mixProtectScreenAutoRestorePending =
@@ -2400,9 +2431,9 @@ export function MessageChatVoiceBar({
 
   // Mix-protect pause handling:
   // - Ghost (0 video RTP): revoke + ban endpoint so auto-show can pick next.
-  // - Live H264 that froze Opus + one-shot restore armed: keep unmuted intent.
-  // - Live H264 without restore (e.g. auto-show): ban endpoint + block further
-  //   auto-show so VoiceBar does not re-push the screen that killed the mix.
+  // - Live H264 that froze Opus + one-shot restore armed: keep unmuted intent
+  //   (explicit unmute and auto-show that already painted both arm restore).
+  // - Live H264 without restore: ban endpoint + block further auto-show.
   useEffect(() => {
     if (!voiceJoined || Platform.OS !== "web") return;
     if (mixPausedScreenSet.size === 0) return;
@@ -2440,6 +2471,9 @@ export function MessageChatVoiceBar({
           preferredExplicitScreenEndpointRef.current === endpoint
         ) {
           preferredExplicitScreenEndpointRef.current = null;
+        }
+        if (autoScreenCommittedEndpointsRef.current.has(endpoint)) {
+          autoScreenCommittedEndpointsRef.current.delete(endpoint);
         }
       } else {
         // Live stall with restore armed: keep muteScreen=false + wanted key.
@@ -2507,6 +2541,7 @@ export function MessageChatVoiceBar({
       failedAutoScreenEndpointsRef.current.clear();
       autoScreenBlockedAfterLiveMixStallRef.current = false;
       screenEndpointFirstSeenAtRef.current.clear();
+      autoScreenCommittedEndpointsRef.current.clear();
       setDeniedScreenPeerKeys((prev) => (prev.length === 0 ? prev : []));
       setWantedScreenPeerKeys((prev) => (prev.length === 0 ? prev : []));
       return;
@@ -2514,21 +2549,14 @@ export function MessageChatVoiceBar({
     if (autoScreenBlockedAfterLiveMixStallRef.current) {
       return;
     }
-    const alreadyShowing = participantsRef.current.some((row) => {
-      if (row.is_self) return false;
-      if (!participantHasScreenPublisher(row)) return false;
-      const endpoint = row.screen_sharing_video_info?.endpoint_id?.trim() || "";
-      if (endpoint && mixPausedScreenSet.has(endpoint)) return false;
-      if (endpoint && failedAutoScreenEndpointsRef.current.has(endpoint)) {
-        return false;
-      }
-      const key = voiceParticipantPrefsKey(row);
-      if (!explicitScreenWantedKeysRef.current.has(key)) return false;
-      const prefs = participantMediaPrefsRef.current[key];
-      return prefs?.muteScreen === false;
-    });
-    if (alreadyShowing) return;
-
+    // While mix-protect restore is pending, do not failover-auto-show another
+    // publisher — that burned the one-shot restore during audio recover.
+    if (mixProtectScreenAutoRestorePending) {
+      return;
+    }
+    // Prefer is armed + unmute prefs are enough — do NOT wait for live paint.
+    // Requiring remoteVideoSources caused: prefer → bump epoch → re-run prefer
+    // → cancel applyRequests (120ms) forever (sdp_gate requested=0 loop).
     type ScreenCand = {
       key: string;
       endpoint: string;
@@ -2536,6 +2564,7 @@ export function MessageChatVoiceBar({
       score: number;
       firstSeenAt: number;
       hasGroups: boolean;
+      ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
     };
     const now = Date.now();
     const cands: ScreenCand[] = [];
@@ -2574,6 +2603,10 @@ export function MessageChatVoiceBar({
         score,
         firstSeenAt,
         hasGroups: groups.length > 0,
+        ssrcGroups: groups.map((g) => ({
+          semantics: g.semantics,
+          sourceIds: g.source_ids,
+        })),
       });
     }
     if (cands.length === 0) return;
@@ -2582,11 +2615,11 @@ export function MessageChatVoiceBar({
       if (a.hasGroups !== b.hasGroups) return a.hasGroups ? -1 : 1;
       return b.firstSeenAt - a.firstSeenAt;
     });
-    const pick = cands[0];
-    // Prefer complete SSRC (SIM+FID) so Colibri video SDP is less likely to
-    // freeze Opus. Incomplete publishers stay muted until groups arrive or
-    // the user unmutes manually.
-    if (!pick.hasGroups || pick.score < 100) {
+    // Prefer complete SSRC (SIM+FID). Cap at 2 concurrent remote screens.
+    const MAX_AUTO_SCREENS = 2;
+    const eligible = cands.filter((c) => c.hasGroups && c.score >= 100);
+    if (eligible.length === 0) {
+      const pick = cands[0];
       logPageDisplay("messages_voice_remote_screen_auto_show_wait_ssrc", {
         chatId,
         title: pick.title,
@@ -2599,43 +2632,95 @@ export function MessageChatVoiceBar({
       });
       return;
     }
-    explicitScreenWantedKeysRef.current.add(pick.key);
-    setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
-    const existingPrefs =
-      participantMediaPrefsRef.current[pick.key] ?? {
-        volumePercent: 100,
-        muteVideo: true,
-        muteScreen: true,
+    const target = Math.min(MAX_AUTO_SCREENS, eligible.length);
+    const committed = autoScreenCommittedEndpointsRef.current;
+    const stillValid = eligible.filter((c) => committed.has(c.endpoint));
+    if (stillValid.length >= target) {
+      return;
+    }
+    const toAdd = eligible
+      .filter((c) => !committed.has(c.endpoint))
+      .slice(0, target - stillValid.length);
+    if (toAdd.length === 0) return;
+
+    const nextRequests: Array<{
+      endpointId: string;
+      kind: "screen";
+      ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
+    }> = [];
+    for (const pick of [...stillValid, ...toAdd].slice(0, target)) {
+      explicitScreenWantedKeysRef.current.add(pick.key);
+      const existingPrefs =
+        participantMediaPrefsRef.current[pick.key] ?? {
+          volumePercent: 100,
+          muteVideo: true,
+          muteScreen: true,
+        };
+      participantMediaPrefsRef.current = {
+        ...participantMediaPrefsRef.current,
+        [pick.key]: { ...existingPrefs, muteScreen: false },
       };
-    participantMediaPrefsRef.current = {
-      ...participantMediaPrefsRef.current,
-      [pick.key]: { ...existingPrefs, muteScreen: false },
-    };
-    setParticipantMediaPrefs((prev) => {
-      const cur = prev[pick.key] ?? existingPrefs;
-      if (cur.muteScreen === false) return prev;
-      return { ...prev, [pick.key]: { ...cur, muteScreen: false } };
-    });
-    preferredExplicitScreenEndpointRef.current = pick.endpoint;
-    preferExplicitRemoteVideoSubscribe(pick.endpoint, { autoShow: true });
-    logPageDisplay("messages_voice_remote_screen_auto_show", {
+      committed.add(pick.endpoint);
+      nextRequests.push({
+        endpointId: pick.endpoint,
+        kind: "screen",
+        ssrcGroups: pick.ssrcGroups,
+      });
+    }
+    setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
+    setParticipantMediaPrefs({ ...participantMediaPrefsRef.current });
+    const primary = toAdd[0] ?? stillValid[0];
+    preferredExplicitScreenEndpointRef.current = primary.endpoint;
+    // Arm SDP gate first (telegram-tt arms then setRequestedVideoChannels).
+    preferExplicitRemoteVideoSubscribe(primary.endpoint, { autoShow: true });
+    const nextSig = nextRequests
+      .map(
+        (r) =>
+          `screen:${r.endpointId}:${r.ssrcGroups
+            .map((g) => `${g.semantics}:${g.sourceIds.join(",")}`)
+            .join(";")}`,
+      )
+      .sort()
+      .join("|");
+    lastGoodRemoteVideoRequestsRef.current = nextRequests;
+    lastGoodRemoteVideoAtRef.current = Date.now();
+    lastRemoteVideoRequestSigRef.current = nextSig;
+    setRemoteVideoRequests(nextRequests);
+    for (const pick of toAdd) {
+      logPageDisplay("messages_voice_remote_screen_auto_show", {
+        chatId,
+        title: pick.title,
+        endpoint: pick.endpoint,
+        score: pick.score,
+        hasGroups: pick.hasGroups,
+        candidates: cands.length,
+        candidateTitles: cands.slice(0, 4).map((c) => c.title),
+        subscribed: nextRequests.length,
+        level: "info",
+        note:
+          "instant setRequestedVideoChannels (tt/tgcalls); soft 180p; mix-protect may drop if Opus freezes",
+      });
+    }
+    logPageDisplay("messages_voice_remote_video_requests", {
       chatId,
-      title: pick.title,
-      endpoint: pick.endpoint,
-      score: pick.score,
-      hasGroups: pick.hasGroups,
-      candidates: cands.length,
-      candidateTitles: cands.slice(0, 4).map((c) => c.title),
+      count: nextRequests.length,
+      kinds: nextRequests.map((r) => r.kind),
+      endpoints: nextRequests.map((r) => r.endpointId).slice(0, 4),
+      listed: participantsRef.current.length,
+      hint: rosterTotalHintRef.current,
       level: "info",
-      note:
-        "auto-subscribe best live screencast at soft 180p; mix-protect may drop if Opus freezes",
+      note: "auto_show_instant_subscribe",
     });
   }, [
     voiceJoined,
+    // Roster / publisher identity — NOT remoteVideoRepushEpoch (that is for
+    // apply-requests only; including it re-prefer-loops and cancels subscribe).
     remoteVideoSourceKey,
     mixPausedScreenSet,
+    mixProtectScreenAutoRestorePending,
     chatId,
     preferExplicitRemoteVideoSubscribe,
+    setRemoteVideoRequests,
   ]);
 
   useEffect(() => {
@@ -2648,6 +2733,7 @@ export function MessageChatVoiceBar({
       autoScreenBlockedAfterLiveMixStallRef.current = false;
       screenEndpointFirstSeenAtRef.current.clear();
       preferredExplicitScreenEndpointRef.current = null;
+      autoScreenCommittedEndpointsRef.current.clear();
       setWantedScreenPeerKeys((prev) => (prev.length === 0 ? prev : []));
       setRemoteVideoRequests([]);
       return;
@@ -2747,10 +2833,10 @@ export function MessageChatVoiceBar({
         return (hasSim ? 100 : 0) + fidCount * 20 + groups.length * 10;
       };
       const COMPLETE_SSRC_MIN = 100; // requires SIM
-      // Colibri: dual subscribe (screen+camera) reliably freezes the mix Opus
-      // m-line. Prefer one screen; camera only when nobody is sharing.
+      // Colibri: too many video m-lines freeze mix Opus. Prefer up to two
+      // screens; camera only when nobody is sharing.
       const hasScreenRequest = requests.some((r) => r.kind === "screen");
-      const MAX_REMOTE_VIDEOS = 1;
+      const MAX_REMOTE_VIDEOS = hasScreenRequest ? 2 : 1;
       const sortVideoRequests = (
         list: typeof requests,
       ): typeof requests =>
@@ -2786,7 +2872,7 @@ export function MessageChatVoiceBar({
         next.push(row);
       };
       if (completeRequests.length > 0) {
-        // Prefer the endpoint the user just unmuted (2nd share under cap_1).
+        // Prefer the endpoint the user just unmuted (2nd share under cap).
         const preferredEndpoint =
           preferredExplicitScreenEndpointRef.current?.trim() || "";
         if (preferredEndpoint) {
@@ -2948,12 +3034,12 @@ export function MessageChatVoiceBar({
         note:
           next.length > 0
             ? hasScreenRequest
-              ? "explicit_video_screen_only_cap_1"
+              ? "explicit_video_screen_only_cap_2"
               : pendingGroups.length > 0 ||
                   requests.length > next.length ||
                   incompleteRequests.length > 0
-                ? "explicit_video_complete_ssrc_cap_1"
-                : "explicit_video_subscribe_cap_1"
+                ? "explicit_video_complete_ssrc_cap_2"
+                : "explicit_video_subscribe_cap_2"
             : requests.length > 0
               ? "skipped_incomplete_ssrc_video — audio-first"
               : participantsRef.current.some(
@@ -3210,13 +3296,69 @@ export function MessageChatVoiceBar({
         return { ...prev, [key]: { ...existing, muteScreen: nextMute } };
       });
       // Unmute must arm video SDP even when mix RMS is quiet; pass endpoint so
-      // a 2nd share wins over cap_1 sticky on the first unmuted screen.
-      if (!nextMute) {
+      // a 2nd share is included under the dual-screen cap.
+      // telegram-tt: setRequestedVideoChannels in the same turn (not await
+      // remoteVideoRepushEpoch / delayed apply).
+      if (!nextMute && endpoint) {
+        preferredExplicitScreenEndpointRef.current = endpoint;
+        autoScreenCommittedEndpointsRef.current.add(endpoint);
+        voiceSession.preferExplicitRemoteVideoSubscribe(endpoint);
+        const groups = participant.screen_sharing_video_info?.source_groups;
+        if (groups && groups.length > 0) {
+          const request = {
+            endpointId: endpoint,
+            kind: "screen" as const,
+            ssrcGroups: groups.map((g) => ({
+              semantics: g.semantics,
+              sourceIds: g.source_ids,
+            })),
+          };
+          const merged = [
+            request,
+            ...lastGoodRemoteVideoRequestsRef.current.filter(
+              (r) => r.endpointId !== endpoint && r.kind === "screen",
+            ),
+          ].slice(0, 2);
+          const nextSig = merged
+            .map(
+              (r) =>
+                `screen:${r.endpointId}:${r.ssrcGroups
+                  .map((g) => `${g.semantics}:${g.sourceIds.join(",")}`)
+                  .join(";")}`,
+            )
+            .sort()
+            .join("|");
+          lastGoodRemoteVideoRequestsRef.current = merged;
+          lastGoodRemoteVideoAtRef.current = Date.now();
+          lastRemoteVideoRequestSigRef.current = nextSig;
+          setRemoteVideoRequests(merged);
+          logPageDisplay("messages_voice_remote_video_requests", {
+            chatId,
+            count: merged.length,
+            kinds: merged.map((r) => r.kind),
+            endpoints: merged.map((r) => r.endpointId),
+            level: "info",
+            note: "menu_unmute_instant_subscribe",
+          });
+        }
+      } else if (!nextMute) {
         preferredExplicitScreenEndpointRef.current = endpoint;
         voiceSession.preferExplicitRemoteVideoSubscribe(endpoint);
+      } else if (
+        nextMute &&
+        endpoint &&
+        autoScreenCommittedEndpointsRef.current.has(endpoint)
+      ) {
+        autoScreenCommittedEndpointsRef.current.delete(endpoint);
       }
     },
-    [ensureParticipantPrefs, voicePrefsAccountId, voiceSession],
+    [
+      chatId,
+      ensureParticipantPrefs,
+      setRemoteVideoRequests,
+      voicePrefsAccountId,
+      voiceSession,
+    ],
   );
 
   // Hydrate account-persisted mute / stream prefs into session state so roster
@@ -4430,8 +4572,13 @@ export function MessageChatVoiceBar({
     ) {
       return t("messages.voiceChat.errors.screenShareFailed");
     }
+    const floodMs = parseTelegramFloodWaitMs(code);
+    if (floodMs != null) {
+      const seconds = Math.max(1, Math.ceil(floodMs / 1000));
+      return tf("messages.voiceChat.errors.joinRateLimited", { seconds });
+    }
     return null;
-  }, [t, voiceSession.error]);
+  }, [t, tf, voiceSession.error]);
 
   const showStrip = Boolean(joined || presenceConfirmed);
 

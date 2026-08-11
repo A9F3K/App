@@ -1,0 +1,150 @@
+import { useSyncExternalStore } from "react";
+
+import type { SwapCurrencySide } from "./swapCurrencyPicker";
+import {
+  SWAP_TON_TOKEN,
+  SWAP_USDT_TOKEN,
+  type SwapPairToken,
+  type SwapQuoteDirection,
+} from "./swapPairTypes";
+
+export type SwapPairState = {
+  sellToken: SwapPairToken;
+  buyToken: SwapPairToken;
+  sellAmount: string;
+  buyAmount: string;
+  /** Which field the user last edited. */
+  quoteDirection: SwapQuoteDirection;
+  /** Last successful route meta for the action row. */
+  lastQuotedSellAmount: number | null;
+  lastQuotedBuyAmount: number | null;
+  quoteError: string | null;
+  isQuoting: boolean;
+};
+
+const listeners = new Set<() => void>();
+
+let state: SwapPairState = {
+  sellToken: SWAP_USDT_TOKEN,
+  buyToken: SWAP_TON_TOKEN,
+  sellAmount: "1",
+  buyAmount: "",
+  quoteDirection: "exact_in",
+  lastQuotedSellAmount: null,
+  lastQuotedBuyAmount: null,
+  quoteError: null,
+  isQuoting: false,
+};
+
+function emit() {
+  for (const listener of listeners) listener();
+}
+
+function setState(patch: Partial<SwapPairState>) {
+  state = { ...state, ...patch };
+  emit();
+}
+
+export function getSwapPairState(): SwapPairState {
+  return state;
+}
+
+export function subscribeSwapPair(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function useSwapPairState(): SwapPairState {
+  return useSyncExternalStore(subscribeSwapPair, getSwapPairState, getSwapPairState);
+}
+
+export function setSwapSellAmount(amount: string) {
+  setState({
+    sellAmount: amount,
+    quoteDirection: "exact_in",
+  });
+}
+
+export function setSwapBuyAmount(amount: string) {
+  setState({
+    buyAmount: amount,
+    quoteDirection: "exact_out",
+  });
+}
+
+export function setSwapQuoteResult(opts: {
+  sellAmount: string;
+  buyAmount: string;
+  sellNumeric: number | null;
+  buyNumeric: number | null;
+  error: string | null;
+  isQuoting: boolean;
+}) {
+  setState({
+    sellAmount: opts.sellAmount,
+    buyAmount: opts.buyAmount,
+    lastQuotedSellAmount: opts.sellNumeric,
+    lastQuotedBuyAmount: opts.buyNumeric,
+    quoteError: opts.error,
+    isQuoting: opts.isQuoting,
+  });
+}
+
+export function setSwapQuoting(isQuoting: boolean) {
+  if (state.isQuoting === isQuoting) return;
+  setState({ isQuoting });
+}
+
+export function setSwapTokenForSide(side: SwapCurrencySide, token: SwapPairToken) {
+  if (side === "sell") {
+    const sameAsBuy =
+      token.address.toLowerCase() === state.buyToken.address.toLowerCase() &&
+      Boolean(token.isNative) === Boolean(state.buyToken.isNative);
+    if (sameAsBuy) {
+      setState({
+        sellToken: token,
+        buyToken: state.sellToken,
+        buyAmount: "",
+        quoteDirection: "exact_in",
+      });
+      return;
+    }
+    setState({
+      sellToken: token,
+      buyAmount: "",
+      quoteDirection: "exact_in",
+    });
+    return;
+  }
+  const sameAsSell =
+    token.address.toLowerCase() === state.sellToken.address.toLowerCase() &&
+    Boolean(token.isNative) === Boolean(state.sellToken.isNative);
+  if (sameAsSell) {
+    setState({
+      buyToken: token,
+      sellToken: state.buyToken,
+      buyAmount: "",
+      quoteDirection: "exact_in",
+    });
+    return;
+  }
+  setState({
+    buyToken: token,
+    buyAmount: "",
+    quoteDirection: "exact_in",
+  });
+}
+
+export function rotateSwapPair() {
+  setState({
+    sellToken: state.buyToken,
+    buyToken: state.sellToken,
+    sellAmount: state.buyAmount || state.sellAmount,
+    buyAmount: "",
+    quoteDirection: "exact_in",
+    lastQuotedBuyAmount: null,
+    lastQuotedSellAmount: null,
+  });
+}

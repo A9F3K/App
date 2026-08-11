@@ -1060,17 +1060,44 @@ async function collectChatSearchHit(
     const messageHistoryMap = await import("./messageHistoryMap.js");
     const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
     const hint = usernameHint?.trim().replace(/^@+/, "") || null;
+    const peerUserId = chatPreview.peerUserIdFromChat(chat);
+    let peerUsername = chatPreview.peerUsernameFromChat(chat);
+    // Private chats store username on the User object, not chat.type.
+    if (!peerUsername && peerUserId != null && peerUserId !== 0) {
+      try {
+        const user = (await client.invoke({ _: "getUser", user_id: peerUserId })) as {
+          username?: string;
+          usernames?: { active_usernames?: string[]; editable_username?: string };
+        };
+        peerUsername = chatPreview.usernameFromTdUser(user);
+      } catch {
+        /* keep null */
+      }
+    }
     collected.set(chatId, {
       chatId,
       title: chatPreview.chatTitle(chat),
-      peerUserId: chatPreview.peerUserIdFromChat(chat),
-      peerUsername: chatPreview.peerUsernameFromChat(chat),
-      chatUsername: chatPreview.chatUsernameFromChat(chat) ?? hint,
+      peerUserId,
+      peerUsername: peerUsername ?? (hint && peerUserId != null ? hint : null),
+      chatUsername: chatPreview.chatUsernameFromChat(chat) ?? (peerUserId == null ? hint : null),
       chatKind: messageHistoryMap.chatKindFromTdChat(chat),
     });
   } catch {
     /* skip unavailable chat */
   }
+}
+
+/** Strip leading @ for TDLib public/username queries; keep multi-word titles intact. */
+function normalizeGlobalSearchQuery(query: string): {
+  trimmed: string;
+  bare: string;
+  looksLikeUsername: boolean;
+} {
+  const trimmed = query.trim();
+  const bare = trimmed.replace(/^@+/, "").trim();
+  // Telegram public usernames are 5–32 chars; allow 4+ so short prefixes still try exact resolve.
+  const looksLikeUsername = /^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(bare);
+  return { trimmed, bare, looksLikeUsername };
 }
 
 export async function searchChatsForUser(
@@ -1080,36 +1107,47 @@ export async function searchChatsForUser(
   const record = await requireReadySession(telegramUsername, 90_000);
   if (!record) return [];
 
-  const trimmed = query.trim();
+  const { trimmed, bare, looksLikeUsername } = normalizeGlobalSearchQuery(query);
   if (!trimmed) return [];
-  const usernameCandidate = trimmed.replace(/^@+/, "");
-  const looksLikeUsername = /^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(usernameCandidate);
+  // Prefer bare username when the user typed @name; otherwise keep spaces for channel titles.
+  const textQuery = trimmed.startsWith("@") ? bare : trimmed;
 
   const collected = new Map<number, ChatSearchHit>();
   const client = record.client;
 
-  // Local known chats (main + archive).
-  for (const chatList of [{ _: "chatListMain" as const }, { _: "chatListArchive" as const }]) {
-    try {
-      const result = (await client.invoke({
-        _: "searchChats",
-        chat_list: chatList,
-        query: trimmed,
-        limit: 40,
-      })) as { chat_ids?: number[] };
-      for (const chatId of result.chat_ids ?? []) {
-        await collectChatSearchHit(client, chatId, collected);
-      }
-    } catch {
-      /* skip list */
+  // Local known chats (offline). TDLib `searchChats` takes only query + limit — no chat_list.
+  try {
+    const result = (await client.invoke({
+      _: "searchChats",
+      query: textQuery,
+      limit: 50,
+    })) as { chat_ids?: number[] };
+    for (const chatId of result.chat_ids ?? []) {
+      await collectChatSearchHit(client, chatId, collected);
     }
+  } catch {
+    /* skip */
+  }
+
+  // Recently opened search hits (Telegram global-search recents).
+  try {
+    const result = (await client.invoke({
+      _: "searchRecentlyFoundChats",
+      query: textQuery,
+      limit: 30,
+    })) as { chat_ids?: number[] };
+    for (const chatId of result.chat_ids ?? []) {
+      await collectChatSearchHit(client, chatId, collected);
+    }
+  } catch {
+    /* optional / older TDLib */
   }
 
   // Server-side search among chats this account knows (beyond local cache pages).
   try {
     const result = (await client.invoke({
       _: "searchChatsOnServer",
-      query: trimmed,
+      query: textQuery,
       limit: 40,
     })) as { chat_ids?: number[] };
     for (const chatId of result.chat_ids ?? []) {
@@ -1119,28 +1157,32 @@ export async function searchChatsForUser(
     /* optional method / older TDLib */
   }
 
-  // Public title/username prefix search (finds chats not in the synced list window).
+  // Global public users + channels/supergroups (not already in the chat list).
+  // Username-prefix lookups need ≥5 chars; title search works for shorter channel names.
   try {
-    const result = (await client.invoke({
-      _: "searchPublicChats",
-      query: trimmed,
-    })) as { chat_ids?: number[] };
-    for (const chatId of (result.chat_ids ?? []).slice(0, 40)) {
-      await collectChatSearchHit(client, chatId, collected);
+    const publicQuery = looksLikeUsername ? bare : textQuery;
+    if (publicQuery.length > 0) {
+      const result = (await client.invoke({
+        _: "searchPublicChats",
+        query: publicQuery,
+      })) as { chat_ids?: number[] };
+      for (const chatId of (result.chat_ids ?? []).slice(0, 40)) {
+        await collectChatSearchHit(client, chatId, collected, looksLikeUsername ? bare : null);
+      }
     }
   } catch {
     /* optional */
   }
 
-  // Exact public username (e.g. HyperlinksSpaceChat / @HyperlinksSpaceChat).
+  // Exact public username (e.g. durov / @durov / HyperlinksSpaceChat).
   if (looksLikeUsername) {
     try {
       const chat = (await client.invoke({
         _: "searchPublicChat",
-        username: usernameCandidate,
+        username: bare,
       })) as TdChat;
       if (typeof chat?.id === "number") {
-        await collectChatSearchHit(client, chat.id, collected, usernameCandidate);
+        await collectChatSearchHit(client, chat.id, collected, bare);
       }
     } catch {
       /* username not found / private */
@@ -1158,7 +1200,7 @@ export async function searchMessagesChatIdsForUser(
   const record = await requireReadySession(telegramUsername, 90_000);
   if (!record) return [];
 
-  const trimmed = query.trim();
+  const trimmed = query.trim().replace(/^@+/, "").trim();
   if (!trimmed) return [];
 
   const collected = new Set<number>();
@@ -1220,9 +1262,11 @@ export async function searchContactsForUser(
   if (!trimmed) return [];
 
   try {
+    const chatPreview = await import("./chatPreview.js");
+    const searchQuery = trimmed.replace(/^@+/, "").trim() || trimmed;
     const result = (await record.client.invoke({
       _: "searchContacts",
-      query: trimmed,
+      query: searchQuery,
       limit: 30,
     })) as { user_ids?: number[] };
     const rows: Array<{
@@ -1238,6 +1282,7 @@ export async function searchContactsForUser(
         first_name?: string;
         last_name?: string;
         username?: string;
+        usernames?: { active_usernames?: string[]; editable_username?: string };
       };
       let chatId: number | null = null;
       try {
@@ -1254,7 +1299,7 @@ export async function searchContactsForUser(
         userId,
         firstName: typeof user.first_name === "string" ? user.first_name : "",
         lastName: typeof user.last_name === "string" ? user.last_name : "",
-        username: typeof user.username === "string" ? user.username : null,
+        username: chatPreview.usernameFromTdUser(user),
         chatId,
       });
     }

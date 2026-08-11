@@ -1,5 +1,10 @@
-import { resolveJettonMarketCapUsd } from "../resolveJettonMarketCapUsd";
-import type { SwapJetton } from "../swapJettonsTypes";
+import {
+  jettonFailsVolumeToMcapFilter,
+  rankJettonMarketCapUsd,
+  RANK_MCAP_TO_VOLUME_TARGET,
+  resolveJettonMarketCapUsd,
+} from "../resolveJettonMarketCapUsd";
+import { SwapJetton } from "../swapJettonsTypes";
 
 function jetton(partial: Partial<SwapJetton> & { market_stats?: SwapJetton["market_stats"] }): SwapJetton {
   return {
@@ -95,5 +100,106 @@ describe("resolveJettonMarketCapUsd", () => {
         }),
       ),
     ).toBeNull();
+  });
+
+  it("rejects preOPENAI / OPENAI $8.9B fantasy (live API regression)", () => {
+    // Live: price×~10M supply → $8.86B while pool TVL is ~$5.3M and 24h vol ~$89k.
+    // Old max mcap/TVL of 10_000 still accepted ratio ≈ 1_680.
+    const raw = resolveJettonMarketCapUsd(
+      jetton({
+        symbol: "OPENAI",
+        name: "preOPENAI",
+        verification: "UNKNOWN",
+        market_stats: {
+          price_usd: 886.176363405419,
+          mcap: 8_861_763_600,
+          fdmc: 8_861_763_600,
+          tvl_usd: 5_275_200,
+          volume_usd_24h: 89_166.7,
+        },
+      }),
+    );
+    expect(raw).toBeNull();
+  });
+
+  it("rejects when mcap dwarfs 24h volume even if TVL looks mid-size", () => {
+    expect(
+      resolveJettonMarketCapUsd(
+        jetton({
+          verification: "UNKNOWN",
+          market_stats: {
+            mcap: 200_000_000,
+            tvl_usd: 600_000,
+            volume_usd_24h: 20_000,
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("excludes when mcap/volume exceeds hard coefficient (~0.05% turnover)", () => {
+    // $50M mcap / $20k vol = 2_500 > 2_000 hard gate.
+    expect(
+      jettonFailsVolumeToMcapFilter({
+        verification: "UNKNOWN",
+        market_stats: {
+          mcap: 50_000_000,
+          tvl_usd: 200_000,
+          volume_usd_24h: 20_000,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      resolveJettonMarketCapUsd(
+        jetton({
+          verification: "UNKNOWN",
+          market_stats: {
+            mcap: 50_000_000,
+            tvl_usd: 200_000,
+            volume_usd_24h: 20_000,
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps healthy turnover tokens (≈1%+ daily volume)", () => {
+    // $10M mcap / $150k vol ≈ 67 ≤ 100 target — full trust + full rank.
+    const j = jetton({
+      verification: "COMMUNITY",
+      market_stats: {
+        mcap: 10_000_000,
+        tvl_usd: 400_000,
+        volume_usd_24h: 150_000,
+      },
+    });
+    expect(resolveJettonMarketCapUsd(j)).toBe(10_000_000);
+    expect(rankJettonMarketCapUsd(10_000_000, 150_000)).toBe(10_000_000);
+  });
+
+  it("soft-demotes thin but not excluded turnover toward volume × 100", () => {
+    // $20M mcap / $50k vol = 400 (between target 100 and hard 2_000).
+    const trusted = 20_000_000;
+    const volume = 50_000;
+    expect(jettonFailsVolumeToMcapFilter({
+      verification: "UNKNOWN",
+      market_stats: { mcap: trusted, tvl_usd: 200_000, volume_usd_24h: volume },
+    })).toBe(false);
+    expect(resolveJettonMarketCapUsd(
+      jetton({
+        verification: "UNKNOWN",
+        market_stats: { mcap: trusted, tvl_usd: 200_000, volume_usd_24h: volume },
+      }),
+    )).toBe(trusted);
+    expect(rankJettonMarketCapUsd(trusted, volume)).toBe(volume * RANK_MCAP_TO_VOLUME_TARGET);
+    expect(rankJettonMarketCapUsd(trusted, volume)).toBe(5_000_000);
+  });
+
+  it("ranks dead-volume trusted small caps below any live book", () => {
+    // Floor = 1% of SMALL_CAP_WITHOUT_LIQUIDITY ($1M) → $10k max when volume is 0.
+    expect(rankJettonMarketCapUsd(500_000, 0)).toBe(10_000);
+    expect(rankJettonMarketCapUsd(500_000, 0)).toBeLessThan(
+      rankJettonMarketCapUsd(50_000, 5_000),
+    );
   });
 });

@@ -89,22 +89,37 @@ function chatSearchRank(row: MessageChatRowData, needle: string, serverHit: bool
   const peer = normalizeSearchNeedle(row.peer_username || "");
   const chatUser = normalizeSearchNeedle(row.chat_username || "");
   const subtitle = normalizeSearchNeedle(row.subtitle || "");
-  if (title.startsWith(needle)) return 0;
+  // Prefer exact / prefix username matches (global @user / channel finds).
+  if (peer === needle || chatUser === needle) return 0;
   if (peer.startsWith(needle) || chatUser.startsWith(needle)) return 1;
-  if (title.includes(needle)) return 2;
-  if (peer.includes(needle) || chatUser.includes(needle)) return 3;
-  if (subtitle.includes(needle)) return 4;
-  if (serverHit) return 5;
-  return 6;
+  if (title.startsWith(needle)) return 2;
+  if (title.includes(needle)) return 3;
+  if (peer.includes(needle) || chatUser.includes(needle)) return 4;
+  if (subtitle.includes(needle)) return 5;
+  if (serverHit) return 6;
+  return 7;
 }
 
 /** Remote TDLib hits for chats not yet in the scroll-synced local window. */
 function remoteSearchHitToRow(hit: TelegramChatListSearchHit): MessageChatRowData {
+  const username = (hit.peerUsername || hit.chatUsername || "").replace(/^@+/, "").trim();
+  const kindLabel =
+    hit.chatKind === "channel"
+      ? "channel"
+      : hit.chatKind === "supergroup" || hit.chatKind === "group"
+        ? "group"
+        : hit.chatKind === "private"
+          ? "user"
+          : "";
+  const subtitleParts = [
+    username ? `@${username}` : "",
+    kindLabel,
+  ].filter(Boolean);
   return {
     id: hit.chatId,
     telegram_chat_id: hit.chatId,
     title: hit.title,
-    subtitle: "",
+    subtitle: subtitleParts.join(" · "),
     avatar_url: null,
     last_message_at: null,
     unread_count: 0,
