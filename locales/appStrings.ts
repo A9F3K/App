@@ -288,6 +288,7 @@ const en = {
 
   "swap.footer.insufficientAmount": "Insufficient amount",
   "swap.action.lowAmount": "Low amount",
+  "swap.action.noPool": "No pool",
   "swap.action.summary": "Buy 1 {{symbol}}",
   "swap.action.summaryWithAmount": "Buy 1 {{symbol}} for {{amount}} dllr",
   "swap.action.button": "Swap",
@@ -732,6 +733,7 @@ const ru = {
 
   "swap.footer.insufficientAmount": "Недостаточная сумма",
   "swap.action.lowAmount": "Малая сумма",
+  "swap.action.noPool": "Нет пула",
   "swap.action.summary": "Купить 1 {{symbol}}",
   "swap.action.summaryWithAmount": "Купить 1 {{symbol}} за {{amount}} dllr",
   "swap.action.button": "Обмен",
@@ -1141,6 +1143,7 @@ const zh = {
   "messages.privateCall.noUser": "无法呼叫此用户",
   "swap.footer.insufficientAmount": "金额不足",
   "swap.action.lowAmount": "金额过低",
+  "swap.action.noPool": "无流动性池",
   "swap.action.summary": "买入 1 {{symbol}}",
   "swap.action.summaryWithAmount": "用 {{amount}} dllr 买入 1 {{symbol}}",
   "swap.action.button": "兑换",

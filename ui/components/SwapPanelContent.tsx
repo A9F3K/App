@@ -7,6 +7,7 @@ import {
 import { SWAP_CHART_BLOCK_MIN_HEIGHT_PX } from "../swap/swapChartConstants";
 import { swapChartLog } from "../swap/swapChartDebug";
 import { useSwapChart } from "../swap/useSwapChart";
+import { useSwapQuote } from "../swap/useSwapQuote";
 import { useSwapPairState } from "../swap/swapPairStore";
 import {
   isDllrToken,
@@ -32,6 +33,7 @@ export function SwapPanelContent() {
   const pickerMode = useSwapCurrencyPicker();
   const swapFormVisible = pickerMode == null;
   const { sellToken, buyToken } = useSwapPairState();
+  useSwapQuote();
   const chartToken = useMemo(() => {
     // Chart / rate follow the asset being bought for DLLR (or the non-dollar side).
     if (!isDllrToken(buyToken)) return buyToken;

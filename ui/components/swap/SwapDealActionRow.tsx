@@ -4,7 +4,7 @@ import { useAppStrings } from "../../../locales/AppStringsContext";
 import { formatSwapTokenAmount } from "../../swap/swapChartFormat";
 import {
   useSwapDealActionState,
-  type SwapDealLeftMode,
+  type SwapDealButtonNotice,
 } from "../../swap/useSwapDealActionState";
 import {
   layout,
@@ -15,6 +15,8 @@ import {
 
 const FIT_EPSILON_PX = 1;
 const { textToSendIconGapPx: TEXT_TO_BUTTON_GAP_PX } = layout.bottomBar;
+/** Small indent between the button notice and the Swap button. */
+const NOTICE_TO_BUTTON_GAP_PX = 8;
 
 type Density = "compact" | "bar";
 
@@ -27,7 +29,7 @@ type Props = {
   /** When set, skip the shared hook (tests / custom footers). */
   dllrAmount?: number | null;
   buySymbol?: string;
-  leftMode?: SwapDealLeftMode;
+  buttonNotice?: SwapDealButtonNotice;
   buttonActive?: boolean;
 };
 
@@ -36,19 +38,21 @@ function useResolvedDealProps(props: Props) {
   return {
     dllrAmount: props.dllrAmount !== undefined ? props.dllrAmount : hooked.dllrAmount,
     buySymbol: props.buySymbol ?? hooked.buySymbol,
-    leftMode: props.leftMode ?? hooked.leftMode,
+    buttonNotice: props.buttonNotice ?? hooked.buttonNotice,
     buttonActive: props.buttonActive ?? hooked.buttonActive,
   };
 }
 
 /**
- * Swap deal controls: summary / Low amount on the left, Swap on the right.
- * Inactive = undercover chip + secondary labels (“Low amount” on the left).
+ * Swap deal controls:
+ * - Far left: Buy 1 {symbol} for {amount} dllr (Gram offer on Currencies screens)
+ * - Just left of Swap (small indent): “No pool” / “Low amount” when needed
+ * - Far right: Swap (inactive undercover when not actionable)
  */
 export function SwapDealActionRow({ density = "compact", ...props }: Props) {
   const colors = useColors();
   const { t, tf } = useAppStrings();
-  const { dllrAmount, buySymbol, leftMode, buttonActive } = useResolvedDealProps(props);
+  const { dllrAmount, buySymbol, buttonNotice, buttonActive } = useResolvedDealProps(props);
 
   const isBar = density === "bar";
   const labelStyle = isBar ? typographyFixedRow40Label : typographyFixedRow30Label;
@@ -64,19 +68,22 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
           symbol,
         })
       : dealShort;
-  const lowAmountLabel = t("swap.action.lowAmount");
 
-  const fullSummaryLabel = leftMode === "lowAmount" ? lowAmountLabel : dealFull;
-  const shortSummaryLabel = leftMode === "lowAmount" ? lowAmountLabel : dealShort;
+  const noticeLabel =
+    buttonNotice === "noPool"
+      ? t("swap.action.noPool")
+      : buttonNotice === "lowAmount"
+        ? t("swap.action.lowAmount")
+        : null;
+  const hasNotice = noticeLabel != null;
 
   const [labelSlotWidth, setLabelSlotWidth] = useState(0);
   const [fullLabelWidth, setFullLabelWidth] = useState(0);
 
   const labelMeasured = labelSlotWidth > 0 && fullLabelWidth > 0;
-  const canShowFullSummaryLabel =
-    leftMode === "lowAmount" ||
-    (labelMeasured && fullLabelWidth <= labelSlotWidth + FIT_EPSILON_PX);
-  const summaryLabel = canShowFullSummaryLabel ? fullSummaryLabel : shortSummaryLabel;
+  const canShowFullDealLabel =
+    labelMeasured && fullLabelWidth <= labelSlotWidth + FIT_EPSILON_PX;
+  const dealLabel = canShowFullDealLabel ? dealFull : dealShort;
 
   const onLabelSlotLayout = useCallback((width: number) => {
     setLabelSlotWidth((current) => (current === width ? current : width));
@@ -88,9 +95,8 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
 
   useEffect(() => {
     setFullLabelWidth(0);
-  }, [fullSummaryLabel]);
+  }, [dealFull]);
 
-  const summaryColor = buttonActive ? colors.primary : colors.secondary;
   const buttonLabelColor = buttonActive ? colors.primary : colors.secondary;
 
   const buttonInner = (
@@ -111,10 +117,10 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
   return (
     <View style={styles.wrapper}>
       <Text
-        style={[labelStyle, styles.fullLabelMeasure, { color: summaryColor }]}
+        style={[labelStyle, styles.fullLabelMeasure, { color: colors.primary }]}
         onLayout={(event) => onFullLabelMeasureLayout(Math.ceil(event.nativeEvent.layout.width))}
       >
-        {fullSummaryLabel}
+        {dealFull}
       </Text>
       <View style={[styles.row, { height: buttonHeight }]}>
         <View
@@ -122,22 +128,37 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
           onLayout={(event) => onLabelSlotLayout(Math.round(event.nativeEvent.layout.width))}
         >
           <Text
-            style={[labelStyle, styles.summaryLabel, { color: summaryColor }]}
+            style={[labelStyle, styles.summaryLabel, { color: colors.primary }]}
             numberOfLines={1}
-            accessibilityLabel={fullSummaryLabel}
+            accessibilityLabel={dealFull}
           >
-            {summaryLabel}
+            {dealLabel}
           </Text>
         </View>
+        {hasNotice ? (
+          <Text
+            style={[
+              labelStyle,
+              styles.noticeLabel,
+              { color: colors.secondary, marginRight: NOTICE_TO_BUTTON_GAP_PX },
+            ]}
+            numberOfLines={1}
+          >
+            {noticeLabel}
+          </Text>
+        ) : null}
         {buttonActive ? (
-          <Pressable accessibilityRole="button" style={buttonStyle}>
+          <Pressable
+            accessibilityRole="button"
+            style={[buttonStyle, { marginLeft: hasNotice ? 0 : TEXT_TO_BUTTON_GAP_PX }]}
+          >
             {buttonInner}
           </Pressable>
         ) : (
           <View
             accessibilityRole="button"
             accessibilityState={{ disabled: true }}
-            style={buttonStyle}
+            style={[buttonStyle, { marginLeft: hasNotice ? 0 : TEXT_TO_BUTTON_GAP_PX }]}
           >
             {buttonInner}
           </View>
@@ -156,7 +177,6 @@ const styles = StyleSheet.create({
     width: "100%",
     flexDirection: "row",
     alignItems: "center",
-    gap: TEXT_TO_BUTTON_GAP_PX,
   },
   summaryLabelSlot: {
     flex: 1,
@@ -165,6 +185,9 @@ const styles = StyleSheet.create({
   },
   summaryLabel: {
     minWidth: 0,
+  },
+  noticeLabel: {
+    flexShrink: 0,
   },
   fullLabelMeasure: {
     position: "absolute",
