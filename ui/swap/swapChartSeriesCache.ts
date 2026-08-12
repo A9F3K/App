@@ -1,40 +1,64 @@
-import { fetchSwapChartSeries, type NormalizedChartSeries } from "./fetchSwapChart";
+import {
+  fetchJettonChartSeries,
+  type NormalizedChartSeries,
+} from "./fetchSwapChart";
 import type { SwapChartResolution } from "./swapChartConstants";
+import { TON_JETTON_ADDRESS } from "./swapChartConstants";
 
 type ChartResult =
   | { ok: true; series: NormalizedChartSeries }
   | { ok: false; error: string; retryable: boolean };
 
-const seriesCache = new Map<SwapChartResolution, NormalizedChartSeries>();
-let inFlightKey: SwapChartResolution | null = null;
-let inFlightPromise: Promise<ChartResult> | null = null;
+function cacheKey(jettonAddress: string, resolution: SwapChartResolution): string {
+  return `${jettonAddress.trim().toLowerCase()}|${resolution}`;
+}
 
-/** Dedupes Dyor fetches across SwapPanel remounts (resize / breakpoint) and caches by resolution. */
-export async function loadSwapChartSeriesCached(resolution: SwapChartResolution): Promise<ChartResult> {
-  const cached = seriesCache.get(resolution);
+const seriesCache = new Map<string, NormalizedChartSeries>();
+const inFlight = new Map<string, Promise<ChartResult>>();
+
+function normalizeChartAddress(jettonAddress: string): string {
+  const trimmed = jettonAddress.trim();
+  if (!trimmed) return TON_JETTON_ADDRESS;
+  return trimmed;
+}
+
+/** Dedupes Dyor fetches across SwapPanel remounts and caches by address+resolution. */
+export async function loadSwapChartSeriesCached(
+  jettonAddress: string,
+  resolution: SwapChartResolution,
+): Promise<ChartResult> {
+  const address = normalizeChartAddress(jettonAddress);
+  const key = cacheKey(address, resolution);
+  const cached = seriesCache.get(key);
   if (cached) {
     return { ok: true, series: cached };
   }
 
-  if (inFlightPromise && inFlightKey === resolution) {
-    return inFlightPromise;
-  }
+  const existing = inFlight.get(key);
+  if (existing) return existing;
 
-  inFlightKey = resolution;
-  inFlightPromise = fetchSwapChartSeries(resolution).then((result) => {
-    inFlightPromise = null;
-    inFlightKey = null;
+  const promise = fetchJettonChartSeries(address, resolution).then((result) => {
+    inFlight.delete(key);
     if (result.ok) {
-      seriesCache.set(resolution, result.series);
+      seriesCache.set(key, result.series);
     }
     return result;
   });
-
-  return inFlightPromise;
+  inFlight.set(key, promise);
+  return promise;
 }
 
 export function peekSwapChartSeriesCache(
+  jettonAddress: string,
   resolution: SwapChartResolution,
 ): NormalizedChartSeries | null {
-  return seriesCache.get(resolution) ?? null;
+  const address = normalizeChartAddress(jettonAddress);
+  return seriesCache.get(cacheKey(address, resolution)) ?? null;
+}
+
+/** @deprecated Prefer address-aware {@link loadSwapChartSeriesCached}. */
+export async function loadTonSwapChartSeriesCached(
+  resolution: SwapChartResolution,
+): Promise<ChartResult> {
+  return loadSwapChartSeriesCached(TON_JETTON_ADDRESS, resolution);
 }

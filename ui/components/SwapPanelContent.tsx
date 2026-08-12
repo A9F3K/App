@@ -1,11 +1,22 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
+import {
+  openSwapCurrenciesBrowse,
+  useSwapCurrencyPicker,
+} from "../swap/swapCurrencyPicker";
 import { SWAP_CHART_BLOCK_MIN_HEIGHT_PX } from "../swap/swapChartConstants";
 import { swapChartLog } from "../swap/swapChartDebug";
 import { useSwapChart } from "../swap/useSwapChart";
+import { useSwapPairState } from "../swap/swapPairStore";
+import {
+  isDllrToken,
+  swapTokenChartAddress,
+  swapTokenDisplaySymbol,
+} from "../swap/swapPairTypes";
 import { HspScrollColumn, type HspScrollMetrics } from "./HspScrollColumn";
 import { SwapChartView } from "./swap/SwapChartView";
 import { SwapFormBelowChart } from "./swap/SwapFormBelowChart";
+import { SwapPanelHeader } from "./swap/SwapPanelHeader";
 import { SwapRateRow } from "./SwapRateRow";
 import { SwapStatsRow } from "./SwapStatsRow";
 import { layout } from "../theme";
@@ -18,6 +29,17 @@ function swapPanelNeedsScroll(fixedMinContentH: number, viewportH: number): bool
 
 /** Swap panel body: rate row, stats, chart (min 55px line area), and buy/sell form. Scrolls when content exceeds viewport (footer bar excluded). */
 export function SwapPanelContent() {
+  const pickerMode = useSwapCurrencyPicker();
+  const swapFormVisible = pickerMode == null;
+  const { sellToken, buyToken } = useSwapPairState();
+  const chartToken = useMemo(() => {
+    // Chart / rate follow the asset being bought for DLLR (or the non-dollar side).
+    if (!isDllrToken(buyToken)) return buyToken;
+    if (!isDllrToken(sellToken)) return sellToken;
+    return buyToken;
+  }, [buyToken, sellToken]);
+  const chartJettonAddress = swapTokenChartAddress(chartToken);
+
   const {
     intervalKey,
     setIntervalKey,
@@ -28,8 +50,30 @@ export function SwapPanelContent() {
     selectedPointIndex,
     setSelectedPointIndex,
     marketStats,
-    effectiveTonPriceUsd,
-  } = useSwapChart("d", { deferInitialLoad: true });
+    effectivePriceUsd,
+  } = useSwapChart("d", {
+    deferInitialLoad: true,
+    jettonAddress: chartJettonAddress,
+    // Do not load/compete while Currencies covers this panel — load the
+    // selected asset when the form becomes visible.
+    enabled: swapFormVisible,
+  });
+
+  useEffect(() => {
+    swapChartLog("panel_pair", {
+      sell: sellToken.symbol,
+      buy: buyToken.symbol,
+      chartSymbol: chartToken.symbol,
+      chartJettonAddress,
+      swapFormVisible,
+    });
+  }, [
+    sellToken.symbol,
+    buyToken.symbol,
+    chartToken.symbol,
+    chartJettonAddress,
+    swapFormVisible,
+  ]);
 
   const { width: windowWidth } = useWindowDimensions();
   const showSwapActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
@@ -55,7 +99,7 @@ export function SwapPanelContent() {
     measureMetricsRef.current = { layoutH: 0, contentH: 0 };
     setScrollViewportH(0);
     setNeedsScroll(null);
-  }, [showSwapActionBlock]);
+  }, [showSwapActionBlock, chartJettonAddress, swapFormVisible]);
 
   const effectiveViewportH = scrollViewportH > 0 ? scrollViewportH : viewportH;
 
@@ -174,13 +218,13 @@ export function SwapPanelContent() {
   };
   const flexFillMinHeight = scrollViewportH > 0 ? scrollViewportH : effectiveViewportH;
 
-  const displayTonPriceUsd =
+  const displayPriceUsd =
     selectedPointIndex != null &&
     series &&
     selectedPointIndex >= 0 &&
     selectedPointIndex < series.points.length
       ? series.points[selectedPointIndex]!.price
-      : effectiveTonPriceUsd;
+      : effectivePriceUsd;
 
   return (
     <View
@@ -192,6 +236,9 @@ export function SwapPanelContent() {
       }}
       onLayout={onViewportLayout}
     >
+      <View style={scrollShellBleed}>
+        <SwapPanelHeader onCurrenciesPress={openSwapCurrenciesBrowse} />
+      </View>
       <HspScrollColumn
         style={{ flex: 1, ...scrollShellBleed }}
         scrollEnabled={needsScroll === true}
@@ -209,7 +256,8 @@ export function SwapPanelContent() {
         <SwapRateRow
           intervalKey={intervalKey}
           onIntervalKeyChange={setIntervalKey}
-          tonPriceUsd={displayTonPriceUsd}
+          priceUsd={displayPriceUsd}
+          assetSymbol={swapTokenDisplaySymbol(chartToken)}
         />
         <View style={{ marginTop: layout.authenticatedHome.swapStatsRowTopGapPx }}>
           <SwapStatsRow marketStats={marketStats} />
@@ -221,19 +269,24 @@ export function SwapPanelContent() {
             ...(flexFillMode ? { flex: 1 } : null),
           }}
         >
-          <SwapChartView
-            resolution={resolution}
-            intervalKey={intervalKey}
-            onIntervalKeyChange={setIntervalKey}
-            series={series}
-            isLoading={isLoadingChart}
-            error={chartError}
-            selectedPointIndex={selectedPointIndex}
-            onSelectedPointIndexChange={setSelectedPointIndex}
-            expandToFill={flexFillMode}
-          />
+          {/* Remount when the selected asset changes or the form leaves display:none
+              so layout is not stuck at width=0 from the Currencies overlay. */}
+          {swapFormVisible ? (
+            <SwapChartView
+              key={chartJettonAddress}
+              resolution={resolution}
+              intervalKey={intervalKey}
+              onIntervalKeyChange={setIntervalKey}
+              series={series}
+              isLoading={isLoadingChart}
+              error={chartError}
+              selectedPointIndex={selectedPointIndex}
+              onSelectedPointIndexChange={setSelectedPointIndex}
+              expandToFill={flexFillMode}
+            />
+          ) : null}
         </View>
-        <SwapFormBelowChart effectiveTonPriceUsd={displayTonPriceUsd} />
+        <SwapFormBelowChart effectivePriceUsd={displayPriceUsd} />
       </HspScrollColumn>
     </View>
   );

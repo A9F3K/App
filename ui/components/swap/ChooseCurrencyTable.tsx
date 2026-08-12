@@ -13,9 +13,11 @@ import {
   ActivityIndicator,
   FlatList,
   Platform,
+  Pressable,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -30,13 +32,20 @@ import {
   snapScrollIndicatorCoordPx,
 } from "../../scrollIndicatorPx";
 import {
+  aiPromptButtonActiveBackground,
+  aiPromptButtonHoverBackground,
   layout,
   typographyAeroport15,
   typographySansSemibold,
   useColors,
 } from "../../theme";
+import { useTelegram } from "../Telegram";
 import { ScrollIndicatorDragHandle } from "../ScrollIndicatorDragHandle";
 import { SmartGradientDivider } from "../smart/SmartGradientDivider";
+import {
+  LIST_ROW_GAP_PX,
+  LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX,
+} from "../messages/messageListLayout";
 import { ChooseCurrencyLastYearMiniChart } from "./ChooseCurrencyLastYearMiniChart";
 import {
   CHOOSE_CURRENCY_TABLE_CELL_PADDING_HORIZONTAL_PX,
@@ -47,7 +56,6 @@ import {
   CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX,
   CHOOSE_CURRENCY_TABLE_RANK_CELL_PADDING_RIGHT_PX,
   CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX,
-  CHOOSE_CURRENCY_TABLE_ROW_PADDING_VERTICAL_PX,
   CHOOSE_CURRENCY_TABLE_SCROLL_INDICATOR_THUMB_MIN_PX,
 } from "./chooseCurrencyTableConstants";
 import { resolveChooseCurrencyColumnLayout } from "./chooseCurrencyTableLayout";
@@ -250,27 +258,71 @@ function DataRow({
   row,
   rank,
   visibleColumns,
+  isLast,
+  onPress,
 }: {
   row: ChooseCurrencyRow;
   rank: string;
   visibleColumns: readonly ChooseCurrencyVisibleColumn[];
+  isLast: boolean;
+  onPress?: (row: ChooseCurrencyRow) => void;
 }) {
+  const colors = useColors();
+  const { colorScheme } = useTelegram();
+  const { width: windowWidth } = useWindowDimensions();
+  const widePressHighlight = windowWidth > layout.authenticatedHome.firstBreakpoint;
+
+  const body = (
+    <View style={styles.bodyRow}>
+      {visibleColumns.map((column) => (
+        <ColumnShell key={column.key} column={column}>
+          <CellContent columnKey={column.key} row={row} rank={rank} />
+        </ColumnShell>
+      ))}
+    </View>
+  );
+
+  if (!widePressHighlight) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        onPress={onPress ? () => onPress(row) : undefined}
+        style={{
+          width: "100%",
+          alignSelf: "stretch",
+          paddingHorizontal: CONTENT_INSET_PX,
+          marginBottom: isLast ? 0 : LIST_ROW_GAP_PX,
+        }}
+      >
+        {body}
+      </Pressable>
+    );
+  }
+
+  // Table is already full-bleed to the column edge; hover fills that width
+  // (messages bleed via negative margin from an inset parent).
   return (
-    <View
-      style={{
-        paddingTop: CHOOSE_CURRENCY_TABLE_ROW_PADDING_VERTICAL_PX,
-        paddingBottom: CHOOSE_CURRENCY_TABLE_ROW_PADDING_VERTICAL_PX,
-        paddingHorizontal: CONTENT_INSET_PX,
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress ? () => onPress(row) : undefined}
+      style={({ pressed, hovered }) => {
+        let backgroundColor = "transparent";
+        if (pressed) {
+          backgroundColor = aiPromptButtonActiveBackground(colors, colorScheme);
+        } else if (hovered) {
+          backgroundColor = aiPromptButtonHoverBackground(colors, colorScheme);
+        }
+        return {
+          width: "100%",
+          alignSelf: "stretch",
+          paddingHorizontal: CONTENT_INSET_PX,
+          paddingVertical: LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX,
+          backgroundColor,
+        };
       }}
     >
-      <View style={styles.bodyRow}>
-        {visibleColumns.map((column) => (
-          <ColumnShell key={column.key} column={column}>
-            <CellContent columnKey={column.key} row={row} rank={rank} />
-          </ColumnShell>
-        ))}
-      </View>
-    </View>
+      {body}
+    </Pressable>
   );
 }
 
@@ -284,6 +336,8 @@ const MemoDataRow = memo(
     prev.row.balance === next.row.balance &&
     prev.row.rate === next.row.rate &&
     prev.rank === next.rank &&
+    prev.isLast === next.isLast &&
+    prev.onPress === next.onPress &&
     prev.visibleColumns === next.visibleColumns,
 );
 
@@ -293,6 +347,7 @@ type Props = {
   isFetchingMore?: boolean;
   loadError?: string | null;
   onLoadMore?: () => void;
+  onSelectRow?: (row: ChooseCurrencyRow) => void;
   /** Measured middle split-column width (px); authoritative on wide home. */
   columnShellWidthPx?: number;
 };
@@ -303,6 +358,7 @@ export function ChooseCurrencyTable({
   isFetchingMore = false,
   loadError = null,
   onLoadMore,
+  onSelectRow,
   columnShellWidthPx = 0,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
@@ -517,9 +573,15 @@ export function ChooseCurrencyTable({
 
   const renderItem = useCallback(
     ({ item, index }: { item: ChooseCurrencyRow; index: number }) => (
-      <MemoDataRow row={item} rank={String(index + 1)} visibleColumns={visibleColumns} />
+      <MemoDataRow
+        row={item}
+        rank={String(index + 1)}
+        visibleColumns={visibleColumns}
+        isLast={index >= rows.length - 1}
+        onPress={onSelectRow}
+      />
     ),
-    [visibleColumns],
+    [onSelectRow, rows.length, visibleColumns],
   );
 
   const keyExtractor = useCallback((item: ChooseCurrencyRow) => item.rowKey, []);
@@ -563,7 +625,13 @@ export function ChooseCurrencyTable({
         renderItem={renderItem}
         extraData={visibleColumns}
         style={styles.list}
-        contentContainerStyle={[styles.listContent, { paddingTop: HEADER_BLOCK_HEIGHT_PX }]}
+        contentContainerStyle={[
+          styles.listContent,
+          {
+            paddingTop:
+              HEADER_BLOCK_HEIGHT_PX + LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX,
+          },
+        ]}
         showsVerticalScrollIndicator={false}
         initialNumToRender={14}
         maxToRenderPerBatch={12}
@@ -636,7 +704,7 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     width: "100%",
     maxWidth: "100%",
-    paddingBottom: 8,
+    paddingBottom: LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX + 8,
   },
   headerBlock: {
     width: "100%",

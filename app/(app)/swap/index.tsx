@@ -5,6 +5,7 @@ import { useAuthenticatedHomeRouteWideLayout } from "../../../ui/authenticatedHo
 import { openAuthenticatedHomeRightPanel } from "../../../ui/authenticatedHomeRightPanel";
 import { focusAuthenticatedHomeMiddleColumnOnHeaderPanel } from "../../../ui/authenticatedHomeSelectedChat";
 import { SwapScreen } from "../../../ui/screens/SwapScreen";
+import { openSwapCurrenciesBrowse } from "../../../ui/swap/swapCurrencyPicker";
 
 export default function SwapRoute() {
   const { isAuthenticated, authReady } = useAuth();
@@ -13,6 +14,7 @@ export default function SwapRoute() {
   useLayoutEffect(() => {
     if (isWide) {
       openAuthenticatedHomeRightPanel("swap");
+      openSwapCurrenciesBrowse();
       focusAuthenticatedHomeMiddleColumnOnHeaderPanel();
     }
   }, [isWide]);

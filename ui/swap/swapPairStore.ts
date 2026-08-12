@@ -2,8 +2,8 @@ import { useSyncExternalStore } from "react";
 
 import type { SwapCurrencySide } from "./swapCurrencyPicker";
 import {
-  SWAP_TON_TOKEN,
-  SWAP_USDT_TOKEN,
+  SWAP_DLLR_TOKEN,
+  SWAP_GRAM_TOKEN,
   type SwapPairToken,
   type SwapQuoteDirection,
 } from "./swapPairTypes";
@@ -25,8 +25,8 @@ export type SwapPairState = {
 const listeners = new Set<() => void>();
 
 let state: SwapPairState = {
-  sellToken: SWAP_USDT_TOKEN,
-  buyToken: SWAP_TON_TOKEN,
+  sellToken: SWAP_DLLR_TOKEN,
+  buyToken: SWAP_GRAM_TOKEN,
   sellAmount: "1",
   buyAmount: "",
   quoteDirection: "exact_in",
@@ -134,6 +134,25 @@ export function setSwapTokenForSide(side: SwapCurrencySide, token: SwapPairToken
     buyToken: token,
     buyAmount: "",
     quoteDirection: "exact_in",
+  });
+}
+
+/**
+ * Currencies-home selection: buy `token` for Dollar (DLLR). Picking DLLR itself
+ * opens the default DLLR → Gram pair.
+ */
+export function selectSwapBuyTokenForDllr(token: SwapPairToken) {
+  const isDllr =
+    token.address.toLowerCase() === SWAP_DLLR_TOKEN.address.toLowerCase() ||
+    token.symbol.trim().toUpperCase() === "DLLR";
+  setState({
+    sellToken: SWAP_DLLR_TOKEN,
+    buyToken: isDllr ? SWAP_GRAM_TOKEN : token,
+    buyAmount: "",
+    quoteDirection: "exact_in",
+    lastQuotedBuyAmount: null,
+    lastQuotedSellAmount: null,
+    quoteError: null,
   });
 }
 

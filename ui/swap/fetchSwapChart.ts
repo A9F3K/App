@@ -253,11 +253,14 @@ export async function fetchJettonChartSeries(
 
 export async function fetchSwapChartSeries(
   resolution: SwapChartResolution,
+  jettonAddress: string = TON_JETTON_ADDRESS,
 ): Promise<{ ok: true; series: NormalizedChartSeries } | { ok: false; error: string; retryable: boolean }> {
-  return fetchJettonChartSeries(TON_JETTON_ADDRESS, resolution);
+  return fetchJettonChartSeries(jettonAddress, resolution);
 }
 
-export async function fetchSwapMarketStats(): Promise<SwapMarketStats> {
+export async function fetchSwapMarketStats(
+  jettonAddress: string = TON_JETTON_ADDRESS,
+): Promise<SwapMarketStats> {
   const empty: SwapMarketStats = {
     priceUsd: null,
     mcap: null,
@@ -269,11 +272,17 @@ export async function fetchSwapMarketStats(): Promise<SwapMarketStats> {
     priceChange24h: null,
   };
 
+  const address = jettonAddress.trim() || TON_JETTON_ADDRESS;
+
   try {
-    const url = `${SWAP_COFFEE_TOKENS_API_BASE.replace(/\/$/, "")}/api/v3/jettons/${encodeURIComponent(TON_JETTON_ADDRESS)}`;
-    swapChartLog("market_stats_start", { url });
+    const url = `${SWAP_COFFEE_TOKENS_API_BASE.replace(/\/$/, "")}/api/v3/jettons/${encodeURIComponent(address)}`;
+    swapChartLog("market_stats_start", { url, jettonAddress: address });
     const response = await fetch(url);
-    swapChartLog("market_stats_response", { status: response.status, ok: response.ok });
+    swapChartLog("market_stats_response", {
+      status: response.status,
+      ok: response.ok,
+      jettonAddress: address,
+    });
     if (!response.ok) return empty;
 
     const data = await response.json();
@@ -297,10 +306,11 @@ export async function fetchSwapMarketStats(): Promise<SwapMarketStats> {
       priceChange6h: num("price_change_6h"),
       priceChange24h: num("price_change_24h"),
     };
-    swapChartLog("market_stats_success", stats);
+    swapChartLog("market_stats_success", { ...stats, jettonAddress: address });
     return stats;
   } catch (e) {
     swapChartWarn("market_stats_exception", {
+      jettonAddress: address,
       message: e instanceof Error ? e.message : String(e),
     });
     return empty;

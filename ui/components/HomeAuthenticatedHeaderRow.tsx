@@ -28,6 +28,7 @@ import { useTelegram } from "./Telegram";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import type { AppStringKey } from "../../locales/appStrings";
 import { openAuthenticatedHomeRightPanel } from "../authenticatedHomeRightPanel";
+import { openSwapCurrenciesBrowse } from "../swap/swapCurrencyPicker";
 import { focusAuthenticatedHomeMiddleColumnOnHeaderPanel } from "../authenticatedHomeSelectedChat";
 import {
   HeaderIconCopy,
@@ -204,15 +205,23 @@ export function HomeAuthenticatedHeaderRow({
     (key: (typeof WIDE_MENU_ITEM_KEYS)[number]["key"]) => {
       if (atOrAboveFirstBreakpoint) {
         openAuthenticatedHomeRightPanel(key);
+        if (key === "swap") {
+          openSwapCurrenciesBrowse();
+        }
         focusAuthenticatedHomeMiddleColumnOnHeaderPanel();
         if (pathname !== "/" && pathname !== "" && pathname != null) {
           router.replace("/");
         }
         return;
       }
+      if (key === "swap") {
+        openSwapCurrenciesBrowse();
+      }
       const route = `/${key}`;
       if (pathname !== route) {
         router.push(route as any);
+      } else if (key === "swap") {
+        openSwapCurrenciesBrowse();
       }
     },
     [atOrAboveFirstBreakpoint, pathname, router],

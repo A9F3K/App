@@ -21,6 +21,10 @@ export function ChooseCurrencyScreen() {
     router.back();
   }, [router]);
 
+  const onAfterSelect = useCallback(() => {
+    router.back();
+  }, [router]);
+
   return (
     <AuthenticatedAppShell
       showLogoHeader={!hideLogoHeader}
@@ -30,6 +34,7 @@ export function ChooseCurrencyScreen() {
         <ChooseCurrencyPanelContent
           onFilterPress={onFilterPress}
           onBackPress={onBackPress}
+          onAfterSelect={onAfterSelect}
           walletAddress={wallet?.wallet_address ?? null}
         />
       </View>

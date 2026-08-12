@@ -2615,8 +2615,7 @@ export function MessageChatVoiceBar({
       if (a.hasGroups !== b.hasGroups) return a.hasGroups ? -1 : 1;
       return b.firstSeenAt - a.firstSeenAt;
     });
-    // Prefer complete SSRC (SIM+FID). Cap at 2 concurrent remote screens.
-    const MAX_AUTO_SCREENS = 2;
+    // Prefer complete SSRC (SIM+FID). Auto-show every eligible remote screen.
     const eligible = cands.filter((c) => c.hasGroups && c.score >= 100);
     if (eligible.length === 0) {
       const pick = cands[0];
@@ -2632,7 +2631,7 @@ export function MessageChatVoiceBar({
       });
       return;
     }
-    const target = Math.min(MAX_AUTO_SCREENS, eligible.length);
+    const target = eligible.length;
     const committed = autoScreenCommittedEndpointsRef.current;
     const stillValid = eligible.filter((c) => committed.has(c.endpoint));
     if (stillValid.length >= target) {
@@ -2833,10 +2832,9 @@ export function MessageChatVoiceBar({
         return (hasSim ? 100 : 0) + fidCount * 20 + groups.length * 10;
       };
       const COMPLETE_SSRC_MIN = 100; // requires SIM
-      // Colibri: too many video m-lines freeze mix Opus. Prefer up to two
-      // screens; camera only when nobody is sharing.
+      // Screens only when any share is live; camera only when nobody is sharing.
       const hasScreenRequest = requests.some((r) => r.kind === "screen");
-      const MAX_REMOTE_VIDEOS = hasScreenRequest ? 2 : 1;
+      const MAX_REMOTE_VIDEOS = hasScreenRequest ? Number.POSITIVE_INFINITY : 1;
       const sortVideoRequests = (
         list: typeof requests,
       ): typeof requests =>
@@ -2872,7 +2870,7 @@ export function MessageChatVoiceBar({
         next.push(row);
       };
       if (completeRequests.length > 0) {
-        // Prefer the endpoint the user just unmuted (2nd share under cap).
+        // Prefer the endpoint the user just unmuted.
         const preferredEndpoint =
           preferredExplicitScreenEndpointRef.current?.trim() || "";
         if (preferredEndpoint) {
@@ -3034,12 +3032,12 @@ export function MessageChatVoiceBar({
         note:
           next.length > 0
             ? hasScreenRequest
-              ? "explicit_video_screen_only_cap_2"
+              ? "explicit_video_screen_only"
               : pendingGroups.length > 0 ||
                   requests.length > next.length ||
                   incompleteRequests.length > 0
-                ? "explicit_video_complete_ssrc_cap_2"
-                : "explicit_video_subscribe_cap_2"
+                ? "explicit_video_complete_ssrc"
+                : "explicit_video_subscribe"
             : requests.length > 0
               ? "skipped_incomplete_ssrc_video — audio-first"
               : participantsRef.current.some(
@@ -3296,7 +3294,7 @@ export function MessageChatVoiceBar({
         return { ...prev, [key]: { ...existing, muteScreen: nextMute } };
       });
       // Unmute must arm video SDP even when mix RMS is quiet; pass endpoint so
-      // a 2nd share is included under the dual-screen cap.
+      // additional shares merge into the subscribe set.
       // telegram-tt: setRequestedVideoChannels in the same turn (not await
       // remoteVideoRepushEpoch / delayed apply).
       if (!nextMute && endpoint) {
@@ -3318,7 +3316,7 @@ export function MessageChatVoiceBar({
             ...lastGoodRemoteVideoRequestsRef.current.filter(
               (r) => r.endpointId !== endpoint && r.kind === "screen",
             ),
-          ].slice(0, 2);
+          ];
           const nextSig = merged
             .map(
               (r) =>

@@ -3,8 +3,10 @@ import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { useRouter } from "expo-router";
 import { SWAP_BUY_AMOUNT_TON } from "../../swap/fetchSwapAmount";
 import { formatSwapPrice, formatSwapTokenAmount } from "../../swap/swapChartFormat";
-import { layout, typographyAeroport15, typographyAeroport20, useColors } from "../../theme";
 import { navigateToSwapCurrencyPicker } from "../../swap/navigateToSwapCurrencyPicker";
+import { useSwapPairState } from "../../swap/swapPairStore";
+import { swapTokenDisplaySymbol } from "../../swap/swapPairTypes";
+import { layout, typographyAeroport15, typographyAeroport20, useColors } from "../../theme";
 import { useResolvedPathname } from "../../useResolvedPathname";
 import { SmartGradientDivider } from "../smart/SmartGradientDivider";
 import { SwapActionRow } from "./SwapActionRow";
@@ -19,31 +21,59 @@ const amountTextStyle = [typographyAeroport20, { fontWeight: "500" as const }];
 const muted15 = [typographyAeroport15, { color: SWAP_MUTED }];
 
 type Props = {
-  effectiveTonPriceUsd: number | null;
+  effectivePriceUsd: number | null;
+  /** @deprecated Use {@link effectivePriceUsd}. */
+  effectiveTonPriceUsd?: number | null;
 };
+
+function tokenIconSource(token: {
+  icon?: unknown;
+  imageUrl?: string | null;
+  symbol: string;
+}) {
+  if (token.icon) return token.icon as never;
+  if (token.imageUrl) return { uri: token.imageUrl };
+  const upper = token.symbol.trim().toUpperCase();
+  if (upper === "DLLR") return swapDllrTokenImage;
+  if (upper === "TON" || upper === "GRAM") return swapTonTokenImage;
+  return null;
+}
 
 /**
  * Sell / max·rotate·wallet / Buy / insufficient-amount blocks below the chart (prev-main).
  */
-export function SwapFormBelowChart({ effectiveTonPriceUsd }: Props) {
+export function SwapFormBelowChart({
+  effectivePriceUsd,
+  effectiveTonPriceUsd,
+}: Props) {
+  const priceUsd = effectivePriceUsd ?? effectiveTonPriceUsd ?? null;
   const colors = useColors();
   const router = useRouter();
   const pathname = useResolvedPathname();
   const { width: windowWidth } = useWindowDimensions();
+  const { sellToken, buyToken } = useSwapPairState();
   const showSwapActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
   const sellDllrAmount =
-    effectiveTonPriceUsd != null ? effectiveTonPriceUsd * SWAP_BUY_AMOUNT_TON : null;
+    priceUsd != null ? priceUsd * SWAP_BUY_AMOUNT_TON : null;
 
-  const openBuyCurrency = () => navigateToSwapCurrencyPicker(router, "buy", windowWidth, pathname);
-  const openSellCurrency = () => navigateToSwapCurrencyPicker(router, "sell", windowWidth, pathname);
+  const openBuyCurrency = () =>
+    navigateToSwapCurrencyPicker(router, "buy", windowWidth, pathname);
+  const openSellCurrency = () =>
+    navigateToSwapCurrencyPicker(router, "sell", windowWidth, pathname);
 
   const buyAmountText = formatSwapTokenAmount(SWAP_BUY_AMOUNT_TON);
   const buyPriceText =
-    effectiveTonPriceUsd != null ? `${formatSwapPrice(effectiveTonPriceUsd)}$` : "…";
+    priceUsd != null ? `${formatSwapPrice(priceUsd)}$` : "…";
 
   const sellAmountText =
     sellDllrAmount != null ? formatSwapTokenAmount(sellDllrAmount) : "…";
   const sellPriceText = buyPriceText;
+
+  const sellIcon = tokenIconSource(sellToken);
+  const buyIcon = tokenIconSource(buyToken);
+  const sellLabel = swapTokenDisplaySymbol(sellToken).toLowerCase();
+  const buyLabel = swapTokenDisplaySymbol(buyToken).toLowerCase();
+  const buyNetworkLabel = swapTokenDisplaySymbol(buyToken);
 
   return (
     <View style={{ width: "100%", alignSelf: "stretch" }}>
@@ -72,9 +102,13 @@ export function SwapFormBelowChart({ effectiveTonPriceUsd }: Props) {
             onPress={openSellCurrency}
             style={{ flexDirection: "row", alignItems: "center" }}
           >
-            <Image source={swapDllrTokenImage} style={{ width: 20, height: 20 }} contentFit="contain" />
+            {sellIcon ? (
+              <Image source={sellIcon} style={{ width: 20, height: 20 }} contentFit="contain" />
+            ) : (
+              <View style={{ width: 20, height: 20, backgroundColor: colors.secondary }} />
+            )}
             <View style={{ width: 8 }} />
-            <Text style={[amountTextStyle, { color: colors.primary }]}>dllr</Text>
+            <Text style={[amountTextStyle, { color: colors.primary }]}>{sellLabel}</Text>
             <View style={{ width: 8 }} />
             <SwapSelectChevron />
           </Pressable>
@@ -88,7 +122,7 @@ export function SwapFormBelowChart({ effectiveTonPriceUsd }: Props) {
           }}
         >
           <Text style={muted15}>{sellPriceText}</Text>
-          <Text style={muted15}>TON</Text>
+          <Text style={muted15}>{buyNetworkLabel}</Text>
         </View>
       </View>
 
@@ -143,9 +177,13 @@ export function SwapFormBelowChart({ effectiveTonPriceUsd }: Props) {
             onPress={openBuyCurrency}
             style={{ flexDirection: "row", alignItems: "center" }}
           >
-            <Image source={swapTonTokenImage} style={{ width: 20, height: 20 }} contentFit="contain" />
+            {buyIcon ? (
+              <Image source={buyIcon} style={{ width: 20, height: 20 }} contentFit="contain" />
+            ) : (
+              <View style={{ width: 20, height: 20, backgroundColor: colors.secondary }} />
+            )}
             <View style={{ width: 8 }} />
-            <Text style={[amountTextStyle, { color: colors.primary }]}>ton</Text>
+            <Text style={[amountTextStyle, { color: colors.primary }]}>{buyLabel}</Text>
             <View style={{ width: 8 }} />
             <SwapSelectChevron />
           </Pressable>
@@ -159,7 +197,7 @@ export function SwapFormBelowChart({ effectiveTonPriceUsd }: Props) {
           }}
         >
           <Text style={muted15}>{buyPriceText}</Text>
-          <Text style={muted15}>TON</Text>
+          <Text style={muted15}>{buyNetworkLabel}</Text>
         </View>
       </View>
 
@@ -168,7 +206,7 @@ export function SwapFormBelowChart({ effectiveTonPriceUsd }: Props) {
           <View style={{ height: SECTION_GAP_PX }} />
           <SmartGradientDivider />
           <View style={{ height: SECTION_GAP_PX }} />
-          <SwapActionRow dllrAmount={sellDllrAmount} />
+          <SwapActionRow />
           <View style={{ height: SECTION_GAP_PX }} />
         </>
       ) : null}

@@ -78,7 +78,7 @@ function downsample(points: number[]): number[] {
 
 function trySeedFromTonMainChart(address: string): boolean {
   if (address !== TON_ADDRESS) return false;
-  const peek = peekSwapChartSeriesCache("day1");
+  const peek = peekSwapChartSeriesCache(TON_ADDRESS, "day1");
   if (!peek || peek.normalized.length === 0) return false;
   setSnapshot(address, {
     status: "ready",

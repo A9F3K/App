@@ -1,7 +1,18 @@
-import { useCallback, useMemo, useState } from "react";
-import { Platform, PixelRatio, Pressable, StyleSheet, Text, View, type TextStyle, type ViewStyle } from "react-native";
+import { useMemo, useState } from "react";
+import {
+  Platform,
+  PixelRatio,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type TextStyle,
+  type ViewStyle,
+} from "react-native";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useAppStrings } from "../../../locales/AppStringsContext";
+import { useSwapPairState } from "../../swap/swapPairStore";
+import { swapTokenDisplaySymbol } from "../../swap/swapPairTypes";
 import {
   layout,
   typographyFixedRow30Label,
@@ -10,21 +21,18 @@ import {
   welcomeAuthButtonHoverBackground,
 } from "../../theme";
 import { useTelegram } from "../Telegram";
-import { SwapFilterButton } from "../icons/SwapFilterButton";
+import { CHOOSE_CURRENCY_SUBHEADER_HEIGHT_PX } from "./ChooseCurrencySubheader";
 
-/** Matches {@link AuthenticatedHomeLeftNavStrip} total strip height. */
-export const CHOOSE_CURRENCY_SUBHEADER_HEIGHT_PX = 55;
 const STRIP_PADDING_PX = layout.contentSideInsetPx;
 const INNER_ROW_HEIGHT_PX = CHOOSE_CURRENCY_SUBHEADER_HEIGHT_PX - STRIP_PADDING_PX * 2;
 
 const TITLE_FONT_SIZE_PX = 20;
 const TITLE_LINE_HEIGHT_PX = 25;
 const TITLE_MIN_FONT_SIZE_PX = 12;
-/** Reserve space for back / filter controls overlapping the centered title. */
-const TITLE_SIDE_RESERVE_PX = 72;
+const TITLE_SIDE_RESERVE_PX = 96;
 
-const BACK_BUTTON_HEIGHT_PX = 30;
-const BACK_BUTTON_HORIZONTAL_PADDING_PX = 15;
+const BUTTON_HEIGHT_PX = 30;
+const BUTTON_HORIZONTAL_PADDING_PX = 15;
 
 function titleLineHeightPx(fontSizePx: number): number {
   return Math.round(fontSizePx * (TITLE_LINE_HEIGHT_PX / TITLE_FONT_SIZE_PX));
@@ -32,9 +40,7 @@ function titleLineHeightPx(fontSizePx: number): number {
 
 function measureTitleTextWidthPx(text: string, fontSizePx: number): number {
   if (!text) return 0;
-
   const lineHeightPx = titleLineHeightPx(fontSizePx);
-
   if (Platform.OS === "web" && typeof document !== "undefined") {
     const probe = document.createElement("span");
     probe.style.position = "fixed";
@@ -53,24 +59,15 @@ function measureTitleTextWidthPx(text: string, fontSizePx: number): number {
     document.body.removeChild(probe);
     return width;
   }
-
   return Math.ceil(text.length * fontSizePx * 0.56);
 }
 
 function resolveTitleFontSizePx(text: string, availableWidthPx: number): number {
   if (availableWidthPx <= 0 || !text) return TITLE_FONT_SIZE_PX;
-
   const widthAtMax = measureTitleTextWidthPx(text, TITLE_FONT_SIZE_PX);
   if (widthAtMax <= availableWidthPx) return TITLE_FONT_SIZE_PX;
-
   const scaled = TITLE_FONT_SIZE_PX * (availableWidthPx / widthAtMax);
   return Math.max(TITLE_MIN_FONT_SIZE_PX, Math.floor(scaled * 10) / 10);
-}
-
-function titleWrapContentWidthPx(wrapWidthPx: number, titleAlign: "left" | "center"): number {
-  const paddingLeft = titleAlign === "left" ? STRIP_PADDING_PX : TITLE_SIDE_RESERVE_PX;
-  const paddingRight = TITLE_SIDE_RESERVE_PX;
-  return Math.max(0, wrapWidthPx - paddingLeft - paddingRight);
 }
 
 function menuStripRuleThickness(): number {
@@ -84,43 +81,31 @@ function menuStripRuleThickness(): number {
 }
 
 type Props = {
-  onBackPress?: () => void;
-  onFilterPress?: () => void;
-  showBack?: boolean;
-  showFilter?: boolean;
-  titleAlign?: "left" | "center";
-  /** Overrides default `swap.chooseCurrency.title`. */
-  title?: string;
+  onCurrenciesPress?: () => void;
 };
 
-export function ChooseCurrencySubheader({
-  onBackPress,
-  onFilterPress,
-  showBack = true,
-  showFilter = true,
-  titleAlign = "center",
-  title: titleProp,
-}: Props) {
-  const { t } = useAppStrings();
+/** Swap form subheader: pair title left, Currencies button right. */
+export function SwapPanelHeader({ onCurrenciesPress }: Props) {
+  const { t, tf } = useAppStrings();
   const colors = useColors();
   const { colorScheme } = useTelegram();
-  const [hoverBack, setHoverBack] = useState(false);
+  const { sellToken, buyToken } = useSwapPairState();
+  const [hoverCurrencies, setHoverCurrencies] = useState(false);
   const [titleWrapWidthPx, setTitleWrapWidthPx] = useState(0);
   const lineT = menuStripRuleThickness();
-  const title = titleProp ?? t("swap.chooseCurrency.title");
 
-  const onTitleWrapLayout = useCallback(
-    (event: { nativeEvent: { layout: { width: number } } }) => {
-      const nextWidth = Math.round(event.nativeEvent.layout.width);
-      setTitleWrapWidthPx((current) => (current === nextWidth ? current : nextWidth));
-    },
-    [],
-  );
+  const title = tf("swap.panel.pairTitle", {
+    sell: swapTokenDisplaySymbol(sellToken),
+    buy: swapTokenDisplaySymbol(buyToken),
+  });
 
   const titleFontSizePx = useMemo(() => {
-    const availableWidthPx = titleWrapContentWidthPx(titleWrapWidthPx, titleAlign);
-    return resolveTitleFontSizePx(title, availableWidthPx);
-  }, [title, titleAlign, titleWrapWidthPx]);
+    const available = Math.max(
+      0,
+      titleWrapWidthPx - STRIP_PADDING_PX - TITLE_SIDE_RESERVE_PX,
+    );
+    return resolveTitleFontSizePx(title, available);
+  }, [title, titleWrapWidthPx]);
 
   const borderLineStyle = useMemo((): ViewStyle => {
     return {
@@ -138,7 +123,7 @@ export function ChooseCurrencySubheader({
     styles.title,
     {
       color: colors.primary,
-      textAlign: titleAlign,
+      textAlign: "left",
       fontSize: titleFontSizePx,
       lineHeight: titleLineHeightPx(titleFontSizePx),
     },
@@ -147,56 +132,62 @@ export function ChooseCurrencySubheader({
   return (
     <View style={styles.strip}>
       <View style={styles.row}>
-        {showBack ? (
-          <View style={styles.leftSlot}>
-            <Pressable
-              onPress={onBackPress}
-              accessibilityRole="button"
-              accessibilityLabel={t("common.back")}
-              onHoverIn={Platform.OS === "web" ? () => setHoverBack(true) : undefined}
-              onHoverOut={Platform.OS === "web" ? () => setHoverBack(false) : undefined}
-              style={({ pressed }) => {
-                const webHover = Platform.OS === "web" && hoverBack;
-                let backgroundColor = colors.undercover;
-                if (pressed) {
-                  backgroundColor = welcomeAuthButtonActiveBackground(colors, colorScheme);
-                } else if (webHover) {
-                  backgroundColor = welcomeAuthButtonHoverBackground(colors, colorScheme);
-                }
-                return [
-                  styles.backButton,
-                  {
-                    backgroundColor,
-                    opacity: pressed ? 0.92 : 1,
-                  },
-                ];
-              }}
-            >
-              <Text style={[typographyFixedRow30Label, { color: colors.primary }]} numberOfLines={1}>
-                {t("common.back")}
-              </Text>
-            </Pressable>
-          </View>
-        ) : (
-          <View style={styles.sideSlotSpacer} />
-        )}
-
         <View
-          style={[styles.titleWrap, titleAlign === "left" ? styles.titleWrapLeft : null]}
-          onLayout={onTitleWrapLayout}
+          style={styles.titleWrap}
+          onLayout={(event) => {
+            const nextWidth = Math.round(event.nativeEvent.layout.width);
+            setTitleWrapWidthPx((current) =>
+              current === nextWidth ? current : nextWidth,
+            );
+          }}
         >
           <Text style={titleStyle} numberOfLines={1} ellipsizeMode="tail">
             {title}
           </Text>
         </View>
 
-        {showFilter ? (
-          <View style={styles.rightSlot}>
-            <SwapFilterButton onPress={onFilterPress} />
-          </View>
-        ) : (
-          <View style={styles.sideSlotSpacer} />
-        )}
+        <View style={styles.rightSlot}>
+          <Pressable
+            onPress={onCurrenciesPress}
+            accessibilityRole="button"
+            accessibilityLabel={t("swap.panel.currenciesButton")}
+            onHoverIn={
+              Platform.OS === "web" ? () => setHoverCurrencies(true) : undefined
+            }
+            onHoverOut={
+              Platform.OS === "web" ? () => setHoverCurrencies(false) : undefined
+            }
+            style={({ pressed }) => {
+              const webHover = Platform.OS === "web" && hoverCurrencies;
+              let backgroundColor = colors.undercover;
+              if (pressed) {
+                backgroundColor = welcomeAuthButtonActiveBackground(
+                  colors,
+                  colorScheme,
+                );
+              } else if (webHover) {
+                backgroundColor = welcomeAuthButtonHoverBackground(
+                  colors,
+                  colorScheme,
+                );
+              }
+              return [
+                styles.currenciesButton,
+                {
+                  backgroundColor,
+                  opacity: pressed ? 0.92 : 1,
+                },
+              ];
+            }}
+          >
+            <Text
+              style={[typographyFixedRow30Label, { color: colors.primary }]}
+              numberOfLines={1}
+            >
+              {t("swap.panel.currenciesButton")}
+            </Text>
+          </Pressable>
+        </View>
       </View>
       <View pointerEvents="none" style={borderLineStyle} />
     </View>
@@ -220,39 +211,26 @@ const styles = StyleSheet.create({
     width: "100%",
     paddingHorizontal: STRIP_PADDING_PX,
   },
-  leftSlot: {
-    zIndex: 2,
-    alignItems: "flex-start",
-    justifyContent: "center",
-  },
   rightSlot: {
     zIndex: 2,
     marginLeft: "auto",
     alignItems: "flex-end",
     justifyContent: "center",
   },
-  sideSlotSpacer: {
-    width: 0,
-    minWidth: 0,
-    flexShrink: 0,
-  },
-  backButton: {
-    height: BACK_BUTTON_HEIGHT_PX,
-    paddingHorizontal: BACK_BUTTON_HORIZONTAL_PADDING_PX,
+  currenciesButton: {
+    height: BUTTON_HEIGHT_PX,
+    paddingHorizontal: BUTTON_HORIZONTAL_PADDING_PX,
     justifyContent: "center",
     alignItems: "center",
-    alignSelf: "flex-start",
+    alignSelf: "flex-end",
   },
   titleWrap: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: "center",
-    paddingHorizontal: TITLE_SIDE_RESERVE_PX,
-    pointerEvents: "none",
-  },
-  titleWrapLeft: {
     alignItems: "flex-start",
     paddingLeft: STRIP_PADDING_PX,
     paddingRight: TITLE_SIDE_RESERVE_PX,
+    pointerEvents: "none",
   },
   title: {
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,

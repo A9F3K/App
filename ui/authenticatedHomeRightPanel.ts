@@ -3,9 +3,9 @@ import { useSyncExternalStore } from "react";
 /** Right split column content on authenticated home (wide layout only). */
 export type AuthenticatedHomeRightPanelKey = "swap" | "smart" | "trade" | "send" | "get";
 
-export const DEFAULT_AUTHENTICATED_HOME_RIGHT_PANEL_KEY: AuthenticatedHomeRightPanelKey = "smart";
+export const DEFAULT_AUTHENTICATED_HOME_RIGHT_PANEL_KEY: AuthenticatedHomeRightPanelKey = "swap";
 
-const STORAGE_KEY = "hyperlinks_authenticated_home_right_panel_v1";
+const STORAGE_KEY = "hyperlinks_authenticated_home_right_panel_v2";
 
 const PANEL_KEYS: readonly AuthenticatedHomeRightPanelKey[] = [
   "swap",

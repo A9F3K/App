@@ -13,17 +13,25 @@ const INTERVAL_GROUP_WIDTH_PX = Platform.OS === "web" ? 72 : 56;
 type Props = {
   intervalKey: SwapIntervalKey;
   onIntervalKeyChange: (key: SwapIntervalKey) => void;
-  tonPriceUsd: number | null;
+  priceUsd: number | null;
+  /** Asset ticker shown in the rate title (e.g. GRAM, NOT). */
+  assetSymbol: string;
 };
 
 /**
  * Single swap summary row: asset label · interval letters (row-centered) · price.
  */
-export function SwapRateRow({ intervalKey, onIntervalKeyChange, tonPriceUsd }: Props) {
+export function SwapRateRow({
+  intervalKey,
+  onIntervalKeyChange,
+  priceUsd,
+  assetSymbol,
+}: Props) {
   const colors = useColors();
   const resolution = SWAP_INTERVAL_TO_RESOLUTION[intervalKey];
-  const title = `TON ${resolutionLabel(resolution)}`;
-  const priceText = tonPriceUsd != null ? `${formatSwapPrice(tonPriceUsd)}$` : "…$";
+  const symbol = assetSymbol.trim().toUpperCase() || "TOKEN";
+  const title = `${symbol} ${resolutionLabel(resolution)}`;
+  const priceText = priceUsd != null ? `${formatSwapPrice(priceUsd)}$` : "…$";
 
   return (
     <View

@@ -2,7 +2,15 @@ import { useSyncExternalStore } from "react";
 
 export type SwapCurrencySide = "buy" | "sell";
 
-let activeSide: SwapCurrencySide | null = null;
+/** `browse` = Currencies home list; `buy`/`sell` = choose-token from the swap form. */
+export type SwapCurrencyPickerMode = SwapCurrencySide | "browse";
+
+let activeMode: SwapCurrencyPickerMode | null = null;
+/**
+ * After the user leaves Currencies into the swap form, narrow `/swap` remounts
+ * must not force browse again (e.g. returning from `/swap/currency`).
+ */
+let preferSwapForm = false;
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -11,16 +19,33 @@ function emit() {
   }
 }
 
-export function openSwapCurrencyPicker(side: SwapCurrencySide) {
-  if (activeSide === side) return;
-  activeSide = side;
+export function openSwapCurrencyPicker(mode: SwapCurrencyPickerMode) {
+  if (mode === "browse") {
+    preferSwapForm = false;
+  }
+  if (activeMode === mode) return;
+  activeMode = mode;
   emit();
 }
 
+/** Open the Currencies list as the Swap entry surface. */
+export function openSwapCurrenciesBrowse() {
+  openSwapCurrencyPicker("browse");
+}
+
 export function closeSwapCurrencyPicker() {
-  if (activeSide === null) return;
-  activeSide = null;
+  if (activeMode === null) return;
+  activeMode = null;
   emit();
+}
+
+/** Call when a Currencies-home row opens the swap form. */
+export function markSwapFormPreferred() {
+  preferSwapForm = true;
+}
+
+export function shouldOpenSwapCurrenciesBrowseOnSwapScreen(): boolean {
+  return !preferSwapForm;
 }
 
 function subscribe(onStoreChange: () => void) {
@@ -31,13 +56,19 @@ function subscribe(onStoreChange: () => void) {
 }
 
 function getSnapshot() {
-  return activeSide;
+  return activeMode;
 }
 
 function getServerSnapshot() {
-  return null as SwapCurrencySide | null;
+  return null as SwapCurrencyPickerMode | null;
 }
 
-export function useSwapCurrencyPicker(): SwapCurrencySide | null {
+export function useSwapCurrencyPicker(): SwapCurrencyPickerMode | null {
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
+export function isSwapCurrencySide(
+  mode: SwapCurrencyPickerMode | null | undefined,
+): mode is SwapCurrencySide {
+  return mode === "buy" || mode === "sell";
 }

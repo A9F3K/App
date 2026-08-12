@@ -34,10 +34,9 @@ const GROUP_CALL_VIDEO_MAX_HEIGHT_SOFT = 180;
 /** Softer rung after a Colibri mix stall — still a tgcalls simulcast step. */
 const GROUP_CALL_VIDEO_MAX_HEIGHT_AFTER_STALL = 360;
 /**
- * Concurrent remote screencasts on one PC. Cap above 2 reliably freezes
- * Colibri mix Opus; 2 matches dual live shares in large groups.
+ * Remote screencasts share one Colibri mix m-line per PC; mix-protect still
+ * may drop video if Opus stalls — there is no artificial subscribe cap.
  */
-const MAX_REMOTE_SCREEN_SUBSCRIBE = 2;
 /**
  * After constraints-pause fails under a painting stage, wait this long before
  * audio-only recover so Opus can resume without tearing both screencasts.
@@ -87,6 +86,16 @@ const OPUS_HARD_FREEZE_PACKET_SLACK = 12;
 const OPUS_POST_VIDEO_SPIKE_PLATEAU_MS = 2_800;
 /** Min time since video renegotiate before spike-plateau hard-freeze can trip. */
 const OPUS_POST_VIDEO_SPIKE_PLATEAU_MIN_WATCH_MS = 3_200;
+/**
+ * After video SDP renegotiate, keep endpoints off-stage while probing whether
+ * Opus mix RTP still grows. Putting H264 on-stage immediately often freezes the
+ * mixed audio m-line (prod: inboundPackets stuck at 29 while video climbs).
+ */
+const OPUS_POST_VIDEO_ON_STAGE_PROBE_MS = 4_000;
+/** Extra probe passes before giving up on deferred on-stage (race / late Opus). */
+const OPUS_POST_VIDEO_ON_STAGE_PROBE_MAX_ATTEMPTS = 2;
+/** Min Opus packet growth since video SDP before promoting endpoints on-stage. */
+const OPUS_POST_VIDEO_ON_STAGE_MIN_AUDIO_GROWTH = 4;
 /**
  * STUN so the join payload includes a public srflx address. Host-only LAN
  * candidates (192.168/10/172.16) are unreachable from Telegram's SFU — without
@@ -539,6 +548,12 @@ export class TelegramGroupCallWebSession {
   /** One deferred recover after pause-fail while H264 was painting. */
   private postPauseFailRecoverDeferred = false;
   private postPauseFailRecoverTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Video m-line exists but Colibri on-stage is deferred until mix probe passes. */
+  private videoOnStageDeferred = false;
+  private videoOnStageProbeTimer: ReturnType<typeof setTimeout> | null = null;
+  private videoOnStageProbeBaselinePackets = 0;
+  /** How many deferred on-stage probe passes have run for this video attach. */
+  private videoOnStageProbeAttempts = 0;
   /**
    * Last mix-protect drop had live H264 (not a ghost share). VoiceBar uses
    * this with {@link getMixProtectScreenAutoRestorePending} to keep unmute
@@ -602,7 +617,7 @@ export class TelegramGroupCallWebSession {
    * video SDP; menu unmute keeps the shorter explicit settle.
    */
   private explicitVideoSubscribeFromAutoShow = false;
-  /** Prefer this screen endpoint on the next subscribe (2nd unmute under cap). */
+  /** Prefer this screen endpoint on the next subscribe (menu unmute). */
   private preferredExplicitVideoEndpointId: string | null = null;
   /**
    * In-place strip of remote video m-lines (no PC teardown). Full rejoin after
@@ -1334,23 +1349,17 @@ export class TelegramGroupCallWebSession {
             sourceIds: g.sourceIds.map((id) => Math.trunc(id)),
           })),
       }));
-    // Safety net: Colibri mix Opus stalls when too many video m-lines attach.
-    // Prefer up to two screens (else one camera). Explicit unmute may name a
-    // preferred endpoint so it stays in the subscribe set under the cap.
+    // Safety net: prefer all screen shares (else one camera). Explicit unmute
+    // may name a preferred endpoint so it stays first in the subscribe set.
     const screens = normalizedRaw.filter((r) => r.kind === "screen");
     const preferredId = this.preferredExplicitVideoEndpointId;
     let normalized =
-      screens.length > 0
-        ? screens.slice(0, MAX_REMOTE_SCREEN_SUBSCRIBE)
-        : normalizedRaw.slice(0, 1);
+      screens.length > 0 ? screens : normalizedRaw.slice(0, 1);
     if (preferredId && screens.length > 0) {
       const preferredScreen = screens.find((r) => r.endpointId === preferredId);
       if (preferredScreen) {
         const rest = screens.filter((r) => r.endpointId !== preferredId);
-        normalized = [preferredScreen, ...rest].slice(
-          0,
-          MAX_REMOTE_SCREEN_SUBSCRIBE,
-        );
+        normalized = [preferredScreen, ...rest];
       }
     }
     if (this.explicitVideoSubscribeArmed && normalized.length > 0) {
@@ -2175,6 +2184,11 @@ export class TelegramGroupCallWebSession {
     }
     this.constraintsThrottleInFlight = true;
     this.constraintsPauseHealUsedAtVideoAttach = true;
+    // Cancel deferred on-stage probe for the pause window — otherwise the 4s
+    // promote races empty on-stage and re-freezes Opus (prod: pause at 53pk,
+    // promote audioGrowth=1 mid-pause, then pause_heal_result mixGrew=false).
+    this.clearVideoOnStageProbe();
+    this.videoOnStageDeferred = true;
     try {
       const before = await this.logIceDiagnostics(
         connection,
@@ -2210,7 +2224,7 @@ export class TelegramGroupCallWebSession {
       );
       const audioGrowth = after.inboundPackets - before.inboundPackets;
       const mixGrew =
-        audioGrowth >= 4 ||
+        audioGrowth >= OPUS_POST_VIDEO_ON_STAGE_MIN_AUDIO_GROWTH ||
         this.mixRecentlyHearableForScreenProtect(2_500);
       logPageDisplay("messages_voice_video_constraints_pause_heal_result", {
         chatId: this.input.chatId,
@@ -2233,10 +2247,15 @@ export class TelegramGroupCallWebSession {
           after.inboundPackets,
         );
         this.postVideoSilenceTicks = 0;
-        this.sendReceiverVideoConstraints();
+        this.videoOnStageDeferred = false;
+        this.clearVideoOnStageProbe();
+        this.sendReceiverVideoConstraints({ forceOnStage: true });
         this.queueRemotePlayback("constraints-pause-heal");
         return true;
       }
+      // Keep endpoints off-stage while escalate decides strip/recover — do not
+      // let a concurrent constraints_sent put H264 back on-stage over a dead mix.
+      this.videoOnStageDeferred = true;
       return false;
     } catch (err) {
       logPageDisplay("messages_voice_video_constraints_pause_heal_fail", {
@@ -2315,6 +2334,9 @@ export class TelegramGroupCallWebSession {
         level: "warn",
         note: "pause failed under painting stage — defer recover, keep screencasts",
       });
+      // Stay deferred so constraints_sent does not put H264 back on-stage
+      // over a still-frozen mix (prod race after pause_heal_result mixGrew=false).
+      this.videoOnStageDeferred = true;
       this.sendReceiverVideoConstraints();
       // Arm timer before async heal so silent_heal / soft_silent see the gate.
       this.postPauseFailRecoverTimer = setTimeout(() => {
@@ -2334,10 +2356,10 @@ export class TelegramGroupCallWebSession {
       void this.healSilentMixDespiteRtp();
       return;
     }
-    // Skip strip: inactive video m-lines left mix flat and delayed recover
-    // while the stage was already cleared in UI (no screencast, no mix).
-    if (this.recoverAudioAfterOpusFrozenAtVideoSdp(reason)) return;
+    // Prefer in-place video SDP strip (same PC) before full audio rejoin — less
+    // disruptive and may revive Opus without tearing the whole session.
     if (this.dropRemoteVideoSdpToRestoreMix(reason)) return;
+    if (this.recoverAudioAfterOpusFrozenAtVideoSdp(reason)) return;
     void this.healSilentMixDespiteRtp();
   }
 
@@ -2407,7 +2429,6 @@ export class TelegramGroupCallWebSession {
     }
     this.preferStableScreencast = false;
     const packetsAtVideo = this.inboundPacketsAtVideoRenegotiate;
-    this.clearRemoteVideoSubscribeForMixStall(reason);
     logPageDisplay("messages_voice_opus_frozen_at_video_sdp", {
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
@@ -2418,10 +2439,10 @@ export class TelegramGroupCallWebSession {
       allowResub: this.mixProtectScreenAutoRestorePending,
       level: "error",
       note: this.mixProtectScreenAutoRestorePending
-        ? "Opus flat since video SDP — audio recover, one-shot screen restore when mix healthy"
-        : "Opus flat since video SDP — audio recover (no screen restore armed)",
+        ? "Opus flat since video SDP — strip in-place then audio recover if needed"
+        : "Opus flat since video SDP — strip in-place then audio recover if needed",
     });
-    this.scheduleAudioRecoverAfterVideoStall();
+    void this.stripRemoteVideoSdpInPlaceThenMaybeRecover(reason);
     return true;
   }
 
@@ -2538,14 +2559,23 @@ export class TelegramGroupCallWebSession {
     if (this.postPauseFailRecoverTimer) {
       return true;
     }
-    // Pause completed (not in flight) — allow strip/recover with restore.
+    if (this.remoteVideoStillInPaintGrace()) return true;
+    // Pause completed (not in flight) — still protect live paint / healthy
+    // H264 until the hard-freeze window elapses (defer alone is not enough).
     if (
       this.constraintsPauseHealUsedAtVideoAttach &&
       !this.constraintsThrottleInFlight
     ) {
+      if (
+        this.hasHealthyRemoteVideoMedia() ||
+        (this.postVideoRenegotiateAt > 0 &&
+          Date.now() - this.postVideoRenegotiateAt <
+            OPUS_HARD_FREEZE_RECOVER_AFTER_MS)
+      ) {
+        return true;
+      }
       return false;
     }
-    if (this.remoteVideoStillInPaintGrace()) return true;
     if (this.postVideoRenegotiateAt <= 0) return false;
     if (
       Date.now() - this.postVideoRenegotiateAt >=
@@ -3298,7 +3328,141 @@ export class TelegramGroupCallWebSession {
    * telegram-tt / Colibri: SFU only forwards camera/screen once we name the
    * endpoints in ReceiverVideoConstraints over the SCTP data channel.
    */
-  private sendReceiverVideoConstraints(): void {
+  private clearVideoOnStageProbe(): void {
+    if (this.videoOnStageProbeTimer) {
+      clearTimeout(this.videoOnStageProbeTimer);
+      this.videoOnStageProbeTimer = null;
+    }
+  }
+
+  /** After video SDP, probe mix RTP before putting endpoints on-stage. */
+  private armVideoOnStageProbe(connection: RTCPeerConnection): void {
+    this.clearVideoOnStageProbe();
+    if (typeof window === "undefined") return;
+    this.videoOnStageProbeTimer = window.setTimeout(() => {
+      this.videoOnStageProbeTimer = null;
+      void this.promoteVideoOnStageAfterProbe(connection);
+    }, OPUS_POST_VIDEO_ON_STAGE_PROBE_MS);
+  }
+
+  private async promoteVideoOnStageAfterProbe(
+    connection: RTCPeerConnection,
+  ): Promise<void> {
+    if (this.connection !== connection || !this.joined) return;
+    if (!this.videoOnStageDeferred) return;
+    // Pause heal owns on-stage for its window — do not promote over empty stage.
+    if (this.constraintsThrottleInFlight) {
+      this.armVideoOnStageProbe(connection);
+      return;
+    }
+    this.videoOnStageProbeAttempts += 1;
+    try {
+      const stats = await this.logIceDiagnostics(
+        connection,
+        "video_on_stage_probe",
+      );
+      const audioGrowth =
+        stats.inboundPackets - this.videoOnStageProbeBaselinePackets;
+      // Sticky mixRtpPacketsAlive / pre-video hears must NOT count — prod
+      // promoted with audioGrowth=1 at flat 53pk and re-froze the mix.
+      const mixHealthy =
+        audioGrowth >= OPUS_POST_VIDEO_ON_STAGE_MIN_AUDIO_GROWTH ||
+        (audioGrowth >= 2 &&
+          this.mixRecentlyHearableForScreenProtect(3_000));
+      const frozen = this.isOpusHardFrozenSinceVideoRenegotiate(
+        stats.inboundPackets,
+      );
+      const videoClimbing =
+        stats.inboundVideoPackets > 0 || this.hasHealthyRemoteVideoMedia();
+      if (!mixHealthy || frozen) {
+        if (
+          frozen ||
+          (videoClimbing &&
+            audioGrowth < OPUS_POST_VIDEO_ON_STAGE_MIN_AUDIO_GROWTH)
+        ) {
+          logPageDisplay("messages_voice_video_on_stage_probe_defer", {
+            chatId: this.input.chatId,
+            groupCallId: this.input.groupCallId,
+            inboundPackets: stats.inboundPackets,
+            baseline: this.videoOnStageProbeBaselinePackets,
+            audioGrowth,
+            inboundVideoPackets: stats.inboundVideoPackets,
+            frozen,
+            attempt: this.videoOnStageProbeAttempts,
+            level: "warn",
+            note:
+              "Opus flat before on-stage — keep m-line, try constraints pause heal",
+          });
+          this.escalateAfterFailedConstraintsPauseHeal(
+            "video_on_stage_probe_opus_flat",
+          );
+          return;
+        }
+        if (
+          this.videoOnStageProbeAttempts <
+          OPUS_POST_VIDEO_ON_STAGE_PROBE_MAX_ATTEMPTS
+        ) {
+          logPageDisplay("messages_voice_video_on_stage_probe_retry", {
+            chatId: this.input.chatId,
+            groupCallId: this.input.groupCallId,
+            inboundPackets: stats.inboundPackets,
+            audioGrowth,
+            attempt: this.videoOnStageProbeAttempts,
+            level: "info",
+            note: "mix not proven yet — keep deferred on-stage, probe again",
+          });
+          this.armVideoOnStageProbe(connection);
+          return;
+        }
+        logPageDisplay("messages_voice_video_on_stage_probe_defer", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          inboundPackets: stats.inboundPackets,
+          baseline: this.videoOnStageProbeBaselinePackets,
+          audioGrowth,
+          inboundVideoPackets: stats.inboundVideoPackets,
+          frozen,
+          attempt: this.videoOnStageProbeAttempts,
+          level: "warn",
+          note:
+            "mix still unproven after probes — keep off-stage, escalate heal",
+        });
+        this.escalateAfterFailedConstraintsPauseHeal(
+          "video_on_stage_probe_unproven",
+        );
+        return;
+      }
+      this.videoOnStageDeferred = false;
+      logPageDisplay("messages_voice_video_on_stage_promote", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        inboundPackets: stats.inboundPackets,
+        audioGrowth,
+        inboundVideoPackets: stats.inboundVideoPackets,
+        level: "info",
+        note: "mix healthy — promote screencast to on-stage",
+      });
+      this.sendReceiverVideoConstraints({ forceOnStage: true });
+    } catch (err) {
+      logPageDisplay("messages_voice_video_on_stage_probe_fail", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        error: err instanceof Error ? err.message : String(err),
+        attempt: this.videoOnStageProbeAttempts,
+        level: "warn",
+      });
+      // Do not force on-stage on probe errors — that re-froze Opus mid-pause.
+      if (
+        this.videoOnStageDeferred &&
+        this.videoOnStageProbeAttempts <
+          OPUS_POST_VIDEO_ON_STAGE_PROBE_MAX_ATTEMPTS
+      ) {
+        this.armVideoOnStageProbe(connection);
+      }
+    }
+  }
+
+  private sendReceiverVideoConstraints(opts?: { forceOnStage?: boolean }): void {
     const channel = this.dataChannel;
     // Do not put video endpoints on-stage while audio settle is still running —
     // Colibri constraints without a video m-line still steal mix bandwidth.
@@ -3371,12 +3535,15 @@ export class TelegramGroupCallWebSession {
         maxHeight,
       };
     }
+    const deferOnStage =
+      this.videoOnStageDeferred && !opts?.forceOnStage && endpoints.length > 0;
+    const onStageEndpoints = deferOnStage ? [] : endpoints;
     const message = {
       colibriClass: "ReceiverVideoConstraints",
       // Match telegram-tt groupCall.ts updateRemoteVideoConstraints.
       defaultConstraints: { maxHeight: 0 },
       constraints,
-      onStageEndpoints: endpoints,
+      onStageEndpoints,
     };
     try {
       channel.send(JSON.stringify(message));
@@ -3385,6 +3552,8 @@ export class TelegramGroupCallWebSession {
         groupCallId: this.input.groupCallId,
         count: endpoints.length,
         endpoints,
+        onStage: onStageEndpoints,
+        deferredOnStage: deferOnStage,
         maxHeight,
         level: "info",
       });
@@ -3720,6 +3889,7 @@ export class TelegramGroupCallWebSession {
         clearTimeout(this.postPauseFailRecoverTimer);
         this.postPauseFailRecoverTimer = null;
       }
+      this.clearVideoOnStageProbe();
       this.lastMixPacketAdvanceAt = Date.now();
       // Freeze baseline = live getStats at renegotiate. Session peak is often
       // higher than the oscillating snapshot (prod: peak=50, snap=26) and made
@@ -3737,15 +3907,29 @@ export class TelegramGroupCallWebSession {
       // (prod: healCount=4 before screen → flat_recheck skipped 10s window).
       this.silentMixHealCount = 0;
       this.silentMixHealInFlight = false;
+      this.videoOnStageDeferred = true;
+      this.videoOnStageProbeAttempts = 0;
+      this.videoOnStageProbeBaselinePackets = Math.max(
+        0,
+        inboundBefore.inboundPackets > 0
+          ? inboundBefore.inboundPackets
+          : this.peakInboundAudioPackets,
+      );
     } else {
       this.postVideoRenegotiateAt = 0;
       this.inboundPacketsAtVideoRenegotiate = 0;
       this.postVideoSilenceTicks = 0;
       this.firstRemoteVideoFrameAt = 0;
       this.lastMixPacketAdvanceAt = 0;
+      this.videoOnStageDeferred = false;
+      this.videoOnStageProbeAttempts = 0;
+      this.clearVideoOnStageProbe();
     }
     this.sendReceiverVideoConstraints();
     this.pullRemoteMediaTracks(connection);
+    if (wanted.length > 0) {
+      this.armVideoOnStageProbe(connection);
+    }
     // Video subscribe used to leave WebAudio attached to a pre-renegotiate
     // stream snapshot — force rebuild so unmuted mix keeps playing.
     this.queueRemotePlayback("post-video-renegotiate");
@@ -5828,7 +6012,7 @@ export class TelegramGroupCallWebSession {
         pendingVideo: this.pendingRemoteVideoAfterRecover.length,
         level: "info",
       });
-      if (!armPreVideoScreenRestore) {
+      if (!armPreVideoScreenRestore && !this.mixProtectScreenAutoRestorePending) {
         this.remoteVideoSdpBlockedAfterStall = true;
         this.remoteVideoSdpSubscribeEnabled = false;
       } else {
@@ -5876,7 +6060,7 @@ export class TelegramGroupCallWebSession {
     const copyScreens = (
       list: TelegramRemoteVideoRequest[],
     ): TelegramRemoteVideoRequest[] =>
-      list.slice(0, MAX_REMOTE_SCREEN_SUBSCRIBE).map((r) => ({
+      list.map((r) => ({
         endpointId: r.endpointId,
         kind: r.kind,
         ssrcGroups: r.ssrcGroups.map((g) => ({
@@ -5956,8 +6140,8 @@ export class TelegramGroupCallWebSession {
     // by auto-show prefer — wasExplicit alone would re-arm blanks forever).
     const armOneShotRestore =
       Boolean(preferredForRestore) &&
-      !this.mixProtectScreenAutoRestoreUsed &&
       !this.mixProtectScreenAutoRestorePending &&
+      this.audioRecoverCount < TelegramGroupCallWebSession.MAX_AUDIO_RECOVERS &&
       ((wasExplicit && !wasAutoShow) || (wasAutoShow && hadLiveVideo));
     // Always report live H264 truth; VoiceBar only keeps unmute chrome when
     // restore is also armed (see MessageChatVoiceBar mix-protect effect).
@@ -10557,6 +10741,9 @@ export class TelegramGroupCallWebSession {
       clearTimeout(this.postPauseFailRecoverTimer);
       this.postPauseFailRecoverTimer = null;
     }
+    this.videoOnStageDeferred = false;
+    this.videoOnStageProbeAttempts = 0;
+    this.clearVideoOnStageProbe();
     this.lastMixProtectDropHadLiveVideo = false;
     this.firstRemoteVideoFrameAt = 0;
     this.peakInboundAudioPackets = 0;
@@ -10624,6 +10811,9 @@ export class TelegramGroupCallWebSession {
       clearTimeout(this.postPauseFailRecoverTimer);
       this.postPauseFailRecoverTimer = null;
     }
+    this.videoOnStageDeferred = false;
+    this.videoOnStageProbeAttempts = 0;
+    this.clearVideoOnStageProbe();
     this.lastMixProtectDropHadLiveVideo = false;
     this.firstRemoteVideoFrameAt = 0;
     this.constraintsThrottleInFlight = false;

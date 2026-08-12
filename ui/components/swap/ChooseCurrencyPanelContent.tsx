@@ -1,31 +1,78 @@
 import { useCallback } from "react";
-import { View } from "react-native";
-import { closeSwapCurrencyPicker } from "../../swap/swapCurrencyPicker";
+import { useWindowDimensions, View } from "react-native";
+import { useAppStrings } from "../../../locales/AppStringsContext";
+import {
+  closeSwapCurrencyPicker,
+  isSwapCurrencySide,
+  markSwapFormPreferred,
+  useSwapCurrencyPicker,
+} from "../../swap/swapCurrencyPicker";
 import { useChooseCurrencyChrome } from "../../swap/chooseCurrencyChrome";
+import { mapChooseCurrencyRowToSwapPairToken } from "../../swap/mapChooseCurrencyRowToSwapPairToken";
+import {
+  selectSwapBuyTokenForDllr,
+  setSwapTokenForSide,
+} from "../../swap/swapPairStore";
 import { useChooseCurrencyRows } from "../../swap/useChooseCurrencyRows";
 import { layout } from "../../theme";
 import { useAuthenticatedHomeSplitLayoutMetrics } from "../AuthenticatedHomeSplitLayoutMetricsContext";
 import { ChooseCurrencySubheader } from "./ChooseCurrencySubheader";
 import { ChooseCurrencyTable } from "./ChooseCurrencyTable";
+import { SwapDealActionRow } from "./SwapDealActionRow";
+import type { ChooseCurrencyRow } from "./chooseCurrencyTableTypes";
 
 type Props = {
   onFilterPress?: () => void;
   onBackPress?: () => void;
   walletAddress?: string | null;
+  /**
+   * After a row is chosen and the picker closes. Narrow `/swap/currency` uses
+   * this to `router.back()`; browse mode on `/swap` stays on the swap screen.
+   */
+  onAfterSelect?: () => void;
 };
 
 /** Wide split-column picker body (subheader + list area). */
-export function ChooseCurrencyPanelContent({ onFilterPress, onBackPress, walletAddress }: Props) {
-  const { rows, isLoading, isFetchingMore, error, loadMore } = useChooseCurrencyRows(walletAddress);
+export function ChooseCurrencyPanelContent({
+  onFilterPress,
+  onBackPress,
+  walletAddress,
+  onAfterSelect,
+}: Props) {
+  const { t } = useAppStrings();
+  const { width: windowWidth } = useWindowDimensions();
+  const pickerMode = useSwapCurrencyPicker();
+  const isBrowse = pickerMode === "browse";
+  const { rows, isLoading, isFetchingMore, error, loadMore } =
+    useChooseCurrencyRows(walletAddress);
   const contentInset = layout.contentSideInsetPx;
   const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   const scrollShellBleed = { marginHorizontal: -contentInset };
   const { showSubheaderBack, titleAlign } = useChooseCurrencyChrome();
+  /** Inline deal row when the 3-column bottom bar is not showing (≤2 columns). */
+  const showInlineDealAction =
+    windowWidth <= layout.authenticatedHome.secondBreakpoint;
 
   const handleBack = useCallback(() => {
     closeSwapCurrencyPicker();
     onBackPress?.();
   }, [onBackPress]);
+
+  const handleSelectRow = useCallback(
+    (row: ChooseCurrencyRow) => {
+      const token = mapChooseCurrencyRowToSwapPairToken(row);
+      if (isBrowse || pickerMode == null) {
+        selectSwapBuyTokenForDllr(token);
+        markSwapFormPreferred();
+      } else if (isSwapCurrencySide(pickerMode)) {
+        setSwapTokenForSide(pickerMode, token);
+        markSwapFormPreferred();
+      }
+      closeSwapCurrencyPicker();
+      onAfterSelect?.();
+    },
+    [isBrowse, onAfterSelect, pickerMode],
+  );
 
   return (
     <View style={{ flex: 1, width: "100%", alignSelf: "stretch", minHeight: 0 }}>
@@ -33,9 +80,10 @@ export function ChooseCurrencyPanelContent({ onFilterPress, onBackPress, walletA
         <ChooseCurrencySubheader
           onBackPress={handleBack}
           onFilterPress={onFilterPress}
-          showBack={showSubheaderBack}
+          showBack={isBrowse ? false : showSubheaderBack}
           showFilter
-          titleAlign={titleAlign}
+          titleAlign={isBrowse ? "left" : titleAlign}
+          title={isBrowse ? t("swap.currencies.title") : undefined}
         />
       </View>
       <View style={{ flex: 1, minHeight: 0, ...scrollShellBleed }}>
@@ -45,9 +93,22 @@ export function ChooseCurrencyPanelContent({ onFilterPress, onBackPress, walletA
           isFetchingMore={isFetchingMore}
           loadError={error}
           onLoadMore={loadMore}
+          onSelectRow={handleSelectRow}
           columnShellWidthPx={splitMetrics?.middleColumnWidthPx ?? 0}
         />
       </View>
+      {showInlineDealAction ? (
+        <View
+          style={{
+            width: "100%",
+            paddingVertical: 15,
+            paddingHorizontal: contentInset,
+            ...scrollShellBleed,
+          }}
+        >
+          <SwapDealActionRow density="compact" />
+        </View>
+      ) : null}
     </View>
   );
 }

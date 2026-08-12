@@ -13,9 +13,19 @@ import {
   resolveJettonMarketCapRankUsd,
   resolveJettonMarketCapUsd,
 } from "./resolveJettonMarketCapUsd";
+import { SWAP_TON_ZERO_ADDRESS } from "./swapPairTypes";
 import type { SwapAccountJettonBalance, SwapJetton } from "./swapJettonsTypes";
 
 const DLLR_SYMBOL = "DLLR";
+
+function isNativeZeroAddress(address: string): boolean {
+  const addr = address.trim().toLowerCase();
+  return (
+    addr === SWAP_TON_ZERO_ADDRESS ||
+    /^0:0+$/.test(addr) ||
+    addr.includes("00000000000000000000000000000000000000000000000000000000")
+  );
+}
 
 export function buildBalanceByJettonAddress(
   items: readonly SwapAccountJettonBalance[],
@@ -30,8 +40,10 @@ export function buildBalanceByJettonAddress(
 
 function jettonIcon(jetton: SwapJetton) {
   if (jettonUsesStolenUsdtBranding(jetton)) return null;
+  if (isNativeZeroAddress(jetton.address ?? "")) return swapTonTokenImage;
+  const upper = jetton.symbol?.trim().toUpperCase();
+  if (upper === "TON" || upper === "GRAM") return swapTonTokenImage;
   if (jetton.image_url) return { uri: jetton.image_url } as const;
-  if (jetton.symbol?.trim().toUpperCase() === "TON") return swapTonTokenImage;
   return null;
 }
 
@@ -44,9 +56,14 @@ export function mapJettonToChooseCurrencyRow(
   balanceByAddress: Map<string, string>,
   locale: AppLocale = "en",
 ): ChooseCurrencyRow | null {
-  const symbol = normalizeJettonLabel(jetton.symbol ?? "");
   const address = jetton.address?.toLowerCase();
-  if (!symbol || !address || symbol.toUpperCase() === DLLR_SYMBOL) return null;
+  if (!address || !jetton.symbol?.trim()) return null;
+  const isNative = isNativeZeroAddress(address);
+  // Catalog still returns "TON" for the zero-address native; UI shows Gram.
+  const symbol = isNative
+    ? "GRAM"
+    : normalizeJettonLabel(jetton.symbol ?? "");
+  if (!symbol || symbol.toUpperCase() === DLLR_SYMBOL) return null;
   // Brand lookalikes (e.g. preOPENAI) — hide entirely, do not merely demote.
   if (jettonImpersonatesKnownBrand(jetton)) return null;
 
@@ -67,7 +84,9 @@ export function mapJettonToChooseCurrencyRow(
   const resolvedCap = stolenUsdt ? null : resolveJettonMarketCapUsd(jetton);
   // Sort by volume-adjusted rank (target ≈ 1% daily turnover); display stays trusted mcap.
   const marketCapUsd = stolenUsdt ? 0 : resolveJettonMarketCapRankUsd(jetton);
-  const name = normalizeJettonLabel(jetton.name ?? "") || symbol;
+  const name = isNative
+    ? "Gram"
+    : normalizeJettonLabel(jetton.name ?? "") || symbol;
 
   return {
     rowKey: address,

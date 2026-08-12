@@ -100,10 +100,6 @@ export function MainColumnInactiveFooter() {
 
   return <InactiveWelcomeColumnFooter active label={label} onPress={onPress} />;
 }
-export function SwapColumnInactiveFooter() {
-  const { t } = useAppStrings();
-  return <InactiveWelcomeColumnFooter label={t("swap.footer.insufficientAmount")} />;
-}
 
 export function SendColumnInactiveFooter() {
   const { t } = useAppStrings();

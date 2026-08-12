@@ -15,8 +15,8 @@ import { useBottomBarLayout } from "../components/BottomBarLayoutContext";
 import {
   MainColumnInactiveFooter,
   SendColumnInactiveFooter,
-  SwapColumnInactiveFooter,
 } from "../components/InactiveWelcomeColumnFooter";
+import { SwapColumnFooter } from "../components/swap/SwapColumnFooter";
 import { HomeAuthenticatedHeaderRow } from "../components/HomeAuthenticatedHeaderRow";
 import { AuthenticatedHomeLeftNavStrip } from "../components/AuthenticatedHomeLeftNavStrip";
 import { AuthenticatedHomeFeedPanel } from "../components/AuthenticatedHomeFeedPanel";
@@ -74,7 +74,11 @@ import {
   useAuthenticatedHomeSelectedChat,
 } from "../authenticatedHomeSelectedChat";
 import { useRouter } from "expo-router";
-import { useSwapCurrencyPicker } from "../swap/swapCurrencyPicker";
+import {
+  openSwapCurrenciesBrowse,
+  shouldOpenSwapCurrenciesBrowseOnSwapScreen,
+  useSwapCurrencyPicker,
+} from "../swap/swapCurrencyPicker";
 
 /**
  * Survives React Strict Mode / remount: component `useRef` resets, but two parallel
@@ -664,6 +668,14 @@ export function HomeAuthenticatedScreen() {
   }, [isWideHome, rightPanel]);
 
   useEffect(() => {
+    // Swap entry surface is Currencies until the user opens a pair form.
+    if (!isWideHome || rightPanel !== "swap") return;
+    if (shouldOpenSwapCurrenciesBrowseOnSwapScreen()) {
+      openSwapCurrenciesBrowse();
+    }
+  }, [isWideHome, rightPanel]);
+
+  useEffect(() => {
     if (!isWideHome || rightPanel !== "swap") return;
     logPageDisplay("swap_panel_visible", {
       windowWidth,
@@ -705,7 +717,7 @@ export function HomeAuthenticatedScreen() {
   const aiSearchColumnContent =
     aiBarDock === "splitColumn3" && draftText.trim().length === 0 ? <AiSearchColumnEmptyState /> : null;
   const mainColumnFooter = <MainColumnInactiveFooter />;
-  const swapColumnFooter = <SwapColumnInactiveFooter />;
+  const swapColumnFooter = <SwapColumnFooter />;
   const sendColumnFooter = <SendColumnInactiveFooter />;
   const smartColumnFooter = <SmartColumnFooter />;
   const [step, setStep] = useState<CreateStep>("idle");
