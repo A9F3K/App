@@ -152,7 +152,7 @@ If **Linked service: None**, fix it:
 
 **Alternative (often easier):** connect GitHub in the Railway service **Source** tab and deploy from a git push — no `railway up` upload needed.
 
-Upgrade CLI if 404 persists after linking: `npm i -D @railway/cli@latest` (v5.x).
+Upgrade CLI if 404 persists after linking: `npx --yes @railway/cli@latest` (v5.x). Do not add `@railway/cli` as a package dependency — its Windows postinstall downloads a GitHub release binary and can fail Electron CI.
 
 ### `npm ci` / lock file out of sync (graphql, @tonconnect, …)
 

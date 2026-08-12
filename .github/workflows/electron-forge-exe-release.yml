@@ -31,7 +31,9 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        # Avoid packages whose postinstall downloads GitHub release binaries (e.g. @railway/cli);
+        # those are invoked via npx only when deploying the TDLib gateway.
+        run: npm ci --no-fund --no-audit
 
       - name: Resolve next app version from GitHub releases
         id: version

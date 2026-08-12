@@ -31,7 +31,8 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
-        run: npm ci
+        # Same as Forge workflow: keep npm ci free of @railway/cli binary postinstall.
+        run: npm ci --no-fund --no-audit
 
       - name: Resolve next app version from GitHub releases
         id: version
