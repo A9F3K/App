@@ -1867,8 +1867,11 @@ export function MessageChatVoiceBar({
     [appendVoiceChatMessage, chatId, groupCallId],
   );
 
-  const refreshParticipants = useCallback(async (): Promise<"ok" | "retry_soon" | "backoff"> => {
-    if (!isTelegramMessagesConnected) return "backoff";
+  const refreshParticipants = useCallback(async (): Promise<{
+    status: "ok" | "retry_soon" | "backoff";
+    error?: string;
+  }> => {
+    if (!isTelegramMessagesConnected) return { status: "backoff", error: "not_connected_client" };
     // Soft HTTP polls contend with joinVideoChat on TDLib. While Join is armed
     // but WebRTC is not up yet, skip entirely. After webrtc_join_ok, allow soft
     // polls even with the sheet open so speaking/roster recover if SSE stalls.
@@ -1877,10 +1880,10 @@ export function MessageChatVoiceBar({
       !voiceSessionJoinedRef.current &&
       joinAttemptsRef.current < 3
     ) {
-      return "ok";
+      return { status: "ok", error: "skip_join_inflight" };
     }
     if (popoverOpenRef.current && !voiceSessionJoinedRef.current) {
-      return "ok";
+      return { status: "ok", error: "skip_sheet_pre_join" };
     }
     softPollAbortRef.current?.abort();
     const abort = new AbortController();
@@ -1890,7 +1893,7 @@ export function MessageChatVoiceBar({
       const result = await fetchTelegramChatVoiceParticipants(pollChatId, null, {
         signal: abort.signal,
       });
-      if (chatIdRef.current !== pollChatId) return "ok";
+      if (chatIdRef.current !== pollChatId) return { status: "ok", error: "chat_switched" };
       if (result.ok) {
         const live = syncVoicePresence(
           pollChatId,
@@ -1909,7 +1912,7 @@ export function MessageChatVoiceBar({
           rosterCountHintStateRef.current = 0;
           setRosterCountHint(0);
           setPresenceConfirmedAndNotify(false);
-          return "ok";
+          return { status: "ok" };
         }
         // Always paint rows when TDLib returned any participants — countHint of 0
         // used to leave the strip empty despite a real self/other roster.
@@ -1921,26 +1924,27 @@ export function MessageChatVoiceBar({
             preferMerge: result.participant_count > result.participants.length,
           });
         }
-        return "ok";
+        return { status: "ok" };
       }
       if (result.error === "aborted") {
-        return "ok";
+        return { status: "ok", error: "aborted" };
       }
       if (result.error === "not_connected" || result.error === "session_not_ready") {
-        return "backoff";
+        return { status: "backoff", error: result.error };
       }
       if (result.error === "timeout" || result.error === "network_error") {
         appWarn("[message-voice-participants]", result.error, { chatId, groupCallId });
-        return "backoff";
+        return { status: "backoff", error: result.error };
       }
       appWarn("[message-voice-participants]", result.error, { chatId, groupCallId });
-      return "retry_soon";
+      return { status: "retry_soon", error: result.error };
     } catch (err) {
-      appWarn("[message-voice-participants]", err instanceof Error ? err.message : String(err), {
+      const message = err instanceof Error ? err.message : String(err);
+      appWarn("[message-voice-participants]", message, {
         chatId,
         groupCallId,
       });
-      return "backoff";
+      return { status: "backoff", error: message };
     }
   }, [
     applyRosterRows,
@@ -2338,10 +2342,14 @@ export function MessageChatVoiceBar({
           ? performance.now()
           : Date.now();
       let status: "ok" | "retry_soon" | "backoff" = "ok";
+      let error: string | undefined;
       try {
-        status = await refreshParticipantsRef.current();
+        const result = await refreshParticipantsRef.current();
+        status = result.status;
+        error = result.error;
       } catch {
         status = "backoff";
+        error = "poll_threw";
       } finally {
         inFlight = false;
       }
@@ -2351,16 +2359,19 @@ export function MessageChatVoiceBar({
           ? performance.now()
           : Date.now()) - started,
       );
-      if (sheetOpen || elapsedMs >= 800 || tickCount % 8 === 1) {
+      if (sheetOpen || elapsedMs >= 800 || tickCount % 8 === 1 || status !== "ok") {
         logPageDisplay("messages_voice_dialog_poll_tick", {
           chatId,
           popoverOpen: sheetOpen,
           joined,
           status,
+          error: error ?? null,
           elapsedMs,
           tickCount,
           nextBaseMs: baseMs,
-          level: elapsedMs >= 1200 ? "warn" : "info",
+          listed: participantsRef.current.length,
+          streamActive: streamActiveRef.current,
+          level: elapsedMs >= 1200 || status === "backoff" ? "warn" : "info",
         });
       }
       if (status === "ok") {
@@ -2615,7 +2626,9 @@ export function MessageChatVoiceBar({
       if (a.hasGroups !== b.hasGroups) return a.hasGroups ? -1 : 1;
       return b.firstSeenAt - a.firstSeenAt;
     });
-    // Prefer complete SSRC (SIM+FID). Auto-show every eligible remote screen.
+    // Prefer complete SSRC (SIM+FID). Auto-show every eligible remote screen,
+    // but session defers video SDP until mix RTP is hearable (prod: 3 screens
+    // during ICE checking froze the Colibri mix).
     const eligible = cands.filter((c) => c.hasGroups && c.score >= 100);
     if (eligible.length === 0) {
       const pick = cands[0];

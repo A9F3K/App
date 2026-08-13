@@ -18,9 +18,18 @@ import {
   syncAuthenticatedHomeSelectedChat,
   useAuthenticatedHomeSelectedChat,
 } from "../authenticatedHomeSelectedChat";
-import { prefetchChatHistory, prefetchChatHistoryPriority, prefetchVisibleChatNeighbors } from "../messageChatHistoryPrefetch";
+import {
+  prefetchChatHistory,
+  prefetchChatHistoryPriority,
+  prefetchVisibleChatNeighbors,
+  setOpenChatFocusHold,
+} from "../messageChatHistoryPrefetch";
 import { unlockVoiceAutoplay } from "../telegram/unlockVoiceAutoplay";
 import { getCachedChatHistory } from "../messageChatHistoryCache";
+import {
+  clearQueuedNormalNetworkFetches,
+  demoteQueuedNetworkFetches,
+} from "./messages/networkFetchQueue";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
 import { MessageChatListSearchField } from "./messages/MessageChatListSearchField";
 import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
@@ -1350,6 +1359,11 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         peerUserId: item.peer_user_id,
         title: item.title,
       }));
+      // Pause neighbor history + demote leftover media so voice strip / open
+      // history win the gateway (prod: soft poll 4–5s timeouts while previews ran).
+      setOpenChatFocusHold(item.telegram_chat_id);
+      demoteQueuedNetworkFetches();
+      clearQueuedNormalNetworkFetches();
       // tdesktop: start full history warm before the message list mounts.
       prefetchChatHistoryPriority(item);
       void import("../telegram/warmupTelegramChatSession").then(({ warmupTelegramChatSession }) => {
@@ -1375,6 +1389,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
 
   const handleClearSelection = useCallback(() => {
     if (!chatSelectionEnabled) return;
+    setOpenChatFocusHold(null);
     clearAuthenticatedHomeSelectedChat();
   }, [chatSelectionEnabled]);
 

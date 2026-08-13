@@ -35,6 +35,12 @@ const PREFETCH_VISIBLE_MAX = 7;
 const MAX_BACKGROUND_CONCURRENT = 2;
 /** Stagger between background list prefetches (telegram-tt). */
 const TOP_CHAT_PREFETCH_INTERVAL_MS = 100;
+/**
+ * After opening a chat, keep neighbor history paused so voice strip / full
+ * history / soft getGroupCall win the TDLib gateway (prod: open → 34s until
+ * voice SSE while preview prefetches ran 7–32s each).
+ */
+const OPEN_CHAT_FOCUS_HOLD_MS = 12_000;
 
 type LoadSpec = {
   warmup: boolean;
@@ -60,6 +66,32 @@ let backgroundActive = 0;
 let historyPrefetchEpoch = 0;
 /** While set, background list prefetch is paused so the open chat wins gateway time. */
 let openChatLoadingId: number | null = null;
+/** Selected chat — background drain stays paused for {@link OPEN_CHAT_FOCUS_HOLD_MS}. */
+let openChatFocusId: number | null = null;
+let openChatFocusUntilMs = 0;
+let openChatFocusTimer: ReturnType<typeof setTimeout> | null = null;
+
+function prefetchQueueSnapshot(): {
+  queued: number;
+  inFlight: number;
+  backgroundActive: number;
+  openChatLoadingId: number | null;
+  openChatFocusId: number | null;
+  focusHoldMsLeft: number;
+} {
+  return {
+    queued: queued.length,
+    inFlight: inFlightBackground.size,
+    backgroundActive,
+    openChatLoadingId,
+    openChatFocusId,
+    focusHoldMsLeft: Math.max(0, openChatFocusUntilMs - Date.now()),
+  };
+}
+
+function isOpenChatFocusHoldActive(): boolean {
+  return openChatFocusId != null && Date.now() < openChatFocusUntilMs;
+}
 
 function toPageResult(cached: CachedChatHistoryPage): ChatHistoryPageResult {
   const {
@@ -130,7 +162,9 @@ async function runHistoryLoad(
   // 80-row normalize mid-Join freezes createOffer / Close.
   if (
     spec.background &&
-    (historyPrefetchEpoch !== epochAtStart || isVoiceDialogUiOpen())
+    (historyPrefetchEpoch !== epochAtStart ||
+      isVoiceDialogUiOpen() ||
+      isOpenChatFocusHoldActive())
   ) {
     logPageDisplay("messages_history_prefetch_dropped_voice_dialog", {
       chatId,
@@ -138,6 +172,12 @@ async function runHistoryLoad(
       elapsedMs: Date.now() - started,
       previewOnly: spec.previewOnly,
       note: "skipped_before_fetch",
+      reason: isVoiceDialogUiOpen()
+        ? "voice_dialog"
+        : isOpenChatFocusHoldActive()
+          ? "open_chat_focus"
+          : "epoch",
+      ...prefetchQueueSnapshot(),
     });
     return {
       messages: [],
@@ -162,15 +202,24 @@ async function runHistoryLoad(
   });
   // Neighbor prefetches that finish during Join used to parse + cache-notify on
   // the main thread beside createOffer (logs: history_prefetch_ok mid-dialog).
+  // Same for open-chat focus hold — drop paint so voice soft-poll can recover.
   if (
     spec.background &&
-    (historyPrefetchEpoch !== epochAtStart || isVoiceDialogUiOpen())
+    (historyPrefetchEpoch !== epochAtStart ||
+      isVoiceDialogUiOpen() ||
+      isOpenChatFocusHoldActive())
   ) {
     logPageDisplay("messages_history_prefetch_dropped_voice_dialog", {
       chatId,
       count: result.messages.length,
       elapsedMs: Date.now() - started,
       previewOnly: spec.previewOnly,
+      reason: isVoiceDialogUiOpen()
+        ? "voice_dialog"
+        : isOpenChatFocusHoldActive()
+          ? "open_chat_focus"
+          : "epoch",
+      ...prefetchQueueSnapshot(),
     });
     return {
       messages: [],
@@ -199,6 +248,8 @@ async function runHistoryLoad(
       aroundMessageId: spec.aroundMessageId ?? null,
       limit: spec.limit,
       lane: spec.previewOnly ? "preview" : "full",
+      background: spec.background === true,
+      ...prefetchQueueSnapshot(),
     });
   } else if (result.error) {
     const shouldFallbackFromAroundUnread =
@@ -274,6 +325,7 @@ function scheduleBackgroundDrain(): void {
   if (openChatLoadingId != null || isChatListSyncInProgress()) return;
   // Voice UI owns gateway + main thread — pause neighbor history warming.
   if (isVoiceDialogUiOpen()) return;
+  if (isOpenChatFocusHoldActive()) return;
   if (backgroundActive >= MAX_BACKGROUND_CONCURRENT || queued.length === 0) return;
 
   const next = queued.shift();
@@ -293,6 +345,12 @@ function scheduleBackgroundDrain(): void {
   }
 
   backgroundActive += 1;
+  logPageDisplay("messages_history_prefetch_drain_start", {
+    chatId: next.chatId,
+    previewOnly: next.spec.previewOnly,
+    ...prefetchQueueSnapshot(),
+    level: "info",
+  });
   const promise = startSharedLoad(next.chatId, next.peerUserId, next.spec)
     .finally(() => {
       backgroundActive -= 1;
@@ -313,6 +371,9 @@ function enqueueBackgroundPrefetch(
   // Skipping enqueue here previously burned MessageChatRow's one-shot prefetch.
   // List sync: still enqueue (esp. front/open neighbors); drain waits until sync clears.
   if (isVoiceDialogUiOpen()) return;
+  // During open-chat focus hold, don't refill neighbor work that will compete
+  // the moment the hold ends (rows keep remounting / viewport firing).
+  if (isOpenChatFocusHoldActive() && !options?.front) return;
 
   const freshMs = spec.previewOnly ? PREVIEW_FRESH_MS : undefined;
   if (
@@ -403,6 +464,62 @@ export function isOpenChatHistoryLoading(): boolean {
   return openChatLoadingId != null;
 }
 
+/**
+ * Pause neighbor history drain after selecting a chat so voice strip / open
+ * history / soft getGroupCall are not starved by list warming.
+ */
+export function setOpenChatFocusHold(
+  chatId: number | null,
+  options?: { holdMs?: number; clearQueued?: boolean },
+): void {
+  if (openChatFocusTimer != null) {
+    clearTimeout(openChatFocusTimer);
+    openChatFocusTimer = null;
+  }
+  if (chatId == null || !Number.isFinite(chatId)) {
+    openChatFocusId = null;
+    openChatFocusUntilMs = 0;
+    logPageDisplay("messages_history_prefetch_focus_cleared", {
+      ...prefetchQueueSnapshot(),
+    });
+    scheduleBackgroundDrain();
+    return;
+  }
+  const holdMs =
+    typeof options?.holdMs === "number" && options.holdMs > 0
+      ? Math.trunc(options.holdMs)
+      : OPEN_CHAT_FOCUS_HOLD_MS;
+  const clearQueued = options?.clearQueued !== false;
+  openChatFocusId = Math.trunc(chatId);
+  openChatFocusUntilMs = Date.now() + holdMs;
+  // Invalidate in-flight neighbor loads so they don't cache/normalize on focus.
+  historyPrefetchEpoch += 1;
+  let dropped = 0;
+  if (clearQueued && queued.length > 0) {
+    dropped = queued.length;
+    queued.length = 0;
+  }
+  logPageDisplay("messages_history_prefetch_focus_hold", {
+    chatId: openChatFocusId,
+    holdMs,
+    dropped,
+    ...prefetchQueueSnapshot(),
+    level: "info",
+  });
+  openChatFocusTimer = setTimeout(() => {
+    openChatFocusTimer = null;
+    if (openChatFocusId !== Math.trunc(chatId)) return;
+    openChatFocusId = null;
+    openChatFocusUntilMs = 0;
+    logPageDisplay("messages_history_prefetch_focus_release", {
+      chatId: Math.trunc(chatId),
+      ...prefetchQueueSnapshot(),
+      level: "info",
+    });
+    scheduleBackgroundDrain();
+  }, holdMs);
+}
+
 /** Prefetch a short preview page when a list row scrolls into view. */
 export function prefetchChatHistory(
   chat: Pick<MessageChatRowData, "telegram_chat_id" | "peer_user_id" | "unread_count">,
@@ -424,6 +541,15 @@ export function prefetchVisibleChatNeighbors(
   options?: { radius?: number },
 ): void {
   if (chats.length === 0) return;
+  if (isOpenChatFocusHoldActive()) {
+    logPageDisplay("messages_history_prefetch_neighbors_deferred_focus", {
+      selectedChatId: selectedChatId ?? null,
+      visible: chats.length,
+      ...prefetchQueueSnapshot(),
+      level: "info",
+    });
+    return;
+  }
   const radius =
     typeof options?.radius === "number" && options.radius > 0
       ? Math.trunc(options.radius)

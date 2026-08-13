@@ -14,6 +14,8 @@ export async function joinTelegramChatVoice(input: {
   audioSourceId: number;
   payload: string;
   isMuted: boolean;
+  /** Optional external abort (e.g. ICE/audio recover join watchdog). */
+  signal?: AbortSignal;
 }): Promise<JoinTelegramChatVoiceResult> {
   if (!Number.isFinite(input.chatId) || input.chatId === 0) {
     return { ok: false, error: "chat_id_required" };
@@ -23,10 +25,15 @@ export async function joinTelegramChatVoice(input: {
   if (!Number.isFinite(audioSourceId) || audioSourceId === 0) {
     return { ok: false, error: "invalid_audio_source" };
   }
+  if (input.signal?.aborted) {
+    return { ok: false, error: "aborted" };
+  }
   const controller = new AbortController();
   // Gateway can stall under voice-dialog load (prod: ice_recover → join_timeout
   // while participants SSE also times out). Give TDLib join room to finish.
   const timer = setTimeout(() => controller.abort(), 45_000);
+  const onExternalAbort = () => controller.abort();
+  input.signal?.addEventListener("abort", onExternalAbort, { once: true });
   let response: Response;
   try {
     response = await fetch(buildApiUrl("/api/telegram-messages-voice-join"), {
@@ -45,9 +52,14 @@ export async function joinTelegramChatVoice(input: {
     });
   } catch (err) {
     const aborted = err instanceof DOMException && err.name === "AbortError";
-    return { ok: false, error: aborted ? "join_timeout" : "network_error" };
+    const external = Boolean(input.signal?.aborted);
+    return {
+      ok: false,
+      error: aborted ? (external ? "aborted" : "join_timeout") : "network_error",
+    };
   } finally {
     clearTimeout(timer);
+    input.signal?.removeEventListener("abort", onExternalAbort);
   }
   const json = (await response.json().catch(() => ({}))) as {
     ok?: boolean;

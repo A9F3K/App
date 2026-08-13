@@ -175,6 +175,17 @@ function pickJoinAnswerCandidates(
     .slice(0, 16);
 }
 
+function isUnusableLocalIceAddress(ip: string): boolean {
+  if (!ip || ip.includes(":")) return false;
+  if (ip.startsWith("169.254.")) return true;
+  const m = /^172\.(\d+)\./.exec(ip);
+  if (m) {
+    const second = Number(m[1]);
+    if (second >= 16 && second <= 31) return true;
+  }
+  return false;
+}
+
 /**
  * Drop local ICE candidates Chrome gathers on Docker/WSL/Hyper-V bridges and
  * link-local ranges. Those pairs often win briefly then fail consent freshness
@@ -188,22 +199,9 @@ function stripUnusableLocalIceCandidates(sdp: string): string {
     // a=candidate:<foundation> <component> <proto> <priority> <ip> <port> typ ...
     const parts = line.split(/\s+/);
     const ip = parts[4] ?? "";
-    if (!ip || ip.includes(":")) {
-      // Keep IPv6 for now — pickJoinAnswerCandidates already prefers IPv4 on the SFU side.
-      return true;
-    }
-    if (ip.startsWith("169.254.")) {
+    if (isUnusableLocalIceAddress(ip)) {
       dropped += 1;
       return false;
-    }
-    // RFC1918 docker/hyper-v style bridges commonly seen as 172.16–31.x (esp. 172.18.0.1).
-    const m = /^172\.(\d+)\./.exec(ip);
-    if (m) {
-      const second = Number(m[1]);
-      if (second >= 16 && second <= 31) {
-        dropped += 1;
-        return false;
-      }
     }
     return true;
   });
@@ -675,6 +673,8 @@ export class TelegramGroupCallWebSession {
   private joinEpoch = 0;
   /** PeerConnection owned by joinInternal before `this.joined` flips true. */
   private pendingJoinConnection: RTCPeerConnection | null = null;
+  /** Aborts in-flight joinVideoChat fetch when {@link abortInFlightJoin} runs. */
+  private pendingJoinAbort: AbortController | null = null;
   private micEnabled = false;
   private localSpeaking = false;
   private speakingListeners = new Set<(speaking: boolean) => void>();
@@ -1098,7 +1098,10 @@ export class TelegramGroupCallWebSession {
           ? "prefer explicit remote video — mix-protect restore (mix grew after drop)"
           : "prefer explicit remote video — mix already healthy",
       });
-      this.preferExplicitRemoteVideoSubscribe();
+      this.preferExplicitRemoteVideoSubscribe(
+        this.preferredExplicitVideoEndpointId,
+        { autoShow: this.explicitVideoSubscribeFromAutoShow },
+      );
       return;
     }
     this.preferExplicitWhenMixHealthyPending = true;
@@ -1158,7 +1161,14 @@ export class TelegramGroupCallWebSession {
       level: "info",
       note: "mix healthy — flush deferred prefer explicit remote video",
     });
-    this.preferExplicitRemoteVideoSubscribe();
+    this.preferExplicitRemoteVideoSubscribe(
+      this.preferredExplicitVideoEndpointId,
+      {
+        // Keep auto-show semantics across mix-health deferral (flush without
+        // this flag used to open SDP on mediaConnected alone mid-ICE).
+        autoShow: this.explicitVideoSubscribeFromAutoShow,
+      },
+    );
   }
 
   /**
@@ -1169,6 +1179,14 @@ export class TelegramGroupCallWebSession {
   private canArmExplicitRemoteVideoSdp(): boolean {
     if (!this.explicitVideoSubscribeArmed) return false;
     if (!this.joined) return false;
+    // Auto-show must wait for live mix RTP — mediaConnected alone still opened
+    // 3 screen m-lines during ICE checking and froze Opus (prod: Vespiol).
+    if (this.explicitVideoSubscribeFromAutoShow) {
+      return (
+        this.isMediaConnected() &&
+        (this.mixRtpPacketsAlive || this.heardRemoteMixAudio)
+      );
+    }
     // Menu unmute after mix recover: media-connected is enough (RMS may be quiet).
     if (this.isMediaConnected()) return true;
     if (this.mixRtpPacketsAlive || this.heardRemoteMixAudio) return true;
@@ -1500,9 +1518,47 @@ export class TelegramGroupCallWebSession {
         remoteSpeaking: this.remoteSpeaking,
         mediaConnected: this.isMediaConnected(),
         mixRtpPacketsAlive: this.mixRtpPacketsAlive,
+        autoShow: this.explicitVideoSubscribeFromAutoShow,
+        armed: this.explicitVideoSubscribeArmed,
         level: "info",
         note: "defer video SDP until media connected / mix RTP alive",
       });
+      // Armed auto-show used to fall through and call setRemoteVideoSdpEnabled
+      // without canArm — that opened 3 screens during ICE checking and killed mix.
+      if (this.explicitVideoSubscribeArmed) {
+        this.schedulePreferExplicitWhenMixHealthy("wait_hearable_mix_auto_show");
+        // Keep requests queued; constraints-only path below must not open SDP.
+        if (
+          !this.remoteVideoSdpSubscribeEnabled &&
+          normalized.length > 0
+        ) {
+          const nextEndpoints = normalized.map((r) => r.endpointId);
+          const prevByEndpoint = new Map(
+            this.videoRecvSlots
+              .filter((slot) => Boolean(slot.endpointId))
+              .map((slot) => [slot.endpointId as string, slot] as const),
+          );
+          this.videoRecvSlots = nextEndpoints.map((endpointId) => {
+            const prev = prevByEndpoint.get(endpointId);
+            return {
+              transceiver: prev?.transceiver ?? null,
+              endpointId,
+            };
+          });
+          // Do NOT stamp lastAppliedRemoteVideoKey — when mix becomes healthy
+          // preferExplicit must still full-renegotiate video SDP.
+          this.lastAppliedRemoteVideoEndpoints = nextEndpoints;
+          this.sendReceiverVideoConstraints();
+          logPageDisplay("messages_voice_remote_video_skip_renegotiate", {
+            chatId: this.input.chatId,
+            groupCallId: this.input.groupCallId,
+            endpoints: nextEndpoints,
+            level: "info",
+            note: "video SDP deferred — protect mix audio until hearable",
+          });
+          return;
+        }
+      }
     }
     if (nextKey === this.lastAppliedRemoteVideoKey) return;
     // Same endpoints already slotted — roster SSRC churn / join kicks used to
@@ -1620,9 +1676,23 @@ export class TelegramGroupCallWebSession {
       return;
     }
     if (this.explicitVideoSubscribeArmed) {
-      if (!this.remoteVideoSdpSubscribeEnabled) {
+      if (
+        !this.remoteVideoSdpSubscribeEnabled &&
+        this.canArmExplicitRemoteVideoSdp()
+      ) {
         this.setRemoteVideoSdpEnabled(true);
         this.explicitVideoSubscribeArmed = false;
+        return;
+      }
+      if (!this.remoteVideoSdpSubscribeEnabled) {
+        this.schedulePreferExplicitWhenMixHealthy("armed_await_mix_before_sdp");
+        logPageDisplay("messages_voice_remote_video_skip_renegotiate", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          endpoints: nextEndpoints,
+          level: "info",
+          note: "armed but mix not ready — defer video SDP",
+        });
         return;
       }
       this.explicitVideoSubscribeArmed = false;
@@ -4815,6 +4885,10 @@ export class TelegramGroupCallWebSession {
           remotes.push(`${addr}:${report.port}/${report.candidateType}`);
         }
       });
+      const unusableLocalHosts = locals.filter((c) => {
+        const ip = c.split(":")[0] ?? "";
+        return isUnusableLocalIceAddress(ip);
+      }).length;
       const silentCtx = sharedSilentAudioCtx ?? getVoiceAutoplayAudioContext();
       if (inboundPackets > this.peakInboundAudioPackets) {
         this.peakInboundAudioPackets = inboundPackets;
@@ -4846,6 +4920,7 @@ export class TelegramGroupCallWebSession {
         pairsSucceeded,
         pairsInProgress,
         pairsFailed,
+        unusableLocalHosts,
         localCandidates: locals.join(","),
         remoteCandidates: remotes.join(","),
       });
@@ -5033,7 +5108,33 @@ export class TelegramGroupCallWebSession {
       });
       this.remoteAudioEnabled = true;
       unlockVoiceAutoplay();
-      await this.ensureJoinedListenOnly(startMuted);
+      const ICE_RECOVER_JOIN_TIMEOUT_MS = 20_000;
+      let iceJoinTimedOut = false;
+      const iceJoinTimer = window.setTimeout(() => {
+        iceJoinTimedOut = true;
+        this.abortInFlightJoin("ice_recover_join_timeout");
+      }, ICE_RECOVER_JOIN_TIMEOUT_MS);
+      try {
+        await this.ensureJoinedListenOnly(startMuted);
+      } finally {
+        window.clearTimeout(iceJoinTimer);
+      }
+      if (iceJoinTimedOut || !this.joined || !this.connection) {
+        logPageDisplay("messages_voice_ice_recover_fail", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          reason,
+          error: iceJoinTimedOut
+            ? "join_timeout"
+            : !this.joined
+              ? "not_joined"
+              : "no_connection",
+          recoverCount: this.iceRecoverCount,
+          level: "error",
+        });
+        this.markJoinLost(reason);
+        return;
+      }
       this.resumeRemoteAudio();
       if (
         preserveScreenCapture &&
@@ -5080,20 +5181,43 @@ export class TelegramGroupCallWebSession {
         if (remoteScreenSnapshot.length > 0) {
           this.pendingRemoteVideoAfterRecover = remoteScreenSnapshot;
         }
-        this.preferExplicitRemoteVideoSubscribe(preferredRemoteScreen, {
-          autoShow: remoteScreenFromAutoShow,
-        });
-        logPageDisplay("messages_voice_ice_recover_restore_screen", {
-          chatId: this.input.chatId,
-          groupCallId: this.input.groupCallId,
-          recoverCount: this.iceRecoverCount,
-          preferred: preferredRemoteScreen,
-          pending: remoteScreenSnapshot.length,
-          autoShow: remoteScreenFromAutoShow,
-          level: "info",
-          note:
-            "re-arm remote screen after silent ICE rejoin — VoiceBar must re-push SDP",
-        });
+        // Auto-show restores must wait for mix — immediate preferExplicit after
+        // ICE recover re-armed 3 screens and froze Opus again (prod: Vespiol).
+        if (remoteScreenFromAutoShow) {
+          this.explicitVideoSubscribeFromAutoShow = true;
+          this.explicitVideoSubscribeSession = true;
+          this.preferredExplicitVideoEndpointId =
+            preferredRemoteScreen ||
+            remoteScreenSnapshot[0]?.endpointId ||
+            this.preferredExplicitVideoEndpointId;
+          this.schedulePreferExplicitWhenMixHealthy("ice_recover_auto_show");
+          logPageDisplay("messages_voice_ice_recover_restore_screen", {
+            chatId: this.input.chatId,
+            groupCallId: this.input.groupCallId,
+            recoverCount: this.iceRecoverCount,
+            preferred: preferredRemoteScreen,
+            pending: remoteScreenSnapshot.length,
+            autoShow: true,
+            level: "info",
+            note:
+              "defer auto-show screen restore until mix RTP hearable after ICE rejoin",
+          });
+        } else {
+          this.preferExplicitRemoteVideoSubscribe(preferredRemoteScreen, {
+            autoShow: false,
+          });
+          logPageDisplay("messages_voice_ice_recover_restore_screen", {
+            chatId: this.input.chatId,
+            groupCallId: this.input.groupCallId,
+            recoverCount: this.iceRecoverCount,
+            preferred: preferredRemoteScreen,
+            pending: remoteScreenSnapshot.length,
+            autoShow: false,
+            level: "info",
+            note:
+              "re-arm remote screen after silent ICE rejoin — VoiceBar must re-push SDP",
+          });
+        }
       }
       logPageDisplay("messages_voice_ice_recover_ok", {
         chatId: this.input.chatId,
@@ -5998,7 +6122,60 @@ export class TelegramGroupCallWebSession {
       });
       this.remoteAudioEnabled = true;
       unlockVoiceAutoplay();
-      await this.ensureJoinedListenOnly(startMuted);
+      // Prod: ensureJoined hung ~16m with UI still joined=true and ice=none —
+      // abort stuck joinVideoChat so mix can recover.
+      const RECOVER_JOIN_TIMEOUT_MS = 20_000;
+      let recoverJoinTimedOut = false;
+      const recoverJoinTimer = window.setTimeout(() => {
+        recoverJoinTimedOut = true;
+        this.abortInFlightJoin("audio_recover_join_timeout");
+      }, RECOVER_JOIN_TIMEOUT_MS);
+      try {
+        await this.ensureJoinedListenOnly(startMuted);
+      } finally {
+        window.clearTimeout(recoverJoinTimer);
+      }
+      if (recoverJoinTimedOut || !this.joined || !this.connection) {
+        logPageDisplay("messages_voice_audio_recover_fail", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          error: recoverJoinTimedOut
+            ? "join_timeout"
+            : !this.joined
+              ? "not_joined"
+              : "no_connection",
+          timedOut: recoverJoinTimedOut,
+          joined: this.joined,
+          ice: this.connection?.iceConnectionState ?? "none",
+          conn: this.connection?.connectionState ?? "none",
+          level: "error",
+          note: "audio-only rejoin did not restore media — surface join lost",
+        });
+        this.markJoinLost("audio_recover_failed");
+        return;
+      }
+      const iceAfter = this.connection.iceConnectionState;
+      const connAfter = this.connection.connectionState;
+      if (
+        iceAfter === "failed" ||
+        iceAfter === "closed" ||
+        connAfter === "failed" ||
+        connAfter === "closed"
+      ) {
+        logPageDisplay("messages_voice_audio_recover_fail", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          error: `ice_${iceAfter}_conn_${connAfter}`,
+          timedOut: false,
+          joined: this.joined,
+          ice: iceAfter,
+          conn: connAfter,
+          level: "error",
+          note: "audio-only rejoin PC failed — surface join lost",
+        });
+        this.markJoinLost("audio_recover_failed");
+        return;
+      }
       this.resumeRemoteAudio();
       logPageDisplay("messages_voice_audio_recover_ok", {
         chatId: this.input.chatId,
@@ -6050,6 +6227,7 @@ export class TelegramGroupCallWebSession {
         error: err instanceof Error ? err.message : String(err),
         level: "error",
       });
+      this.markJoinLost("audio_recover_failed");
     } finally {
       this.audioRecoverInFlight = false;
     }
@@ -8396,6 +8574,13 @@ export class TelegramGroupCallWebSession {
    */
   abortInFlightJoin(reason = "join_watchdog"): void {
     this.joinEpoch += 1;
+    const pendingAbort = this.pendingJoinAbort;
+    this.pendingJoinAbort = null;
+    try {
+      pendingAbort?.abort();
+    } catch {
+      // ignore
+    }
     const pending = this.pendingJoinConnection;
     this.pendingJoinConnection = null;
     if (pending) {
@@ -10093,6 +10278,8 @@ export class TelegramGroupCallWebSession {
       throw new Error("join_payload_build_failed");
     }
 
+    const joinAbort = new AbortController();
+    this.pendingJoinAbort = joinAbort;
     const joinResult = await joinTelegramChatVoice({
       chatId: this.input.chatId,
       groupCallId: this.input.groupCallId,
@@ -10102,7 +10289,11 @@ export class TelegramGroupCallWebSession {
       // Listen-only still publishes near-silent RTP locally; Telegram mute is
       // signaled right after SDP apply (is_muted / toggleGroupCallParticipant).
       isMuted: false,
+      signal: joinAbort.signal,
     });
+    if (this.pendingJoinAbort === joinAbort) {
+      this.pendingJoinAbort = null;
+    }
     assertJoinLive();
     if (!joinResult.ok) {
       this.pendingJoinConnection = null;

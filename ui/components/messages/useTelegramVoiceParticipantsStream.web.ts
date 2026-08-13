@@ -15,6 +15,9 @@ type Options = {
 
 const STREAM_RECONNECT_MS = 3_000;
 
+/** Wall time when this chat's voice strip first armed SSE — for open→connect lag. */
+const voiceStreamArmStartedAt = new Map<number, number>();
+
 function parseStreamVideoInfo(
   raw: unknown,
 ): TelegramChatVoiceParticipant["video_info"] {
@@ -151,6 +154,11 @@ export function useTelegramVoiceParticipantsStream(options: Options): void {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let mintAbort: AbortController | null = null;
     let streamActive = false;
+    const armStartedAt = Date.now();
+    if (!voiceStreamArmStartedAt.has(Math.trunc(chatId))) {
+      voiceStreamArmStartedAt.set(Math.trunc(chatId), armStartedAt);
+    }
+    const firstArmAt = voiceStreamArmStartedAt.get(Math.trunc(chatId)) ?? armStartedAt;
 
     const setActive = (active: boolean) => {
       if (streamActive === active) return;
@@ -190,6 +198,8 @@ export function useTelegramVoiceParticipantsStream(options: Options): void {
           groupCallId,
           sinceRevision: sinceRevision ?? null,
           mode,
+          elapsedSinceArmMs: Date.now() - firstArmAt,
+          elapsedSinceThisConnectMs: Date.now() - armStartedAt,
         });
 
         const applyEvent = (event: Event) => {
@@ -244,6 +254,9 @@ export function useTelegramVoiceParticipantsStream(options: Options): void {
       if (reconnectTimer != null) clearTimeout(reconnectTimer);
       eventSource?.close();
       setActive(false);
+      if (voiceStreamArmStartedAt.get(Math.trunc(chatId)) === firstArmAt) {
+        voiceStreamArmStartedAt.delete(Math.trunc(chatId));
+      }
     };
   }, [enabled, chatId, groupCallId]);
 }
