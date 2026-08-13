@@ -2826,6 +2826,30 @@ async function createWindow() {
     }, 400);
   });
 
+  // Mirror selected renderer console lines into userData/main.log (swap/jettons, page-display, errors).
+  // Electron 41+: prefer event fields; positional level/message remain for compatibility.
+  mainWindow.webContents.on("console-message", (event, level, message) => {
+    try {
+      const text =
+        typeof message === "string"
+          ? message
+          : typeof event?.message === "string"
+            ? event.message
+            : String(message ?? event?.message ?? "");
+      if (!text) return;
+      const lvl = typeof level === "number" ? level : Number(event?.level ?? 0);
+      const interesting =
+        text.includes("[page-display]") ||
+        text.includes("swap_jettons") ||
+        text.includes("swap_chart") ||
+        text.includes("swap_account_jettons") ||
+        lvl >= 2;
+      if (!interesting) return;
+      const levelName = lvl >= 3 ? "error" : lvl === 2 ? "warn" : "log";
+      log(`[renderer:${levelName}] ${text.slice(0, 2000)}`);
+    } catch (_) {}
+  });
+
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
     const reason = details?.reason ?? "unknown";
     const exitCode = details?.exitCode ?? "?";

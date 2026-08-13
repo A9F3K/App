@@ -1,3 +1,4 @@
+import { logPageDisplay } from "../pageDisplayLog";
 import { fetchSwapJettonsPage } from "./fetchSwapJettons";
 import type { SwapJetton } from "./swapJettonsTypes";
 
@@ -111,6 +112,13 @@ async function fetchPage(page: number): Promise<{ items: SwapJetton[]; hasMore: 
 
 async function runCatalogLoad(fromScroll = false): Promise<void> {
   const generation = loadGeneration;
+  const started = Date.now();
+  logPageDisplay("swap_jettons_catalog_start", {
+    fromScroll,
+    alreadyLoaded: jettons.length,
+    nextPage,
+    hasMore,
+  });
 
   if (jettons.length === 0) {
     isLoading = true;
@@ -142,6 +150,11 @@ async function runCatalogLoad(fromScroll = false): Promise<void> {
       if (page === 1) {
         isLoading = false;
         flushNow();
+        logPageDisplay("swap_jettons_catalog_first_page", {
+          pageItems: items.length,
+          total: jettons.length,
+          elapsedMs: Date.now() - started,
+        });
       } else {
         scheduleFlush();
       }
@@ -152,9 +165,22 @@ async function runCatalogLoad(fromScroll = false): Promise<void> {
 
       await delay(PAGE_FETCH_DELAY_MS);
     }
+    logPageDisplay("swap_jettons_catalog_done", {
+      fromScroll,
+      total: jettons.length,
+      loadedPages: Math.max(0, nextPage - 1),
+      hasMore,
+      elapsedMs: Date.now() - started,
+    });
   } catch (err) {
     if (generation !== loadGeneration) return;
     error = err instanceof Error ? err.message : "Failed to load tokens";
+    logPageDisplay("swap_jettons_catalog_error", {
+      fromScroll,
+      total: jettons.length,
+      message: error,
+      elapsedMs: Date.now() - started,
+    });
     flushNow();
   } finally {
     if (generation !== loadGeneration) return;

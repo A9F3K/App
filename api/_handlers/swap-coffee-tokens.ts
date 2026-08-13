@@ -63,7 +63,10 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
   if (COFFEE_API_KEY) headers["X-Api-Key"] = COFFEE_API_KEY;
 
   try {
-    const upstream = await fetch(target.toString(), { headers });
+    const upstream = await fetch(target.toString(), {
+      headers,
+      signal: AbortSignal.timeout(12_000),
+    });
     const text = await upstream.text();
     const outHeaders = new Headers({
       "Content-Type": upstream.headers.get("content-type") || "application/json; charset=utf-8",
