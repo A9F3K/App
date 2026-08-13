@@ -358,6 +358,63 @@ function resolveWindowsCurrentLaunchExe() {
   return null;
 }
 
+/** Resolve INSTDIR\current junction target without following into the version tree. */
+function resolveWindowsCurrentJunctionTarget(appRoot) {
+  const currentLink = path.join(appRoot, "current");
+  try {
+    const st = fs.lstatSync(currentLink);
+    if (!st.isSymbolicLink() && !st.isDirectory()) return null;
+    try {
+      const target = fs.readlinkSync(currentLink);
+      return target ? path.resolve(path.dirname(currentLink), target) : null;
+    } catch (_) {
+      // Non-reparse directory named current (legacy) — treat as itself.
+      return st.isDirectory() ? currentLink : null;
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
+function windowsVersionDirIsComplete(versionDir, preferredExeName) {
+  try {
+    if (!fs.existsSync(path.join(versionDir, "resources", "app.asar"))) return false;
+    const tries = new Set(
+      [preferredExeName, path.basename(process.execPath), ...brand.allKnownExeBaseNames()].filter(Boolean),
+    );
+    for (const name of tries) {
+      const exeName = /\.exe$/i.test(name) ? name : `${name}.exe`;
+      if (fs.existsSync(path.join(versionDir, exeName))) return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+/** Highest complete versions/<semver> under the install root (null if none). */
+function findNewestCompleteWindowsVersionDir(appRoot) {
+  const versionsRoot = path.join(appRoot, "versions");
+  let names = [];
+  try {
+    names = fs.readdirSync(versionsRoot);
+  } catch (_) {
+    return null;
+  }
+  let best = null;
+  for (const name of names) {
+    const full = path.join(versionsRoot, name);
+    try {
+      if (!fs.statSync(full).isDirectory()) continue;
+    } catch (_) {
+      continue;
+    }
+    if (!windowsVersionDirIsComplete(full)) continue;
+    if (!best || compareSemverLike(name, best.version) > 0) {
+      best = { version: name, dir: full };
+    }
+  }
+  return best;
+}
+
 /**
  * After zip apply, shortcuts may still launch the flat install exe while `current` points at the new build.
  * Re-exec from `current` once so app.getVersion() and UI bundle match the applied update.
@@ -403,6 +460,132 @@ function tryRelaunchFromCurrentJunction() {
   } catch (e) {
     try {
       log(`[startup] relaunch from current failed: ${e?.message || e}`);
+    } catch (_) {}
+    return false;
+  }
+
+  app.quit();
+  return true;
+}
+
+/**
+ * If robocopy finished into versions/<semver> but the apply helper died before flipping
+ * `current` (classic: hung Remove-Item on the junction), finish the junction + relaunch.
+ * @returns {boolean} true when this process is quitting after spawning recovery
+ */
+function tryFinishIncompleteWindowsVersionedApply() {
+  if (process.platform !== "win32" || !app.isPackaged || isDev) return false;
+  if (process.env.HSP_SKIP_INCOMPLETE_APPLY_RECOVERY === "1") return false;
+  if (process.env[HSP_FROM_CURRENT_ENV] === "1") return false;
+
+  const appRoot = getWindowsAppRootFromExecPath(process.execPath);
+  const newest = findNewestCompleteWindowsVersionDir(appRoot);
+  if (!newest) return false;
+
+  const currentTarget = resolveWindowsCurrentJunctionTarget(appRoot);
+  const currentVer = currentTarget ? path.basename(currentTarget) : null;
+  if (currentVer && compareSemverLike(newest.version, currentVer) <= 0) return false;
+
+  const runningVer = app.getVersion();
+  const marker = readAppliedVersionMarker();
+  const markerPointsAtNewest = marker && compareSemverLike(marker, newest.version) === 0;
+  // Only auto-finish when the copied tree is clearly ahead of what we are running, or a
+  // prior apply wrote the marker but never flipped the junction.
+  if (!markerPointsAtNewest && compareSemverLike(newest.version, runningVer) <= 0) return false;
+
+  const exeName = path.basename(process.execPath);
+  const applyLogPath = path.join(app.getPath("userData"), "hsp-update-apply.log");
+  const markerPath = getAppliedVersionMarkerPath();
+  const currentLink = path.join(appRoot, "current");
+  const needsElevation = installPathNeedsElevation(appRoot);
+
+  try {
+    log(
+      `[startup] incomplete versioned apply: newest=${newest.version} current=${currentVer || "none"} running=${runningVer} marker=${marker || "none"} — finishing junction`,
+    );
+  } catch (_) {}
+
+  const ps1Path = path.join(app.getPath("temp"), `hsp-finish-incomplete-${Date.now()}.ps1`);
+  const ps1Body = [
+    "$ErrorActionPreference = 'Stop'",
+    `$log = ${JSON.stringify(applyLogPath)}`,
+    "function W([string]$m) {",
+    "  $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')",
+    '  try { Add-Content -LiteralPath $log -Encoding UTF8 -Value ("[$ts] [recovery] " + $m) } catch {}',
+    "}",
+    "try {",
+    "  Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {",
+    "    $_.Name -match 'powershell|pwsh' -and $_.CommandLine -and (",
+    "      $_.CommandLine -like '*hsp-apply-versions*' -or $_.CommandLine -like '*hsp-finish-*'",
+    "    ) -and $_.ProcessId -ne $PID",
+    "  } | ForEach-Object {",
+    "    try { W ('killing hung apply helper pid=' + $_.ProcessId); Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}",
+    "  }",
+    `  $current = ${JSON.stringify(currentLink)}`,
+    `  $target = ${JSON.stringify(newest.dir)}`,
+    `  $exeName = ${JSON.stringify(exeName)}`,
+    `  $markerPath = ${JSON.stringify(markerPath)}`,
+    `  $appliedVersion = ${JSON.stringify(newest.version)}`,
+    '  W ("finish incomplete apply -> " + $target)',
+    "  if ([System.IO.Directory]::Exists($current)) {",
+    '    W ("removing old current via cmd rmdir: " + $current)',
+    "    $rm = Start-Process -FilePath $env:ComSpec -ArgumentList @('/c','rmdir',('\"' + $current + '\"')) -Wait -PassThru -WindowStyle Hidden",
+    "    if ($rm.ExitCode -ne 0 -and [System.IO.Directory]::Exists($current)) { throw ('rmdir failed exit=' + $rm.ExitCode) }",
+    '    W "removed old current"',
+    "  }",
+    '  W ("creating junction via mklink: " + $current + " -> " + $target)',
+    "  $mk = Start-Process -FilePath $env:ComSpec -ArgumentList @('/c','mklink','/J',('\"' + $current + '\"'),('\"' + $target + '\"')) -Wait -PassThru -WindowStyle Hidden",
+    "  if ($mk.ExitCode -ne 0) { throw ('mklink failed exit=' + $mk.ExitCode) }",
+    "  try {",
+    "    $md = Split-Path -Parent $markerPath",
+    "    if ($md) { $null = New-Item -ItemType Directory -Force -Path $md }",
+    "    Set-Content -LiteralPath $markerPath -Value $appliedVersion -Encoding UTF8 -NoNewline",
+    '    W ("wrote applied version marker: " + $appliedVersion)',
+    "  } catch { W ('marker failed: ' + $_.Exception.Message) }",
+    "  $launch = Join-Path $current $exeName",
+    "  if (-not [System.IO.File]::Exists($launch)) { throw ('launch exe missing: ' + $launch) }",
+    '  W ("relaunch " + $launch)',
+    `  $cmd = 'set ${HSP_FROM_CURRENT_ENV}=1&& start "" ' + [char]34 + $launch + [char]34`,
+    "  Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $cmd -WorkingDirectory $current -WindowStyle Hidden",
+    '  W "recovery apply done"',
+    "} catch {",
+    '  W ("FATAL: " + $_.Exception.Message)',
+    "  exit 1",
+    "}",
+    "",
+  ].join("\r\n");
+  try {
+    fs.writeFileSync(ps1Path, `\uFEFF${ps1Body}`, "utf8");
+  } catch (e) {
+    try {
+      log(`[startup] incomplete-apply recovery write failed: ${e?.message || e}`);
+    } catch (_) {}
+    return false;
+  }
+
+  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows";
+  const psExe = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const args = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1Path];
+  try {
+    if (needsElevation) {
+      // Start elevated without waiting (UAC); quit so we do not keep running the stale binary.
+      const psSq = (s) => `'${String(s).replace(/'/g, "''")}'`;
+      const argList = args.map(psSq).join(",");
+      spawnSync(
+        psExe,
+        [
+          "-NoProfile",
+          "-Command",
+          `Start-Process -FilePath ${psSq(psExe)} -Verb RunAs -WindowStyle Hidden -ArgumentList @(${argList})`,
+        ],
+        { windowsHide: true, timeout: 60000 },
+      );
+    } else {
+      spawn(psExe, args, { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    }
+  } catch (e) {
+    try {
+      log(`[startup] incomplete-apply recovery spawn failed: ${e?.message || e}`);
     } catch (_) {}
     return false;
   }
@@ -1617,6 +1800,18 @@ function setupAutoUpdater() {
         "  }",
         "  Start-Sleep -Milliseconds 1500",
         '  Write-ApplyLog "stopped app processes under install root"',
+        "  # Prior applies using Remove-Item on the junction can hang elevated forever and",
+        "  # block cmd rmdir / Test-Path on the same reparse point (prod: 1422/1423).",
+        "  Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {",
+        "    $_.Name -match 'powershell|pwsh' -and $_.CommandLine -and (",
+        "      $_.CommandLine -like '*hsp-apply-versions*' -or $_.CommandLine -like '*hsp-finish-*'",
+        "    ) -and $_.ProcessId -ne $PID",
+        "  } | ForEach-Object {",
+        "    try {",
+        '      Write-ApplyLog ("killing hung apply helper pid=" + $_.ProcessId)',
+        "      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue",
+        "    } catch {}",
+        "  }",
         "  $src = $plan.stagingContent",
         "  if (-not $plan.useVersionedLayout -or -not $plan.targetVersionDir) {",
         '    throw "versioned apply target missing"',
@@ -1647,20 +1842,20 @@ function setupAutoUpdater() {
         "  Write-FileProbe 'post-copy dst asar' $dstAsar",
         "  Write-FileProbe 'post-copy dst exe' $dstExe",
         "  if ($plan.useVersionedLayout) {",
-        "    # Never Remove-Item a junction under Program Files — PowerShell can",
-        "    # recurse into the target (or hang) and the apply log stops after",
-        "    # post-copy with no FATAL (prod: 53.0.1413 copied, current stayed on",
-        "    # the previous version). cmd rmdir only drops the reparse point.",
-        "    if (Test-Path -LiteralPath $plan.currentLink) {",
-        '      Write-ApplyLog ("removing old current junction/link: " + $plan.currentLink)',
+        "    # Never Remove-Item / Test-Path a Program Files junction — both can hang",
+        "    # (esp. while a prior elevated apply is stuck on Remove-Item). Use cmd only.",
+        '    Write-ApplyLog ("switching current junction -> " + $plan.targetVersionDir)',
+        "    if ([System.IO.Directory]::Exists([string]$plan.currentLink)) {",
+        '      Write-ApplyLog ("removing old current via cmd rmdir: " + $plan.currentLink)',
         "      $rm = Start-Process -FilePath $env:ComSpec -ArgumentList @('/c','rmdir',('\"' + $plan.currentLink + '\"')) -Wait -PassThru -WindowStyle Hidden",
-        "      if ($rm.ExitCode -ne 0 -and (Test-Path -LiteralPath $plan.currentLink)) {",
+        "      if ($rm.ExitCode -ne 0 -and [System.IO.Directory]::Exists([string]$plan.currentLink)) {",
         "        throw (\"failed to remove current junction exit=\" + $rm.ExitCode)",
         "      }",
-        '      Write-ApplyLog ("removed old current junction/link")',
+        '      Write-ApplyLog "removed old current junction/link"',
         "    }",
-        '    Write-ApplyLog ("creating junction: $($plan.currentLink) -> $($plan.targetVersionDir)")',
-        "    $null = New-Item -ItemType Junction -Path $plan.currentLink -Target $plan.targetVersionDir -Force",
+        '    Write-ApplyLog ("creating junction via mklink /J: $($plan.currentLink) -> $($plan.targetVersionDir)")',
+        "    $mk = Start-Process -FilePath $env:ComSpec -ArgumentList @('/c','mklink','/J',('\"' + $plan.currentLink + '\"'),('\"' + $plan.targetVersionDir + '\"')) -Wait -PassThru -WindowStyle Hidden",
+        "    if ($mk.ExitCode -ne 0) { throw (\"mklink /J failed exit=\" + $mk.ExitCode) }",
         '    Write-ApplyLog ("junction: $($plan.currentLink) -> $($plan.targetVersionDir)")',
         "  }",
         "  if ($plan.appliedVersionMarker -and $plan.appliedVersion) {",
@@ -1673,23 +1868,12 @@ function setupAutoUpdater() {
         '      Write-ApplyLog ("applied version marker failed: " + $_.Exception.Message)',
         "    }",
         "  }",
-        "  if ($plan.cleanupLegacyFlat -and $plan.appRoot) {",
-        '    Write-ApplyLog "mirror legacy flat root for shortcuts (exclude versions, current)"',
-        "    Get-ChildItem -LiteralPath $plan.appRoot -Force -ErrorAction SilentlyContinue | Where-Object {",
-        "      $n = $_.Name",
-        "      $n -ne 'versions' -and $n -ne 'current' -and $n -notlike 'Uninstall*.exe'",
-        "    } | ForEach-Object {",
-        "      Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue",
-        "    }",
-        "    & $robocopyExe $src $plan.appRoot /E /MT:64 /J /R:0 /W:0 /XD versions current /NFL /NDL /NJH /NJS",
-        "    Write-ApplyLog (\"legacy flat robocopy exit=\" + $LASTEXITCODE)",
-        "  }",
         "  $workDir = if ($plan.useVersionedLayout) { $plan.currentLink } else { $dst }",
         `  $candidates = @($plan.exeName, ${brand.allKnownExeBaseNames().map((n) => `"${n}"`).join(", ")}) | Select-Object -Unique`,
         "  $exePath = $null",
         "  foreach ($c in $candidates) {",
         "    $tryExe = Join-Path $workDir $c",
-        "    if (Test-Path -LiteralPath $tryExe) { $exePath = $tryExe; Write-ApplyLog (\"picked exe: \" + $c); break }",
+        "    if ([System.IO.File]::Exists($tryExe)) { $exePath = $tryExe; Write-ApplyLog (\"picked exe: \" + $c); break }",
         "  }",
         "  if (-not $exePath) { throw (\"main exe missing after apply under \" + $workDir + \" (tried \" + ($candidates -join \", \") + \")\") }",
         '  Write-ApplyLog ("relaunch " + $exePath + " (wd=" + $workDir + ")")',
@@ -1701,7 +1885,22 @@ function setupAutoUpdater() {
         "    Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $cmd -WorkingDirectory $workDir -WindowStyle Hidden",
         "  }",
         '  Write-ApplyLog "Start-Process returned (GUI may take a moment)"',
-        "  if ($plan.stagingVersionDirToRemove -and (Test-Path -LiteralPath $plan.stagingVersionDirToRemove)) {",
+        "  # Flat-root refresh is best-effort and MUST NOT block relaunch. Never Remove-Item",
+        "  # the Program Files tree (can hang forever on locked files).",
+        "  if ($plan.cleanupLegacyFlat -and $plan.appRoot) {",
+        '    Write-ApplyLog "scheduling async legacy flat robocopy (no Remove-Item)"',
+        "    $flatSrc = $src",
+        "    $flatDst = [string]$plan.appRoot",
+        "    $flatLog = $LogFile",
+        "    Start-Process -FilePath $robocopyExe -ArgumentList @(",
+        "      $flatSrc, $flatDst, '/E', '/MT:8', '/J', '/R:0', '/W:0', '/XD', 'versions', 'current', '/NFL', '/NDL', '/NJH', '/NJS'",
+        "    ) -WindowStyle Hidden",
+        "    try {",
+        "      $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')",
+        '      Add-Content -LiteralPath $flatLog -Encoding UTF8 -Value ("[$ts] scheduled async legacy flat robocopy")',
+        "    } catch {}",
+        "  }",
+        "  if ($plan.stagingVersionDirToRemove -and [System.IO.Directory]::Exists([string]$plan.stagingVersionDirToRemove)) {",
         "    $sdRm = $plan.stagingVersionDirToRemove",
         "    $rdArg = 'rd /s /q \"' + $sdRm.Replace('\"', '\"\"') + '\"'",
         "    Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $rdArg -WindowStyle Hidden",
@@ -2718,6 +2917,7 @@ app.whenReady().then(async () => {
   } catch (e) {
     log(`display-media register: ${e?.message || e}`);
   }
+  if (tryFinishIncompleteWindowsVersionedApply()) return;
   if (tryRelaunchFromCurrentJunction()) return;
   clearAppliedVersionMarkerIfMatched();
   setupAppMenu();

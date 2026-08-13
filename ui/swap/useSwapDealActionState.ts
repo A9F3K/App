@@ -19,14 +19,14 @@ import { useSwapChart } from "./useSwapChart";
 export const SWAP_AVAILABLE_DLLR_PLACEHOLDER = 1;
 
 /** Notice shown immediately left of the Swap button. */
-export type SwapDealButtonNotice = "none" | "lowAmount" | "noPool";
+export type SwapDealButtonNotice = "none" | "lowAmount" | "noPool" | "dllrFrozen";
 
 export type SwapDealActionState = {
   /** DLLR needed to buy 1 unit of the offer / deal asset. */
   dllrAmount: number | null;
   /** Ticker for the left-edge offer copy. */
   buySymbol: string;
-  /** Status text immediately left of Swap (`No pool` / `Low amount`). */
+  /** Status text immediately left of Swap (`DLLR Frozen` / `No pool` / `Low amount`). */
   buttonNotice: SwapDealButtonNotice;
   /** When false, Swap uses inactive undercover + is not pressable. */
   buttonActive: boolean;
@@ -78,23 +78,25 @@ export function useSwapDealActionState(): SwapDealActionState {
   const hasEnoughDllr =
     dllrAmount != null && dllrAmount <= SWAP_AVAILABLE_DLLR_PLACEHOLDER + 1e-9;
 
-  // DLLR is off-catalog / not routable on Swap.Coffee yet — treat any DLLR pair
-  // (including Currencies Gram offer) as no pool until a real route exists.
+  // DLLR swaps are frozen until routing is live — every DLLR pair (and the
+  // Currencies Gram offer) shows “DLLR Frozen” left of Swap.
   const dllrInPair =
     onCurrencyScreen || isDllrToken(sellToken) || isDllrToken(buyToken);
-  const noPool = dllrInPair || quoteMeansNoPool(quoteError);
+  const noPool = !dllrInPair && quoteMeansNoPool(quoteError);
 
-  const buttonNotice: SwapDealButtonNotice = noPool
-    ? "noPool"
-    : !hasEnoughDllr
-      ? "lowAmount"
-      : "none";
+  const buttonNotice: SwapDealButtonNotice = dllrInPair
+    ? "dllrFrozen"
+    : noPool
+      ? "noPool"
+      : !hasEnoughDllr
+        ? "lowAmount"
+        : "none";
 
   return {
     dllrAmount,
     buySymbol,
     buttonNotice,
-    buttonActive: !onCurrencyScreen && !noPool && hasEnoughDllr,
+    buttonActive: !onCurrencyScreen && !dllrInPair && !noPool && hasEnoughDllr,
     onCurrencyScreen,
   };
 }
