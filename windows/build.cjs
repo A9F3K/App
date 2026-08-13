@@ -2439,10 +2439,27 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 function log(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}`;
   try {
     const logPath = path.join(app.getPath("userData"), "main.log");
-    const line = `[${new Date().toISOString()}] ${msg}`;
+    // Cap runaway logs (EPIPE/uncaughtException loops previously grew this to multi-GB).
+    try {
+      const st = fs.statSync(logPath);
+      if (st.size > 32 * 1024 * 1024) {
+        fs.writeFileSync(
+          logPath,
+          `${line}\n[log truncated — previous file was ${(st.size / (1024 * 1024)).toFixed(0)}MB]\n`,
+        );
+        return;
+      }
+    } catch (_) {}
     fs.appendFileSync(logPath, line + "\n");
+  } catch (_) {}
+  // Packaged Windows: never touch console.error — a broken stdout/stderr pipe
+  // used to throw EPIPE → uncaughtException → log → console.error → death spiral
+  // (prod: app quit while joining a voice call before the mix was audible).
+  if (app.isPackaged && process.platform === "win32") return;
+  try {
     console.error(line);
   } catch (_) {}
 }
@@ -2942,7 +2959,17 @@ async function createWindow() {
 
 process.on("uncaughtException", (err) => {
   try {
+    // console.error → EPIPE when stdout/stderr is closed; logging that again loops forever and fills the disk.
+    if (err && (err.code === "EPIPE" || /EPIPE/i.test(String(err.message || "")))) return;
     log(`uncaughtException: ${err.message}\n${err.stack}`);
+  } catch (_) {}
+});
+
+process.on("unhandledRejection", (reason) => {
+  try {
+    const msg = reason instanceof Error ? `${reason.message}\n${reason.stack}` : String(reason);
+    if (/EPIPE/i.test(msg)) return;
+    log(`unhandledRejection: ${msg}`);
   } catch (_) {}
 });
 
