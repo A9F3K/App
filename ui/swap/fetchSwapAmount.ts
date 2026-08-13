@@ -1,3 +1,5 @@
+import { swapCoffeeFetch } from "./swapCoffeeFetch";
+
 export const SWAP_COFFEE_API_BASE = "https://backend.swap.coffee";
 
 /** Default USDT jetton on TON (prev-main `swap_page.dart`). */
@@ -16,7 +18,7 @@ export type FetchSwapAmountResult =
 
 async function resolveUsdtAddress(): Promise<string> {
   try {
-    const res = await fetch(`${SWAP_COFFEE_API_BASE}/v1/tokens/ton`);
+    const res = await swapCoffeeFetch(`${SWAP_COFFEE_API_BASE}/v1/tokens/ton`);
     if (!res.ok) return SWAP_USDT_DEFAULT_ADDRESS;
     const data: unknown = await res.json();
     if (Array.isArray(data)) {
@@ -46,7 +48,7 @@ export async function fetchSwapAmount(
 ): Promise<FetchSwapAmountResult> {
   const usdtAddress = await resolveUsdtAddress();
   try {
-    const res = await fetch(`${SWAP_COFFEE_API_BASE}/v1/route/smart`, {
+    const res = await swapCoffeeFetch(`${SWAP_COFFEE_API_BASE}/v1/route/smart`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

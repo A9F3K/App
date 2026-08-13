@@ -14,13 +14,16 @@ const IDLE_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "idle" };
 const LOADING_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "loading" };
 const EMPTY_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "empty" };
 
-/** One at a time — DYOR rate-limits aggressively (429) under parallel chart traffic. */
-const MAX_CONCURRENT = 1;
-const REQUEST_GAP_MS = Math.max(CHART_RATE_LIMIT_MS + 400, 1500);
+/** Keep concurrency low — DYOR 429s under parallel chart traffic. */
+const MAX_CONCURRENT = 2;
+const REQUEST_GAP_MS = Math.max(CHART_RATE_LIMIT_MS + 200, 1100);
 const RETRY_BASE_DELAY_MS = 4000;
 const RETRY_MAX_DELAY_MS = 24000;
-/** Soft cap — drop oldest pending if list remount storms. */
-const MAX_QUEUED = 40;
+/**
+ * FlatList windowSize≈9 mounts far more than 40 sparklines. A tiny queue dropped
+ * pending addresses permanently (mounted cells never re-called ensure).
+ */
+const MAX_QUEUED = 240;
 /** Re-try hard empties after this cooldown (e.g. brief API gaps). */
 const EMPTY_RETRY_COOLDOWN_MS = 60_000;
 /** Downsample for 40px-tall sparklines. */
@@ -102,10 +105,7 @@ function scheduleRetry(address: string, attempt: number): void {
 async function runFetch(address: string): Promise<void> {
   if (isVoiceDialogUiOpen()) {
     // Defer mid-dialog — parsing chart JSON on the main thread freezes Close.
-    if (!queuedSet.has(address)) {
-      queuedSet.add(address);
-      queued.push(address);
-    }
+    enqueueFront(address);
     return;
   }
   if (trySeedFromTonMainChart(address)) return;
@@ -118,10 +118,7 @@ async function runFetch(address: string): Promise<void> {
 
   if (isVoiceDialogUiOpen()) {
     // Dialog opened while the fetch was in flight — don't parse/apply yet.
-    if (!queuedSet.has(address)) {
-      queuedSet.add(address);
-      queued.push(address);
-    }
+    enqueueFront(address);
     cache.delete(address);
     return;
   }
@@ -217,6 +214,42 @@ export function subscribeChooseCurrencyYearChart(
   };
 }
 
+function hasActiveListeners(address: string): boolean {
+  const set = listeners.get(address);
+  return !!set && set.size > 0;
+}
+
+function promoteInQueue(address: string): void {
+  const idx = queued.indexOf(address);
+  if (idx <= 0) return;
+  queued.splice(idx, 1);
+  queued.unshift(address);
+}
+
+function enqueueFront(address: string): void {
+  // Prefer visible (newly ensured) rows over older off-screen backlog.
+  while (queued.length >= MAX_QUEUED) {
+    let dropIdx = -1;
+    for (let i = queued.length - 1; i >= 0; i--) {
+      const candidate = queued[i]!;
+      if (!hasActiveListeners(candidate)) {
+        dropIdx = i;
+        break;
+      }
+    }
+    if (dropIdx < 0) break; // all pending are still on-screen — allow overflow
+    const dropped = queued.splice(dropIdx, 1)[0];
+    if (dropped) queuedSet.delete(dropped);
+  }
+
+  if (queuedSet.has(address)) {
+    promoteInQueue(address);
+    return;
+  }
+  queuedSet.add(address);
+  queued.unshift(address);
+}
+
 /** Ensure a year sparkline is loading / cached for this jetton address. */
 export function ensureChooseCurrencyYearChart(address: string): void {
   const key = normalizeAddress(address);
@@ -232,14 +265,7 @@ export function ensureChooseCurrencyYearChart(address: string): void {
     cache.delete(key);
     emptyAtMs.delete(key);
   }
-  if (queuedSet.has(key)) return;
 
-  while (queued.length >= MAX_QUEUED) {
-    const dropped = queued.shift();
-    if (dropped) queuedSet.delete(dropped);
-  }
-
-  queuedSet.add(key);
-  queued.push(key);
+  enqueueFront(key);
   pumpQueue();
 }

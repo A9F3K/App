@@ -14,6 +14,10 @@ export function hasWelcomeBrowserAuthContext(): boolean {
   return typeof globalThis !== "undefined" && typeof globalThis.fetch === "function";
 }
 
+export type DesktopSwapCoffeeFetchResult =
+  | { ok: true; status: number; body: string }
+  | { ok: false; error: string };
+
 export type DesktopOAuthBridge = {
   openOAuthUrl: (
     authUrl: string,
@@ -23,6 +27,15 @@ export type DesktopOAuthBridge = {
     error?: string | null;
     sessionToken?: string | null;
   }>;
+  fetchSwapCoffee?: (
+    url: string,
+    init?: {
+      method?: string;
+      headers?: Record<string, string>;
+      body?: string;
+      timeoutMs?: number;
+    },
+  ) => Promise<DesktopSwapCoffeeFetchResult>;
   /** Set by windows/preload.cjs in the Electron shell. */
   isElectronShell?: boolean;
 };

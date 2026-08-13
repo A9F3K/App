@@ -147,6 +147,12 @@ function SparklineMiniChart({ address }: { address: string }) {
   useEffect(() => {
     if (!fetchEnabled) return;
     ensureChooseCurrencyYearChart(address);
+    // Re-queue if this row stayed idle after a queue drop while still mounted.
+    const timer = setInterval(() => {
+      const snap = getChooseCurrencyYearChartSnapshot(address);
+      if (snap.status === "idle") ensureChooseCurrencyYearChart(address);
+    }, 2500);
+    return () => clearInterval(timer);
   }, [address, fetchEnabled]);
 
   const snapshot = useSyncExternalStore(

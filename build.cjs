@@ -30,10 +30,6 @@ if (process.platform === "win32" && process.env.HSP_DISABLE_GPU === "1") {
 }
 const path = require("path");
 const { registerOAuthIpc } = require("./oauth-window.cjs");
-const {
-  registerSwapCoffeeFetchIpc,
-  installSwapCoffeeRendererFetchShim,
-} = require("./swap-coffee-fetch.cjs");
 const { registerZoomMenu } = require("./zoom-menu-row.cjs");
 const {
   registerOsScreenshotPassthrough,
@@ -2453,8 +2449,6 @@ registerOAuthIpc({
   log,
 });
 
-registerSwapCoffeeFetchIpc({ ipcMain, net, log });
-
 const zoomMenuApi = registerZoomMenu({
   getMainWindow: () => mainWindowRef,
   log,
@@ -2751,9 +2745,6 @@ async function createWindow() {
     show: false,
   });
   mainWindowRef = mainWindow;
-  if (!isDev) {
-    installSwapCoffeeRendererFetchShim(mainWindow.webContents, log);
-  }
   zoomMenuApi.attachMainWindowZoomHooks(mainWindow);
   ensureBrowserWindowAllowsOsCapture(mainWindow, log);
 
@@ -2959,19 +2950,6 @@ function installSwapCoffeeCorsReflect() {
     const filter = {
       urls: ["https://tokens.swap.coffee/*", "https://backend.swap.coffee/*"],
     };
-    session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
-      try {
-        const headers = { ...(details.requestHeaders || {}) };
-        const drop = ["Cookie", "Authorization"];
-        for (const name of drop) {
-          const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
-          if (key) delete headers[key];
-        }
-        callback({ requestHeaders: headers });
-      } catch (_) {
-        callback({ requestHeaders: details.requestHeaders });
-      }
-    });
     session.defaultSession.webRequest.onHeadersReceived(filter, (details, callback) => {
       try {
         const headers = { ...(details.responseHeaders || {}) };

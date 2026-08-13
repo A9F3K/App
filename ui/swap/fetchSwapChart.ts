@@ -9,6 +9,7 @@ import {
 } from "./swapChartConstants";
 import type { SwapChartPoint } from "./swapChartFormat";
 import { swapChartError, swapChartLog, swapChartWarn } from "./swapChartDebug";
+import { swapCoffeeFetch } from "./swapCoffeeFetch";
 
 export type SwapMarketStats = {
   priceUsd: number | null;
@@ -180,7 +181,7 @@ export async function fetchJettonChartSeries(
 
   try {
     const startedAt = Date.now();
-    const response = await fetch(url.toString(), { credentials: "omit" });
+    const response = await swapCoffeeFetch(url.toString());
     const elapsedMs = Date.now() - startedAt;
 
     swapChartLog("fetch_response", {
@@ -277,7 +278,7 @@ export async function fetchSwapMarketStats(
   try {
     const url = `${SWAP_COFFEE_TOKENS_API_BASE.replace(/\/$/, "")}/api/v3/jettons/${encodeURIComponent(address)}`;
     swapChartLog("market_stats_start", { url, jettonAddress: address });
-    const response = await fetch(url, { credentials: "omit" });
+    const response = await swapCoffeeFetch(url);
     swapChartLog("market_stats_response", {
       status: response.status,
       ok: response.ok,

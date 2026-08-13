@@ -1,6 +1,7 @@
 import { isDesktopAppShell } from "../appShell";
 import { logPageDisplay } from "../pageDisplayLog";
 import { SWAP_COFFEE_TOKENS_API_BASE } from "./swapChartConstants";
+import { swapCoffeeFetch } from "./swapCoffeeFetch";
 import type {
   SwapAccountJettonsResponse,
   SwapJetton,
@@ -9,45 +10,11 @@ import type {
 
 const PAGE_SIZE = 100;
 const MAX_PAGES = 100;
-/** Desktop previously hung forever on the Vercel proxy (504 / DDoS-Guard). Cap waits. */
-const FETCH_TIMEOUT_MS = 45_000;
 
 const DEFAULT_VERIFICATION: SwapJettonVerification[] = ["WHITELISTED", "COMMUNITY", "UNKNOWN"];
 
 function tokensBaseUrl(): string {
   return SWAP_COFFEE_TOKENS_API_BASE.replace(/\/$/, "");
-}
-
-function swapCoffeeHeaders(): Record<string, string> {
-  const headers: Record<string, string> = { Accept: "application/json" };
-  const apiKey = process.env.EXPO_PUBLIC_COFFEE?.trim();
-  if (apiKey) headers["X-Api-Key"] = apiKey;
-  return headers;
-}
-
-async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  try {
-    return await fetch(url, {
-      ...init,
-      // Never send cookies to Swap.Coffee — ACAO:* forbids credentials:include
-      // (Electron desktop auth fetch used to force include on any `/api/` URL).
-      credentials: "omit",
-      signal: controller.signal,
-      headers: {
-        ...swapCoffeeHeaders(),
-        ...(init?.headers as Record<string, string> | undefined),
-      },
-    });
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      throw new Error(`Swap.Coffee tokens request timed out after ${FETCH_TIMEOUT_MS}ms`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function parseJsonResponse<T>(res: Response): Promise<T> {
@@ -86,7 +53,7 @@ export async function fetchSwapJettonsPage(
     via: "direct",
   });
   try {
-    const res = await fetchWithTimeout(url);
+    const res = await swapCoffeeFetch(url);
     const data = await parseJsonResponse<unknown>(res);
     if (!Array.isArray(data)) {
       throw new Error("Swap.Coffee jettons: unexpected payload");
@@ -142,7 +109,7 @@ export async function fetchAccountSwapJettons(walletAddress: string): Promise<Sw
     via: "direct",
   });
   try {
-    const res = await fetchWithTimeout(url);
+    const res = await swapCoffeeFetch(url);
     const data = await parseJsonResponse<SwapAccountJettonsResponse>(res);
     logPageDisplay("swap_account_jettons_ok", {
       count: Array.isArray(data.items) ? data.items.length : 0,
