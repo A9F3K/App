@@ -180,7 +180,7 @@ export async function fetchJettonChartSeries(
 
   try {
     const startedAt = Date.now();
-    const response = await fetch(url.toString());
+    const response = await fetch(url.toString(), { credentials: "omit" });
     const elapsedMs = Date.now() - startedAt;
 
     swapChartLog("fetch_response", {
@@ -277,7 +277,7 @@ export async function fetchSwapMarketStats(
   try {
     const url = `${SWAP_COFFEE_TOKENS_API_BASE.replace(/\/$/, "")}/api/v3/jettons/${encodeURIComponent(address)}`;
     swapChartLog("market_stats_start", { url, jettonAddress: address });
-    const response = await fetch(url);
+    const response = await fetch(url, { credentials: "omit" });
     swapChartLog("market_stats_response", {
       status: response.status,
       ok: response.ok,

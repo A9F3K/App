@@ -10,7 +10,7 @@ import type {
 const PAGE_SIZE = 100;
 const MAX_PAGES = 100;
 /** Desktop previously hung forever on the Vercel proxy (504 / DDoS-Guard). Cap waits. */
-const FETCH_TIMEOUT_MS = 20_000;
+const FETCH_TIMEOUT_MS = 45_000;
 
 const DEFAULT_VERIFICATION: SwapJettonVerification[] = ["WHITELISTED", "COMMUNITY", "UNKNOWN"];
 
@@ -31,6 +31,9 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
   try {
     return await fetch(url, {
       ...init,
+      // Never send cookies to Swap.Coffee — ACAO:* forbids credentials:include
+      // (Electron desktop auth fetch used to force include on any `/api/` URL).
+      credentials: "omit",
       signal: controller.signal,
       headers: {
         ...swapCoffeeHeaders(),

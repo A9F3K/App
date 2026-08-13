@@ -180,7 +180,13 @@ async function runCatalogLoad(fromScroll = false): Promise<void> {
       total: jettons.length,
       message: error,
       elapsedMs: Date.now() - started,
+      // Keep showing rows already received; only treat as hard empty-state when nothing loaded.
+      soft: jettons.length > 0,
     });
+    // Partial catalog is usable — don't leave a sticky error after later page failures.
+    if (jettons.length > 0) {
+      error = null;
+    }
     flushNow();
   } finally {
     if (generation !== loadGeneration) return;

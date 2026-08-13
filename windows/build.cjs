@@ -2939,11 +2939,53 @@ process.on("uncaughtException", (err) => {
 
 registerOsScreenshotPassthrough(app, { BrowserWindow, clipboard }, log);
 
+/**
+ * tokens.swap.coffee returns Access-Control-Allow-Origin: *. Chromium rejects that
+ * when fetch credentials mode is include (desktop auth fetch used to force include on
+ * any URL containing "/api/"). Reflect app://. so credentialed requests still work,
+ * and preflights succeed from the Electron shell.
+ */
+function installSwapCoffeeCorsReflect() {
+  try {
+    const filter = {
+      urls: ["https://tokens.swap.coffee/*", "https://backend.swap.coffee/*"],
+    };
+    session.defaultSession.webRequest.onHeadersReceived(filter, (details, callback) => {
+      try {
+        const headers = { ...(details.responseHeaders || {}) };
+        const findKey = (name) =>
+          Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
+        const setHeader = (name, value) => {
+          const prev = findKey(name);
+          if (prev) delete headers[prev];
+          headers[name] = Array.isArray(value) ? value : [value];
+        };
+        const acaoKey = findKey("Access-Control-Allow-Origin");
+        const acaoRaw = acaoKey ? headers[acaoKey] : null;
+        const acao = Array.isArray(acaoRaw) ? acaoRaw[0] : acaoRaw;
+        if (!acao || acao === "*") {
+          setHeader("Access-Control-Allow-Origin", "app://.");
+          setHeader("Access-Control-Allow-Credentials", "true");
+        }
+        setHeader("Access-Control-Allow-Headers", "Content-Type, Accept, X-Api-Key, Authorization");
+        setHeader("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
+        callback({ responseHeaders: headers });
+      } catch (_) {
+        callback({ responseHeaders: details.responseHeaders });
+      }
+    });
+    log("[net] swap.coffee CORS reflect for app://. installed");
+  } catch (e) {
+    log(`[net] swap.coffee CORS reflect failed: ${e?.message || e}`);
+  }
+}
+
 app.whenReady().then(async () => {
   if (process.platform === "win32") {
     // Dark native chrome (title bar / menu area) so the OS-drawn separator under the menu reads closer to #111111.
     nativeTheme.themeSource = "dark";
   }
+  installSwapCoffeeCorsReflect();
   // Voice chat screen share — Chromium getDisplayMedia needs an Electron handler.
   try {
     registerDisplayMediaHandler({
