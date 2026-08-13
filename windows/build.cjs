@@ -1688,7 +1688,17 @@ function setupAutoUpdater() {
       const appRoot = getWindowsAppRootFromExecPath(execPath);
       // Always apply into versions/<semver> + current junction (avoids locked flat exe / partial overwrite).
       const useVersionedLayout = true;
-      const cleanupLegacyFlat = path.basename(installDir).toLowerCase() !== "current";
+      // Start Menu / desktop shortcuts often still point at INSTDIR\<exe> (flat), not
+      // INSTDIR\current\. If we skip flat refresh when applying from `current`, the next
+      // shortcut launch returns to an old flat build (prod: current=1425, flat stayed 1412).
+      let cleanupLegacyFlat = false;
+      try {
+        cleanupLegacyFlat =
+          fs.existsSync(path.join(appRoot, exeName)) ||
+          fs.existsSync(path.join(appRoot, "resources", "app.asar"));
+      } catch (_) {
+        cleanupLegacyFlat = path.basename(installDir).toLowerCase() !== "current";
+      }
       const needsElevation = installPathNeedsElevation(appRoot);
       const applyLogPath = applyUserLogPath;
       logUpdater(
@@ -1753,8 +1763,10 @@ function setupAutoUpdater() {
         "}",
         "$LogFile = $plan.logPath",
         "function Write-ApplyLog([string]$m) {",
-        "  $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')",
-        '  Add-Content -LiteralPath $LogFile -Value ("[$ts] " + $m) -Encoding UTF8',
+        "  try {",
+        "    $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')",
+        '    Add-Content -LiteralPath $LogFile -Value ("[$ts] " + $m) -Encoding UTF8',
+        "  } catch {}",
         "}",
         "if ($plan.needsElevation -and -not $plan.elevated) {",
         '  Write-ApplyLog "needsElevation=true; relaunching apply helper elevated"',
@@ -1841,6 +1853,7 @@ function setupAutoUpdater() {
         "  Write-FileProbe 'post-copy src exe' $srcExe",
         "  Write-FileProbe 'post-copy dst asar' $dstAsar",
         "  Write-FileProbe 'post-copy dst exe' $dstExe",
+        '  Write-ApplyLog "post-copy probes done; beginning junction switch"',
         "  if ($plan.useVersionedLayout) {",
         "    # Never Remove-Item / Test-Path a Program Files junction — both can hang",
         "    # (esp. while a prior elevated apply is stuck on Remove-Item). Use cmd only.",
