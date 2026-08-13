@@ -4,7 +4,7 @@ import { useRouter } from "expo-router";
 import { SWAP_BUY_AMOUNT_TON } from "../../swap/fetchSwapAmount";
 import { formatSwapPrice, formatSwapTokenAmount } from "../../swap/swapChartFormat";
 import { navigateToSwapCurrencyPicker } from "../../swap/navigateToSwapCurrencyPicker";
-import { useSwapPairState } from "../../swap/swapPairStore";
+import { rotateSwapPair, useSwapPairState } from "../../swap/swapPairStore";
 import { swapTokenDisplaySymbol } from "../../swap/swapPairTypes";
 import { layout, typographyAeroport15, typographyAeroport20, useColors } from "../../theme";
 import { useResolvedPathname } from "../../useResolvedPathname";
@@ -137,7 +137,14 @@ export function SwapFormBelowChart({
           }}
         >
           <Text style={muted15}>max.</Text>
-          <SwapRotateIcon />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Swap sell and buy currencies"
+            hitSlop={8}
+            onPress={rotateSwapPair}
+          >
+            <SwapRotateIcon />
+          </Pressable>
           <Pressable
             accessibilityRole="button"
             hitSlop={8}

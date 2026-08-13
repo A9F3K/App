@@ -19,14 +19,14 @@ import { useSwapChart } from "./useSwapChart";
 export const SWAP_AVAILABLE_DLLR_PLACEHOLDER = 1;
 
 /** Notice shown immediately left of the Swap button. */
-export type SwapDealButtonNotice = "none" | "lowAmount" | "noPool" | "dllrFrozen";
+export type SwapDealButtonNotice = "none" | "noAmount" | "lowAmount" | "noPool" | "dllrFrozen";
 
 export type SwapDealActionState = {
   /** DLLR needed to buy 1 unit of the offer / deal asset. */
   dllrAmount: number | null;
   /** Ticker for the left-edge offer copy. */
   buySymbol: string;
-  /** Status text immediately left of Swap (`DLLR Frozen` / `No pool` / `Low amount`). */
+  /** Status text immediately left of Swap (`DLLR Frozen` / `No pool` / `No amount` / `Low amount`). */
   buttonNotice: SwapDealButtonNotice;
   /** When false, Swap uses inactive undercover + is not pressable. */
   buttonActive: boolean;
@@ -75,8 +75,9 @@ export function useSwapDealActionState(): SwapDealActionState {
     return effectivePriceUsd * SWAP_BUY_AMOUNT_TON;
   }, [effectivePriceUsd]);
 
+  const hasQuotedAmount = dllrAmount != null && Number.isFinite(dllrAmount);
   const hasEnoughDllr =
-    dllrAmount != null && dllrAmount <= SWAP_AVAILABLE_DLLR_PLACEHOLDER + 1e-9;
+    hasQuotedAmount && dllrAmount <= SWAP_AVAILABLE_DLLR_PLACEHOLDER + 1e-9;
 
   // DLLR swaps are frozen until routing is live — every DLLR pair (and the
   // Currencies Gram offer) shows “DLLR Frozen” left of Swap.
@@ -88,9 +89,11 @@ export function useSwapDealActionState(): SwapDealActionState {
     ? "dllrFrozen"
     : noPool
       ? "noPool"
-      : !hasEnoughDllr
-        ? "lowAmount"
-        : "none";
+      : !hasQuotedAmount
+        ? "noAmount"
+        : !hasEnoughDllr
+          ? "lowAmount"
+          : "none";
 
   return {
     dllrAmount,

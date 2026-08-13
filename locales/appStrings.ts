@@ -287,6 +287,7 @@ const en = {
   "messages.privateCall.noUser": "Can't call this user",
 
   "swap.footer.insufficientAmount": "Insufficient amount",
+  "swap.action.noAmount": "No amount",
   "swap.action.lowAmount": "Low amount",
   "swap.action.noPool": "No pool",
   "swap.action.dllrFrozen": "DLLR Frozen",
@@ -733,6 +734,7 @@ const ru = {
   "messages.privateCall.noUser": "Нельзя позвонить этому пользователю",
 
   "swap.footer.insufficientAmount": "Недостаточная сумма",
+  "swap.action.noAmount": "Нет суммы",
   "swap.action.lowAmount": "Малая сумма",
   "swap.action.noPool": "Нет пула",
   "swap.action.dllrFrozen": "DLLR заморожен",
@@ -1144,6 +1146,7 @@ const zh = {
   "messages.privateCall.failed": "通话失败",
   "messages.privateCall.noUser": "无法呼叫此用户",
   "swap.footer.insufficientAmount": "金额不足",
+  "swap.action.noAmount": "无金额",
   "swap.action.lowAmount": "金额过低",
   "swap.action.noPool": "无流动性池",
   "swap.action.dllrFrozen": "DLLR 已冻结",

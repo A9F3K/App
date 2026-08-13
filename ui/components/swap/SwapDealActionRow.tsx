@@ -46,7 +46,7 @@ function useResolvedDealProps(props: Props) {
 /**
  * Swap deal controls:
  * - Far left: Buy 1 {symbol} for {amount} dllr (Gram offer on Currencies screens)
- * - Just left of Swap (small indent): “DLLR Frozen” / “No pool” / “Low amount”
+ * - Just left of Swap (small indent): “DLLR Frozen” / “No pool” / “No amount” / “Low amount”
  * - Far right: Swap (inactive undercover when not actionable)
  */
 export function SwapDealActionRow({ density = "compact", ...props }: Props) {
@@ -74,9 +74,11 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
       ? t("swap.action.dllrFrozen")
       : buttonNotice === "noPool"
         ? t("swap.action.noPool")
-        : buttonNotice === "lowAmount"
-          ? t("swap.action.lowAmount")
-          : null;
+        : buttonNotice === "noAmount"
+          ? t("swap.action.noAmount")
+          : buttonNotice === "lowAmount"
+            ? t("swap.action.lowAmount")
+            : null;
   const hasNotice = noticeLabel != null;
 
   const [labelSlotWidth, setLabelSlotWidth] = useState(0);
