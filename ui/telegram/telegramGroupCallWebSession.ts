@@ -13,6 +13,7 @@ import {
   type TelegramGroupCallRtpExtension,
   type TelegramGroupCallTransport,
 } from "../../shared/telegramGroupCallSdp";
+import { isElectronDesktopShell } from "../appShell";
 import { logPageDisplay } from "../pageDisplayLog";
 import { joinTelegramChatVoice } from "./joinTelegramChatVoice";
 import {
@@ -6790,15 +6791,31 @@ export class TelegramGroupCallWebSession {
     // Joining / SDP must not run before getDisplayMedia or Chrome drops the prompt.
     let displayStream = preacquiredStream ?? null;
     if (!displayStream) {
+      const desktopShell = isElectronDesktopShell();
       try {
         displayStream = await navigator.mediaDevices.getDisplayMedia({
-          // Prefer system audio when the OS/browser exposes it — silent
-          // presentation audio alone is not "the stream" others expect to hear.
-          audio: true,
+          // Electron's display-media handler returns video only. Requesting
+          // audio:true first fails and consumes the click's user activation,
+          // so the video-only retry then throws NotSupportedError ("use Chrome").
+          audio: desktopShell ? false : true,
           video: true,
         });
       } catch (err) {
-        // Some platforms reject audio:true — fall back to video-only capture.
+        const name =
+          err && typeof err === "object" && "name" in err
+            ? String((err as { name?: unknown }).name ?? "")
+            : "";
+        logPageDisplay("messages_voice_screen_share_getdisplaymedia_fail", {
+          chatId: this.input.chatId,
+          desktopShell,
+          name,
+          message: err instanceof Error ? err.message : String(err ?? ""),
+          level: "warn",
+        });
+        if (desktopShell) {
+          throw mapDisplayMediaError(err);
+        }
+        // Browsers may reject audio:true — fall back to video-only capture.
         try {
           displayStream = await navigator.mediaDevices.getDisplayMedia({
             audio: false,

@@ -2431,7 +2431,16 @@ function setupAppMenu() {
 }
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: "app", privileges: { standard: true, supportFetchAPI: true } },
+  {
+    scheme: "app",
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
 ]);
 
 function log(msg) {
@@ -2745,6 +2754,15 @@ async function createWindow() {
     show: false,
   });
   mainWindowRef = mainWindow;
+  try {
+    registerDisplayMediaHandler({
+      session: mainWindow.webContents.session,
+      getMainWindow: () => mainWindowRef,
+      log,
+    });
+  } catch (e) {
+    log(`display-media window session: ${e?.message || e}`);
+  }
   zoomMenuApi.attachMainWindowZoomHooks(mainWindow);
   ensureBrowserWindowAllowsOsCapture(mainWindow, log);
 

@@ -914,7 +914,11 @@ export function MessageChatVoiceBar({
               speakingHoldUntilRef.current.get(speakKey) ?? 0,
             );
           }
-          if (until > now) {
+          const mixCarry =
+            voiceJoinedRef.current &&
+            remoteSpeakingRef.current &&
+            aliases.some((speakKey) => mixCarrySpeakingKeysRef.current.has(speakKey));
+          if (until > now || mixCarry) {
             for (const speakKey of aliases) next[speakKey] = true;
           } else {
             clearSpeakingHoldsForRow(row);
@@ -941,7 +945,14 @@ export function MessageChatVoiceBar({
         for (const speakKey of rowSpeakKeys(row)) mutedKeys.add(speakKey);
       }
       for (const [key, until] of speakingHoldUntilRef.current.entries()) {
-        if (mutedKeys.has(key)) {
+        if (
+          mutedKeys.has(key) &&
+          !(
+            voiceJoinedRef.current &&
+            remoteSpeakingRef.current &&
+            mixCarrySpeakingKeysRef.current.has(key)
+          )
+        ) {
           speakingHoldUntilRef.current.delete(key);
           continue;
         }
@@ -962,16 +973,26 @@ export function MessageChatVoiceBar({
         const remotes = mergedRows.filter(
           (row) => !row.is_self && canonicalSpeakKey(row) !== "self",
         );
+        const rowVolume = (row: TelegramChatVoiceParticipant) => {
+          const prefs =
+            participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
+          return (
+            prefs?.volumePercent ??
+            (typeof row.volume_percent === "number" ? row.volume_percent : 100)
+          );
+        };
+        const rowSharing = (row: TelegramChatVoiceParticipant) =>
+          Boolean(
+            row.screen_sharing_video_info?.endpoint_id?.trim() ||
+              (row.screen_sharing_video_info?.source_groups?.length ?? 0) > 0 ||
+              row.video_info?.endpoint_id?.trim() ||
+              (row.video_info?.source_groups?.length ?? 0) > 0,
+          );
         let bestRow: TelegramChatVoiceParticipant | null = null;
         let bestAt = 0;
         for (const row of remotes) {
           if (row.is_muted) continue;
-          const prefs =
-            participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
-          const volume =
-            prefs?.volumePercent ??
-            (typeof row.volume_percent === "number" ? row.volume_percent : 100);
-          if (volume <= 0) continue;
+          if (rowVolume(row) <= 0) continue;
           let at = 0;
           for (const speakKey of rowSpeakKeys(row)) {
             at = Math.max(at, lastTdlibSpeakingAtRef.current.get(speakKey) ?? 0);
@@ -981,13 +1002,35 @@ export function MessageChatVoiceBar({
             bestRow = row;
           }
         }
-        if (bestRow != null && bestAt > 0) {
+        if (bestRow == null) {
+          const hearable = remotes.filter((row) => rowVolume(row) > 0);
+          const openMics = hearable.filter((row) => !row.is_muted);
+          const pool = openMics.length > 0 ? openMics : hearable;
+          bestRow =
+            pool.find((row) =>
+              rowSpeakKeys(row).some((k) => mixCarrySpeakingKeysRef.current.has(k)),
+            ) ??
+            pool.find(rowSharing) ??
+            pool[0] ??
+            null;
+        }
+        if (bestRow != null) {
           for (const speakKey of rowSpeakKeys(bestRow)) {
             speakingHoldUntilRef.current.set(speakKey, now + holdMs);
             mixCarrySpeakingKeysRef.current.add(speakKey);
             next[speakKey] = true;
           }
           soonestExpiry = now + holdMs;
+        } else {
+          for (const key of mixCarrySpeakingKeysRef.current) {
+            next[key] = true;
+            speakingHoldUntilRef.current.set(key, now + holdMs);
+          }
+          for (const key of Object.keys(speakingByKeyRef.current)) {
+            if (key === "self") continue;
+            next[key] = true;
+          }
+          if (Object.keys(next).length > 0) soonestExpiry = now + holdMs;
         }
       }
       if (speakingHoldTimerRef.current) {
@@ -1071,6 +1114,9 @@ export function MessageChatVoiceBar({
           note: "TDLib speaking pulse was self — remotes rely on mix open-mic paint",
         });
       }
+      // Empty SSE must not wipe mix-RMS greens (prod: speakingCount=0 while
+      // mix is loud). Mix extend owns those faces until RMS goes quiet.
+      if (voiceJoinedRef.current && remoteSpeakingRef.current) return;
       if (speakingRafRef.current != null) return;
       speakingRafRef.current = window.setTimeout(commitSpeaking, 0) as unknown as number;
     },
@@ -2100,6 +2146,25 @@ export function MessageChatVoiceBar({
         }
         return [bestRow];
       };
+      const isSharing = (row: TelegramChatVoiceParticipant) =>
+        Boolean(
+          row.screen_sharing_video_info?.endpoint_id?.trim() ||
+            (row.screen_sharing_video_info?.source_groups?.length ?? 0) > 0 ||
+            row.video_info?.endpoint_id?.trim() ||
+            (row.video_info?.source_groups?.length ?? 0) > 0,
+        );
+      const hearableRemotes = remotes.filter((row) => remoteVolumePercent(row) > 0);
+      const preferOne = (rows: TelegramChatVoiceParticipant[]) => {
+        if (rows.length <= 1) return rows;
+        const sharing = rows.filter(isSharing);
+        if (sharing.length === 1) return sharing;
+        if (sharing.length > 1) return pickNewest(sharing);
+        const carried = rows.filter((row) =>
+          rowSpeakKeys(row).some((k) => mixCarrySpeakingKeysRef.current.has(k)),
+        );
+        if (carried.length > 0) return pickNewest(carried);
+        return pickNewest(rows);
+      };
       const withTdlib = unmutedRemotes.filter((row) => lastTdlibAt(row) > 0);
       const newestAge =
         withTdlib.length > 0
@@ -2113,18 +2178,26 @@ export function MessageChatVoiceBar({
           lastTdlibAgeMs: newestAge,
         };
       }
-      if (unmutedRemotes.length === 1) {
+      if (unmutedRemotes.length > 0) {
         return {
-          targets: unmutedRemotes,
-          mixSource: "solo",
-          unmutedCount: 1,
+          targets: preferOne(unmutedRemotes),
+          mixSource: unmutedRemotes.length === 1 ? "solo" : "last_tdlib",
+          unmutedCount: unmutedRemotes.length,
+          lastTdlibAgeMs: null,
+        };
+      }
+      if (hearableRemotes.length > 0) {
+        return {
+          targets: preferOne(hearableRemotes),
+          mixSource: hearableRemotes.length === 1 ? "solo" : "last_tdlib",
+          unmutedCount: 0,
           lastTdlibAgeMs: null,
         };
       }
       return {
         targets: [],
         mixSource: "tdlib_hold",
-        unmutedCount: unmutedRemotes.length,
+        unmutedCount: 0,
         lastTdlibAgeMs: newestAge,
       };
     },

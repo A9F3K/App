@@ -10,17 +10,36 @@ const { desktopCapturer, dialog, BrowserWindow } = require("electron");
  *   log?: (msg: string) => void,
  * }} opts
  */
+function allowDisplayCapturePermissions(session, log) {
+  try {
+    if (typeof session.setPermissionCheckHandler === "function") {
+      session.setPermissionCheckHandler(() => true);
+    }
+    if (typeof session.setPermissionRequestHandler === "function") {
+      session.setPermissionRequestHandler((_contents, _permission, callback) => {
+        callback(true);
+      });
+    }
+    log?.("[display-media] media/display-capture permissions allowed");
+  } catch (err) {
+    log?.(`[display-media] permission handlers: ${err?.message || err}`);
+  }
+}
+
 function registerDisplayMediaHandler({ session, getMainWindow, log }) {
   if (!session || typeof session.setDisplayMediaRequestHandler !== "function") {
     log?.("[display-media] setDisplayMediaRequestHandler unavailable");
     return;
   }
 
-  session.setDisplayMediaRequestHandler(async (_request, callback) => {
+  allowDisplayCapturePermissions(session, log);
+
+  const handler = async (_request, callback) => {
     try {
       const sources = await desktopCapturer.getSources({
         types: ["screen", "window"],
-        thumbnailSize: { width: 0, height: 0 },
+        // Zero-size thumbs failed to enumerate sources on some Windows builds.
+        thumbnailSize: { width: 150, height: 150 },
         fetchWindowIcons: false,
       });
       const screens = sources.filter((s) => String(s.id || "").startsWith("screen:"));
@@ -72,9 +91,19 @@ function registerDisplayMediaHandler({ session, getMainWindow, log }) {
         /* ignore */
       }
     }
-  });
+  };
 
-  log?.("[display-media] getDisplayMedia handler registered");
+  try {
+    // Windows 10 1809+ / macOS 15+: native picker (same path Chrome uses).
+    // The JS handler is skipped when the OS picker is shown.
+    session.setDisplayMediaRequestHandler(handler, { useSystemPicker: true });
+    log?.("[display-media] getDisplayMedia handler registered (useSystemPicker)");
+  } catch (err) {
+    session.setDisplayMediaRequestHandler(handler);
+    log?.(
+      `[display-media] getDisplayMedia handler registered (legacy): ${err?.message || err}`,
+    );
+  }
 }
 
 module.exports = { registerDisplayMediaHandler };
