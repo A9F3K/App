@@ -126,13 +126,19 @@ function isTransientGithubUpdateError(err) {
   if (code === 502 || code === 503 || code === 504) return true;
   const msg = String(err.message || err);
   if (
-    /\b502\b|\b503\b|\b504\b|Bad Gateway|Service Unavailable|Gateway Timeout|taking too long|ECONNRESET|ETIMEDOUT|timed out|stalled/i.test(
+    /\b502\b|\b503\b|\b504\b|Bad Gateway|Service Unavailable|Gateway Timeout|taking too long|ECONNRESET|ETIMEDOUT|timed out|stalled|incomplete download/i.test(
       msg,
     )
   )
     return true;
   // Electron reports URL loader failures as net::ERR_* (not Node ECONNRESET).
-  if (/net::ERR_CONNECTION_RESET|net::ERR_CONNECTION_TIMED_OUT|net::ERR_NETWORK_CHANGED/i.test(msg))
+  // GitHub CDN / HTTP2 drops ~270MB zips mid-stream (prod: ERR_CONNECTION_CLOSED,
+  // ERR_HTTP2_PROTOCOL_ERROR) — resume from the partial file instead of starting over.
+  if (
+    /net::ERR_CONNECTION_RESET|net::ERR_CONNECTION_TIMED_OUT|net::ERR_CONNECTION_CLOSED|net::ERR_CONNECTION_ABORTED|net::ERR_NETWORK_CHANGED|net::ERR_NETWORK_IO_SUSPENDED|net::ERR_INTERNET_DISCONNECTED|net::ERR_HTTP2|net::ERR_QUIC|AbortError/i.test(
+      msg,
+    )
+  )
     return true;
   return false;
 }
@@ -207,8 +213,14 @@ async function resolveWindowsZipSidecarMeta(netFetch, currentVersion) {
       if (compareSemverLike(meta.version, currentVersion) <= 0) {
         throw new Error("zip-latest.yml version is not newer than current app");
       }
-      logUpdater("meta", `using zip-latest.yml version=${meta.version} file=${meta.fileName}`);
-      return { version: meta.version, fileName: meta.fileName, sha512: meta.sha512, source: "zip-latest.yml" };
+      logUpdater("meta", `using zip-latest.yml version=${meta.version} file=${meta.fileName} size=${meta.size || "?"}`);
+      return {
+        version: meta.version,
+        fileName: meta.fileName,
+        sha512: meta.sha512,
+        size: meta.size || null,
+        source: "zip-latest.yml",
+      };
     }
     log("[updater] zip-latest.yml incomplete; falling back to latest.yml + inferred zip name");
   } else {
@@ -236,6 +248,7 @@ async function resolveWindowsZipSidecarMeta(netFetch, currentVersion) {
     version: ly.version,
     fileName,
     sha512: null,
+    size: null,
     source: "latest.yml+inferred",
   };
 }
@@ -691,7 +704,7 @@ async function fetchPortableZipBrowserUrlFromGitHubApi(netFetch, version, prefer
   return null;
 }
 
-function fetchWithTimeout(netFetch, url, timeoutMs, label) {
+function fetchWithTimeout(netFetch, url, timeoutMs, label, init = {}) {
   const ac = typeof AbortController === "function" ? new AbortController() : null;
   let timer = null;
   const timeout = new Promise((_, reject) => {
@@ -702,10 +715,21 @@ function fetchWithTimeout(netFetch, url, timeoutMs, label) {
       reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`));
     }, timeoutMs);
   });
-  const req = Promise.resolve(ac ? netFetch(url, { signal: ac.signal }) : netFetch(url));
-  return Promise.race([req, timeout]).finally(() => {
+  const req = Promise.resolve(
+    netFetch(url, {
+      ...init,
+      ...(ac ? { signal: ac.signal } : {}),
+    }),
+  );
+  const raced = Promise.race([req, timeout]).finally(() => {
     if (timer) clearTimeout(timer);
   });
+  raced.abort = () => {
+    try {
+      ac?.abort();
+    } catch (_) {}
+  };
+  return raced;
 }
 
 function readBodyChunkWithTimeout(reader, timeoutMs) {
@@ -726,72 +750,240 @@ function readBodyChunkWithTimeout(reader, timeoutMs) {
   });
 }
 
-async function downloadToFile(netFetch, url, destPath, onProgress) {
-  const headerTimeoutMs = 60_000;
-  const stallTimeoutMs = 90_000;
-  logUpdater("download", `start → ${destPath}`);
-  logUpdater("download", `GET ${url.length > 200 ? `${url.slice(0, 200)}…` : url}`);
-  const res = await fetchWithTimeout(netFetch, url, headerTimeoutMs, "GitHub zip response");
-  if (!res.ok) {
-    throw new Error(`Download failed ${res.status} ${url}`);
+function fileSizeOrZero(filePath) {
+  try {
+    return fs.statSync(filePath).size;
+  } catch (_) {
+    return 0;
   }
-  const total =
-    parseInt(res.headers.get("content-length") || res.headers.get("Content-Length") || "0", 10) || 0;
-  logUpdater(
-    "download",
-    `response status=${res.status} content-length=${total || "missing"} redirected=${Boolean(res.url && res.url !== url)}`,
-  );
-  const reader = res.body?.getReader?.();
-  if (!reader) {
-    logUpdater("download", "no streamed body reader — buffering entire zip in memory");
-    const buf = Buffer.from(
-      await Promise.race([
-        res.arrayBuffer(),
-        new Promise((_, reject) => {
-          setTimeout(
-            () => reject(new Error("zip body buffer timed out after 180s")),
-            180_000,
-          );
-        }),
-      ]),
-    );
-    if (onProgress) onProgress(buf.length, total || buf.length);
-    fs.writeFileSync(destPath, buf);
-    logUpdater("download", `done bytes=${buf.length} (buffer path) → ${destPath}`);
-    return;
-  }
-  const ws = fs.createWriteStream(destPath);
-  let received = 0;
-  let lastProgressLogAt = 0;
+}
+
+function parseContentRange(header) {
+  const m = String(header || "").match(/bytes\s+(\d+)-(\d+)\/(\d+|\*)/i);
+  if (!m) return null;
+  return {
+    start: parseInt(m[1], 10),
+    end: parseInt(m[2], 10),
+    total: m[3] === "*" ? 0 : parseInt(m[3], 10),
+  };
+}
+
+async function streamResponseBodyToFile(reader, destPath, { append, onChunk, stallTimeoutMs, abort }) {
+  const ws = fs.createWriteStream(destPath, { flags: append ? "a" : "w" });
+  let wrote = 0;
   try {
     for (;;) {
       const { done, value } = await readBodyChunkWithTimeout(reader, stallTimeoutMs);
       if (done) break;
       if (value && value.length) {
-        received += value.length;
+        wrote += value.length;
         if (!ws.write(Buffer.from(value))) {
           await new Promise((resWrite) => ws.once("drain", resWrite));
         }
-        if (onProgress) onProgress(received, total);
-        const now = Date.now();
-        if (now - lastProgressLogAt >= 5_000) {
-          lastProgressLogAt = now;
-          const mb = (received / (1024 * 1024)).toFixed(1);
-          const totalMb = total > 0 ? (total / (1024 * 1024)).toFixed(1) : "?";
-          logUpdater("download", `progress ${mb}/${totalMb} MB`);
-        }
+        if (onChunk) onChunk(value.length);
       }
     }
+  } catch (err) {
+    try {
+      abort?.();
+    } catch (_) {}
+    throw err;
   } finally {
     await new Promise((resolve, reject) => {
-      ws.end((err) => (err ? reject(err) : resolve()));
+      ws.end((endErr) => (endErr ? reject(endErr) : resolve()));
     });
   }
-  let sizeOnDisk = received;
+  return wrote;
+}
+
+async function resolveFinalDownloadUrl(netFetch, url) {
   try {
-    sizeOnDisk = fs.statSync(destPath).size;
-  } catch (_) {}
-  logUpdater("download", `done bytes=${sizeOnDisk} streamed=${received} totalHdr=${total || "?"} → ${destPath}`);
+    const pending = fetchWithTimeout(netFetch, url, 30_000, "zip URL resolve", {
+      headers: { Range: "bytes=0-0", "Accept-Encoding": "identity" },
+    });
+    const res = await pending;
+    try {
+      pending.abort?.();
+      await res.body?.cancel?.();
+    } catch (_) {}
+    const finalUrl = typeof res.url === "string" && res.url.trim() ? res.url.trim() : url;
+    if (finalUrl !== url) {
+      logUpdater(
+        "download",
+        `cdn url ${finalUrl.length > 180 ? `${finalUrl.slice(0, 180)}…` : finalUrl}`,
+      );
+    }
+    return finalUrl;
+  } catch (e) {
+    logUpdater("download", `cdn resolve skipped: ${e?.message || e}`);
+    return url;
+  }
+}
+
+async function downloadToFile(netFetch, url, destPath, onProgress, opts = {}) {
+  const headerTimeoutMs = 60_000;
+  const stallTimeoutMs = 90_000;
+  const maxAttempts = 16;
+  const expectedHint = Number(opts.expectedSize) > 0 ? Number(opts.expectedSize) : 0;
+  fs.mkdirSync(path.dirname(destPath), { recursive: true });
+  const resolvedUrl = await resolveFinalDownloadUrl(netFetch, url);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let existing = fileSizeOrZero(destPath);
+    if (expectedHint > 0 && existing > expectedHint) {
+      logUpdater("download", `partial larger than expected (${existing}>${expectedHint}) — restart`);
+      try {
+        fs.unlinkSync(destPath);
+      } catch (_) {}
+      existing = 0;
+    }
+    if (expectedHint > 0 && existing === expectedHint) {
+      if (onProgress) onProgress(existing, expectedHint);
+      logUpdater("download", `already complete bytes=${existing} → ${destPath}`);
+      return;
+    }
+
+    const headers = { "Accept-Encoding": "identity" };
+    if (existing > 0) headers.Range = `bytes=${existing}-`;
+    logUpdater(
+      "download",
+      `${existing > 0 ? "resume" : "start"} attempt ${attempt}/${maxAttempts}` +
+        `${existing > 0 ? ` from byte ${existing}` : ""} → ${destPath}`,
+    );
+    logUpdater("download", `GET ${resolvedUrl.length > 200 ? `${resolvedUrl.slice(0, 200)}…` : resolvedUrl}`);
+
+    let fetchAbort = null;
+    try {
+      const pending = fetchWithTimeout(netFetch, resolvedUrl, headerTimeoutMs, "GitHub zip response", {
+        headers,
+      });
+      fetchAbort = pending.abort;
+      const res = await pending;
+      if (res.status === 404 || res.status === 401) {
+        throw new Error(`Download failed ${res.status} ${url}`);
+      }
+      if (existing > 0 && res.status === 416) {
+        const nowSize = fileSizeOrZero(destPath);
+        if (expectedHint > 0 && nowSize >= expectedHint) {
+          if (onProgress) onProgress(nowSize, expectedHint);
+          logUpdater("download", `range 416 and file complete bytes=${nowSize}`);
+          return;
+        }
+        logUpdater("download", "range 416 — restarting from byte 0");
+        try {
+          fs.unlinkSync(destPath);
+        } catch (_) {}
+        continue;
+      }
+      if (!res.ok && res.status !== 206) {
+        throw new Error(`Download failed ${res.status} ${url}`);
+      }
+
+      const range = parseContentRange(res.headers.get("content-range") || res.headers.get("Content-Range"));
+      const lengthHdr =
+        parseInt(res.headers.get("content-length") || res.headers.get("Content-Length") || "0", 10) || 0;
+      let append = false;
+      let received = 0;
+      let total = expectedHint || lengthHdr;
+
+      if (res.status === 206) {
+        if (range && range.start !== existing) {
+          throw new Error(`unexpected Content-Range start ${range.start} vs local ${existing}`);
+        }
+        append = true;
+        received = existing;
+        if (range?.total > 0) total = range.total;
+        else if (lengthHdr > 0) total = existing + lengthHdr;
+      } else if (existing > 0) {
+        logUpdater("download", `server ignored Range (HTTP ${res.status}) — rewriting from byte 0`);
+        received = 0;
+        append = false;
+        total = expectedHint || lengthHdr;
+      } else {
+        received = 0;
+        append = false;
+        total = expectedHint || lengthHdr;
+      }
+
+      logUpdater(
+        "download",
+        `response status=${res.status} content-length=${lengthHdr || "missing"} total=${total || "?"} ` +
+          `append=${append} redirected=${Boolean(res.url && res.url !== url)}`,
+      );
+
+      const reader = res.body?.getReader?.();
+      if (!reader) {
+        if (append) {
+          throw new Error("zip body has no stream reader while resuming");
+        }
+        logUpdater("download", "no streamed body reader — buffering entire zip in memory");
+        const buf = Buffer.from(
+          await Promise.race([
+            res.arrayBuffer(),
+            new Promise((_, reject) => {
+              setTimeout(
+                () => reject(new Error("zip body buffer timed out after 180s")),
+                180_000,
+              );
+            }),
+          ]),
+        );
+        fs.writeFileSync(destPath, buf);
+        received = buf.length;
+        total = total || buf.length;
+        if (onProgress) onProgress(received, total);
+      } else {
+        if (onProgress) onProgress(received, total);
+        let lastProgressLogAt = 0;
+        await streamResponseBodyToFile(reader, destPath, {
+          append,
+          stallTimeoutMs,
+          abort: fetchAbort,
+          onChunk: (n) => {
+            received += n;
+            if (onProgress) onProgress(received, total);
+            const now = Date.now();
+            if (now - lastProgressLogAt >= 5_000) {
+              lastProgressLogAt = now;
+              const mb = (received / (1024 * 1024)).toFixed(1);
+              const totalMb = total > 0 ? (total / (1024 * 1024)).toFixed(1) : "?";
+              logUpdater("download", `progress ${mb}/${totalMb} MB`);
+            }
+          },
+        });
+      }
+
+      const sizeOnDisk = fileSizeOrZero(destPath);
+      if (total > 0 && sizeOnDisk < total) {
+        throw new Error(`incomplete download bytes=${sizeOnDisk} total=${total}`);
+      }
+      logUpdater(
+        "download",
+        `done bytes=${sizeOnDisk} streamed=${received} totalHdr=${total || "?"} → ${destPath}`,
+      );
+      return;
+    } catch (err) {
+      try {
+        fetchAbort?.();
+      } catch (_) {}
+      const msg = String(err?.message || err);
+      const sizeNow = fileSizeOrZero(destPath);
+      if (attempt >= maxAttempts || /Download failed 404|Download failed 401/.test(msg)) {
+        logUpdater("download", `FAILED after ${attempt} attempt(s) kept=${sizeNow}B: ${msg}`);
+        throw err;
+      }
+      if (!isTransientGithubUpdateError(err) && !/incomplete download|unexpected Content-Range/i.test(msg)) {
+        logUpdater("download", `FAILED non-retryable kept=${sizeNow}B: ${msg}`);
+        throw err;
+      }
+      const waitMs = Math.min(12_000, 1_500 * attempt);
+      logUpdater(
+        "download",
+        `interrupted kept=${sizeNow}B (${(sizeNow / (1024 * 1024)).toFixed(1)} MB) — retry in ${Math.round(waitMs / 1000)}s: ${msg}`,
+      );
+      await sleep(waitMs);
+    }
+  }
 }
 
 /**
@@ -1552,6 +1744,8 @@ function setupAutoUpdater() {
       prepareUiSnapshot.percent = 0;
       logUpdater("prepare", `start pipeline → ${remoteV} exeBase=${exeBase}`);
       const uiManual = Boolean(opts?.uiManual);
+      const uiActive =
+        uiManual || Boolean(updateDialogState.window && !updateDialogState.window.isDestroyed());
       /** Overall 0–100: 0–81 download, 81–100 verify/unpack/finalize (single bar, monotonic). */
       let prepareProgressCeiling = 0;
       const lastPrepareUi = { text: "0% — Connecting to GitHub…", percent: 0 };
@@ -1598,13 +1792,30 @@ function setupAutoUpdater() {
         const versionsRoot = getVersionsStagingRoot();
         const versionDir = path.join(versionsRoot, meta.version);
         const extractDir = path.join(versionDir, "extract");
-        logUpdater("prepare", `paths versionDir=${versionDir} extractDir=${extractDir}`);
-        try {
-          fs.rmSync(versionDir, { recursive: true, force: true });
-        } catch (_) {}
-        fs.mkdirSync(extractDir, { recursive: true });
-
         const zipPath = path.join(versionDir, meta.fileName);
+        logUpdater("prepare", `paths versionDir=${versionDir} extractDir=${extractDir}`);
+        fs.mkdirSync(versionDir, { recursive: true });
+        const expectedZipSize = Number(meta.size) > 0 ? Number(meta.size) : 0;
+        const existingZip = fileSizeOrZero(zipPath);
+        if (existingZip > 0) {
+          logUpdater(
+            "prepare",
+            `keeping partial zip ${existingZip}B` +
+              `${expectedZipSize ? ` / ${expectedZipSize}B` : ""} (resume, not wipe)`,
+          );
+          if (expectedZipSize > 0) {
+            const dl = Math.min(1, existingZip / expectedZipSize);
+            const overall = Math.min(
+              PREP_PCT_DOWNLOAD_MAX,
+              Math.round(PREP_PCT_DOWNLOAD_MAX * dl),
+            );
+            pushUi({
+              text: `${overall}% — Resuming download…`,
+              percent: overall,
+            });
+          }
+        }
+
         const primaryZipUrl = githubLatestAssetUrl(meta.fileName);
         logUpdater("prepare", `download primaryURL asset=${meta.fileName}`);
         let lastZipPush = 0;
@@ -1635,20 +1846,44 @@ function setupAutoUpdater() {
             percent: overall,
           });
         };
-        try {
-          await downloadToFile((u, init) => net.fetch(u, init), primaryZipUrl, zipPath, onZipProgress);
-        } catch (e) {
-          const msg = String(e?.message || e);
-          if (!/404/.test(msg)) throw e;
-          const altUrl = await fetchPortableZipBrowserUrlFromGitHubApi(
-            (u, init) => net.fetch(u, init),
-            meta.version,
-            meta.fileName,
-          );
-          if (!altUrl) throw e;
-          log(`[updater] primary zip 404; downloading from GitHub API URL`);
-          logUpdater("prepare", `download fallbackURL (API) → ${altUrl.length > 160 ? `${altUrl.slice(0, 160)}…` : altUrl}`);
-          await downloadToFile((u, init) => net.fetch(u, init), altUrl, zipPath, onZipProgress);
+        let skipDownload = false;
+        if (existingZip > 0 && meta.sha512 && (!expectedZipSize || existingZip === expectedZipSize)) {
+          try {
+            if (sha512Base64OfFile(zipPath) === meta.sha512) {
+              skipDownload = true;
+              onZipProgress(existingZip, expectedZipSize || existingZip);
+              logUpdater("prepare", "existing zip sha512 ok — skip download");
+            }
+          } catch (_) {}
+        }
+        if (!skipDownload) {
+          try {
+            await downloadToFile(
+              (u, init) => net.fetch(u, init),
+              primaryZipUrl,
+              zipPath,
+              onZipProgress,
+              { expectedSize: expectedZipSize },
+            );
+          } catch (e) {
+            const msg = String(e?.message || e);
+            if (!/404/.test(msg)) throw e;
+            const altUrl = await fetchPortableZipBrowserUrlFromGitHubApi(
+              (u, init) => net.fetch(u, init),
+              meta.version,
+              meta.fileName,
+            );
+            if (!altUrl) throw e;
+            log(`[updater] primary zip 404; downloading from GitHub API URL`);
+            logUpdater("prepare", `download fallbackURL (API) → ${altUrl.length > 160 ? `${altUrl.slice(0, 160)}…` : altUrl}`);
+            await downloadToFile(
+              (u, init) => net.fetch(u, init),
+              altUrl,
+              zipPath,
+              onZipProgress,
+              { expectedSize: expectedZipSize },
+            );
+          }
         }
 
         pushUi({ text: `${PREP_PCT_DOWNLOAD_MAX}% — Download finished`, percent: PREP_PCT_DOWNLOAD_MAX });
@@ -1665,7 +1900,13 @@ function setupAutoUpdater() {
           if (meta.sha512) {
             logUpdater("verify", "sha512 check (zip-latest)");
             const hash = sha512Base64OfFile(zipPath);
-            if (hash !== meta.sha512) throw new Error("zip sha512 mismatch");
+            if (hash !== meta.sha512) {
+              logUpdater("verify", "sha512 mismatch — deleting zip so the next pass re-downloads");
+              try {
+                fs.unlinkSync(zipPath);
+              } catch (_) {}
+              throw new Error("zip sha512 mismatch");
+            }
             logUpdater("verify", "sha512 ok");
           } else {
             log(
@@ -1681,6 +1922,11 @@ function setupAutoUpdater() {
           text: `${PREP_UNPACK_LO}% — Unpacking update…`,
           percent: PREP_UNPACK_LO,
         });
+
+        try {
+          fs.rmSync(extractDir, { recursive: true, force: true });
+        } catch (_) {}
+        fs.mkdirSync(extractDir, { recursive: true });
 
         await extractPortableZipToDir(zipPath, extractDir, log, pushUi, PREP_UNPACK_LO, PREP_UNPACK_HI, {
           verifyExeBase: exeBase,
@@ -1732,16 +1978,14 @@ function setupAutoUpdater() {
         const hint =
           `Update prepare failed: ${e?.message || String(e)}. ` +
           `Publish the Windows zip (${WIN_PORTABLE_ZIP_PREFIX}<version>.zip) on https://github.com/${UPDATE_GITHUB_OWNER}/${UPDATE_GITHUB_REPO}/releases/latest — latest.yml is enough; add zip-latest.yml from cleanup for checksum verification.`;
-        if (uiActive) {
-          openOrFocusUpdateDialog();
-          updateDialogUi({
-            text: hint,
-            percent: 0,
-            showProgress: false,
-            showActions: true,
-            installEnabled: false,
-          });
-        }
+        openOrFocusUpdateDialog();
+        updateDialogUi({
+          text: hint,
+          percent: prepareProgressCeiling,
+          showProgress: prepareProgressCeiling > 0,
+          showActions: true,
+          installEnabled: false,
+        });
         logUpdaterStateSnapshot("prepare/failed", { error: String(errMsg) });
       } finally {
         zipPrepareInFlight = false;
