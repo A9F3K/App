@@ -1155,6 +1155,77 @@ function participantKey(userId: number | null, chatId: number | null): string | 
   return null;
 }
 
+function titleFromTdUser(user: Record<string, unknown>): string {
+  const parts = [user.first_name, user.last_name].filter(
+    (part): part is string => typeof part === "string" && Boolean(part.trim()),
+  );
+  let title = parts.join(" ").trim();
+  if (!title) {
+    const usernames = user.usernames as
+      | { editable_username?: string; active_usernames?: string[] }
+      | undefined;
+    const username =
+      typeof user.username === "string" && user.username.trim()
+        ? user.username.trim()
+        : usernames?.editable_username || usernames?.active_usernames?.[0] || "";
+    if (username) title = `@${username}`;
+  }
+  return title;
+}
+
+/**
+ * Keep voice-roster titles in sync with TDLib `updateUser`. Without this,
+ * `profileCache` served the previous first/last name for up to 30 minutes
+ * (`PROFILE_TTL_MS`) and SSE snapshots never picked up a rename.
+ */
+export function ingestUserProfileUpdate(update: Record<string, unknown>): void {
+  if (update._ !== "updateUser") return;
+  const user = update.user;
+  if (!user || typeof user !== "object") return;
+  const rec = user as Record<string, unknown>;
+  const userId = Number(rec.id);
+  if (!Number.isFinite(userId) || userId <= 0) return;
+  const trunc = Math.trunc(userId);
+  const key = participantKey(trunc, null);
+  if (!key) return;
+  const title = titleFromTdUser(rec);
+  if (!title) return;
+  const prev = profileCache.get(key);
+  const emoji = emojiStatusCustomIdFromUser(rec);
+  if (
+    prev &&
+    prev.title === title &&
+    (prev.emoji_status_custom_emoji_id ?? null) === (emoji ?? null)
+  ) {
+    prev.at = Date.now();
+    return;
+  }
+  profileCache.set(key, {
+    title,
+    description: prev?.description ?? "",
+    emoji_status_custom_emoji_id: emoji ?? prev?.emoji_status_custom_emoji_id ?? null,
+    at: Date.now(),
+  });
+  for (const [callId, cached] of callMembersCache) {
+    let found = false;
+    for (const row of cached.members.values()) {
+      if (row.userId === trunc) {
+        found = true;
+        break;
+      }
+    }
+    if (!found && cached.speakers) {
+      for (const row of cached.speakers.values()) {
+        if (row.userId === trunc) {
+          found = true;
+          break;
+        }
+      }
+    }
+    if (found) bumpVoiceCallRevision(callId, { immediate: true });
+  }
+}
+
 function parseSender(sender: { _?: string; user_id?: number; chat_id?: number } | undefined): {
   userId: number | null;
   chatId: number | null;
@@ -1197,20 +1268,7 @@ async function loadParticipantProfile(
         _: "getUser",
         user_id: userId,
       })) as Record<string, unknown>;
-      const parts = [user.first_name, user.last_name].filter(
-        (part): part is string => typeof part === "string" && Boolean(part.trim()),
-      );
-      title = parts.join(" ").trim();
-      if (!title) {
-        const usernames = user.usernames as
-          | { editable_username?: string; active_usernames?: string[] }
-          | undefined;
-        const username =
-          typeof user.username === "string" && user.username.trim()
-            ? user.username.trim()
-            : usernames?.editable_username || usernames?.active_usernames?.[0] || "";
-        if (username) title = `@${username}`;
-      }
+      title = titleFromTdUser(user);
       emojiStatus = emojiStatusCustomIdFromUser(user);
     } catch {
       title = "";
@@ -1761,7 +1819,7 @@ async function warmMissingProfiles(
     [];
   for (const [key, row] of members) {
     const cached = profileCache.get(key);
-    if (cached?.title) continue;
+    if (cached?.title && Date.now() - cached.at < PROFILE_TTL_MS) continue;
     pending.push({ key, userId: row.userId, chatId: row.chatId });
   }
   if (pending.length === 0) return 0;
@@ -1783,8 +1841,9 @@ async function warmMissingProfiles(
       const at = profile.title
         ? Date.now()
         : Date.now() - PROFILE_TTL_MS + EMPTY_PROFILE_RETRY_MS;
+      const prevTitle = profileCache.get(key)?.title ?? "";
       profileCache.set(key, { ...profile, at });
-      if (profile.title) warmed += 1;
+      if (profile.title && profile.title !== prevTitle) warmed += 1;
     } catch {
       /* keep warming the rest */
     }

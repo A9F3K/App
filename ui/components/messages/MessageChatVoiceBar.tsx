@@ -103,6 +103,21 @@ function participantHasScreenPublisher(row: TelegramChatVoiceParticipant): boole
   );
 }
 
+function participantHasCameraPublisher(row: TelegramChatVoiceParticipant): boolean {
+  const camera = row.video_info;
+  return Boolean(
+    (camera?.endpoint_id && camera.endpoint_id.trim()) ||
+      (camera?.source_groups?.length ?? 0) > 0,
+  );
+}
+
+function participantHasRemoteVideoPublisher(row: TelegramChatVoiceParticipant): boolean {
+  return (
+    !row.is_self &&
+    (participantHasScreenPublisher(row) || participantHasCameraPublisher(row))
+  );
+}
+
 function participantNeedsVideoForceReload(row: TelegramChatVoiceParticipant): boolean {
   if (row.is_self) return false;
   const screen = row.screen_sharing_video_info;
@@ -440,6 +455,7 @@ export function MessageChatVoiceBar({
   // webrtcJoined=false forever (speakingCount=0, thin roster).
   const joinAttemptsRef = useRef(0);
   const kickPostJoinForceReloadRef = useRef<((source: string) => void) | null>(null);
+  const postJoinForceCompletedRef = useRef(false);
   useEffect(() => {
     if (!joined) {
       joinAttemptsRef.current = 0;
@@ -1527,6 +1543,14 @@ export function MessageChatVoiceBar({
               title: formatVoiceParticipantTitle(row),
               endpoint: row.screen_sharing_video_info?.endpoint_id,
               groups: row.screen_sharing_video_info?.source_groups?.length ?? 0,
+            })),
+          cameras: next
+            .filter((row) => row.video_info?.endpoint_id)
+            .slice(0, 4)
+            .map((row) => ({
+              title: formatVoiceParticipantTitle(row),
+              endpoint: row.video_info?.endpoint_id,
+              groups: row.video_info?.source_groups?.length ?? 0,
             })),
         });
       }
@@ -2696,7 +2720,7 @@ export function MessageChatVoiceBar({
         })),
       });
     }
-    if (cands.length === 0) return;
+    if (cands.length > 0) {
     cands.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
       if (a.hasGroups !== b.hasGroups) return a.hasGroups ? -1 : 1;
@@ -2718,22 +2742,17 @@ export function MessageChatVoiceBar({
         level: "info",
         note: "defer auto-show until SIM+FID source_groups are ready",
       });
-      return;
-    }
+    } else {
     const target = eligible.length;
     const committed = autoScreenCommittedEndpointsRef.current;
     const stillValid = eligible.filter((c) => committed.has(c.endpoint));
-    if (stillValid.length >= target) {
-      return;
-    }
     const toAdd = eligible
       .filter((c) => !committed.has(c.endpoint))
-      .slice(0, target - stillValid.length);
-    if (toAdd.length === 0) return;
-
+      .slice(0, Math.max(0, target - stillValid.length));
+    if (toAdd.length > 0) {
     const nextRequests: Array<{
       endpointId: string;
-      kind: "screen";
+      kind: "screen" | "camera";
       ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
     }> = [];
     for (const pick of [...stillValid, ...toAdd].slice(0, target)) {
@@ -2764,7 +2783,7 @@ export function MessageChatVoiceBar({
     const nextSig = nextRequests
       .map(
         (r) =>
-          `screen:${r.endpointId}:${r.ssrcGroups
+          `${r.kind}:${r.endpointId}:${r.ssrcGroups
             .map((g) => `${g.semantics}:${g.sourceIds.join(",")}`)
             .join(";")}`,
       )
@@ -2799,6 +2818,152 @@ export function MessageChatVoiceBar({
       level: "info",
       note: "auto_show_instant_subscribe",
     });
+    }
+    }
+    }
+
+    // Camera: same opt-in chrome as screens. Menu-only left web camera
+    // publishers looking muted by default (constraints count=0, skip_non_slot).
+    type CamCand = {
+      key: string;
+      wantedKey: string;
+      endpoint: string;
+      title: string;
+      score: number;
+      hasGroups: boolean;
+      ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
+    };
+    const camCands: CamCand[] = [];
+    for (const row of participantsRef.current) {
+      if (row.is_self) continue;
+      const camera = row.video_info;
+      if (!participantHasCameraPublisher(row) || !camera) continue;
+      const endpoint =
+        camera.endpoint_id?.trim() ||
+        `cam-${row.user_id ?? row.chat_id ?? "x"}`;
+      if (failedAutoScreenEndpointsRef.current.has(endpoint)) continue;
+      const key = voiceParticipantPrefsKey(row);
+      const wantedKey = `cam:${key}`;
+      if (userDeniedScreenKeysRef.current.has(wantedKey)) continue;
+      const groups = camera.source_groups ?? [];
+      const hasSim = groups.some((g) => g.semantics.toUpperCase() === "SIM");
+      const fidCount = groups.filter((g) =>
+        g.semantics.toUpperCase() === "FID",
+      ).length;
+      let firstSeenAt = screenEndpointFirstSeenAtRef.current.get(endpoint);
+      if (firstSeenAt == null) {
+        firstSeenAt = now;
+        screenEndpointFirstSeenAtRef.current.set(endpoint, firstSeenAt);
+      }
+      const score =
+        (hasSim ? 100 : 0) +
+        fidCount * 20 +
+        groups.length * 10 +
+        (camera.endpoint_id?.trim() ? 5 : 0) +
+        (row.is_speaking ? 25 : 0) +
+        (row.order && row.order.trim() ? 5 : 0);
+      camCands.push({
+        key,
+        wantedKey,
+        endpoint,
+        title: formatVoiceParticipantTitle(row),
+        score,
+        hasGroups: groups.length > 0,
+        ssrcGroups: groups.map((g) => ({
+          semantics: g.semantics,
+          sourceIds: g.source_ids,
+        })),
+      });
+    }
+    if (camCands.length === 0) return;
+    camCands.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.hasGroups !== b.hasGroups) return a.hasGroups ? -1 : 1;
+      return 0;
+    });
+    // Cameras often ship FID without SIM — require groups, not score>=100.
+    const camEligible = camCands.filter((c) => c.hasGroups);
+    if (camEligible.length === 0) {
+      const pick = camCands[0];
+      logPageDisplay("messages_voice_remote_camera_auto_show_wait_ssrc", {
+        chatId,
+        title: pick.title,
+        endpoint: pick.endpoint,
+        score: pick.score,
+        hasGroups: pick.hasGroups,
+        candidates: camCands.length,
+        level: "info",
+        note: "defer camera auto-show until source_groups are ready",
+      });
+      return;
+    }
+    const camCommitted = autoScreenCommittedEndpointsRef.current;
+    const camToAdd = camEligible.filter((c) => !camCommitted.has(c.endpoint));
+    if (camToAdd.length === 0) return;
+    const camRequests: Array<{
+      endpointId: string;
+      kind: "camera";
+      ssrcGroups: Array<{ semantics: string; sourceIds: number[] }>;
+    }> = [];
+    for (const pick of camToAdd) {
+      explicitScreenWantedKeysRef.current.add(pick.wantedKey);
+      const existingPrefs =
+        participantMediaPrefsRef.current[pick.key] ?? {
+          volumePercent: 100,
+          muteVideo: true,
+          muteScreen: true,
+        };
+      participantMediaPrefsRef.current = {
+        ...participantMediaPrefsRef.current,
+        [pick.key]: { ...existingPrefs, muteVideo: false },
+      };
+      camCommitted.add(pick.endpoint);
+      camRequests.push({
+        endpointId: pick.endpoint,
+        kind: "camera",
+        ssrcGroups: pick.ssrcGroups,
+      });
+    }
+    setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
+    setParticipantMediaPrefs({ ...participantMediaPrefsRef.current });
+    const camPrimary = camToAdd[0];
+    if (!preferredExplicitScreenEndpointRef.current) {
+      preferredExplicitScreenEndpointRef.current = camPrimary.endpoint;
+    }
+    preferExplicitRemoteVideoSubscribe(camPrimary.endpoint, { autoShow: true });
+    const mergedRequests = [
+      ...lastGoodRemoteVideoRequestsRef.current.filter(
+        (r) => !camRequests.some((c) => c.endpointId === r.endpointId),
+      ),
+      ...camRequests,
+    ];
+    const camSig = mergedRequests
+      .map(
+        (r) =>
+          `${r.kind}:${r.endpointId}:${r.ssrcGroups
+            .map((g) => `${g.semantics}:${g.sourceIds.join(",")}`)
+            .join(";")}`,
+      )
+      .sort()
+      .join("|");
+    lastGoodRemoteVideoRequestsRef.current = mergedRequests;
+    lastGoodRemoteVideoAtRef.current = Date.now();
+    lastRemoteVideoRequestSigRef.current = camSig;
+    setRemoteVideoRequests(mergedRequests);
+    for (const pick of camToAdd) {
+      logPageDisplay("messages_voice_remote_camera_auto_show", {
+        chatId,
+        title: pick.title,
+        endpoint: pick.endpoint,
+        score: pick.score,
+        hasGroups: pick.hasGroups,
+        candidates: camCands.length,
+        subscribed: mergedRequests.length,
+        level: "info",
+        note:
+          "camera auto-show after mix-protect gate; default muteVideo was chrome-only",
+      });
+    }
   }, [
     voiceJoined,
     // Roster / publisher identity — NOT remoteVideoRepushEpoch (that is for
@@ -2865,8 +3030,8 @@ export function MessageChatVoiceBar({
             ? `screen-${row.user_id ?? row.chat_id ?? "x"}`
             : "");
         const prefsKey = voiceParticipantPrefsKey(row);
-        // Opt-in / auto-show: screenAllowed requires this session key (menu unmute
-        // or join-time auto-show). Cameras stay menu-only.
+        // Opt-in / auto-show: screenAllowed / cameraAllowed require this session
+        // key (menu unmute or join-time auto-show).
         const screenAllowed =
           prefs != null &&
           prefs.muteScreen === false &&
@@ -3314,23 +3479,37 @@ export function MessageChatVoiceBar({
     (participant: TelegramChatVoiceParticipant) => {
       const { key, prefs } = ensureParticipantPrefs(participant);
       const cur = participantMediaPrefsRef.current[key] ?? prefs;
+      const wantedKey = `cam:${key}`;
+      const endpoint = participant.video_info?.endpoint_id?.trim() || null;
       const nextMute = !cur.muteVideo;
       if (nextMute) {
-        explicitScreenWantedKeysRef.current.delete(`cam:${key}`);
+        explicitScreenWantedKeysRef.current.delete(wantedKey);
+        userDeniedScreenKeysRef.current.add(wantedKey);
+        if (endpoint) autoScreenCommittedEndpointsRef.current.delete(endpoint);
       } else {
-        explicitScreenWantedKeysRef.current.add(`cam:${key}`);
+        explicitScreenWantedKeysRef.current.add(wantedKey);
+        userDeniedScreenKeysRef.current.delete(wantedKey);
+        if (endpoint) failedAutoScreenEndpointsRef.current.delete(endpoint);
       }
+      setDeniedScreenPeerKeys([...userDeniedScreenKeysRef.current]);
+      setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
       patchStoredVoicePeerMediaPrefs(voicePrefsAccountId, key, {
         muteVideo: nextMute,
       });
+      const nextPrefs = {
+        ...(participantMediaPrefsRef.current[key] ?? prefs),
+        muteVideo: nextMute,
+      };
+      participantMediaPrefsRef.current = {
+        ...participantMediaPrefsRef.current,
+        [key]: nextPrefs,
+      };
       setParticipantMediaPrefs((prev) => {
         const existing = prev[key] ?? prefs;
         return { ...prev, [key]: { ...existing, muteVideo: nextMute } };
       });
       if (!nextMute) {
-        voiceSession.preferExplicitRemoteVideoSubscribe(
-          participant.video_info?.endpoint_id?.trim() || null,
-        );
+        voiceSession.preferExplicitRemoteVideoSubscribe(endpoint);
       }
     },
     [ensureParticipantPrefs, voicePrefsAccountId, voiceSession],
@@ -3799,6 +3978,16 @@ export function MessageChatVoiceBar({
     // Any gap vs TDLib means the roster is incomplete — listed=5 hint=6 used
     // to skip force-reload and hide the screencaster (no video_info rows).
     if (hint > listed) return true;
+    // recent_speakers stubs omit video_info. listed===hint without a joined
+    // force-load left screens=[] / cameras=[] and auto-show never subscribed
+    // (prod: remote_video_skip_non_slot slotCount=0, constraints count=0).
+    if (
+      voiceJoinedRef.current &&
+      !postJoinForceCompletedRef.current &&
+      !participantsRef.current.some(participantHasRemoteVideoPublisher)
+    ) {
+      return true;
+    }
     // Any untitled non-self row (blank / invisible) needs another force pass.
     if (
       participantsRef.current.some(
@@ -3975,6 +4164,7 @@ export function MessageChatVoiceBar({
         })
         .finally(() => {
           postJoinForceInFlightRef.current = false;
+          if (voiceJoinedRef.current) postJoinForceCompletedRef.current = true;
         });
     },
     [
@@ -4208,6 +4398,7 @@ export function MessageChatVoiceBar({
   useEffect(() => {
     if (!joined) {
       postJoinRosterLoadedRef.current = false;
+      postJoinForceCompletedRef.current = false;
       return;
     }
     // Do not force-reload after Close — joined can lag while leave cancels SDP
@@ -4262,6 +4453,7 @@ export function MessageChatVoiceBar({
         });
         // Stop hammering TDLib even if listed < hint (hidden listeners).
         postJoinRosterLoadedRef.current = true;
+        postJoinForceCompletedRef.current = true;
         return;
       }
       // Prefer waiting for WebRTC join before force-reload (pre-join force can
@@ -4423,6 +4615,9 @@ export function MessageChatVoiceBar({
         } finally {
           inFlight = false;
           postJoinForceInFlightRef.current = false;
+          if (!cancelled && voiceJoinedRef.current) {
+            postJoinForceCompletedRef.current = true;
+          }
         }
       })();
     };

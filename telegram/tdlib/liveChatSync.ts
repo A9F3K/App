@@ -13,6 +13,7 @@ import {
   groupCallLooksLive,
   ingestGroupCallParticipantUpdate,
   ingestGroupCallUpdate,
+  ingestUserProfileUpdate,
   verifyGroupCallLiveState,
 } from "./voiceParticipants.js";
 import { ingestNewGroupCallMessage } from "./voiceCallMessages.js";
@@ -286,6 +287,7 @@ async function applyLiveUpdate(record: LiveSyncRecord, update: Record<string, un
   }
 
   if (type === "updateUser") {
+    ingestUserProfileUpdate(update);
     const user = update.user;
     if (!user || typeof user !== "object") return;
     const userId = (user as { id?: number }).id;
