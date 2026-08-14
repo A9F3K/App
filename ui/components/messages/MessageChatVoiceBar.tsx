@@ -936,6 +936,44 @@ export function MessageChatVoiceBar({
           speakingHoldUntilRef.current.delete(key);
         }
       }
+      // SSE speakingCount=0 after join while mix RMS stays live (prod: Vespiol
+      // 07:43:47 speakingCount=0, mix 0.08–0.42). Keep last known unmuted speaker.
+      if (
+        remoteSpeakingMarked === 0 &&
+        voiceJoinedRef.current &&
+        remoteSpeakingRef.current
+      ) {
+        const remotes = mergedRows.filter(
+          (row) => !row.is_self && canonicalSpeakKey(row) !== "self",
+        );
+        let bestRow: TelegramChatVoiceParticipant | null = null;
+        let bestAt = 0;
+        for (const row of remotes) {
+          if (row.is_muted) continue;
+          const prefs =
+            participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
+          const volume =
+            prefs?.volumePercent ??
+            (typeof row.volume_percent === "number" ? row.volume_percent : 100);
+          if (volume <= 0) continue;
+          let at = 0;
+          for (const speakKey of rowSpeakKeys(row)) {
+            at = Math.max(at, lastTdlibSpeakingAtRef.current.get(speakKey) ?? 0);
+          }
+          if (at > bestAt) {
+            bestAt = at;
+            bestRow = row;
+          }
+        }
+        if (bestRow != null && bestAt > 0) {
+          for (const speakKey of rowSpeakKeys(bestRow)) {
+            speakingHoldUntilRef.current.set(speakKey, now + holdMs);
+            mixCarrySpeakingKeysRef.current.add(speakKey);
+            next[speakKey] = true;
+          }
+          soonestExpiry = now + holdMs;
+        }
+      }
       if (speakingHoldTimerRef.current) {
         clearTimeout(speakingHoldTimerRef.current);
         speakingHoldTimerRef.current = null;
@@ -1988,14 +2026,86 @@ export function MessageChatVoiceBar({
 
   // Mix RMS is not per-participant identity. After WebRTC join TDLib often only
   // pulses is_speaking for self (skipped while listen-muted) while remotes keep
-  // talking — SSE speakingCount stays 0 and greens never light. Prefer TDLib
-  // identity; otherwise, if exactly one unmuted remote exists, light them while
-  // mix RMS is hot. Never invent unmute / speaking for the whole roster from
-  // mixed-track energy (that painted every face open-mic vs Telegram Desktop).
-  // Keep grace short — an 18s window re-lit every recent speaker whenever mix
-  // RMS pulsed, so wrong green mics stacked (Blox: speakingCount=6 from 2 marks).
-  const MIX_SPEAKING_GRACE_MS = 3_500;
+  // talking — SSE speakingCount stays 0 and greens never light. Prefer the last
+  // TDLib-identified unmuted remote while mix RMS is hot. Never paint the whole
+  // roster from mixed-track energy (that stacked every face green vs tdesktop).
   const MIX_SPEAKING_HOLD_MS = 1_800;
+  const pickLastKnownMixSpeaker = useCallback(
+    (
+      remotes: TelegramChatVoiceParticipant[],
+      now: number,
+    ): {
+      targets: TelegramChatVoiceParticipant[];
+      mixSource: "tdlib_hold" | "last_tdlib" | "solo";
+      unmutedCount: number;
+      lastTdlibAgeMs: number | null;
+    } => {
+      const remoteVolumePercent = (row: TelegramChatVoiceParticipant) => {
+        const prefs =
+          participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
+        return (
+          prefs?.volumePercent ??
+          (typeof row.volume_percent === "number" ? row.volume_percent : 100)
+        );
+      };
+      const lastTdlibAt = (row: TelegramChatVoiceParticipant) => {
+        let best = 0;
+        for (const key of rowSpeakKeys(row)) {
+          best = Math.max(best, lastTdlibSpeakingAtRef.current.get(key) ?? 0);
+        }
+        return best;
+      };
+      const unmutedRemotes = remotes.filter((row) => {
+        if (row.is_muted) return false;
+        return remoteVolumePercent(row) > 0;
+      });
+      const pickNewest = (rows: TelegramChatVoiceParticipant[]) => {
+        if (rows.length <= 1) return rows;
+        let bestRow = rows[0]!;
+        let bestAt = lastTdlibAt(bestRow);
+        for (let i = 1; i < rows.length; i += 1) {
+          const row = rows[i]!;
+          const at = lastTdlibAt(row);
+          if (
+            at > bestAt ||
+            (at === bestAt && row.is_speaking && !bestRow.is_speaking)
+          ) {
+            bestRow = row;
+            bestAt = at;
+          }
+        }
+        return [bestRow];
+      };
+      const withTdlib = unmutedRemotes.filter((row) => lastTdlibAt(row) > 0);
+      const newestAge =
+        withTdlib.length > 0
+          ? Math.max(0, now - lastTdlibAt(pickNewest(withTdlib)[0]!))
+          : null;
+      if (withTdlib.length > 0) {
+        return {
+          targets: pickNewest(withTdlib),
+          mixSource: newestAge != null && newestAge < 4_000 ? "tdlib_hold" : "last_tdlib",
+          unmutedCount: unmutedRemotes.length,
+          lastTdlibAgeMs: newestAge,
+        };
+      }
+      if (unmutedRemotes.length === 1) {
+        return {
+          targets: unmutedRemotes,
+          mixSource: "solo",
+          unmutedCount: 1,
+          lastTdlibAgeMs: null,
+        };
+      }
+      return {
+        targets: [],
+        mixSource: "tdlib_hold",
+        unmutedCount: unmutedRemotes.length,
+        lastTdlibAgeMs: newestAge,
+      };
+    },
+    [rowSpeakKeys],
+  );
   const extendMixSpeakingHolds = useCallback(() => {
     if (!voiceJoinedRef.current || !remoteSpeakingRef.current) return;
     heardRemoteMixRef.current = true;
@@ -2006,58 +2116,21 @@ export function MessageChatVoiceBar({
     );
     if (remotes.length === 0) return;
     const now = Date.now();
-    const graceMs = MIX_SPEAKING_GRACE_MS;
     const holdMs = MIX_SPEAKING_HOLD_MS;
-    const remoteVolumePercent = (row: TelegramChatVoiceParticipant) => {
-      const prefs =
-        participantMediaPrefsRef.current[voiceParticipantPrefsKey(row)];
-      return (
-        prefs?.volumePercent ??
-        (typeof row.volume_percent === "number" ? row.volume_percent : 100)
-      );
-    };
-    const lastTdlibAt = (row: TelegramChatVoiceParticipant) => {
-      let best = 0;
-      for (const key of rowSpeakKeys(row)) {
-        best = Math.max(best, lastTdlibSpeakingAtRef.current.get(key) ?? 0);
-      }
-      return best;
-    };
-    // TDLib-backed identity only — do not invent from speakingByKey/hold (loops).
-    const isTdlibRecentSpeaker = (row: TelegramChatVoiceParticipant) => {
-      const seen = lastTdlibAt(row);
-      return seen > 0 && now - seen < graceMs;
-    };
-    let targets = remotes.filter(
-      (row) =>
-        !row.is_muted &&
-        remoteVolumePercent(row) > 0 &&
-        isTdlibRecentSpeaker(row),
-    );
-    let mixSource: "tdlib_hold" | "solo" = "tdlib_hold";
-    if (targets.length > 1) {
-      // Mix energy is one bit — never paint every recent face green at once.
-      let bestRow = targets[0]!;
-      let bestAt = lastTdlibAt(bestRow);
-      for (let i = 1; i < targets.length; i += 1) {
-        const row = targets[i]!;
-        const at = lastTdlibAt(row);
-        if (at > bestAt || (at === bestAt && row.is_speaking && !bestRow.is_speaking)) {
-          bestRow = row;
-          bestAt = at;
-        }
-      }
-      targets = [bestRow];
-    }
+    const picked = pickLastKnownMixSpeaker(remotes, now);
+    const { mixSource, unmutedCount, lastTdlibAgeMs } = picked;
+    let targets = picked.targets;
     if (targets.length === 0) {
-      const unmutedRemotes = remotes.filter((row) => {
-        if (row.is_muted) return false;
-        return remoteVolumePercent(row) > 0;
+      logPageDisplay("messages_voice_roster_speaking_mix_skip", {
+        chatId,
+        listed: roster.length,
+        unmutedCount,
+        lastTdlibAgeMs,
+        popoverOpen: popoverOpenRef.current,
+        level: "warn",
+        note: "mix RMS live but no last-known unmuted speaker to paint green",
       });
-      // Only safe without TDLib identity when exactly one open mic exists.
-      if (unmutedRemotes.length !== 1) return;
-      targets = unmutedRemotes;
-      mixSource = "solo";
+      return;
     }
     const targetKeys = new Set<string>();
     for (const row of targets) {
@@ -2109,12 +2182,16 @@ export function MessageChatVoiceBar({
         remoteSpeakingMarked: targets.length,
         selfSpeakingSkipped: 0,
         listed: roster.length,
+        unmutedCount,
+        lastTdlibAgeMs,
         applyMs: 0,
         popoverOpen: popoverOpenRef.current,
         source:
           mixSource === "solo"
             ? "remote_audio_level_solo"
-            : "remote_audio_level_tdlib_hold",
+            : mixSource === "last_tdlib"
+              ? "remote_audio_level_last_tdlib"
+              : "remote_audio_level_tdlib_hold",
       });
       return next;
     });
@@ -2140,7 +2217,7 @@ export function MessageChatVoiceBar({
         return changed ? next : prev;
       });
     }, holdMs + 50);
-  }, [canonicalSpeakKey, chatId, rowSpeakKeys]);
+  }, [canonicalSpeakKey, chatId, pickLastKnownMixSpeaker, rowSpeakKeys]);
 
   useEffect(() => {
     if (!joined) {
@@ -2154,9 +2231,8 @@ export function MessageChatVoiceBar({
 
   useEffect(() => {
     if (!joined) return;
-    const now = Date.now();
     for (const [key, seen] of lastTdlibSpeakingAtRef.current.entries()) {
-      if (seen > 0 && now - seen < MIX_SPEAKING_GRACE_MS) {
+      if (seen > 0) {
         mixCarrySpeakingKeysRef.current.add(key);
       }
     }
