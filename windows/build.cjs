@@ -126,7 +126,7 @@ function isTransientGithubUpdateError(err) {
   if (code === 502 || code === 503 || code === 504) return true;
   const msg = String(err.message || err);
   if (
-    /\b502\b|\b503\b|\b504\b|Bad Gateway|Service Unavailable|Gateway Timeout|taking too long|ECONNRESET|ETIMEDOUT/i.test(
+    /\b502\b|\b503\b|\b504\b|Bad Gateway|Service Unavailable|Gateway Timeout|taking too long|ECONNRESET|ETIMEDOUT|timed out|stalled/i.test(
       msg,
     )
   )
@@ -691,18 +691,70 @@ async function fetchPortableZipBrowserUrlFromGitHubApi(netFetch, version, prefer
   return null;
 }
 
+function fetchWithTimeout(netFetch, url, timeoutMs, label) {
+  const ac = typeof AbortController === "function" ? new AbortController() : null;
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      try {
+        ac?.abort();
+      } catch (_) {}
+      reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`));
+    }, timeoutMs);
+  });
+  const req = Promise.resolve(ac ? netFetch(url, { signal: ac.signal }) : netFetch(url));
+  return Promise.race([req, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function readBodyChunkWithTimeout(reader, timeoutMs) {
+  let timer = null;
+  return Promise.race([
+    reader.read(),
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () =>
+          reject(
+            new Error(`Download stalled: no data for ${Math.round(timeoutMs / 1000)}s`),
+          ),
+        timeoutMs,
+      );
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function downloadToFile(netFetch, url, destPath, onProgress) {
+  const headerTimeoutMs = 60_000;
+  const stallTimeoutMs = 90_000;
   logUpdater("download", `start → ${destPath}`);
   logUpdater("download", `GET ${url.length > 200 ? `${url.slice(0, 200)}…` : url}`);
-  const res = await netFetch(url);
+  const res = await fetchWithTimeout(netFetch, url, headerTimeoutMs, "GitHub zip response");
   if (!res.ok) {
     throw new Error(`Download failed ${res.status} ${url}`);
   }
   const total =
     parseInt(res.headers.get("content-length") || res.headers.get("Content-Length") || "0", 10) || 0;
+  logUpdater(
+    "download",
+    `response status=${res.status} content-length=${total || "missing"} redirected=${Boolean(res.url && res.url !== url)}`,
+  );
   const reader = res.body?.getReader?.();
   if (!reader) {
-    const buf = Buffer.from(await res.arrayBuffer());
+    logUpdater("download", "no streamed body reader — buffering entire zip in memory");
+    const buf = Buffer.from(
+      await Promise.race([
+        res.arrayBuffer(),
+        new Promise((_, reject) => {
+          setTimeout(
+            () => reject(new Error("zip body buffer timed out after 180s")),
+            180_000,
+          );
+        }),
+      ]),
+    );
     if (onProgress) onProgress(buf.length, total || buf.length);
     fs.writeFileSync(destPath, buf);
     logUpdater("download", `done bytes=${buf.length} (buffer path) → ${destPath}`);
@@ -710,16 +762,24 @@ async function downloadToFile(netFetch, url, destPath, onProgress) {
   }
   const ws = fs.createWriteStream(destPath);
   let received = 0;
+  let lastProgressLogAt = 0;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readBodyChunkWithTimeout(reader, stallTimeoutMs);
       if (done) break;
       if (value && value.length) {
         received += value.length;
         if (!ws.write(Buffer.from(value))) {
-          await new Promise((res) => ws.once("drain", res));
+          await new Promise((resWrite) => ws.once("drain", resWrite));
         }
         if (onProgress) onProgress(received, total);
+        const now = Date.now();
+        if (now - lastProgressLogAt >= 5_000) {
+          lastProgressLogAt = now;
+          const mb = (received / (1024 * 1024)).toFixed(1);
+          const totalMb = total > 0 ? (total / (1024 * 1024)).toFixed(1) : "?";
+          logUpdater("download", `progress ${mb}/${totalMb} MB`);
+        }
       }
     }
   } finally {
@@ -1321,6 +1381,8 @@ function setupAutoUpdater() {
     let zipPrepareInFlight = false;
     let zipReadyVersion = null;
     let zipStagingContentPath = null;
+    /** Last in-flight prepare UI so Check now can attach instead of restarting at 0%. */
+    const prepareUiSnapshot = { text: "", percent: 0 };
 
     autoUpdater.autoDownload = !useWinVersionsSidecar;
     // Windows: never install a downloaded NSIS on quit — in-app Update uses staged zip + robocopy only.
@@ -1486,14 +1548,16 @@ function setupAutoUpdater() {
         return;
       }
       zipPrepareInFlight = true;
+      prepareUiSnapshot.text = "0% — Connecting to GitHub…";
+      prepareUiSnapshot.percent = 0;
       logUpdater("prepare", `start pipeline → ${remoteV} exeBase=${exeBase}`);
       const uiManual = Boolean(opts?.uiManual);
-      const uiActive =
-        uiManual || (updateDialogState.window && !updateDialogState.window.isDestroyed());
       /** Overall 0–100: 0–81 download, 81–100 verify/unpack/finalize (single bar, monotonic). */
       let prepareProgressCeiling = 0;
+      const lastPrepareUi = { text: "0% — Connecting to GitHub…", percent: 0 };
+      const dialogIsOpen = () =>
+        Boolean(updateDialogState.window && !updateDialogState.window.isDestroyed());
       const pushUi = (partial) => {
-        if (!uiActive) return;
         const raw = partial.percent;
         const n = typeof raw === "number" && !Number.isNaN(raw) ? raw : Number(raw);
         const next =
@@ -1501,13 +1565,18 @@ function setupAutoUpdater() {
             ? Math.max(prepareProgressCeiling, Math.round(Math.max(0, Math.min(100, n))))
             : prepareProgressCeiling;
         prepareProgressCeiling = next;
+        const text = typeof partial.text === "string" && partial.text ? partial.text : lastPrepareUi.text;
+        lastPrepareUi.text = text;
+        lastPrepareUi.percent = next;
+        prepareUiSnapshot.text = text;
+        prepareUiSnapshot.percent = next;
+        if (!dialogIsOpen()) return;
         updateDialogUi({
           showProgress: true,
           showActions: true,
           installEnabled: false,
-          percent: 0,
-          text: "",
           ...partial,
+          text,
           percent: next,
         });
       };
@@ -1567,7 +1636,7 @@ function setupAutoUpdater() {
           });
         };
         try {
-          await downloadToFile((u) => net.fetch(u), primaryZipUrl, zipPath, onZipProgress);
+          await downloadToFile((u, init) => net.fetch(u, init), primaryZipUrl, zipPath, onZipProgress);
         } catch (e) {
           const msg = String(e?.message || e);
           if (!/404/.test(msg)) throw e;
@@ -1579,7 +1648,7 @@ function setupAutoUpdater() {
           if (!altUrl) throw e;
           log(`[updater] primary zip 404; downloading from GitHub API URL`);
           logUpdater("prepare", `download fallbackURL (API) → ${altUrl.length > 160 ? `${altUrl.slice(0, 160)}…` : altUrl}`);
-          await downloadToFile((u) => net.fetch(u), altUrl, zipPath, onZipProgress);
+          await downloadToFile((u, init) => net.fetch(u, init), altUrl, zipPath, onZipProgress);
         }
 
         pushUi({ text: `${PREP_PCT_DOWNLOAD_MAX}% — Download finished`, percent: PREP_PCT_DOWNLOAD_MAX });
@@ -2271,6 +2340,18 @@ function setupAutoUpdater() {
         logUpdater("ipc", "checkNow from menu");
         logUpdaterStateSnapshot("checkNow/start");
         downloadProgressLoggedSample = false;
+        if (useWinVersionsSidecar && zipPrepareInFlight) {
+          logUpdater("ipc", "checkNow short-circuit prepare in flight (do not re-check GitHub)");
+          openOrFocusUpdateDialog();
+          updateDialogUi({
+            text: prepareUiSnapshot.text || "Downloading and preparing update…",
+            percent: prepareUiSnapshot.percent || 0,
+            showProgress: true,
+            showActions: true,
+            installEnabled: false,
+          });
+          return;
+        }
         if (
           useWinVersionsSidecar &&
           zipReadyVersion &&
@@ -2324,6 +2405,10 @@ function setupAutoUpdater() {
 
     let lastCheckAt = 0;
     const markAndCheck = () => {
+      if (zipPrepareInFlight) {
+        logUpdater("schedule", "skip periodic check (zip prepare in flight)");
+        return;
+      }
       lastCheckAt = Date.now();
       log("[updater] scheduled checkForUpdates()");
       logUpdater("schedule", "periodic/startup checkForUpdates");
