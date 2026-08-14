@@ -1623,6 +1623,19 @@ function setupAutoUpdater() {
     };
 
     const getVersionsStagingRoot = () => path.join(app.getPath("userData"), "pending-update-versions");
+
+    const findStagedContentForVersion = (version) => {
+      if (!version) return null;
+      try {
+        const extractDir = path.join(getVersionsStagingRoot(), version, "extract");
+        const contentRoot = resolveZipAppContentRoot(extractDir, path.basename(process.execPath));
+        if (!contentRoot || !stagingHasMainExe(contentRoot)) return null;
+        return contentRoot;
+      } catch (_) {
+        return null;
+      }
+    };
+
     function logUpdaterStateSnapshot(reason, extra = {}) {
       let stagedVersions = [];
       try {
@@ -1728,6 +1741,17 @@ function setupAutoUpdater() {
         return;
       }
       const exeBase = path.basename(process.execPath);
+      const adoptStagedExtract = (version, reason) => {
+        const content = findStagedContentForVersion(version);
+        if (!content) return false;
+        zipReadyVersion = version;
+        zipStagingContentPath = content;
+        manualDownloadInProgress = false;
+        logUpdater("prepare", `${reason} ${version} → ${content}`);
+        openOrFocusUpdateDialog();
+        syncZipReadyUi(version);
+        return true;
+      };
       if (zipReadyVersion === remoteV && zipStagingContentPath && stagingHasMainExe(zipStagingContentPath)) {
         logUpdater("prepare", `skip (already staged ${remoteV})`);
         if (!updateDialogState.window || updateDialogState.window.isDestroyed()) {
@@ -1737,6 +1761,7 @@ function setupAutoUpdater() {
         manualDownloadInProgress = false;
         return;
       }
+      if (adoptStagedExtract(remoteV, "skip download — extract already on disk")) return;
       zipPrepareInFlight = true;
       prepareUiSnapshot.text = "0% — Connecting to GitHub…";
       prepareUiSnapshot.percent = 0;
@@ -1773,12 +1798,17 @@ function setupAutoUpdater() {
         });
       };
       let versionsPrepareOk = false;
+      let meta = null;
       try {
-        const meta = await resolveWindowsZipSidecarMeta((u) => net.fetch(u), currentVersion);
+        meta = await resolveWindowsZipSidecarMeta((u) => net.fetch(u), currentVersion);
         if (meta.version !== remoteV) {
           log(`[updater] sidecar version ${meta.version} vs feed ${remoteV} (using sidecar manifest)`);
         }
         log(`[updater] sidecar source: ${meta.source} → ${meta.fileName}`);
+        if (adoptStagedExtract(meta.version, "skip download — sidecar extract already on disk")) {
+          versionsPrepareOk = true;
+          return;
+        }
 
         // One bar: 81% for download, 19% for verify + unpack + finalize (overall 0–100).
         const PREP_PCT_DOWNLOAD_MAX = 81;
@@ -1944,23 +1974,22 @@ function setupAutoUpdater() {
         zipStagingContentPath = contentRoot;
         zipReadyVersion = meta.version;
         manualDownloadInProgress = false;
+        versionsPrepareOk = true;
         log(`[updater] staged update at ${contentRoot}`);
         logUpdater("prepare", `COMPLETE readyVersion=${meta.version} staging=${contentRoot}`);
         logUpdaterStateSnapshot("prepare/complete", { preparedVersion: meta.version });
-        // syncZipReadyUi needs an open dialog; background checks used uiActive=false and would skip UI.
-        if (!uiActive) {
+        try {
           openOrFocusUpdateDialog();
-        }
-        syncZipReadyUi(meta.version);
-        if (!uiActive && process.platform === "win32" && Notification.isSupported()) {
-          try {
+          syncZipReadyUi(meta.version);
+          if (!uiActive && process.platform === "win32" && Notification.isSupported()) {
             new Notification({
               title: brand.productDisplayName,
               body: `Update ${meta.version} is ready. Open Updates → Check for updates.`,
             }).show();
-          } catch (_) {}
+          }
+        } catch (uiErr) {
+          logUpdater("prepare", `stage ready but UI failed: ${uiErr?.message || uiErr}`);
         }
-        versionsPrepareOk = true;
       } catch (e) {
         const errMsg = e?.message || e;
         const errStack = typeof e?.stack === "string" ? e.stack : "";
@@ -1973,17 +2002,21 @@ function setupAutoUpdater() {
         zipStagingContentPath = null;
         zipReadyVersion = null;
         manualDownloadInProgress = false;
-        const hint =
-          `Update prepare failed: ${e?.message || String(e)}. ` +
-          `Publish the Windows zip (${WIN_PORTABLE_ZIP_PREFIX}<version>.zip) on https://github.com/${UPDATE_GITHUB_OWNER}/${UPDATE_GITHUB_REPO}/releases/latest — latest.yml is enough; add zip-latest.yml from cleanup for checksum verification.`;
-        openOrFocusUpdateDialog();
-        updateDialogUi({
-          text: hint,
-          percent: prepareProgressCeiling,
-          showProgress: prepareProgressCeiling > 0,
-          showActions: true,
-          installEnabled: false,
-        });
+        if (adoptStagedExtract(remoteV, "keep extract after UI/prepare error") || adoptStagedExtract(meta?.version, "keep extract after UI/prepare error")) {
+          versionsPrepareOk = true;
+        } else {
+          const hint =
+            `Update prepare failed: ${e?.message || String(e)}. ` +
+            `Publish the Windows zip (${WIN_PORTABLE_ZIP_PREFIX}<version>.zip) on https://github.com/${UPDATE_GITHUB_OWNER}/${UPDATE_GITHUB_REPO}/releases/latest — latest.yml is enough; add zip-latest.yml from cleanup for checksum verification.`;
+          openOrFocusUpdateDialog();
+          updateDialogUi({
+            text: hint,
+            percent: prepareProgressCeiling,
+            showProgress: prepareProgressCeiling > 0,
+            showActions: true,
+            installEnabled: false,
+          });
+        }
         logUpdaterStateSnapshot("prepare/failed", { error: String(errMsg) });
       } finally {
         zipPrepareInFlight = false;
