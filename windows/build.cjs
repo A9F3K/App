@@ -45,6 +45,8 @@ const preloadPath = path.join(__dirname, "preload.cjs");
 let mainWindowRef = null;
 const fs = require("fs");
 const crypto = require("crypto");
+const http = require("http");
+const https = require("https");
 const { Readable } = require("stream");
 const { spawn, spawnSync } = require("child_process");
 const brand = require("./product-brand.cjs");
@@ -704,52 +706,6 @@ async function fetchPortableZipBrowserUrlFromGitHubApi(netFetch, version, prefer
   return null;
 }
 
-function fetchWithTimeout(netFetch, url, timeoutMs, label, init = {}) {
-  const ac = typeof AbortController === "function" ? new AbortController() : null;
-  let timer = null;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => {
-      try {
-        ac?.abort();
-      } catch (_) {}
-      reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`));
-    }, timeoutMs);
-  });
-  const req = Promise.resolve(
-    netFetch(url, {
-      ...init,
-      ...(ac ? { signal: ac.signal } : {}),
-    }),
-  );
-  const raced = Promise.race([req, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-  raced.abort = () => {
-    try {
-      ac?.abort();
-    } catch (_) {}
-  };
-  return raced;
-}
-
-function readBodyChunkWithTimeout(reader, timeoutMs) {
-  let timer = null;
-  return Promise.race([
-    reader.read(),
-    new Promise((_, reject) => {
-      timer = setTimeout(
-        () =>
-          reject(
-            new Error(`Download stalled: no data for ${Math.round(timeoutMs / 1000)}s`),
-          ),
-        timeoutMs,
-      );
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-
 function fileSizeOrZero(filePath) {
   try {
     return fs.statSync(filePath).size;
@@ -768,65 +724,147 @@ function parseContentRange(header) {
   };
 }
 
-async function streamResponseBodyToFile(reader, destPath, { append, onChunk, stallTimeoutMs, abort }) {
-  const ws = fs.createWriteStream(destPath, { flags: append ? "a" : "w" });
-  let wrote = 0;
-  try {
-    for (;;) {
-      const { done, value } = await readBodyChunkWithTimeout(reader, stallTimeoutMs);
-      if (done) break;
-      if (value && value.length) {
-        wrote += value.length;
-        if (!ws.write(Buffer.from(value))) {
-          await new Promise((resWrite) => ws.once("drain", resWrite));
-        }
-        if (onChunk) onChunk(value.length);
-      }
-    }
-  } catch (err) {
-    try {
-      abort?.();
-    } catch (_) {}
-    throw err;
-  } finally {
-    await new Promise((resolve, reject) => {
-      ws.end((endErr) => (endErr ? reject(endErr) : resolve()));
-    });
-  }
-  return wrote;
+/** Isolated from Chromium session so chat SSE / avatars do not throttle the zip. */
+const zipDownloadAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 6,
+  timeout: 0,
+});
+
+const ZIP_DOWNLOAD_HEADERS = {
+  "User-Agent": "HyperlinksSpaceProgram-Updater",
+  Accept: "*/*",
+  "Accept-Encoding": "identity",
+};
+
+function headerValue(headers, name) {
+  if (!headers) return "";
+  const direct = headers[name] ?? headers[name.toLowerCase()];
+  if (Array.isArray(direct)) return String(direct[0] || "");
+  if (direct != null) return String(direct);
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === name.toLowerCase());
+  const v = key ? headers[key] : "";
+  return Array.isArray(v) ? String(v[0] || "") : String(v || "");
 }
 
-async function resolveFinalDownloadUrl(netFetch, url) {
-  try {
-    const pending = fetchWithTimeout(netFetch, url, 30_000, "zip URL resolve", {
-      headers: { Range: "bytes=0-0", "Accept-Encoding": "identity" },
-    });
-    const res = await pending;
+function httpsGet(urlString, { headers, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    let parsed;
     try {
-      pending.abort?.();
-      await res.body?.cancel?.();
-    } catch (_) {}
-    const finalUrl = typeof res.url === "string" && res.url.trim() ? res.url.trim() : url;
-    if (finalUrl !== url) {
+      parsed = new URL(urlString);
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    const lib = parsed.protocol === "http:" ? http : https;
+    const req = lib.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || undefined,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: "GET",
+        headers,
+        agent: parsed.protocol === "https:" ? zipDownloadAgent : undefined,
+        timeout: timeoutMs,
+      },
+      (res) => resolve({ req, res, url: urlString }),
+    );
+    req.on("timeout", () => {
+      req.destroy(new Error(`GitHub zip response timed out after ${Math.round(timeoutMs / 1000)}s`));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+async function openZipDownloadResponse(urlString, headers, timeoutMs) {
+  let current = urlString;
+  for (let hop = 0; hop < 8; hop++) {
+    const { req, res } = await httpsGet(current, { headers, timeoutMs });
+    const status = res.statusCode || 0;
+    const location = headerValue(res.headers, "location");
+    if (status >= 300 && status < 400 && location) {
+      res.resume();
+      req.destroy();
+      current = new URL(location, current).href;
       logUpdater(
         "download",
-        `cdn url ${finalUrl.length > 180 ? `${finalUrl.slice(0, 180)}…` : finalUrl}`,
+        `redirect ${status} → ${current.length > 160 ? `${current.slice(0, 160)}…` : current}`,
       );
+      continue;
     }
-    return finalUrl;
-  } catch (e) {
-    logUpdater("download", `cdn resolve skipped: ${e?.message || e}`);
-    return url;
+    return { req, res, url: current, status };
   }
+  throw new Error("too many redirects");
 }
 
-async function downloadToFile(netFetch, url, destPath, onProgress, opts = {}) {
+function pipeZipResponseToFile(res, req, destPath, { append, receivedStart, total, onProgress, stallTimeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const ws = fs.createWriteStream(destPath, {
+      flags: append ? "a" : "w",
+      highWaterMark: 8 * 1024 * 1024,
+    });
+    let received = receivedStart;
+    let lastDataAt = Date.now();
+    let lastUiAt = 0;
+    let lastLogAt = 0;
+    let settled = false;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(stallTimer);
+      if (err) {
+        try {
+          req.destroy();
+        } catch (_) {}
+        try {
+          res.destroy();
+        } catch (_) {}
+        try {
+          ws.destroy();
+        } catch (_) {}
+        reject(err);
+        return;
+      }
+      resolve(received);
+    };
+    const stallTimer = setInterval(() => {
+      if (Date.now() - lastDataAt > stallTimeoutMs) {
+        finish(new Error(`Download stalled: no data for ${Math.round(stallTimeoutMs / 1000)}s`));
+      }
+    }, 2000);
+    res.on("data", (chunk) => {
+      lastDataAt = Date.now();
+      received += chunk.length;
+      const now = Date.now();
+      if (onProgress && now - lastUiAt >= 400) {
+        lastUiAt = now;
+        onProgress(received, total);
+      }
+      if (now - lastLogAt >= 5_000) {
+        lastLogAt = now;
+        const mb = (received / (1024 * 1024)).toFixed(1);
+        const totalMb = total > 0 ? (total / (1024 * 1024)).toFixed(1) : "?";
+        logUpdater("download", `progress ${mb}/${totalMb} MB`);
+      }
+    });
+    res.on("error", (err) => finish(err));
+    ws.on("error", (err) => finish(err));
+    ws.on("finish", () => {
+      if (onProgress) onProgress(received, total);
+      finish(null);
+    });
+    res.pipe(ws);
+  });
+}
+
+async function downloadToFile(_netFetch, url, destPath, onProgress, opts = {}) {
   const headerTimeoutMs = 60_000;
   const stallTimeoutMs = 90_000;
   const maxAttempts = 16;
   const expectedHint = Number(opts.expectedSize) > 0 ? Number(opts.expectedSize) : 0;
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  const resolvedUrl = await resolveFinalDownloadUrl(netFetch, url);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     let existing = fileSizeOrZero(destPath);
@@ -843,26 +881,24 @@ async function downloadToFile(netFetch, url, destPath, onProgress, opts = {}) {
       return;
     }
 
-    const headers = { "Accept-Encoding": "identity" };
+    const headers = { ...ZIP_DOWNLOAD_HEADERS };
     if (existing > 0) headers.Range = `bytes=${existing}-`;
     logUpdater(
       "download",
       `${existing > 0 ? "resume" : "start"} attempt ${attempt}/${maxAttempts}` +
         `${existing > 0 ? ` from byte ${existing}` : ""} → ${destPath}`,
     );
-    logUpdater("download", `GET ${resolvedUrl.length > 200 ? `${resolvedUrl.slice(0, 200)}…` : resolvedUrl}`);
+    logUpdater("download", `GET ${url.length > 200 ? `${url.slice(0, 200)}…` : url}`);
 
-    let fetchAbort = null;
     try {
-      const pending = fetchWithTimeout(netFetch, resolvedUrl, headerTimeoutMs, "GitHub zip response", {
-        headers,
-      });
-      fetchAbort = pending.abort;
-      const res = await pending;
-      if (res.status === 404 || res.status === 401) {
-        throw new Error(`Download failed ${res.status} ${url}`);
+      const opened = await openZipDownloadResponse(url, headers, headerTimeoutMs);
+      const { req, res, status } = opened;
+      if (status === 404 || status === 401) {
+        res.resume();
+        throw new Error(`Download failed ${status} ${url}`);
       }
-      if (existing > 0 && res.status === 416) {
+      if (existing > 0 && status === 416) {
+        res.resume();
         const nowSize = fileSizeOrZero(destPath);
         if (expectedHint > 0 && nowSize >= expectedHint) {
           if (onProgress) onProgress(nowSize, expectedHint);
@@ -875,19 +911,20 @@ async function downloadToFile(netFetch, url, destPath, onProgress, opts = {}) {
         } catch (_) {}
         continue;
       }
-      if (!res.ok && res.status !== 206) {
-        throw new Error(`Download failed ${res.status} ${url}`);
+      if (status !== 200 && status !== 206) {
+        res.resume();
+        throw new Error(`Download failed ${status} ${url}`);
       }
 
-      const range = parseContentRange(res.headers.get("content-range") || res.headers.get("Content-Range"));
-      const lengthHdr =
-        parseInt(res.headers.get("content-length") || res.headers.get("Content-Length") || "0", 10) || 0;
+      const range = parseContentRange(headerValue(res.headers, "content-range"));
+      const lengthHdr = parseInt(headerValue(res.headers, "content-length") || "0", 10) || 0;
       let append = false;
       let received = 0;
       let total = expectedHint || lengthHdr;
 
-      if (res.status === 206) {
+      if (status === 206) {
         if (range && range.start !== existing) {
+          res.resume();
           throw new Error(`unexpected Content-Range start ${range.start} vs local ${existing}`);
         }
         append = true;
@@ -895,7 +932,7 @@ async function downloadToFile(netFetch, url, destPath, onProgress, opts = {}) {
         if (range?.total > 0) total = range.total;
         else if (lengthHdr > 0) total = existing + lengthHdr;
       } else if (existing > 0) {
-        logUpdater("download", `server ignored Range (HTTP ${res.status}) — rewriting from byte 0`);
+        logUpdater("download", `server ignored Range (HTTP ${status}) — rewriting from byte 0`);
         received = 0;
         append = false;
         total = expectedHint || lengthHdr;
@@ -907,65 +944,26 @@ async function downloadToFile(netFetch, url, destPath, onProgress, opts = {}) {
 
       logUpdater(
         "download",
-        `response status=${res.status} content-length=${lengthHdr || "missing"} total=${total || "?"} ` +
-          `append=${append} redirected=${Boolean(res.url && res.url !== url)}`,
+        `response status=${status} content-length=${lengthHdr || "missing"} total=${total || "?"} ` +
+          `append=${append} via=${opened.url.length > 160 ? `${opened.url.slice(0, 160)}…` : opened.url}`,
       );
+      if (onProgress) onProgress(received, total);
 
-      const reader = res.body?.getReader?.();
-      if (!reader) {
-        if (append) {
-          throw new Error("zip body has no stream reader while resuming");
-        }
-        logUpdater("download", "no streamed body reader — buffering entire zip in memory");
-        const buf = Buffer.from(
-          await Promise.race([
-            res.arrayBuffer(),
-            new Promise((_, reject) => {
-              setTimeout(
-                () => reject(new Error("zip body buffer timed out after 180s")),
-                180_000,
-              );
-            }),
-          ]),
-        );
-        fs.writeFileSync(destPath, buf);
-        received = buf.length;
-        total = total || buf.length;
-        if (onProgress) onProgress(received, total);
-      } else {
-        if (onProgress) onProgress(received, total);
-        let lastProgressLogAt = 0;
-        await streamResponseBodyToFile(reader, destPath, {
-          append,
-          stallTimeoutMs,
-          abort: fetchAbort,
-          onChunk: (n) => {
-            received += n;
-            if (onProgress) onProgress(received, total);
-            const now = Date.now();
-            if (now - lastProgressLogAt >= 5_000) {
-              lastProgressLogAt = now;
-              const mb = (received / (1024 * 1024)).toFixed(1);
-              const totalMb = total > 0 ? (total / (1024 * 1024)).toFixed(1) : "?";
-              logUpdater("download", `progress ${mb}/${totalMb} MB`);
-            }
-          },
-        });
-      }
+      await pipeZipResponseToFile(res, req, destPath, {
+        append,
+        receivedStart: received,
+        total,
+        onProgress,
+        stallTimeoutMs,
+      });
 
       const sizeOnDisk = fileSizeOrZero(destPath);
       if (total > 0 && sizeOnDisk < total) {
         throw new Error(`incomplete download bytes=${sizeOnDisk} total=${total}`);
       }
-      logUpdater(
-        "download",
-        `done bytes=${sizeOnDisk} streamed=${received} totalHdr=${total || "?"} → ${destPath}`,
-      );
+      logUpdater("download", `done bytes=${sizeOnDisk} totalHdr=${total || "?"} → ${destPath}`);
       return;
     } catch (err) {
-      try {
-        fetchAbort?.();
-      } catch (_) {}
       const msg = String(err?.message || err);
       const sizeNow = fileSizeOrZero(destPath);
       if (attempt >= maxAttempts || /Download failed 404|Download failed 401/.test(msg)) {
@@ -976,7 +974,7 @@ async function downloadToFile(netFetch, url, destPath, onProgress, opts = {}) {
         logUpdater("download", `FAILED non-retryable kept=${sizeNow}B: ${msg}`);
         throw err;
       }
-      const waitMs = Math.min(12_000, 1_500 * attempt);
+      const waitMs = Math.min(8_000, 1_000 * attempt);
       logUpdater(
         "download",
         `interrupted kept=${sizeNow}B (${(sizeNow / (1024 * 1024)).toFixed(1)} MB) — retry in ${Math.round(waitMs / 1000)}s: ${msg}`,
@@ -1822,8 +1820,8 @@ function setupAutoUpdater() {
         const onZipProgress = (received, total) => {
           const now = Date.now();
           const hasTotal = typeof total === "number" && total > 0;
-          if (hasTotal && now - lastZipPush < 100 && received < total) return;
-          if (!hasTotal && lastZipPush > 0 && now - lastZipPush < 150) return;
+          if (hasTotal && now - lastZipPush < 400 && received < total) return;
+          if (!hasTotal && lastZipPush > 0 && now - lastZipPush < 400) return;
           lastZipPush = now;
           const mb = received / (1024 * 1024);
           let overall;
