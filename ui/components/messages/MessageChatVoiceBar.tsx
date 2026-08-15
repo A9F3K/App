@@ -119,15 +119,16 @@ function participantHasRemoteVideoPublisher(row: TelegramChatVoiceParticipant): 
 }
 
 /** Mix RMS is not per-participant. Last TDLib speaker is only useful while still fresh. */
-const VOICE_LAST_TDLIB_SPEAKER_FRESH_MS = 2_800;
-const MIX_SPEAKING_HOLD_MS = 1_800;
+/** Prefer last TDLib is_speaking identity while mix RMS is live (tt-like). */
+const VOICE_LAST_TDLIB_SPEAKER_FRESH_MS = 6_500;
+const MIX_SPEAKING_HOLD_MS = 3_200;
 
-type VoiceMixSpeakerSource = "tdlib_hold" | "last_tdlib" | "solo" | "open_mic";
+type VoiceMixSpeakerSource = "tdlib_hold" | "last_tdlib" | "solo" | "empty";
 
 function voiceMixLogSource(mixSource: VoiceMixSpeakerSource): string {
   if (mixSource === "solo") return "remote_audio_level_solo";
   if (mixSource === "last_tdlib") return "remote_audio_level_last_tdlib";
-  if (mixSource === "open_mic") return "remote_audio_level_open_mic";
+  if (mixSource === "empty") return "remote_audio_level_empty";
   return "remote_audio_level_tdlib_hold";
 }
 
@@ -173,9 +174,6 @@ function pickVoiceMixSpeakerTargets(args: {
   const newestFreshAt = withFreshTdlib.length > 0 ? lastTdlibAt(pickNewest(withFreshTdlib)) : 0;
   const lastTdlibAgeMs = newestFreshAt > 0 ? now - newestFreshAt : null;
   const mixCarry = unmuted.filter(rowInMixCarry);
-  const sharing = unmuted.filter(
-    (row) => participantHasScreenPublisher(row) || participantHasCameraPublisher(row),
-  );
 
   if (withFreshTdlib.length > 0) {
     const winner = pickNewest(withFreshTdlib);
@@ -203,12 +201,10 @@ function pickVoiceMixSpeakerTargets(args: {
   if (unmuted.length === 1) {
     return { targets: unmuted, mixSource: "solo", unmutedCount: 1, lastTdlibAgeMs };
   }
-  if (sharing.length > 0) {
-    return { targets: sharing, mixSource: "open_mic", unmutedCount: unmuted.length, lastTdlibAgeMs };
-  }
+  // No wash paint — mix RMS alone cannot identify who is talking (tt/desktop).
   return {
-    targets: unmuted,
-    mixSource: "open_mic",
+    targets: [],
+    mixSource: "empty",
     unmutedCount: unmuted.length,
     lastTdlibAgeMs,
   };
@@ -1094,9 +1090,7 @@ export function MessageChatVoiceBar({
           speakingHoldUntilRef.current.delete(key);
         }
       }
-      // Mix RMS is not per-participant. Fresh TDLib identity wins; if that is
-      // stale, paint current unmuted remotes (open-mic) instead of the last
-      // person who spoke minutes ago.
+      // Mix RMS is not per-participant. Fresh TDLib identity / short hold only.
       let mixFallbackSource: VoiceMixSpeakerSource | null = null;
       if (
         remoteSpeakingMarked === 0 &&
@@ -1133,10 +1127,10 @@ export function MessageChatVoiceBar({
           }
         }
         if (
-          picked.targets.length > 0 &&
-          (picked.mixSource === "last_tdlib" ||
-            picked.mixSource === "tdlib_hold" ||
-            picked.mixSource === "solo")
+          picked.mixSource === "last_tdlib" ||
+          picked.mixSource === "tdlib_hold" ||
+          picked.mixSource === "solo" ||
+          picked.mixSource === "empty"
         ) {
           for (const row of remotes) {
             const aliases = rowSpeakKeys(row);
@@ -2218,10 +2212,7 @@ export function MessageChatVoiceBar({
     }
   }, [joined, voiceSession.localSpeaking, voiceSession.micActive]);
 
-  // Mix RMS is not per-participant identity. After WebRTC join TDLib often only
-  // pulses is_speaking for self (skipped while listen-muted) while remotes keep
-  // talking — SSE speakingCount stays 0 and greens never light. Fresh TDLib
-  // identity wins; if that is stale, paint current unmuted remotes (open-mic).
+  // Mix RMS is not per-participant. Prefer fresh TDLib is_speaking / short hold.
   const pickLastKnownMixSpeaker = useCallback(
     (remotes: TelegramChatVoiceParticipant[], now: number) =>
       pickVoiceMixSpeakerTargets({
@@ -2843,10 +2834,8 @@ export function MessageChatVoiceBar({
       if (a.hasGroups !== b.hasGroups) return a.hasGroups ? -1 : 1;
       return b.firstSeenAt - a.firstSeenAt;
     });
-    // Prefer complete SSRC (SIM+FID). Auto-show only the top remote screen —
-    // dual soft-180p video SDP froze Opus (inboundPackets stuck) and then
-    // mix-protect dropped both stages (prod: Vespiol dual screencast). Second
-    // screen stays available via participant-menu unmute.
+    // Prefer complete SSRC (SIM+FID). Subscribe multiple screens (tt/desktop);
+    // soft 180p + mix-protect keep Opus healthy after video SDP.
     const eligible = cands.filter((c) => c.hasGroups && c.score >= 100);
     if (eligible.length === 0) {
       const pick = cands[0];
@@ -2861,7 +2850,9 @@ export function MessageChatVoiceBar({
         note: "defer auto-show until SIM+FID source_groups are ready",
       });
     } else {
-    const target = 1;
+    // Match tt/desktop: subscribe multiple screens; mix-protect + soft 180p
+    // keep Opus healthy when video SDP opens after audio settle.
+    const target = 4;
     const committed = autoScreenCommittedEndpointsRef.current;
     const stillValid = eligible.filter((c) => committed.has(c.endpoint));
     const toAdd = eligible
@@ -2892,13 +2883,20 @@ export function MessageChatVoiceBar({
         ssrcGroups: pick.ssrcGroups,
       });
     }
+    // Keep already-subscribed cameras — screen auto-show must not wipe them.
+    const keepCameras = lastGoodRemoteVideoRequestsRef.current.filter(
+      (r) =>
+        r.kind === "camera" &&
+        !nextRequests.some((s) => s.endpointId === r.endpointId),
+    );
+    const mergedRequests = [...nextRequests, ...keepCameras];
     setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
     setParticipantMediaPrefs({ ...participantMediaPrefsRef.current });
     const primary = toAdd[0] ?? stillValid[0];
     preferredExplicitScreenEndpointRef.current = primary.endpoint;
     // Arm SDP gate first (telegram-tt arms then setRequestedVideoChannels).
     preferExplicitRemoteVideoSubscribe(primary.endpoint, { autoShow: true });
-    const nextSig = nextRequests
+    const nextSig = mergedRequests
       .map(
         (r) =>
           `${r.kind}:${r.endpointId}:${r.ssrcGroups
@@ -2907,10 +2905,10 @@ export function MessageChatVoiceBar({
       )
       .sort()
       .join("|");
-    lastGoodRemoteVideoRequestsRef.current = nextRequests;
+    lastGoodRemoteVideoRequestsRef.current = mergedRequests;
     lastGoodRemoteVideoAtRef.current = Date.now();
     lastRemoteVideoRequestSigRef.current = nextSig;
-    setRemoteVideoRequests(nextRequests);
+    setRemoteVideoRequests(mergedRequests);
     for (const pick of toAdd) {
       logPageDisplay("messages_voice_remote_screen_auto_show", {
         chatId,
@@ -2920,7 +2918,7 @@ export function MessageChatVoiceBar({
         hasGroups: pick.hasGroups,
         candidates: cands.length,
         candidateTitles: cands.slice(0, 4).map((c) => c.title),
-        subscribed: nextRequests.length,
+        subscribed: mergedRequests.length,
         level: "info",
         note:
           "instant setRequestedVideoChannels (tt/tgcalls); soft 180p; mix-protect may drop if Opus freezes",
@@ -2928,9 +2926,9 @@ export function MessageChatVoiceBar({
     }
     logPageDisplay("messages_voice_remote_video_requests", {
       chatId,
-      count: nextRequests.length,
-      kinds: nextRequests.map((r) => r.kind),
-      endpoints: nextRequests.map((r) => r.endpointId).slice(0, 4),
+      count: mergedRequests.length,
+      kinds: mergedRequests.map((r) => r.kind),
+      endpoints: mergedRequests.map((r) => r.endpointId).slice(0, 4),
       listed: participantsRef.current.length,
       hint: rosterTotalHintRef.current,
       level: "info",
@@ -3016,7 +3014,13 @@ export function MessageChatVoiceBar({
       return;
     }
     const camCommitted = autoScreenCommittedEndpointsRef.current;
-    const camToAdd = camEligible.filter((c) => !camCommitted.has(c.endpoint));
+    const camRoom = Math.max(
+      0,
+      4 - lastGoodRemoteVideoRequestsRef.current.length,
+    );
+    const camToAdd = camEligible
+      .filter((c) => !camCommitted.has(c.endpoint))
+      .slice(0, camRoom);
     if (camToAdd.length === 0) return;
     const camRequests: Array<{
       endpointId: string;
@@ -3045,9 +3049,8 @@ export function MessageChatVoiceBar({
     setWantedScreenPeerKeys([...explicitScreenWantedKeysRef.current]);
     setParticipantMediaPrefs({ ...participantMediaPrefsRef.current });
     const camPrimary = camToAdd[0];
-    if (!preferredExplicitScreenEndpointRef.current) {
-      preferredExplicitScreenEndpointRef.current = camPrimary.endpoint;
-    }
+    // Do not stash a camera id in preferredExplicitScreenEndpointRef — that
+    // made mix-protect restore prefer the camera over a live screencast.
     preferExplicitRemoteVideoSubscribe(camPrimary.endpoint, { autoShow: true });
     const mergedRequests = [
       ...lastGoodRemoteVideoRequestsRef.current.filter(
@@ -3204,10 +3207,9 @@ export function MessageChatVoiceBar({
         return (hasSim ? 100 : 0) + fidCount * 20 + groups.length * 10;
       };
       const COMPLETE_SSRC_MIN = 100; // requires SIM
-      // Screens only when any share is live; camera only when nobody is sharing.
-      const hasScreenRequest = requests.some((r) => r.kind === "screen");
-      // Cap at one remote video — dual-screen auto-show stalls Opus on web.
-      const MAX_REMOTE_VIDEOS = 1;
+      // Screens + cameras together (tt/desktop). Soft 180p + mix-protect
+      // keep Opus healthy; do not drop cameras when a screen is live.
+      const MAX_REMOTE_VIDEOS = 4;
       const sortVideoRequests = (
         list: typeof requests,
       ): typeof requests =>
@@ -3215,9 +3217,7 @@ export function MessageChatVoiceBar({
           if (a.kind !== b.kind) return a.kind === "screen" ? -1 : 1;
           return scoreSsrcGroups(b.ssrcGroups) - scoreSsrcGroups(a.ssrcGroups);
         });
-      const pool = hasScreenRequest
-        ? requests.filter((r) => r.kind === "screen")
-        : requests;
+      const pool = requests;
       const completeRequests = sortVideoRequests(
         pool.filter(
           (r) => scoreSsrcGroups(r.ssrcGroups) >= COMPLETE_SSRC_MIN,

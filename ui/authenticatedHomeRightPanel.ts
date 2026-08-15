@@ -43,7 +43,8 @@ function writeStoredPanelKey(key: AuthenticatedHomeRightPanelKey | null): void {
   }
 }
 
-let activePanel: AuthenticatedHomeRightPanelKey | null = null;
+let activePanel: AuthenticatedHomeRightPanelKey | null =
+  DEFAULT_AUTHENTICATED_HOME_RIGHT_PANEL_KEY;
 let hydratedFromStorage = false;
 const listeners = new Set<() => void>();
 
@@ -51,7 +52,7 @@ function hydrateFromStorageIfNeeded() {
   if (hydratedFromStorage) return;
   hydratedFromStorage = true;
   const stored = readStoredPanelKey();
-  if (stored != null) activePanel = stored;
+  activePanel = stored ?? DEFAULT_AUTHENTICATED_HOME_RIGHT_PANEL_KEY;
 }
 
 function emit() {
@@ -86,7 +87,7 @@ function getSnapshot() {
 }
 
 function getServerSnapshot() {
-  return null as AuthenticatedHomeRightPanelKey | null;
+  return DEFAULT_AUTHENTICATED_HOME_RIGHT_PANEL_KEY;
 }
 
 function subscribe(onStoreChange: () => void) {

@@ -661,8 +661,8 @@ export function HomeAuthenticatedScreen() {
   }, [isWideHome]);
 
   useEffect(() => {
-    // Wide home (2- or 3-column): default right pane when nothing is stored yet.
-    if (isWideHome && rightPanel === null) {
+    // Wide home (2- or 3-column): ensure a right pane is open (defaults to Swap).
+    if (isWideHome && rightPanel == null) {
       openAuthenticatedHomeRightPanel(DEFAULT_AUTHENTICATED_HOME_RIGHT_PANEL_KEY);
     }
   }, [isWideHome, rightPanel]);

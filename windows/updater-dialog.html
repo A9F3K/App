@@ -71,7 +71,7 @@
           white-space: pre-wrap;
           word-break: break-all;
         "
-      ></pre>
+      >Waiting for activity…</pre>
     </div>
     <div id="actionsWrap" style="display: none; flex-direction: row; justify-content: flex-end">
       <button id="install" disabled style="padding: 5px 10px">Update with reload</button>
@@ -99,21 +99,34 @@
           function appendLogLine(line) {
             const el = document.getElementById("log");
             if (!el) return;
+            if (el.textContent === "Waiting for activity…") el.textContent = "";
             el.textContent += (el.textContent ? "\n" : "") + line;
             const parts = el.textContent.split("\n");
             if (parts.length > 220) el.textContent = parts.slice(-220).join("\n");
             el.scrollTop = el.scrollHeight;
           }
-          ipcRenderer.on("updater-ui", (_e, data) => applyUpdaterUi(data));
+          // Register log listeners before UI so a late first paint cannot show progress with an empty log.
           ipcRenderer.on("updater-log-init", (_e, lines) => {
             const el = document.getElementById("log");
             if (!el) return;
-            el.textContent = Array.isArray(lines) ? lines.join("\n") : "";
+            el.textContent = Array.isArray(lines) && lines.length ? lines.join("\n") : "";
             el.scrollTop = el.scrollHeight;
           });
           ipcRenderer.on("updater-log", (_e, line) =>
             appendLogLine(typeof line === "string" ? line : String(line)),
           );
+          ipcRenderer.on("updater-ui", (_e, data) => applyUpdaterUi(data));
+          try {
+            ipcRenderer.invoke("updater-log-pull").then((lines) => {
+              const el = document.getElementById("log");
+              if (!el || !Array.isArray(lines) || !lines.length) return;
+              // Only seed if still on the placeholder (main log-init may have already filled).
+              if (!el.textContent || el.textContent === "Waiting for activity…") {
+                el.textContent = lines.join("\n");
+                el.scrollTop = el.scrollHeight;
+              }
+            }).catch(() => {});
+          } catch (_) {}
           const installBtn = document.getElementById("install");
           if (installBtn) {
             installBtn.addEventListener("click", async () => {

@@ -169,7 +169,8 @@ function hydrateFromStorageIfNeeded() {
   if (selectedChat && historyLoadGeneration === 0) {
     historyLoadChatId = selectedChat.telegram_chat_id;
     historyLoadGeneration = 1;
-    middleColumnFocus = "chat";
+    // Keep `headerPanel` on cold start so multicolumn opens on the default Swap
+    // menu item; the last chat stays selected for when the user opens Messages.
     syncHistoryLoadSnapshot();
     void import("./messageChatHistoryCache").then(({ warmChatHistoryCacheFromSession }) => {
       warmChatHistoryCacheFromSession(selectedChat!.telegram_chat_id);

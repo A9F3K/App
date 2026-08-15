@@ -1410,6 +1410,10 @@ function setupAutoUpdater() {
     const UPDATER_LOG_PANEL = 108;
     const UPDATER_DIALOG_H = 198 + UPDATER_LOG_PANEL;
 
+    /** UI queued while the dialog HTML is still loading — applied only after Activity log init. */
+    let pendingUpdaterDialogUi = null;
+    let updaterDialogDomReady = false;
+
     const sendUpdaterLogInitToDialog = () => {
       const w = updateDialogState.window;
       if (!w || w.isDestroyed()) return;
@@ -1427,21 +1431,61 @@ function setupAutoUpdater() {
           wc.send("updater-log", line);
         } catch (_) {}
       };
-      if (wc.isLoading()) wc.once("did-finish-load", send);
-      else send();
+      // Until DOM + IPC listeners are ready, only the ring buffer holds lines (flushed via log-init).
+      if (!updaterDialogDomReady || wc.isLoading()) return;
+      send();
     };
 
     /** Set after syncZipReadyUi / stagingHasMainExe; enables main-process installEnabled when opening the dialog. */
     let refreshUpdaterDialogIfStagedReady = () => {};
 
-    const openOrFocusUpdateDialog = () => {
-      if (updateDialogState.window && !updateDialogState.window.isDestroyed()) {
-        updateDialogState.window.show();
-        updateDialogState.window.focus();
-        sendUpdaterLogInitToDialog();
+    const showUpdaterDialogWindow = () => {
+      const w = updateDialogState.window;
+      if (!w || w.isDestroyed()) return;
+      try {
+        w.show();
+        w.focus();
+      } catch (_) {}
+    };
+
+    /**
+     * Flush Activity log first, then status/progress UI, then show.
+     * Avoids "Downloading…" / progress bar appearing while the log panel is still blank.
+     * @param {object|null} [ui]
+     */
+    const primeUpdaterDialog = (ui) => {
+      const w = updateDialogState.window;
+      if (!w || w.isDestroyed()) return;
+      updaterDialogDomReady = true;
+      sendUpdaterLogInitToDialog();
+      const payload = ui || pendingUpdaterDialogUi;
+      pendingUpdaterDialogUi = null;
+      if (payload) {
+        updateDialogUi(payload);
+      } else {
         refreshUpdaterDialogIfStagedReady();
+      }
+      showUpdaterDialogWindow();
+    };
+
+    /**
+     * @param {object} [ui] Optional first paint status (applied after log-init).
+     */
+    const openOrFocusUpdateDialog = (ui) => {
+      if (updateDialogState.window && !updateDialogState.window.isDestroyed()) {
+        if (updaterDialogDomReady && !updateDialogState.window.webContents.isLoading()) {
+          sendUpdaterLogInitToDialog();
+          if (ui) updateDialogUi(ui);
+          else refreshUpdaterDialogIfStagedReady();
+          showUpdaterDialogWindow();
+        } else if (ui) {
+          // First paint still loading — apply after log-init in did-finish-load.
+          pendingUpdaterDialogUi = ui;
+        }
         return;
       }
+      updaterDialogDomReady = false;
+      pendingUpdaterDialogUi = ui || null;
       updateDialogState.window = new BrowserWindow({
         width: 420,
         height: UPDATER_DIALOG_H,
@@ -1467,14 +1511,13 @@ function setupAutoUpdater() {
         const wc = w.webContents;
         const cvText = `Current version: ${currentVersion}`;
         wc.executeJavaScript(`document.getElementById('cv').textContent = ${JSON.stringify(cvText)}`).catch(() => {});
-        sendUpdaterLogInitToDialog();
-        refreshUpdaterDialogIfStagedReady();
-      });
-      updateDialogState.window.once("ready-to-show", () => {
-        if (updateDialogState.window && !updateDialogState.window.isDestroyed()) updateDialogState.window.show();
+        // Do not show on ready-to-show: that can paint progress UI before log-init IPC lands.
+        primeUpdaterDialog(null);
       });
       updateDialogState.window.on("closed", () => {
         updateDialogState.window = null;
+        updaterDialogDomReady = false;
+        pendingUpdaterDialogUi = null;
       });
     };
     /**
@@ -1500,18 +1543,15 @@ function setupAutoUpdater() {
         installEnabled: Boolean(installEnabled),
       };
       const wc = updateDialogState.window.webContents;
-      const send = () => {
-        try {
-          wc.send("updater-ui", payload);
-        } catch (e) {
-          log(`[updater] updateDialogUi send: ${e?.message || e}`);
-        }
-      };
-      // IPC survives rapid download-progress; executeJavaScript could drop or race with load state.
-      if (wc.isLoading()) {
-        wc.once("did-finish-load", send);
-      } else {
-        send();
+      // Coalesce while loading so progress never outruns Activity log init.
+      if (!updaterDialogDomReady || wc.isLoading()) {
+        pendingUpdaterDialogUi = payload;
+        return;
+      }
+      try {
+        wc.send("updater-ui", payload);
+      } catch (e) {
+        log(`[updater] updateDialogUi send: ${e?.message || e}`);
       }
     };
     const closeUpdateDialog = () => {
@@ -1547,6 +1587,7 @@ function setupAutoUpdater() {
           return { ok: false, err: m };
         }
       });
+      ipcMain.handle("updater-log-pull", () => updaterDialogLogBuffer.slice());
       ipcMain.on("updater-install-click", () => {
         logUpdater("ipc", "updater-install-click received (legacy send)");
         requestInstallNow();
@@ -2008,8 +2049,7 @@ function setupAutoUpdater() {
           const hint =
             `Update prepare failed: ${e?.message || String(e)}. ` +
             `Publish the Windows zip (${WIN_PORTABLE_ZIP_PREFIX}<version>.zip) on https://github.com/${UPDATE_GITHUB_OWNER}/${UPDATE_GITHUB_REPO}/releases/latest — latest.yml is enough; add zip-latest.yml from cleanup for checksum verification.`;
-          openOrFocusUpdateDialog();
-          updateDialogUi({
+          openOrFocusUpdateDialog({
             text: hint,
             percent: prepareProgressCeiling,
             showProgress: prepareProgressCeiling > 0,
@@ -2509,8 +2549,7 @@ function setupAutoUpdater() {
         logUpdater("event", "update-downloaded ignored (Windows uses zip sidecar only)");
         return;
       }
-      openOrFocusUpdateDialog();
-      updateDialogUi({
+      openOrFocusUpdateDialog({
         text: 'Update is ready. Click "Update with reload".',
         percent: 100,
         showProgress: true,
@@ -2535,11 +2574,13 @@ function setupAutoUpdater() {
       if (manualCheckInProgress) {
         manualCheckInProgress = false;
         manualDownloadInProgress = true;
-        openOrFocusUpdateDialog();
-        updateDialogUi({
-          text: useWinVersionsSidecar
-            ? `Downloading and preparing version ${info?.version || "new"}…`
-            : `Downloading version ${info?.version || "new"}...`,
+        const prepText = useWinVersionsSidecar
+          ? `Downloading and preparing version ${info?.version || "new"}…`
+          : `Downloading version ${info?.version || "new"}...`;
+        // Log before UI so Activity log is never behind the progress bar on first paint.
+        logUpdater("ui", prepText);
+        openOrFocusUpdateDialog({
+          text: prepText,
           percent: 0,
           showProgress: true,
           showActions: true,
@@ -2557,8 +2598,7 @@ function setupAutoUpdater() {
       if (manualCheckInProgress) {
         manualCheckInProgress = false;
         manualDownloadInProgress = false;
-        openOrFocusUpdateDialog();
-        updateDialogUi({
+        openOrFocusUpdateDialog({
           text: "You are already on the latest version.",
           percent: 0,
           showProgress: false,
@@ -2598,8 +2638,7 @@ function setupAutoUpdater() {
       if (manualCheckInProgress || manualDownloadInProgress) {
         manualCheckInProgress = false;
         manualDownloadInProgress = false;
-        openOrFocusUpdateDialog();
-        updateDialogUi({
+        openOrFocusUpdateDialog({
           text: `Update check failed: ${err?.message || String(err)}`,
           percent: 0,
           showProgress: false,
@@ -2617,9 +2656,9 @@ function setupAutoUpdater() {
         downloadProgressLoggedSample = false;
         if (useWinVersionsSidecar && zipPrepareInFlight) {
           logUpdater("ipc", "checkNow short-circuit prepare in flight (do not re-check GitHub)");
-          openOrFocusUpdateDialog();
-          updateDialogUi({
-            text: prepareUiSnapshot.text || "Downloading and preparing update…",
+          const attachText = prepareUiSnapshot.text || "Downloading and preparing update…";
+          openOrFocusUpdateDialog({
+            text: attachText,
             percent: prepareUiSnapshot.percent || 0,
             showProgress: true,
             showActions: true,
@@ -2640,8 +2679,7 @@ function setupAutoUpdater() {
         }
         manualCheckInProgress = true;
         manualDownloadInProgress = false;
-        openOrFocusUpdateDialog();
-        updateDialogUi({
+        openOrFocusUpdateDialog({
           text: "Checking for updates...",
           percent: 0,
           showProgress: false,
@@ -2658,8 +2696,7 @@ function setupAutoUpdater() {
       } catch (e) {
         manualCheckInProgress = false;
         manualDownloadInProgress = false;
-        openOrFocusUpdateDialog();
-        updateDialogUi({
+        openOrFocusUpdateDialog({
           text: `Update check failed: ${e?.message || String(e)}`,
           percent: 0,
           showProgress: false,
