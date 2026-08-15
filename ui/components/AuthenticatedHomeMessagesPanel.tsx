@@ -16,6 +16,7 @@ import {
   resolveAuthenticatedHomeOpenChatUnread,
   subscribeChatVoiceMeta,
   syncAuthenticatedHomeSelectedChat,
+  useAuthenticatedHomeMiddleColumnFocus,
   useAuthenticatedHomeSelectedChat,
 } from "../authenticatedHomeSelectedChat";
 import {
@@ -431,6 +432,34 @@ function applyOpenChatUnreadToRows(
   return next;
 }
 
+function mergeChatRowFields(
+  prev: MessageChatRowData,
+  fresh: MessageChatRowData,
+): MessageChatRowData {
+  const withVoice = mergeChatRowVoicePreferClientClear(prev, fresh);
+  const unread = resolveAuthenticatedHomeOpenChatUnread(
+    withVoice.unread_count,
+    withVoice.telegram_chat_id,
+  );
+  const merged =
+    unread === withVoice.unread_count
+      ? withVoice
+      : { ...withVoice, unread_count: unread };
+  return reuseChatRowIfEqual(prev, merged);
+}
+
+/** True when every index has the same chat id (order unchanged). */
+function chatListOrderMatches(
+  prev: MessageChatRowData[],
+  sortedIncoming: MessageChatRowData[],
+): boolean {
+  if (prev.length !== sortedIncoming.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    if (prev[i]!.telegram_chat_id !== sortedIncoming[i]!.telegram_chat_id) return false;
+  }
+  return true;
+}
+
 function mergeChatRows(
   prev: MessageChatRowData[],
   incoming: MessageChatRowData[],
@@ -447,40 +476,47 @@ function mergeChatRows(
   ).length;
   const tier3Shrinking = incomingTier3Count < prevTier3Count;
 
+  // Truncated / warm-race snapshot must never wipe a large painted list.
+  // Patch overlapping ids, keep prev-only tails, then re-sort so new activity bubbles.
   if (
     !tier3Shrinking &&
     prev.length >= CHAT_LIST_OVERSIZED_THRESHOLD &&
     incoming.length < prev.length * 0.25
   ) {
-    return applyOpenChatUnreadToRows(sortedIncoming, prev);
+    const byId = new Map(sortedIncoming.map((row) => [row.telegram_chat_id, row]));
+    const prevIds = new Set(prev.map((row) => row.telegram_chat_id));
+    const merged: MessageChatRowData[] = prev.map((row) => {
+      const fresh = byId.get(row.telegram_chat_id);
+      return fresh ? mergeChatRowFields(row, fresh) : row;
+    });
+    for (const row of sortedIncoming) {
+      if (!prevIds.has(row.telegram_chat_id)) {
+        merged.push({
+          ...row,
+          unread_count: resolveAuthenticatedHomeOpenChatUnread(
+            row.unread_count,
+            row.telegram_chat_id,
+          ),
+        });
+      }
+    }
+    return sortChatRowsTierAware(merged);
   }
 
   if (incoming.length >= prev.length) {
-    const prevTopId = prev[0]?.telegram_chat_id ?? 0;
-    const incomingTopId = sortedIncoming[0]?.telegram_chat_id ?? 0;
     const prevIdSet = new Set(prev.map((row) => row.telegram_chat_id));
     const hasNewIds = sortedIncoming.some((row) => !prevIdSet.has(row.telegram_chat_id));
+    // In-place field merge only when order is identical — otherwise chats never
+    // bubble (top id can stay put while #2/#3 swap on new messages).
     if (
       prev.length >= CHAT_LIST_VIRTUALIZE_MIN_ROWS &&
       !hasNewIds &&
-      prevTopId > 0 &&
-      prevTopId === incomingTopId
+      chatListOrderMatches(prev, sortedIncoming)
     ) {
-      const byId = new Map(sortedIncoming.map((row) => [row.telegram_chat_id, row]));
       let changed = false;
-      const next = prev.map((row) => {
-        const fresh = byId.get(row.telegram_chat_id);
-        if (!fresh) return row;
-        const withVoice = mergeChatRowVoicePreferClientClear(row, fresh);
-        const unread = resolveAuthenticatedHomeOpenChatUnread(
-          withVoice.unread_count,
-          withVoice.telegram_chat_id,
-        );
-        const merged =
-          unread === withVoice.unread_count
-            ? withVoice
-            : { ...withVoice, unread_count: unread };
-        const reused = reuseChatRowIfEqual(row, merged);
+      const next = prev.map((row, index) => {
+        const fresh = sortedIncoming[index]!;
+        const reused = mergeChatRowFields(row, fresh);
         if (reused !== row) changed = true;
         return reused;
       });
@@ -496,16 +532,7 @@ function mergeChatRows(
   for (const row of prev) {
     const fresh = byId.get(row.telegram_chat_id);
     if (fresh) {
-      const withVoice = mergeChatRowVoicePreferClientClear(row, fresh);
-      const unread = resolveAuthenticatedHomeOpenChatUnread(
-        withVoice.unread_count,
-        withVoice.telegram_chat_id,
-      );
-      const withUnread =
-        unread === withVoice.unread_count
-          ? withVoice
-          : { ...withVoice, unread_count: unread };
-      merged.push(reuseChatRowIfEqual(row, withUnread));
+      merged.push(mergeChatRowFields(row, fresh));
     } else if (resolveChatListTier(row) !== "unpositioned") {
       merged.push(row);
     }
@@ -560,6 +587,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const [remoteSearchPeerUserIds, setRemoteSearchPeerUserIds] = useState<number[]>([]);
   const [remoteSearchHits, setRemoteSearchHits] = useState<TelegramChatListSearchHit[]>([]);
   const selectedChat = useAuthenticatedHomeSelectedChat();
+  const middleColumnFocus = useAuthenticatedHomeMiddleColumnFocus();
   const selectedChatId = selectedChat?.telegram_chat_id ?? null;
   const selectedChatRef = useRef(selectedChat);
   selectedChatRef.current = selectedChat;
@@ -1121,9 +1149,9 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       if (streamLoadTimerRef.current != null) {
         clearTimeout(streamLoadTimerRef.current);
       }
-      // Busy chats emit revisions faster than a 170-row apply can finish.
-      // 800ms still stacked overlapping paints; 2.5s coalesces without feeling stale.
-      const debounceMs = isVoiceDialogUiOpen() ? 12_000 : 2_500;
+      // Busy chats emit revisions faster than a large apply can finish.
+      // ~450ms keeps previews flowing; voice sheet still coalesces harder.
+      const debounceMs = isVoiceDialogUiOpen() ? 12_000 : 450;
       streamLoadTimerRef.current = setTimeout(() => {
         streamLoadTimerRef.current = null;
         if (isVoiceDialogUiOpen()) {
@@ -1230,7 +1258,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           reason: "voice_dialog_closed_flush",
         });
         void flushStreamChatLoad();
-      }, 2_500);
+      }, 400);
     });
   }, [flushStreamChatLoad]);
 
@@ -1730,7 +1758,11 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
             <MessageChatRow
               item={item}
               isLast={absoluteIndex === displayChats.length - 1 && !showBottomLoader}
-              isActive={chatSelectionEnabled && selectedChatId === item.telegram_chat_id}
+              isActive={
+                chatSelectionEnabled &&
+                middleColumnFocus === "chat" &&
+                selectedChatId === item.telegram_chat_id
+              }
               colors={colors}
               timePendingLabel={t("feed.timePending")}
               onPress={chatSelectionEnabled ? () => handleChatPress(item) : undefined}

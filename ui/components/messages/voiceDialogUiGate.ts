@@ -1,7 +1,7 @@
 /**
  * Module-level gate so chat-list SSE / heavy home updates can defer while the
- * voice dialog is open or a call is joined — without wiring React context
- * through the whole tree.
+ * voice sheet is open or a join is arming — without wiring React context
+ * through the whole tree. Docked/joined strip alone must not hold this open.
  */
 
 let voiceDialogOpen = false;

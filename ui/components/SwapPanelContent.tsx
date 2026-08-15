@@ -10,7 +10,7 @@ import { useSwapChart } from "../swap/useSwapChart";
 import { useSwapQuote } from "../swap/useSwapQuote";
 import { useSwapPairState } from "../swap/swapPairStore";
 import {
-  isDllrToken,
+  swapChartTokenForPair,
   swapTokenChartAddress,
   swapTokenDisplaySymbol,
 } from "../swap/swapPairTypes";
@@ -34,12 +34,10 @@ export function SwapPanelContent() {
   const swapFormVisible = pickerMode == null;
   const { sellToken, buyToken } = useSwapPairState();
   useSwapQuote();
-  const chartToken = useMemo(() => {
-    // Chart / rate follow the asset being bought for DLLR (or the non-dollar side).
-    if (!isDllrToken(buyToken)) return buyToken;
-    if (!isDllrToken(sellToken)) return sellToken;
-    return buyToken;
-  }, [buyToken, sellToken]);
+  const chartToken = useMemo(
+    () => swapChartTokenForPair(sellToken, buyToken),
+    [buyToken, sellToken],
+  );
   const chartJettonAddress = swapTokenChartAddress(chartToken);
 
   const {

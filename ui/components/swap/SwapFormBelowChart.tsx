@@ -5,7 +5,10 @@ import { SWAP_BUY_AMOUNT_TON } from "../../swap/fetchSwapAmount";
 import { formatSwapPrice, formatSwapTokenAmount } from "../../swap/swapChartFormat";
 import { navigateToSwapCurrencyPicker } from "../../swap/navigateToSwapCurrencyPicker";
 import { rotateSwapPair, useSwapPairState } from "../../swap/swapPairStore";
-import { swapTokenDisplaySymbol } from "../../swap/swapPairTypes";
+import {
+  swapTokenDisplaySymbol,
+  swapUnitAmountSide,
+} from "../../swap/swapPairTypes";
 import { layout, typographyAeroport15, typographyAeroport20, useColors } from "../../theme";
 import { useResolvedPathname } from "../../useResolvedPathname";
 import { SmartGradientDivider } from "../smart/SmartGradientDivider";
@@ -53,7 +56,9 @@ export function SwapFormBelowChart({
   const { width: windowWidth } = useWindowDimensions();
   const { sellToken, buyToken } = useSwapPairState();
   const showSwapActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
-  const sellDllrAmount =
+  // whatswap-style: keep "1" on the chart asset side; priced DLLR amount on the other.
+  const unitSide = swapUnitAmountSide(sellToken, buyToken);
+  const pricedAmount =
     priceUsd != null ? priceUsd * SWAP_BUY_AMOUNT_TON : null;
 
   const openBuyCurrency = () =>
@@ -61,13 +66,16 @@ export function SwapFormBelowChart({
   const openSellCurrency = () =>
     navigateToSwapCurrencyPicker(router, "sell", windowWidth, pathname);
 
-  const buyAmountText = formatSwapTokenAmount(SWAP_BUY_AMOUNT_TON);
-  const buyPriceText =
+  const unitAmountText = formatSwapTokenAmount(SWAP_BUY_AMOUNT_TON);
+  const pricedAmountText =
+    pricedAmount != null ? formatSwapTokenAmount(pricedAmount) : "…";
+  const sellAmountText = unitSide === "sell" ? unitAmountText : pricedAmountText;
+  const buyAmountText = unitSide === "buy" ? unitAmountText : pricedAmountText;
+  // Both sides of a DLLR pair share ~the same USD notional (asset unit × chart price).
+  const pairUsdText =
     priceUsd != null ? `${formatSwapPrice(priceUsd)}$` : "…";
-
-  const sellAmountText =
-    sellDllrAmount != null ? formatSwapTokenAmount(sellDllrAmount) : "…";
-  const sellPriceText = buyPriceText;
+  const sellPriceText = pairUsdText;
+  const buyPriceText = pairUsdText;
 
   const sellIcon = tokenIconSource(sellToken);
   const buyIcon = tokenIconSource(buyToken);

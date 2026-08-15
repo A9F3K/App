@@ -4,6 +4,7 @@ import type { SwapCurrencySide } from "./swapCurrencyPicker";
 import {
   SWAP_DLLR_TOKEN,
   SWAP_GRAM_TOKEN,
+  swapUnitAmountSide,
   type SwapPairToken,
   type SwapQuoteDirection,
 } from "./swapPairTypes";
@@ -27,9 +28,9 @@ const listeners = new Set<() => void>();
 let state: SwapPairState = {
   sellToken: SWAP_DLLR_TOKEN,
   buyToken: SWAP_GRAM_TOKEN,
-  sellAmount: "1",
-  buyAmount: "",
-  quoteDirection: "exact_in",
+  sellAmount: "",
+  buyAmount: "1",
+  quoteDirection: "exact_out",
   lastQuotedSellAmount: null,
   lastQuotedBuyAmount: null,
   quoteError: null,
@@ -148,8 +149,9 @@ export function selectSwapBuyTokenForDllr(token: SwapPairToken) {
   setState({
     sellToken: SWAP_DLLR_TOKEN,
     buyToken: isDllr ? SWAP_GRAM_TOKEN : token,
-    buyAmount: "",
-    quoteDirection: "exact_in",
+    sellAmount: "",
+    buyAmount: "1",
+    quoteDirection: "exact_out",
     lastQuotedBuyAmount: null,
     lastQuotedSellAmount: null,
     quoteError: null,
@@ -157,10 +159,28 @@ export function selectSwapBuyTokenForDllr(token: SwapPairToken) {
 }
 
 export function rotateSwapPair() {
+  // whatswap rotation: swap tokens and move the fixed unit ("1") to the opposite side.
+  const nextSell = state.buyToken;
+  const nextBuy = state.sellToken;
+  const unitSide = swapUnitAmountSide(nextSell, nextBuy);
+  if (unitSide === "buy") {
+    // Buying 1 chart asset for DLLR — quote exact-out of 1.
+    setState({
+      sellToken: nextSell,
+      buyToken: nextBuy,
+      sellAmount: "",
+      buyAmount: "1",
+      quoteDirection: "exact_out",
+      lastQuotedBuyAmount: null,
+      lastQuotedSellAmount: null,
+    });
+    return;
+  }
+  // Selling 1 chart asset for DLLR — quote exact-in of 1.
   setState({
-    sellToken: state.buyToken,
-    buyToken: state.sellToken,
-    sellAmount: state.buyAmount || state.sellAmount,
+    sellToken: nextSell,
+    buyToken: nextBuy,
+    sellAmount: "1",
     buyAmount: "",
     quoteDirection: "exact_in",
     lastQuotedBuyAmount: null,

@@ -80,6 +80,30 @@ export function isDllrToken(token: SwapPairToken | null | undefined): boolean {
   return token.symbol.trim().toUpperCase() === "DLLR";
 }
 
+/**
+ * Which form side holds the fixed 1-unit of the priced (non-DLLR) asset —
+ * same basis-field rule as whatswap rotation (even: send/buy asset, odd: opposite).
+ * Chart / rate stay on this asset; amounts flip when the pair rotates.
+ */
+export function swapUnitAmountSide(
+  sellToken: SwapPairToken,
+  buyToken: SwapPairToken,
+): "sell" | "buy" {
+  if (!isDllrToken(buyToken)) return "buy";
+  if (!isDllrToken(sellToken)) return "sell";
+  return "buy";
+}
+
+/** Non-DLLR asset used for chart + unit pricing (prefer buy, else sell). */
+export function swapChartTokenForPair(
+  sellToken: SwapPairToken,
+  buyToken: SwapPairToken,
+): SwapPairToken {
+  if (!isDllrToken(buyToken)) return buyToken;
+  if (!isDllrToken(sellToken)) return sellToken;
+  return buyToken;
+}
+
 /** UI ticker — native zero-address asset is always Gram, never "TON". */
 export function swapTokenDisplaySymbol(token: SwapPairToken): string {
   if (isDllrToken(token)) return "DLLR";

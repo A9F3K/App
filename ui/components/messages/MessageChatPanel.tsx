@@ -82,6 +82,8 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const joinArmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const voiceJoinedRef = useRef(false);
   voiceJoinedRef.current = voiceJoined;
+  const voiceEngagedRef = useRef(false);
+  voiceEngagedRef.current = voiceEngaged;
   const groupCallId = resolveGroupCallId(chat, startedCallId);
   // Mount Join strip only after probe/SSE confirms speakers (or user joined).
   // Do not require chat.has_active_voice_chat — list poll often lags / stays
@@ -105,6 +107,10 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     clearJoinArmTimer();
     voiceJoinedRef.current = true;
     setVoiceJoined(true);
+    // Join is armed — stop holding the chat-list deferral via `engaged`.
+    // The open sheet still keeps the gate via `voicePopoverOpen`.
+    voiceEngagedRef.current = false;
+    setVoiceEngaged(false);
   }, [clearJoinArmTimer]);
 
   useEffect(() => {
@@ -130,27 +136,16 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     }
   }, [liveVoiceAvailable, voiceJoined]);
 
-  // Publish dialog-open / joined / engaged voice so chat-list SSE can defer while
-  // the sheet is up or a call is arming — without wiring React context through
-  // the whole tree.
+  // Defer heavy chat-list applies only while the voice sheet is open.
+  // Merely being joined (docked strip) must not freeze list updates.
   // IMPORTANT: do not clear the gate in this effect's cleanup — that briefly
   // flipped open→false→open on every popover toggle and scheduled chat-list
   // flushes that froze Close/Escape.
-  const voicePopoverOpenRef = useRef(voicePopoverOpen);
-  voicePopoverOpenRef.current = voicePopoverOpen;
-  const voiceEngagedRef = useRef(voiceEngaged);
-  voiceEngagedRef.current = voiceEngaged;
-  const publishVoiceUiGate = useCallback(() => {
-    setVoiceDialogUiOpen(
-      voicePopoverOpenRef.current ||
-        voiceJoinedRef.current ||
-        voiceEngagedRef.current,
-    );
-  }, []);
-
+  // Join/start paths call setVoiceDialogUiOpen(true) synchronously before the
+  // popover state commits; this effect keeps the gate aligned with the sheet.
   useEffect(() => {
-    publishVoiceUiGate();
-  }, [voicePopoverOpen, voiceJoined, voiceEngaged, publishVoiceUiGate]);
+    setVoiceDialogUiOpen(voicePopoverOpen);
+  }, [voicePopoverOpen]);
 
   useEffect(() => {
     return () => {
@@ -291,8 +286,11 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
         setVoiceDialogUiOpen(false);
         return;
       }
-      // Already joined — minimize; keep gate so chat-list stays deferred.
-      setVoiceDialogUiOpen(true);
+      // Already joined — minimize to strip. Clear engaged + chat-list deferral
+      // so previews keep flowing while the call stays docked.
+      setVoiceEngaged(false);
+      voiceEngagedRef.current = false;
+      setVoiceDialogUiOpen(false);
     };
     if (Platform.OS === "web") {
       try {
@@ -386,22 +384,29 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
     voicePresenceConfirmed,
   ]);
 
-  const leaveVoiceUi = useCallback(() => {
-    userLeftVoiceRef.current = true;
-    clearJoinArmTimer();
-    setVoiceEngaged(false);
-    voiceEngagedRef.current = false;
-    setVoiceJoined(false);
-    voiceJoinedRef.current = false;
-    closeVoicePopover();
-    setStartedCallId(null);
-    setVoiceDialogUiOpen(false);
-    setVoicePresenceConfirmed(false);
-  }, [clearJoinArmTimer, closeVoicePopover]);
+  const leaveVoiceUi = useCallback(
+    (opts?: { keepJoinPreview?: boolean }) => {
+      const keepJoinPreview = Boolean(opts?.keepJoinPreview);
+      // Only latch “hide Join strip” when the call itself is gone.
+      userLeftVoiceRef.current = !keepJoinPreview;
+      clearJoinArmTimer();
+      setVoiceEngaged(false);
+      voiceEngagedRef.current = false;
+      setVoiceJoined(false);
+      voiceJoinedRef.current = false;
+      closeVoicePopover();
+      setStartedCallId(null);
+      setVoiceDialogUiOpen(false);
+      if (!keepJoinPreview) {
+        setVoicePresenceConfirmed(false);
+      }
+    },
+    [clearJoinArmTimer, closeVoicePopover],
+  );
 
   const onVoicePresenceConfirmedChange = useCallback((confirmed: boolean) => {
-    // Leave must hide the Join/face preview; ignore late SSE/poll that try to
-    // resurrect presence until the user explicitly rejoins.
+    // After Leave on a dead call, ignore late SSE/poll that resurrect presence
+    // until the user explicitly rejoins. Live-call Leave keeps Join preview.
     if (confirmed && userLeftVoiceRef.current) return;
     setVoicePresenceConfirmed(confirmed);
   }, []);

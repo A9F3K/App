@@ -8,6 +8,10 @@ import {
   type TelegramRemoteVideoSource,
 } from "./telegramGroupCallWebSession";
 import { unlockVoiceAutoplay } from "./unlockVoiceAutoplay";
+import {
+  startVoiceConnectionTick,
+  stopVoiceConnectionTick,
+} from "./voiceConnectionTick";
 
 type Input = {
   chatId: number;
@@ -419,22 +423,45 @@ export function useTelegramVoiceSession({
     if (!joined || Platform.OS !== "web") return;
     const tick = () => {
       const session = sessionRef.current;
-      if (!session?.isJoined) {
+      if (!session) {
         setMediaConnected(false);
         setMediaReconnecting(false);
         setVoiceReconnecting(false);
         setNegotiating(false);
         return;
       }
-      setMediaConnected(session.isMediaConnected());
+      // Poll reconnect before isJoined — silent ICE/audio recover sets
+      // session.joined=false while React joined stays true; clearing reconnect
+      // here used to stop the no-connection ticks and unmute a dead mix.
+      const voiceReconnect = session.isVoiceReconnecting();
+      setVoiceReconnecting(voiceReconnect);
       setMediaReconnecting(session.isMediaReconnecting());
-      setVoiceReconnecting(session.isVoiceReconnecting());
+      if (!session.isJoined) {
+        setMediaConnected(false);
+        setNegotiating(false);
+        return;
+      }
+      setMediaConnected(session.isMediaConnected());
       setNegotiating(session.isNegotiating());
     };
     tick();
     const id = window.setInterval(tick, 500);
     return () => window.clearInterval(id);
   }, [joined]);
+
+  // Loop 3× clock ticks whenever voice transport is lost — independent of
+  // popover open/closed so the strip still plays the no-connection sound.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (!joined || !voiceReconnecting) {
+      stopVoiceConnectionTick();
+      return;
+    }
+    startVoiceConnectionTick();
+    return () => {
+      stopVoiceConnectionTick();
+    };
+  }, [joined, voiceReconnecting]);
 
   const joinListen = useCallback(async (opts?: {
     startMuted?: boolean;

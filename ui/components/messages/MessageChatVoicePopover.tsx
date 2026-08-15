@@ -64,10 +64,6 @@ import {
   type VoiceMediaStageSource,
 } from "./MessageChatVoiceVideoPlane";
 import type { TelegramRemoteVideoSource } from "../../telegram/telegramGroupCallWebSession";
-import {
-  startVoiceConnectionTick,
-  stopVoiceConnectionTick,
-} from "../../telegram/voiceConnectionTick";
 import { MessageChatComposePill } from "./MessageChatComposePill";
 import {
   MessageChatVoiceMoreMenu,
@@ -1086,13 +1082,13 @@ export function MessageChatVoicePopover({
   const iconColor = colors.primary;
   const [micReconnectFlashOn, setMicReconnectFlashOn] = useState(false);
 
+  // Mic undercover flash only — no-connection ticks live in useTelegramVoiceSession
+  // so they keep looping when the sheet is minimized.
   useEffect(() => {
     if (!voiceReconnecting || Platform.OS !== "web") {
       setMicReconnectFlashOn(false);
-      stopVoiceConnectionTick();
       return;
     }
-    startVoiceConnectionTick();
     setMicReconnectFlashOn(true);
     const id = window.setInterval(() => {
       setMicReconnectFlashOn((prev) => !prev);
@@ -1100,7 +1096,6 @@ export function MessageChatVoicePopover({
     return () => {
       window.clearInterval(id);
       setMicReconnectFlashOn(false);
-      stopVoiceConnectionTick();
     };
   }, [voiceReconnecting]);
 

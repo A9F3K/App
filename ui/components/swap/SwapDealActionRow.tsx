@@ -38,6 +38,7 @@ function useResolvedDealProps(props: Props) {
   return {
     dllrAmount: props.dllrAmount !== undefined ? props.dllrAmount : hooked.dllrAmount,
     buySymbol: props.buySymbol ?? hooked.buySymbol,
+    dealSide: hooked.dealSide,
     buttonNotice: props.buttonNotice ?? hooked.buttonNotice,
     buttonActive: props.buttonActive ?? hooked.buttonActive,
   };
@@ -52,7 +53,8 @@ function useResolvedDealProps(props: Props) {
 export function SwapDealActionRow({ density = "compact", ...props }: Props) {
   const colors = useColors();
   const { t, tf } = useAppStrings();
-  const { dllrAmount, buySymbol, buttonNotice, buttonActive } = useResolvedDealProps(props);
+  const { dllrAmount, buySymbol, dealSide, buttonNotice, buttonActive } =
+    useResolvedDealProps(props);
 
   const isBar = density === "bar";
   const labelStyle = isBar ? typographyFixedRow40Label : typographyFixedRow30Label;
@@ -60,10 +62,16 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
   const buttonPadX = 30;
 
   const symbol = buySymbol.trim().toLowerCase() || "gram";
-  const dealShort = tf("swap.action.summary", { symbol });
+  const summaryKey =
+    dealSide === "sell" ? "swap.action.summarySell" : "swap.action.summary";
+  const summaryWithAmountKey =
+    dealSide === "sell"
+      ? "swap.action.summarySellWithAmount"
+      : "swap.action.summaryWithAmount";
+  const dealShort = tf(summaryKey, { symbol });
   const dealFull =
     dllrAmount != null
-      ? tf("swap.action.summaryWithAmount", {
+      ? tf(summaryWithAmountKey, {
           amount: formatSwapTokenAmount(dllrAmount),
           symbol,
         })

@@ -6,9 +6,10 @@ import { useSwapPairState } from "./swapPairStore";
 import {
   isDllrToken,
   SWAP_GRAM_TOKEN,
+  swapChartTokenForPair,
   swapTokenChartAddress,
   swapTokenDisplaySymbol,
-  type SwapPairToken,
+  swapUnitAmountSide,
 } from "./swapPairTypes";
 import { useSwapChart } from "./useSwapChart";
 
@@ -22,10 +23,12 @@ export const SWAP_AVAILABLE_DLLR_PLACEHOLDER = 1;
 export type SwapDealButtonNotice = "none" | "noAmount" | "lowAmount" | "noPool" | "dllrFrozen";
 
 export type SwapDealActionState = {
-  /** DLLR needed to buy 1 unit of the offer / deal asset. */
+  /** DLLR needed to buy/sell 1 unit of the offer / deal asset. */
   dllrAmount: number | null;
   /** Ticker for the left-edge offer copy. */
   buySymbol: string;
+  /** `buy` = Buy 1 asset for dllr; `sell` = Sell 1 asset for dllr (after rotate). */
+  dealSide: "buy" | "sell";
   /** Status text immediately left of Swap (`DLLR Frozen` / `No pool` / `No amount` / `Low amount`). */
   buttonNotice: SwapDealButtonNotice;
   /** When false, Swap uses inactive undercover + is not pressable. */
@@ -33,12 +36,6 @@ export type SwapDealActionState = {
   /** Currencies / choose-currency picker is covering the form. */
   onCurrencyScreen: boolean;
 };
-
-function chartTokenForPair(sellToken: SwapPairToken, buyToken: SwapPairToken): SwapPairToken {
-  if (!isDllrToken(buyToken)) return buyToken;
-  if (!isDllrToken(sellToken)) return sellToken;
-  return buyToken;
-}
 
 function quoteMeansNoPool(quoteError: string | null): boolean {
   if (!quoteError) return false;
@@ -58,12 +55,17 @@ export function useSwapDealActionState(): SwapDealActionState {
   const onCurrencyScreen = pickerMode != null;
   const { sellToken, buyToken, quoteError } = useSwapPairState();
 
-  // Currencies / choose-currency: always the Gram ↔ DLLR offer.
+  // Currencies-home selection: always the Gram ↔ DLLR offer.
   const offerToken = onCurrencyScreen
     ? SWAP_GRAM_TOKEN
-    : chartTokenForPair(sellToken, buyToken);
+    : swapChartTokenForPair(sellToken, buyToken);
   const chartJettonAddress = swapTokenChartAddress(offerToken);
   const buySymbol = onCurrencyScreen ? "GRAM" : swapTokenDisplaySymbol(offerToken);
+  const dealSide: "buy" | "sell" = onCurrencyScreen
+    ? "buy"
+    : swapUnitAmountSide(sellToken, buyToken) === "buy"
+      ? "buy"
+      : "sell";
 
   const { effectivePriceUsd } = useSwapChart("d", {
     deferInitialLoad: true,
@@ -98,6 +100,7 @@ export function useSwapDealActionState(): SwapDealActionState {
   return {
     dllrAmount,
     buySymbol,
+    dealSide,
     buttonNotice,
     buttonActive: !onCurrencyScreen && !dllrInPair && !noPool && hasEnoughDllr,
     onCurrencyScreen,
