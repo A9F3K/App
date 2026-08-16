@@ -17,7 +17,7 @@ import { HeaderIconCopy, HeaderIconExit } from "../icons/HeaderActionIcons";
 import { SwapSelectChevron } from "../swap/SwapFormIcons";
 
 const CHIP_HEIGHT_PX = 30;
-const CHIP_PAD_H_PX = 12;
+const CHIP_PAD_H_PX = 10;
 const WALLET_ICON_PX = 18;
 const MENU_ICON_PX = 18;
 const COPIED_HIDE_MS = 1200;
@@ -98,10 +98,26 @@ export function GetConnectedWalletChip({ chipStyle }: Props) {
     }
   }, [ton]);
 
-  const onConnectAnother = useCallback(async () => {
+  /** TonConnect only shows the wallet picker when disconnected; RN Modal must unmount first on web. */
+  const openWalletPicker = useCallback(async () => {
+    setBusy(true);
     setOpen(false);
-    await ton.openConnectModal();
+    try {
+      if (ton.connected) {
+        await ton.disconnect();
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 200);
+      });
+      await ton.openConnectModal();
+    } finally {
+      setBusy(false);
+    }
   }, [ton]);
+
+  const onConnectAnother = useCallback(async () => {
+    await openWalletPicker();
+  }, [openWalletPicker]);
 
   const onSelectWallet = useCallback(
     async (address: string) => {
@@ -109,19 +125,9 @@ export function GetConnectedWalletChip({ chipStyle }: Props) {
         setOpen(false);
         return;
       }
-      setBusy(true);
-      setOpen(false);
-      try {
-        // TonConnect holds one active account — reconnect via modal to switch.
-        if (ton.connected) {
-          await ton.disconnect();
-        }
-        await ton.openConnectModal();
-      } finally {
-        setBusy(false);
-      }
+      await openWalletPicker();
     },
-    [activeAddress, ton],
+    [activeAddress, openWalletPicker],
   );
 
   if (!ton.connected || !activeAddress) return null;
@@ -135,12 +141,14 @@ export function GetConnectedWalletChip({ chipStyle }: Props) {
   const defaultChipStyle = {
     height: CHIP_HEIGHT_PX,
     paddingHorizontal: CHIP_PAD_H_PX,
-    backgroundColor: colors.undercover,
+    backgroundColor: "transparent",
     alignItems: "center" as const,
     justifyContent: "center" as const,
     flexDirection: "row" as const,
     gap: 8,
-    borderRadius: 0,
+    borderRadius: CHIP_HEIGHT_PX / 2,
+    borderWidth: 1,
+    borderColor: colors.highlight,
   };
 
   return (
@@ -156,13 +164,18 @@ export function GetConnectedWalletChip({ chipStyle }: Props) {
           {ton.walletImageUrl ? (
             <Image
               source={{ uri: ton.walletImageUrl }}
-              style={{ width: WALLET_ICON_PX, height: WALLET_ICON_PX }}
+              style={{
+                width: WALLET_ICON_PX,
+                height: WALLET_ICON_PX,
+                borderRadius: 4,
+              }}
             />
           ) : (
             <View
               style={{
                 width: WALLET_ICON_PX,
                 height: WALLET_ICON_PX,
+                borderRadius: 4,
                 backgroundColor: "#0098EA",
               }}
             />

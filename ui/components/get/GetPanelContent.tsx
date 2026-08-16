@@ -2,6 +2,7 @@ import * as Clipboard from "expo-clipboard";
 import { Image } from "expo-image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Animated,
   FlatList,
   Modal,
   Platform,
@@ -30,6 +31,7 @@ import {
   useColors,
 } from "../../theme";
 import { appModalSheetStyles } from "../AppModalSheet";
+import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import { VoiceWindowCrossIcon } from "../messages/MessageChatVoiceControlIcons";
 import { SwapSelectChevron } from "../swap/SwapFormIcons";
 import { swapTonTokenImage } from "../swap/swapFormAssets";
@@ -43,12 +45,16 @@ const METHODS_SIZE_PX = 30;
 const LABEL_SIZE_PX = 20;
 const MULTI_LINE_HEIGHT_PX = 30;
 const CHIP_HEIGHT_PX = 30;
-const CHIP_PAD_H_PX = 30;
+const CHIP_PAD_H_PX = 10;
 const CURRENCY_ICON_PX = 20;
 const COPIED_HIDE_MS = 1000;
 const ROW_GAP_PX = layout.bottomBar.textToSendIconGapPx;
 /** Below this column width, amount+currency share a row; balance + Top Up stack full-width. */
 const TRIPLE_CONTROLS_MIN_WIDTH_PX = 420;
+/** Same red as muted / inactive mic chrome. */
+const INSUFFICIENT_AMOUNT_COLOR = "#FF1111";
+const BALANCE_SHAKE_INTERVAL_MS = 2000;
+const BALANCE_SHAKE_PX = 6;
 
 type Props = {
   walletAddress: string;
@@ -91,6 +97,14 @@ function formatRawTokenBalance(balanceRaw: string, decimals: number): string {
   }
 }
 
+function parseDecimalAmount(raw: string): number | null {
+  const cleaned = raw.trim().replace(/,/g, "").replace(/\s/g, "");
+  if (!cleaned) return null;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
 function tokenIconSource(token: SwapPairToken) {
   if (token.icon) return token.icon as never;
   if (token.imageUrl) return { uri: token.imageUrl };
@@ -115,6 +129,18 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
   const [options, setOptions] = useState<GetCurrencyOption[]>([]);
   const [balancesLoading, setBalancesLoading] = useState(false);
   const [formWidthPx, setFormWidthPx] = useState(0);
+  const [viewportH, setViewportH] = useState(0);
+  const [needsScroll, setNeedsScroll] = useState<boolean | null>(null);
+  const scrollLayoutReady = needsScroll !== null;
+  const balanceShakeX = useRef(new Animated.Value(0)).current;
+
+  const contentInset = layout.contentSideInsetPx;
+  const scrollShellBleed = { marginHorizontal: -contentInset };
+  const scrollContentPadding = {
+    paddingTop: TOP_INSET_PX,
+    paddingHorizontal: contentInset,
+    paddingBottom: TOP_INSET_PX,
+  };
 
   const trimmedDeposit = useMemo(() => trimWalletAddress(walletAddress), [walletAddress]);
   const depositDisplay = trimmedDeposit || "—";
@@ -216,6 +242,19 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     setFormWidthPx((current) => (current === width ? current : width));
   }, []);
 
+  const onViewportLayout = useCallback((e: LayoutChangeEvent) => {
+    setViewportH(e.nativeEvent.layout.height);
+  }, []);
+
+  const onScrollMetrics = useCallback(
+    (metrics: HspScrollMetrics) => {
+      if (needsScroll !== null) return;
+      const overflow = metrics.layoutH > 0 && metrics.contentH > metrics.layoutH + 0.5;
+      setNeedsScroll(overflow);
+    },
+    [needsScroll],
+  );
+
   const selectedSymbol = swapTokenDisplaySymbol(selected.token);
   const balanceLine = balancesLoading
     ? t("get.balanceLoading")
@@ -223,6 +262,66 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         amount: selected.balanceText,
         symbol: selectedSymbol,
       });
+
+  const enteredAmount = useMemo(() => parseDecimalAmount(amount), [amount]);
+  const availableBalance = useMemo(
+    () => parseDecimalAmount(selected.balanceText),
+    [selected.balanceText],
+  );
+  const insufficientBalance =
+    !balancesLoading &&
+    enteredAmount != null &&
+    availableBalance != null &&
+    enteredAmount > availableBalance;
+
+  useEffect(() => {
+    if (!insufficientBalance) {
+      balanceShakeX.stopAnimation();
+      balanceShakeX.setValue(0);
+      return;
+    }
+
+    let cancelled = false;
+    const runShake = () => {
+      if (cancelled) return;
+      Animated.sequence([
+        Animated.timing(balanceShakeX, {
+          toValue: BALANCE_SHAKE_PX,
+          duration: 55,
+          useNativeDriver: true,
+        }),
+        Animated.timing(balanceShakeX, {
+          toValue: -BALANCE_SHAKE_PX,
+          duration: 55,
+          useNativeDriver: true,
+        }),
+        Animated.timing(balanceShakeX, {
+          toValue: BALANCE_SHAKE_PX * 0.6,
+          duration: 55,
+          useNativeDriver: true,
+        }),
+        Animated.timing(balanceShakeX, {
+          toValue: -BALANCE_SHAKE_PX * 0.6,
+          duration: 55,
+          useNativeDriver: true,
+        }),
+        Animated.timing(balanceShakeX, {
+          toValue: 0,
+          duration: 55,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    };
+
+    runShake();
+    const id = setInterval(runShake, BALANCE_SHAKE_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      balanceShakeX.stopAnimation();
+      balanceShakeX.setValue(0);
+    };
+  }, [balanceShakeX, insufficientBalance]);
 
   const multiLineBody = [
     typographyAeroport15,
@@ -245,7 +344,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     {
       fontWeight: "400" as const,
       lineHeight: 30,
-      color: colors.primary,
+      color: insufficientBalance ? INSUFFICIENT_AMOUNT_COLOR : colors.primary,
       flex: 1,
       minWidth: 0,
       padding: 0,
@@ -253,6 +352,20 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
       ...(Platform.OS === "web" ? ({ outlineStyle: "none" } as object) : null),
     },
   ];
+
+  const balanceRow = (
+    <Animated.Text
+      style={[
+        ...multiLineBody,
+        {
+          color: colors.secondary,
+          transform: [{ translateX: balanceShakeX }],
+        },
+      ]}
+    >
+      {balanceLine}
+    </Animated.Text>
+  );
 
   const currencyChip = (
     <Pressable
@@ -265,6 +378,11 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         gap: 8,
         flexShrink: 0,
         height: CHIP_HEIGHT_PX,
+        paddingHorizontal: CHIP_PAD_H_PX,
+        borderRadius: CHIP_HEIGHT_PX / 2,
+        borderWidth: 1,
+        borderColor: colors.highlight,
+        backgroundColor: "transparent",
       }}
     >
       <Image
@@ -275,7 +393,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
           borderRadius: CURRENCY_ICON_PX / 2,
         }}
       />
-      <Text style={[typographyAeroport20, { color: colors.primary, fontWeight: "400" }]}>
+      <Text style={[typographyAeroport15, { color: colors.primary, fontWeight: "400" }]}>
         {selectedSymbol}
       </Text>
       <SwapSelectChevron />
@@ -300,14 +418,22 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
 
   return (
     <View
-      style={{
-        flex: 1,
-        width: "100%",
-        alignSelf: "stretch",
-        minHeight: 0,
-        paddingTop: TOP_INSET_PX,
-      }}
+      style={{ flex: 1, width: "100%", alignSelf: "stretch", minHeight: 0 }}
+      onLayout={onViewportLayout}
     >
+      <HspScrollColumn
+        style={{ flex: 1, ...scrollShellBleed }}
+        onMetricsChange={onScrollMetrics}
+        contentContainerStyle={
+          scrollLayoutReady && !needsScroll
+            ? {
+                ...scrollContentPadding,
+                flexGrow: 1,
+                ...(viewportH > 0 ? { minHeight: viewportH } : {}),
+              }
+            : scrollContentPadding
+        }
+      >
       <Text
         style={{
           fontSize: TITLE_SIZE_PX,
@@ -319,16 +445,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         {t("get.title")}
       </Text>
       {(showTitleRow || Boolean(displayName.trim())) && (
-        <Text
-          style={[
-            ...multiLineBody,
-            {
-              color: colors.secondary,
-              marginTop: 8,
-              fontFamily: Platform.OS === "web" ? WEB_UI_MONO_STACK : undefined,
-            },
-          ]}
-        >
+        <Text style={[...multiLineBody, { color: colors.primary, marginTop: 8 }]}>
           {walletSubtitle}
         </Text>
       )}
@@ -415,7 +532,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
                 {currencyChip}
                 {topUpButton(false)}
               </View>
-              <Text style={[...multiLineBody, { color: colors.secondary }]}>{balanceLine}</Text>
+              {balanceRow}
             </>
           ) : (
             <>
@@ -438,7 +555,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
                 />
                 {currencyChip}
               </View>
-              <Text style={[...multiLineBody, { color: colors.secondary }]}>{balanceLine}</Text>
+              {balanceRow}
               {topUpButton(true)}
             </>
           )}
@@ -496,6 +613,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
       >
         {depositDisplay}
       </Text>
+      </HspScrollColumn>
 
       <Modal
         visible={pickerOpen}
