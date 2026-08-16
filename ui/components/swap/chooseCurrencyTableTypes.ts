@@ -78,7 +78,7 @@ export function buildChooseCurrencyDllrRow(locale: AppLocale): ChooseCurrencyRow
     networks: "TON, ETH...",
     marketCapUsd,
     marketCap: formatSwapUsdCompact(marketCapUsd, locale),
-    volume: formatSwapUsdCompact(123_000_000, locale),
+    volume: formatSwapUsdCompact(2_000_000_000, locale),
     lastYearKind: "stable",
   };
 }

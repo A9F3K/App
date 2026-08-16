@@ -54,7 +54,7 @@ export const CHOOSE_CURRENCY_TABLE_MARKET_CAP_LAYOUT_SAMPLES = [
 
 /** Representative volume strings for column width measurement. */
 export const CHOOSE_CURRENCY_TABLE_VOLUME_LAYOUT_SAMPLES = [
-  "123M$+",
+  "2B$+",
   "999M$+",
   "1.4B$+",
   "2.1T$+",
