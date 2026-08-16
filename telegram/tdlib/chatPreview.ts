@@ -69,7 +69,7 @@ export type TdChat = {
     hasParticipants?: boolean;
   };
   positions?: Array<{
-    list?: { _?: string };
+    list?: { _?: string; chat_folder_id?: number };
     order?: string;
     is_pinned?: boolean;
   }>;
@@ -137,12 +137,21 @@ export function isChatPinnedInMainList(chat: TdChat): boolean {
 export function isChatInMainList(chat: TdChat): boolean {
   const positions = chat.positions;
   if (!Array.isArray(positions)) return false;
-  return positions.some(
-    (row) =>
-      row.list?._ === "chatListMain" &&
-      typeof row.order === "string" &&
-      row.order !== "0",
-  );
+  return positions.some((row) => row.list?._ === "chatListMain");
+}
+
+/** True when TDLib places the chat on the archive list. */
+export function isChatInArchiveList(chat: TdChat): boolean {
+  const positions = chat.positions;
+  if (!Array.isArray(positions)) return false;
+  return positions.some((row) => row.list?._ === "chatListArchive");
+}
+
+/** True when TDLib places the chat in any chat folder list. */
+export function isChatInFolderList(chat: TdChat): boolean {
+  const positions = chat.positions;
+  if (!Array.isArray(positions)) return false;
+  return positions.some((row) => row.list?._ === "chatListFolder");
 }
 
 export function isPrivateTdChat(chat: TdChat): boolean {
@@ -154,6 +163,38 @@ export function mainListOrderKey(chat: TdChat): string {
   if (!Array.isArray(positions)) return "0";
   const main = positions.find((row) => row.list?._ === "chatListMain");
   return typeof main?.order === "string" ? main.order : "0";
+}
+
+/** Order key for archive list pagination (same shape as main-list order). */
+export function archiveListOrderKey(chat: TdChat): string {
+  const positions = chat.positions;
+  if (!Array.isArray(positions)) return "0";
+  const archive = positions.find((row) => row.list?._ === "chatListArchive");
+  return typeof archive?.order === "string" ? archive.order : "0";
+}
+
+export function folderListOrderKey(chat: TdChat, chatFolderId: number): string {
+  const positions = chat.positions;
+  if (!Array.isArray(positions)) return "0";
+  const folder = positions.find(
+    (row) =>
+      row.list?._ === "chatListFolder" &&
+      Number(row.list.chat_folder_id) === chatFolderId,
+  );
+  return typeof folder?.order === "string" ? folder.order : "0";
+}
+
+export type TdChatListRef =
+  | { _: "chatListMain" }
+  | { _: "chatListArchive" }
+  | { _: "chatListFolder"; chat_folder_id: number };
+
+export function chatListOrderKey(chat: TdChat, chatList: TdChatListRef): string {
+  if (chatList._ === "chatListArchive") return archiveListOrderKey(chat);
+  if (chatList._ === "chatListFolder") {
+    return folderListOrderKey(chat, chatList.chat_folder_id);
+  }
+  return mainListOrderKey(chat);
 }
 
 export type ChatPresenceKind = "online" | "recently" | "last_week" | "last_month" | "offline";

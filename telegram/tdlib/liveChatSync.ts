@@ -17,6 +17,7 @@ import {
   verifyGroupCallLiveState,
 } from "./voiceParticipants.js";
 import { ingestNewGroupCallMessage } from "./voiceCallMessages.js";
+import { ingestChatFoldersUpdate } from "./chatFolderCache.js";
 
 const CHAT_REFRESH_DEBOUNCE_MS = 800;
 
@@ -79,6 +80,7 @@ const LIVE_UPDATE_TYPES = new Set([
   "updateChatEmojiStatus",
   "updateChatPhoto",
   "updateChatPosition",
+  "updateChatAddedToList",
   "updateMessageEdited",
   "updateMessageContent",
   "updateDeleteMessages",
@@ -120,7 +122,8 @@ function chatIdFromUpdate(update: Record<string, unknown>): number | null {
     type === "updateChatReadInbox" ||
     type === "updateChatTitle" ||
     type === "updateChatPhoto" ||
-    type === "updateChatPosition"
+    type === "updateChatPosition" ||
+    type === "updateChatAddedToList"
   ) {
     return typeof update.chat_id === "number" ? update.chat_id : null;
   }
@@ -466,8 +469,20 @@ export function attachLiveChatSync(record: LiveSyncRecord): void {
   attachedClients.add(client);
 
   client.on("update", (update: Record<string, unknown>) => {
-    if (record.authState !== "ready") return;
     const type = update._;
+    // Folders can arrive before authState ready — cache early for full list sync.
+    if (type === "updateChatFolders") {
+      const folderIds = ingestChatFoldersUpdate(
+        record.telegramUsername,
+        update as { chat_folders?: Array<{ id?: number }> },
+      );
+      logLiveSync(record, "live_chat_folders", {
+        folderCount: folderIds.length,
+        folderIds,
+      });
+      return;
+    }
+    if (record.authState !== "ready") return;
     // Always ingest voice roster updates — they are not chat-list events.
     if (type === "updateGroupCallParticipant") {
       ingestGroupCallParticipantUpdate(update);

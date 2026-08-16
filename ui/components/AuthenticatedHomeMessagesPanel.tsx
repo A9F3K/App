@@ -52,7 +52,6 @@ import {
   sortChatRowsTierAware,
 } from "./messages/chatListVirtualWindow";
 import {
-  MESSAGE_ROW_HEIGHT_PX,
   chatListRowStridePx,
   chatListSearchBlockHeightPx,
   chatListSearchMarginBelowPx,
@@ -558,9 +557,11 @@ function mergeChatRows(
 const MESSAGES_POLL_FAST_MS = 2_000;
 const MESSAGES_POLL_SLOW_MS = 5_000;
 const MESSAGES_POLL_SLOW_AFTER = 4;
-/** Web uses SSE push; slow poll is a reconnect safety net only. */
+/** Web uses SSE push; slow poll is a reconnect safety net only when stream is healthy. */
 const MESSAGES_POLL_STREAM_FALLBACK_MS = 60_000;
 const CHAT_LIST_STREAM_ENABLED = typeof EventSource !== "undefined";
+/** Keep paging incomplete lists without requiring the user to scroll to the bottom. */
+const CHAT_LIST_AUTO_LOAD_MORE_MS = 1_800;
 
 export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Props) {
   const { t } = useAppStrings();
@@ -652,6 +653,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   } | null>(null);
   const unchangedPollStreakRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** SSE open + recent ready/ping/revision — gates the 60s safety poll. */
+  const chatListStreamHealthyRef = useRef(false);
   const chatListAtBottomRef = useRef(false);
   const loadMoreTierRef = useRef<"positioned" | "unpositioned">("positioned");
   /** Chat-list rows fetched while the voice dialog was open — apply on close. */
@@ -1266,6 +1269,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     enabled: authReady && isTelegramMessagesConnected,
     getSinceRevision: () => lastLiveRevisionRef.current,
     onRevision: onStreamRevision,
+    onStreamHealthyChange: (healthy) => {
+      chatListStreamHealthyRef.current = healthy;
+      if (healthy) {
+        unchangedPollStreakRef.current = 0;
+      }
+    },
   });
 
   useEffect(() => {
@@ -1331,9 +1340,10 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
 
     const scheduleNext = () => {
       if (cancelled) return;
+      const streamHealthy = CHAT_LIST_STREAM_ENABLED && chatListStreamHealthyRef.current;
       const delay = isVoiceDialogUiOpen()
         ? 15_000
-        : CHAT_LIST_STREAM_ENABLED
+        : streamHealthy
           ? MESSAGES_POLL_STREAM_FALLBACK_MS
           : unchangedPollStreakRef.current >= MESSAGES_POLL_SLOW_AFTER
             ? MESSAGES_POLL_SLOW_MS
@@ -1624,15 +1634,6 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       tier3InProgress ||
       (chatListAtBottomRef.current && mayHaveMoreOnServer));
 
-  const firstTier3Index = displayChats.findIndex(
-    (row) => resolveChatListTier(row) === "unpositioned",
-  );
-  const showTier3Divider =
-    !searchNeedle &&
-    positionedComplete &&
-    tier3Available &&
-    firstTier3Index >= 0;
-
   const visibleChats = chatListVirtualWindow.enabled
     ? displayChats.slice(
         Math.min(chatListVirtualWindow.startIndex, displayChats.length),
@@ -1696,6 +1697,29 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     searchNeedle,
   ]);
 
+  // Background sync alone is not enough if SSE is quiet — keep paging until the
+  // gateway reports the main list (and tier-3 tail) is complete.
+  useEffect(() => {
+    if (!authReady || !isTelegramMessagesConnected) return;
+    if (searchNeedle) return;
+    if (!mayHaveMoreOnServer) return;
+
+    const tick = () => {
+      if (isVoiceDialogUiOpen()) return;
+      void requestLoadMoreChats(needsPositionedPage ? "positioned" : "unpositioned");
+    };
+    tick();
+    const id = setInterval(tick, CHAT_LIST_AUTO_LOAD_MORE_MS);
+    return () => clearInterval(id);
+  }, [
+    authReady,
+    isTelegramMessagesConnected,
+    mayHaveMoreOnServer,
+    needsPositionedPage,
+    requestLoadMoreChats,
+    searchNeedle,
+  ]);
+
   const handleChatListNearBottom = useCallback(() => {
     chatListAtBottomRef.current = true;
     if (searchNeedle) return;
@@ -1732,29 +1756,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       ) : null}
       {items.map((item, index) => {
         const absoluteIndex = startIndex + index;
-        const showDivider =
-          showTier3Divider && absoluteIndex === firstTier3Index && firstTier3Index > 0;
         return (
           <View key={item.telegram_chat_id}>
-            {showDivider ? (
-              <View
-                style={{
-                  height: MESSAGE_ROW_HEIGHT_PX,
-                  justifyContent: "center",
-                  paddingHorizontal: 16,
-                }}
-              >
-                <Text
-                  style={{
-                    color: colors.secondary,
-                    fontSize: 13,
-                    lineHeight: 18,
-                  }}
-                >
-                  {t("messages.moreChats")}
-                </Text>
-              </View>
-            ) : null}
             <MessageChatRow
               item={item}
               isLast={absoluteIndex === displayChats.length - 1 && !showBottomLoader}

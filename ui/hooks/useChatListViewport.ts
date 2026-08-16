@@ -5,7 +5,7 @@ export const CHAT_LIST_SLICE = 30;
 /** Rows added per near-bottom expansion. */
 export const CHAT_LIST_EXPAND_BY = 25;
 /** Gateway first-paint main-list cap — matches INITIAL_MAIN_CHAT_SYNC_LIMIT. */
-export const CHAT_LIST_INITIAL_SYNC_LIMIT = 120;
+export const CHAT_LIST_INITIAL_SYNC_LIMIT = 2000;
 
 export function useChatListViewport(totalCount: number) {
   const [viewportCount, setViewportCount] = useState(() =>

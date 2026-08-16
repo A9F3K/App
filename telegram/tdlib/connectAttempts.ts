@@ -22,7 +22,6 @@ import {
   readUserAvatarBytes,
   refreshLiveChats,
   syncChatThreads,
-  INITIAL_MAIN_CHAT_SYNC_LIMIT,
   scheduleBackgroundChatSync,
   scheduleTier3ChatSync,
   isBackgroundChatSyncInProgress,
@@ -30,6 +29,7 @@ import {
 } from "./syncChats.js";
 import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, sendChatTextMessage, sendChatPhotoMessage, editChatTextMessage, deleteChatMessages, viewChatInboxMessagesUpTo } from "./chatHistory.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
+import { ingestChatFoldersUpdate } from "./chatFolderCache.js";
 import { isPositionedComplete } from "./chatListSyncState.js";
 import { getLiveChatList, getLiveChatListRevision, patchLiveChatMemberMeta, patchLiveChatVideoChat } from "./liveChatCache.js";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
@@ -272,11 +272,21 @@ function attachAuthListener(record: AttemptRecord): void {
     failAttempt(record, err.message || "tdlib_client_error");
   });
 
-  client.on("update", (update: { _?: string; authorization_state?: { _?: string; link?: string }; state?: { _?: string } }) => {
+  client.on("update", (update: {
+    _?: string;
+    authorization_state?: { _?: string; link?: string };
+    state?: { _?: string };
+    chat_folders?: Array<{ id?: number }>;
+  }) => {
     if (!attempts.has(record.attemptId)) return;
     if (update._ === "updateConnectionState") {
       record.connectionState = update.state?._ ?? null;
       logConnectEvent(record, "connect_connection_state", { connectionState: record.connectionState });
+      return;
+    }
+    if (update._ === "updateChatFolders") {
+      const folderIds = ingestChatFoldersUpdate(record.telegramUsername, update);
+      logConnectEvent(record, "connect_chat_folders", { folderCount: folderIds.length, folderIds });
       return;
     }
 
@@ -377,8 +387,8 @@ async function finalizeReady(record: AttemptRecord): Promise<void> {
 
   try {
     record.chatCount = await syncChatThreads(client, record.telegramUsername, {
-      maxMainChats: INITIAL_MAIN_CHAT_SYNC_LIMIT,
-      includeArchive: false,
+      maxMainChats: null,
+      includeArchive: true,
       includeSupplementarySearch: false,
       skipMemberCounts: true,
       replaceCache: true,
@@ -1355,8 +1365,8 @@ export async function resyncUserChats(
     }
 
     const count = await syncChatThreads(record.client, telegramUsername, {
-      maxMainChats: INITIAL_MAIN_CHAT_SYNC_LIMIT,
-      includeArchive: false,
+      maxMainChats: null,
+      includeArchive: true,
       includeSupplementarySearch: false,
       skipMemberCounts: true,
       replaceCache: true,
@@ -1459,8 +1469,8 @@ export function restorePersistedGatewaySessions(): void {
         }
         attachLiveChatSync(record);
         const chatCount = await syncChatThreads(record.client, telegramUsername, {
-          maxMainChats: INITIAL_MAIN_CHAT_SYNC_LIMIT,
-          includeArchive: false,
+          maxMainChats: null,
+          includeArchive: true,
           includeSupplementarySearch: false,
           skipMemberCounts: true,
           replaceCache: true,

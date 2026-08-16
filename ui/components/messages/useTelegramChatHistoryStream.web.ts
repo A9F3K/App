@@ -95,6 +95,10 @@ export function useTelegramChatHistoryStream(options: Options): void {
           logPageDisplay("messages_history_stream_ready", { chatId, mode });
         });
 
+        eventSource.addEventListener("ping", () => {
+          setActive(true);
+        });
+
         eventSource.onerror = () => {
           eventSource?.close();
           eventSource = null;

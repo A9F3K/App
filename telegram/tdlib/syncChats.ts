@@ -10,6 +10,7 @@ import {
   isChatPinnedInMainList,
   lastMessageAtIso,
   mainListOrderKey,
+  chatListOrderKey,
   normalizeUnreadCount,
   lastReadOutboxMessageIdFromChat,
   lastReadInboxMessageIdFromChat,
@@ -22,8 +23,10 @@ import {
   resolveLastMessagePreviewPayload,
   usernameFromTdUser,
   type TdChat,
+  type TdChatListRef,
   voiceChatFromTdChat,
 } from "./chatPreview.js";
+import { getChatFolderIds } from "./chatFolderCache.js";
 import { verifyGroupCallLiveState } from "./voiceParticipants.js";
 import {
   patchLiveChatEmojiStatus,
@@ -72,7 +75,7 @@ const PRESENCE_SYNC_CONCURRENCY = 8;
 const MEMBER_COUNT_SYNC_CONCURRENCY = 6;
 
 /** First paint: positioned main-list chats after all pins. */
-export const INITIAL_POSITIONED_SYNC_LIMIT = 120;
+export const INITIAL_POSITIONED_SYNC_LIMIT = 2000;
 /** @deprecated Use INITIAL_POSITIONED_SYNC_LIMIT — kept for client constant parity. */
 export const INITIAL_MAIN_CHAT_SYNC_LIMIT = INITIAL_POSITIONED_SYNC_LIMIT;
 /** Each deferred page after the initial snapshot. */
@@ -80,8 +83,8 @@ export const BACKGROUND_CHAT_SYNC_PAGE_SIZE = 80;
 /** Unpositioned supplementary chats per on-demand batch. */
 export const TIER3_CHAT_SYNC_BATCH_SIZE = 40;
 /** Keep background pages snappy — 2.5s gaps made ~300 chats feel "lazy". */
-const BACKGROUND_CHAT_SYNC_PAGE_DELAY_MS = 350;
-const BACKGROUND_CHAT_SYNC_START_DELAY_MS = 200;
+const BACKGROUND_CHAT_SYNC_PAGE_DELAY_MS = 200;
+const BACKGROUND_CHAT_SYNC_START_DELAY_MS = 100;
 
 export type SyncChatThreadsOptions = {
   /** Cap main-list chats (skips archive and full pagination when set). */
@@ -99,11 +102,72 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isTdlibListExhaustedError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const code = Number((err as { code?: unknown }).code);
+  if (code === 404) return true;
+  const message = String((err as { message?: unknown }).message ?? err);
+  // TDLib loadChats completion is specifically HTTP-style 404.
+  return /\b404\b/.test(message);
+}
+
+/**
+ * TDLib contract: keep calling loadChats until it returns 404 (list fully known).
+ * Without this, getChats pagination stops early (~150–255) on slim/no chat DB.
+ */
+async function loadChatsUntilExhausted(
+  client: Client,
+  chatList: TdChatListRef,
+  options?: { maxRounds?: number; limit?: number },
+): Promise<{ exhausted: boolean; rounds: number }> {
+  const maxRounds = options?.maxRounds ?? 500;
+  const limit = options?.limit ?? 100;
+  for (let round = 0; round < maxRounds; round += 1) {
+    try {
+      await client.invoke({ _: "loadChats", chat_list: chatList, limit });
+      // Brief yield so position updates land before the next load/getChats.
+      await sleep(25);
+    } catch (err) {
+      if (isTdlibListExhaustedError(err)) {
+        return { exhausted: true, rounds: round };
+      }
+      logGateway("load_chats_until_exhausted_error", {
+        chatList,
+        round,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return { exhausted: false, rounds: round };
+    }
+  }
+  return { exhausted: false, rounds: maxRounds };
+}
+
+async function resolveChatFolderIdsForSync(
+  client: Client,
+  telegramUsername?: string,
+): Promise<number[]> {
+  if (telegramUsername) {
+    const cached = getChatFolderIds(telegramUsername);
+    if (cached.length > 0) return cached;
+  }
+  // Fallback when updateChatFolders was missed: probe common folder ids.
+  const found: number[] = [];
+  for (let id = 1; id <= 40; id += 1) {
+    try {
+      await client.invoke({ _: "getChatFolder", chat_folder_id: id });
+      found.push(id);
+    } catch {
+      /* invalid / inaccessible folder */
+    }
+  }
+  return found;
+}
+
 /** Re-fetch chat until TDLib populates `positions` (or retries exhaust). */
 export async function hydrateChatPositions(
   client: Client,
   chatId: number,
-  retries = 2,
+  retries = 4,
 ): Promise<TdChat | null> {
   let last: TdChat | null = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -111,7 +175,12 @@ export async function hydrateChatPositions(
       const chat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
       last = chat;
       const positions = chat.positions;
-      if (Array.isArray(positions) && positions.length > 0) return chat;
+      if (Array.isArray(positions) && positions.length > 0) {
+        const hasUsableOrder = positions.some(
+          (row) => typeof row.order === "string" && row.order !== "0",
+        );
+        if (hasUsableOrder) return chat;
+      }
       if (attempt < retries) await sleep(150 + attempt * 100);
     } catch {
       return last;
@@ -120,195 +189,182 @@ export async function hydrateChatPositions(
   return last;
 }
 
+/**
+ * Pick a getChats pagination anchor from the end of a page.
+ * Never use order "0" — that used to stop sync at ~150 chats.
+ */
+async function findChatListPageAnchor(
+  client: Client,
+  chatIds: number[],
+  chatList: TdChatListRef,
+  known?: Map<number, TdChat> | TdChat[],
+): Promise<{ order: string; chatId: number } | null> {
+  const byId = new Map<number, TdChat>();
+  if (Array.isArray(known)) {
+    for (const chat of known) byId.set(chat.id, chat);
+  } else if (known) {
+    for (const [id, chat] of known) byId.set(id, chat);
+  }
+
+  for (let i = chatIds.length - 1; i >= 0; i -= 1) {
+    const chatId = chatIds[i];
+    if (chatId == null) continue;
+    let chat = byId.get(chatId) ?? null;
+    if (!chat) {
+      chat = await hydrateChatPositions(client, chatId);
+    }
+    if (!chat) continue;
+    const order = chatListOrderKey(chat, chatList);
+    if (order && order !== "0") {
+      return { order, chatId: chat.id };
+    }
+  }
+  return null;
+}
+
+const GET_CHATS_FULL_LIMIT = 20_000;
+
+async function getChatsSnapshot(
+  client: Client,
+  chatList: TdChatListRef,
+  limit: number,
+): Promise<{ chatIds: number[]; totalCount: number }> {
+  try {
+    // TDLib 1.7.7+: getChats only accepts chat_list + limit (no offset pagination).
+    const list = (await client.invoke({
+      _: "getChats",
+      chat_list: chatList,
+      limit: Math.max(1, Math.min(limit, GET_CHATS_FULL_LIMIT)),
+    })) as { chat_ids?: number[]; total_count?: number };
+    const chatIds = list.chat_ids ?? [];
+    const totalCount =
+      typeof list.total_count === "number" && Number.isFinite(list.total_count)
+        ? list.total_count
+        : chatIds.length;
+    return { chatIds, totalCount };
+  } catch {
+    return { chatIds: [], totalCount: 0 };
+  }
+}
+
+async function hydrateChatsByIds(
+  client: Client,
+  chatIds: number[],
+  options?: { maxChats?: number },
+): Promise<TdChat[]> {
+  const maxChats = options?.maxChats;
+  const ids =
+    maxChats != null ? chatIds.slice(0, Math.max(maxChats * 2, maxChats)) : chatIds;
+  const hydrated = await mapWithConcurrency(ids, PREVIEW_SYNC_CONCURRENCY, async (chatId) => {
+    try {
+      return await hydrateChatPositions(client, chatId);
+    } catch {
+      return null;
+    }
+  });
+  const result: TdChat[] = [];
+  const seen = new Set<number>();
+  for (const chat of hydrated) {
+    if (!chat || seen.has(chat.id)) continue;
+    seen.add(chat.id);
+    result.push(chat);
+    if (maxChats != null && result.length >= maxChats) break;
+  }
+  return result;
+}
+
 async function loadPinnedAndPositionedChats(
   client: Client,
   maxPositioned: number,
 ): Promise<{ chats: TdChat[]; positionedComplete: boolean }> {
-  const result: TdChat[] = [];
-  const seen = new Set<number>();
-  let positionedCount = 0;
-  let offsetOrder = "9223372036854775807";
-  let offsetChatId = 0;
-  let emptyListWarmedUp = false;
-  let partialPageRetries = 0;
-  const maxPartialPageRetries = 6;
-  let positionedComplete = false;
-
-  outer: for (let round = 0; round < 80; round += 1) {
-    let list: { chat_ids?: number[] };
-    try {
-      list = (await client.invoke({
-        _: "getChats",
-        chat_list: { _: "chatListMain" },
-        offset_order: offsetOrder,
-        offset_chat_id: offsetChatId,
-        limit: 100,
-      })) as { chat_ids?: number[] };
-    } catch {
-      break;
-    }
-
-    const rawIds = list.chat_ids ?? [];
-    if (rawIds.length === 0) {
-      if (emptyListWarmedUp) {
-        positionedComplete = true;
-        break;
-      }
-      emptyListWarmedUp = true;
-      try {
-        await client.invoke({ _: "loadChats", chat_list: { _: "chatListMain" }, limit: 100 });
-      } catch {
-        break;
-      }
-      await sleep(400);
-      continue;
-    }
-
-    for (const chatId of rawIds) {
-      if (seen.has(chatId)) continue;
-      const chat = await hydrateChatPositions(client, chatId);
-      if (!chat) continue;
-      const tier = chatListTier(chat);
-      if (tier === "pinned") {
-        result.push(chat);
-        seen.add(chatId);
-      } else if (tier === "positioned") {
-        result.push(chat);
-        seen.add(chatId);
-        positionedCount += 1;
-        if (positionedCount >= maxPositioned) {
-          break outer;
-        }
-      }
-    }
-
-    if (rawIds.length < 100) {
-      if (partialPageRetries < maxPartialPageRetries) {
-        partialPageRetries += 1;
-        try {
-          await client.invoke({ _: "loadChats", chat_list: { _: "chatListMain" }, limit: 100 });
-        } catch {
-          /* best effort */
-        }
-        await sleep(400 + partialPageRetries * 300);
-        continue;
-      }
-      positionedComplete = true;
-      break;
-    }
-    partialPageRetries = 0;
-
-    const lastId = rawIds[rawIds.length - 1];
-    if (lastId == null) break;
-    let anchor: TdChat | null = null;
-    try {
-      anchor = await hydrateChatPositions(client, lastId);
-    } catch {
-      anchor = null;
-    }
-    if (!anchor) break;
-    const nextOffsetOrder = mainListOrderKey(anchor);
-    if (!nextOffsetOrder || nextOffsetOrder === "0") {
-      positionedComplete = true;
-      break;
-    }
-    if (nextOffsetOrder === offsetOrder && anchor.id === offsetChatId) break;
-    offsetOrder = nextOffsetOrder;
-    offsetChatId = anchor.id;
-  }
-
-  return { chats: result, positionedComplete };
-}
-
-async function loadChatsFromList(
-  client: Client,
-  chatList: { _: "chatListMain" } | { _: "chatListArchive" },
-  options?: { maxChats?: number },
-): Promise<TdChat[]> {
-  const maxChats = options?.maxChats;
-  const collected = new Map<number, TdChat>();
-  let offsetOrder = "9223372036854775807";
-  let offsetChatId = 0;
-  let emptyListWarmedUp = false;
-  let partialPageRetries = 0;
-  const maxPartialPageRetries = 6;
-  const pageSize = maxChats != null ? Math.min(100, Math.max(maxChats, 20)) : 100;
-
-  for (let round = 0; round < 80; round++) {
-    if (maxChats != null && collected.size >= maxChats) break;
-
-    let list: { chat_ids?: number[] };
-    try {
-      list = (await client.invoke({
-        _: "getChats",
-        chat_list: chatList,
-        offset_order: offsetOrder,
-        offset_chat_id: offsetChatId,
-        limit: maxChats != null ? Math.min(pageSize, maxChats - collected.size) : pageSize,
-      })) as { chat_ids?: number[] };
-    } catch {
-      break;
-    }
-
-    const ids = list.chat_ids ?? [];
-    if (ids.length === 0) {
-      if (emptyListWarmedUp) break;
-      emptyListWarmedUp = true;
-      try {
-        const loadLimit =
-          maxChats != null ? Math.min(pageSize, maxChats) : 100;
-        await client.invoke({ _: "loadChats", chat_list: chatList, limit: loadLimit });
-      } catch {
-        break;
-      }
-      await sleep(400);
-      continue;
-    }
-
-    for (const chatId of ids) {
-      if (maxChats != null && collected.size >= maxChats) break;
-      if (collected.has(chatId)) continue;
+  const chatList = { _: "chatListMain" } as const;
+  // Load enough into TDLib memory, then snapshot from the start (no offsets).
+  for (let round = 0; round < 80; round += 1) {
+    const snap = await getChatsSnapshot(client, chatList, maxPositioned + 100);
+    let positionedCount = 0;
+    for (const chatId of snap.chatIds) {
       try {
         const chat = await hydrateChatPositions(client, chatId);
-        if (chat) collected.set(chatId, chat);
+        if (chat && !isChatPinnedInMainList(chat)) positionedCount += 1;
       } catch {
-        /* skip unreadable chat */
+        /* ignore */
       }
     }
-
-    if (maxChats != null && collected.size >= maxChats) break;
-    if (ids.length < pageSize) {
-      const wantsMore = maxChats == null || collected.size < maxChats;
-      if (partialPageRetries < maxPartialPageRetries && wantsMore) {
-        partialPageRetries += 1;
-        try {
-          const loadLimit =
-            maxChats != null ? Math.min(pageSize, maxChats - collected.size) : pageSize;
-          if (loadLimit > 0) {
-            await client.invoke({ _: "loadChats", chat_list: chatList, limit: loadLimit });
-          }
-        } catch {
-          /* best effort */
-        }
-        await sleep(400 + partialPageRetries * 300);
-        continue;
+    if (positionedCount >= maxPositioned) break;
+    try {
+      await client.invoke({ _: "loadChats", chat_list: chatList, limit: 100 });
+      await sleep(40);
+    } catch (err) {
+      if (isTdlibListExhaustedError(err)) {
+        const chats = await hydrateChatsByIds(client, snap.chatIds, {
+          maxChats: maxPositioned + 50,
+        });
+        return { chats, positionedComplete: true };
       }
       break;
     }
-    partialPageRetries = 0;
-    const lastChat = [...ids]
-      .reverse()
-      .map((chatId) => collected.get(chatId))
-      .find((chat): chat is TdChat => Boolean(chat));
-    if (!lastChat) break;
-    const nextOffsetOrder = mainListOrderKey(lastChat);
-    if (!nextOffsetOrder || nextOffsetOrder === "0") break;
-    if (nextOffsetOrder === offsetOrder && lastChat.id === offsetChatId) break;
-    offsetOrder = nextOffsetOrder;
-    offsetChatId = lastChat.id;
   }
 
-  return [...collected.values()];
+  const finalSnap = await getChatsSnapshot(client, chatList, maxPositioned + 100);
+  const chats = await hydrateChatsByIds(client, finalSnap.chatIds);
+  const positioned = chats.filter((c) => !isChatPinnedInMainList(c));
+  const positionedComplete = positioned.length >= maxPositioned;
+  // Keep pins + first N positioned.
+  const pins = chats.filter((c) => isChatPinnedInMainList(c));
+  const rest = positioned.slice(0, maxPositioned);
+  const byId = new Map<number, TdChat>();
+  for (const chat of [...pins, ...rest]) byId.set(chat.id, chat);
+  return { chats: [...byId.values()], positionedComplete };
+}
+
+/**
+ * TDLib 1.7.7+: loadChats until 404, then getChats(limit) from the start.
+ * offset_order / offset_chat_id were removed — old pagination always re-fetched page 1.
+ */
+async function loadChatsFromList(
+  client: Client,
+  chatList: TdChatListRef,
+  options?: { maxChats?: number; skipExhaust?: boolean },
+): Promise<TdChat[]> {
+  const maxChats = options?.maxChats;
+  const wantLimit = maxChats != null ? Math.max(maxChats, 20) : GET_CHATS_FULL_LIMIT;
+
+  if (options?.skipExhaust !== true) {
+    const loadResult = await loadChatsUntilExhausted(client, chatList);
+    logGateway("load_chats_from_list_exhausted", {
+      chatList,
+      exhausted: loadResult.exhausted,
+      loadRounds: loadResult.rounds,
+    });
+    await sleep(100);
+  }
+
+  let snap = await getChatsSnapshot(client, chatList, wantLimit);
+  // If TDLib reports more chats than returned, keep loading then re-snapshot.
+  for (let retry = 0; retry < 30 && snap.totalCount > snap.chatIds.length; retry += 1) {
+    const again = await loadChatsUntilExhausted(client, chatList, { maxRounds: 40 });
+    await sleep(80);
+    snap = await getChatsSnapshot(client, chatList, wantLimit);
+    logGateway("load_chats_from_list_resnapshot", {
+      chatList,
+      retry,
+      returned: snap.chatIds.length,
+      totalCount: snap.totalCount,
+      exhausted: again.exhausted,
+    });
+    if (again.exhausted && snap.chatIds.length >= snap.totalCount) break;
+    if (again.exhausted && retry >= 2) break;
+  }
+
+  const chats = await hydrateChatsByIds(client, snap.chatIds, { maxChats });
+  logGateway("load_chats_from_list_done", {
+    chatList,
+    returnedIds: snap.chatIds.length,
+    totalCount: snap.totalCount,
+    hydrated: chats.length,
+    maxChats: maxChats ?? null,
+  });
+  return chats;
 }
 
 async function openPrivateChatsForUserIds(client: Client, userIds: number[]): Promise<TdChat[]> {
@@ -406,6 +462,8 @@ type LoadAllChatsOptions = {
   maxMainChats?: number | null;
   includeArchive?: boolean;
   includeSupplementarySearch?: boolean;
+  includeFolders?: boolean;
+  telegramUsername?: string;
 };
 
 async function loadAllChats(client: Client, options?: LoadAllChatsOptions): Promise<TdChat[]> {
@@ -424,6 +482,23 @@ async function loadAllChats(client: Client, options?: LoadAllChatsOptions): Prom
 
   if (options?.includeArchive !== false && options?.maxMainChats == null) {
     merge(await loadChatsFromList(client, { _: "chatListArchive" }));
+  }
+
+  if (options?.includeFolders !== false && options?.maxMainChats == null) {
+    const folderIds = await resolveChatFolderIdsForSync(client, options?.telegramUsername);
+    logGateway("load_all_chats_folders", {
+      telegramUsername: options?.telegramUsername ?? null,
+      folderCount: folderIds.length,
+      folderIds,
+    });
+    for (const folderId of folderIds) {
+      merge(
+        await loadChatsFromList(client, {
+          _: "chatListFolder",
+          chat_folder_id: folderId,
+        }),
+      );
+    }
   }
 
   if (options?.includeSupplementarySearch === false) {
@@ -899,6 +974,13 @@ export async function syncChatThreads(
     const loaded = await loadPinnedAndPositionedChats(client, maxPositioned);
     chats = loaded.chats;
     positionedComplete = loaded.positionedComplete;
+    if (options?.includeArchive) {
+      const archiveChats = await loadChatsFromList(client, { _: "chatListArchive" });
+      const seen = new Set(chats.map((c) => c.id));
+      for (const chat of archiveChats) {
+        if (!seen.has(chat.id)) chats.push(chat);
+      }
+    }
     resetChatListSyncMeta(telegramUsername, {
       positionedComplete,
       tier3Available: true,
@@ -908,6 +990,7 @@ export async function syncChatThreads(
       maxMainChats: options?.maxMainChats ?? null,
       includeArchive: options?.includeArchive,
       includeSupplementarySearch: options?.includeSupplementarySearch,
+      telegramUsername,
     });
     positionedComplete = true;
     resetChatListSyncMeta(telegramUsername, {
@@ -1076,149 +1159,36 @@ export async function syncRemainingChatsInBackground(
 
   let merged = 0;
 
-  const syncChatList = async (
-    chatList: { _: "chatListMain" } | { _: "chatListArchive" },
-  ): Promise<void> => {
-    let offsetOrder = "9223372036854775807";
-    let offsetChatId = 0;
-    let emptyListWarmedUp = false;
-    let partialPageRetries = 0;
-    const maxPartialPageRetries = 6;
+  const syncChatList = async (chatList: TdChatListRef): Promise<void> => {
+    const chats = await loadChatsFromList(client, chatList);
+    const pageChats = chats.filter((chat) => !cachedIds.has(chat.id));
+    for (const chat of pageChats) cachedIds.add(chat.id);
 
-    for (let round = 0; round < 80; round++) {
-      let list: { chat_ids?: number[] };
-      try {
-        list = (await client.invoke({
-          _: "getChats",
-          chat_list: chatList,
-          offset_order: offsetOrder,
-          offset_chat_id: offsetChatId,
-          limit: 100,
-        })) as { chat_ids?: number[] };
-      } catch {
-        break;
-      }
+    logGateway("sync_chat_background_list_snapshot", {
+      telegramUsername,
+      chatList,
+      totalHydrated: chats.length,
+      newChats: pageChats.length,
+    });
 
-      const rawIds = list.chat_ids ?? [];
-      const ids = rawIds.filter((id) => !cachedIds.has(id));
-      if (rawIds.length === 0) {
-        if (emptyListWarmedUp) break;
-        emptyListWarmedUp = true;
-        try {
-          await client.invoke({ _: "loadChats", chat_list: chatList, limit: 100 });
-        } catch {
-          break;
-        }
-        await sleep(400);
-        continue;
-      }
-
-      const pageChats: TdChat[] = [];
-      for (const chatId of ids) {
-        try {
-          const chat = await hydrateChatPositions(client, chatId);
-          if (!chat) continue;
-          const tier = chatListTier(chat);
-          if (tier !== "pinned" && tier !== "positioned") continue;
-          if (!filterChatsForList([chat]).length) continue;
-          pageChats.push(chat);
-          cachedIds.add(chatId);
-        } catch {
-          /* skip */
-        }
-      }
-
-      for (let offset = 0; offset < pageChats.length; offset += BACKGROUND_CHAT_SYNC_PAGE_SIZE) {
-        const slice = pageChats.slice(offset, offset + BACKGROUND_CHAT_SYNC_PAGE_SIZE);
-        if (slice.length === 0) continue;
-        const rows = await buildLiveRowsForChats(client, slice);
-        mergeLiveChatRows(telegramUsername, rows);
-        merged += rows.length;
-        if (offset + BACKGROUND_CHAT_SYNC_PAGE_SIZE < pageChats.length) {
-          await sleep(BACKGROUND_CHAT_SYNC_PAGE_DELAY_MS);
-        }
-      }
-
-      const advanceFromRawIds = async (): Promise<boolean> => {
-        const lastId = rawIds[rawIds.length - 1];
-        if (lastId == null) return false;
-        let anchor: TdChat | null = pageChats.find((c) => c.id === lastId) ?? null;
-        if (!anchor) {
-          try {
-            anchor = (await client.invoke({ _: "getChat", chat_id: lastId })) as TdChat;
-          } catch {
-            anchor = null;
-          }
-        }
-        if (!anchor) return false;
-        const nextOffsetOrder = mainListOrderKey(anchor);
-        if (!nextOffsetOrder || nextOffsetOrder === "0") return false;
-        if (nextOffsetOrder === offsetOrder && anchor.id === offsetChatId) return false;
-        offsetOrder = nextOffsetOrder;
-        offsetChatId = anchor.id;
-        return true;
-      };
-
-      if (ids.length === 0) {
-        if (rawIds.length >= 100) {
-          const advanced = await advanceFromRawIds();
-          if (advanced) {
-            partialPageRetries = 0;
-            continue;
-          }
-        }
-        if (rawIds.length < 100) {
-          if (partialPageRetries < maxPartialPageRetries) {
-            partialPageRetries += 1;
-            try {
-              await client.invoke({ _: "loadChats", chat_list: chatList, limit: 100 });
-            } catch {
-              /* best effort */
-            }
-            await sleep(400 + partialPageRetries * 300);
-            continue;
-          }
-        }
-        break;
-      }
-
-      if (rawIds.length < 100) {
-        if (partialPageRetries < maxPartialPageRetries) {
-          partialPageRetries += 1;
-          try {
-            await client.invoke({ _: "loadChats", chat_list: chatList, limit: 100 });
-          } catch {
-            /* best effort */
-          }
-          await sleep(400 + partialPageRetries * 300);
-          continue;
-        }
-        break;
-      }
-      partialPageRetries = 0;
-      const lastId = rawIds[rawIds.length - 1];
-      let anchor: TdChat | null = pageChats.find((c) => c.id === lastId) ?? null;
-      if (!anchor && lastId != null) {
-        try {
-          anchor = (await client.invoke({ _: "getChat", chat_id: lastId })) as TdChat;
-        } catch {
-          anchor = null;
-        }
-      }
-      if (!anchor) break;
-      const nextOffsetOrder = mainListOrderKey(anchor);
-      if (!nextOffsetOrder || nextOffsetOrder === "0") break;
-      if (nextOffsetOrder === offsetOrder && anchor.id === offsetChatId) break;
-      offsetOrder = nextOffsetOrder;
-      offsetChatId = anchor.id;
-
-      if (pageChats.length > 0) {
+    for (let offset = 0; offset < pageChats.length; offset += BACKGROUND_CHAT_SYNC_PAGE_SIZE) {
+      const slice = pageChats.slice(offset, offset + BACKGROUND_CHAT_SYNC_PAGE_SIZE);
+      if (slice.length === 0) continue;
+      const rows = await buildLiveRowsForChats(client, slice);
+      mergeLiveChatRows(telegramUsername, rows);
+      merged += rows.length;
+      if (offset + BACKGROUND_CHAT_SYNC_PAGE_SIZE < pageChats.length) {
         await sleep(BACKGROUND_CHAT_SYNC_PAGE_DELAY_MS);
       }
     }
   };
 
   await syncChatList({ _: "chatListMain" });
+  await syncChatList({ _: "chatListArchive" });
+  const folderIds = await resolveChatFolderIdsForSync(client, telegramUsername);
+  for (const folderId of folderIds) {
+    await syncChatList({ _: "chatListFolder", chat_folder_id: folderId });
+  }
 
   setPositionedComplete(telegramUsername, true);
   setTier3Available(telegramUsername, true);
@@ -1270,88 +1240,13 @@ export async function syncUnpositionedChatBatch(
 
   const cursor = getTier3ListCursor(telegramUsername);
   if (candidates.length < limit && !cursor.exhausted) {
-    let offsetOrder = cursor.offsetOrder;
-    let offsetChatId = cursor.offsetChatId;
-    let emptyListWarmedUp = false;
-
-    outer: for (let round = 0; round < 40 && candidates.length < limit; round += 1) {
-      let list: { chat_ids?: number[] };
-      try {
-        list = (await client.invoke({
-          _: "getChats",
-          chat_list: { _: "chatListMain" },
-          offset_order: offsetOrder,
-          offset_chat_id: offsetChatId,
-          limit: 100,
-        })) as { chat_ids?: number[] };
-      } catch {
-        cursor.exhausted = true;
-        break;
-      }
-
-      const rawIds = list.chat_ids ?? [];
-      if (rawIds.length === 0) {
-        if (emptyListWarmedUp) {
-          cursor.exhausted = true;
-          break;
-        }
-        emptyListWarmedUp = true;
-        try {
-          await client.invoke({ _: "loadChats", chat_list: { _: "chatListMain" }, limit: 100 });
-        } catch {
-          cursor.exhausted = true;
-          break;
-        }
-        await sleep(400);
-        continue;
-      }
-
-      for (const chatId of rawIds) {
-        if (candidates.length >= limit) break;
-        if (seen.has(chatId) || cachedIds.has(chatId)) continue;
-        try {
-          const hydrated = await hydrateChatPositions(client, chatId);
-          if (hydrated) tryAddChat(hydrated);
-        } catch {
-          /* skip */
-        }
-      }
-
-      const lastId = rawIds[rawIds.length - 1];
-      if (lastId == null) {
-        cursor.exhausted = true;
-        break;
-      }
-      let anchor: TdChat | null = null;
-      try {
-        anchor = await hydrateChatPositions(client, lastId);
-      } catch {
-        anchor = null;
-      }
-      if (!anchor) {
-        cursor.exhausted = true;
-        break;
-      }
-      const nextOffsetOrder = mainListOrderKey(anchor);
-      if (!nextOffsetOrder || nextOffsetOrder === "0") {
-        cursor.exhausted = true;
-        break;
-      }
-      if (nextOffsetOrder === offsetOrder && anchor.id === offsetChatId) {
-        cursor.exhausted = true;
-        break;
-      }
-      offsetOrder = nextOffsetOrder;
-      offsetChatId = anchor.id;
-
-      if (rawIds.length < 100) {
-        cursor.exhausted = true;
-        break outer;
-      }
+    // Snapshot the full main list (TDLib 1.7+ getChats has no offsets), then pick unpositioned.
+    const mainChats = await loadChatsFromList(client, { _: "chatListMain" });
+    for (const chat of mainChats) {
+      if (candidates.length >= limit) break;
+      tryAddChat(chat);
     }
-
-    cursor.offsetOrder = offsetOrder;
-    cursor.offsetChatId = offsetChatId;
+    cursor.exhausted = true;
   }
 
   const batch = candidates.slice(0, limit);
@@ -1383,6 +1278,8 @@ export {
 
 export function scheduleBackgroundChatSync(client: Client, telegramUsername: string): void {
   if (!markBackgroundChatSyncStart(telegramUsername)) return;
+  // Allow UI auto load-more / status to show incomplete until this pass finishes.
+  setPositionedComplete(telegramUsername, false);
   void (async () => {
     try {
       await syncRemainingChatsInBackground(client, telegramUsername);
@@ -1415,8 +1312,8 @@ export async function syncChatsFromTdlib(
 ): Promise<number> {
   await persistMtprotoConnection(client, telegramUsername);
   const count = await syncChatThreads(client, telegramUsername, {
-    maxMainChats: INITIAL_MAIN_CHAT_SYNC_LIMIT,
-    includeArchive: false,
+    maxMainChats: null,
+    includeArchive: true,
     includeSupplementarySearch: false,
     skipMemberCounts: true,
     replaceCache: true,

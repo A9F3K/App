@@ -1,5 +1,7 @@
 import { specialUserForceIncludedPeerUserIds } from "../../shared/specialTelegramUsers.js";
 import {
+  isChatInArchiveList,
+  isChatInFolderList,
   isChatInMainList,
   isChatPinnedInMainList,
   isPrivateTdChat,
@@ -19,7 +21,10 @@ export function chatListTier(
   options?: ChatListFilterOptions,
 ): ChatListTier {
   if (isChatPinnedInMainList(chat)) return "pinned";
-  if (isChatInMainList(chat)) return "positioned";
+  // Main, archive, and folder-only chats belong in the flat list.
+  if (isChatInMainList(chat) || isChatInArchiveList(chat) || isChatInFolderList(chat)) {
+    return "positioned";
+  }
   const peerUserId = peerUserIdFromChat(chat);
   if (peerUserId != null && specialUserForceIncludedPeerUserIds().includes(peerUserId)) {
     return "unpositioned";
@@ -31,7 +36,7 @@ export function chatListTier(
 }
 
 export type ShouldIncludeChatOptions = ChatListFilterOptions & {
-  /** When true, supplementary / forced private chats in the unpositioned tier are included. */
+  /** When false, skip supplementary / forced private chats in the unpositioned tier. */
   includeUnpositioned?: boolean;
 };
 
@@ -39,9 +44,12 @@ export function shouldIncludeChatInList(
   chat: TdChat,
   options?: ShouldIncludeChatOptions,
 ): boolean {
-  const tier = chatListTier(chat, options);
+  const tier = chatListTier(chat, { allowSupplementaryPrivate: true, ...options });
   if (tier === "pinned" || tier === "positioned") return true;
-  if (tier === "unpositioned" && options?.includeUnpositioned) return true;
+  // Default: keep unpositioned (contacts / force-included) — matches Telegram’s full roster.
+  if (tier === "unpositioned") {
+    return options?.includeUnpositioned !== false;
+  }
   return false;
 }
 

@@ -6,15 +6,20 @@ type Options = {
   enabled: boolean;
   getSinceRevision: () => number | null;
   onRevision: (revision: number) => void;
+  /** True while SSE is open and recently heartbeating (ready / ping / revision). */
+  onStreamHealthyChange?: (healthy: boolean) => void;
 };
 
 const STREAM_RECONNECT_MS = 3_000;
+/** Gateway pings every 25s — miss ~2 pings ⇒ treat stream as dead for poll fallback. */
+const STREAM_HEALTH_STALE_MS = 55_000;
 
 /** SSE push — prefers direct gateway; falls back to Vercel proxy. */
 export function useTelegramMessagesChatListStream(options: Options): void {
-  const { enabled, getSinceRevision, onRevision } = options;
+  const { enabled, getSinceRevision, onRevision, onStreamHealthyChange } = options;
   const onRevisionRef = useRef(onRevision);
   const getSinceRevisionRef = useRef(getSinceRevision);
+  const onStreamHealthyChangeRef = useRef(onStreamHealthyChange);
 
   useEffect(() => {
     onRevisionRef.current = onRevision;
@@ -25,20 +30,40 @@ export function useTelegramMessagesChatListStream(options: Options): void {
   }, [getSinceRevision]);
 
   useEffect(() => {
+    onStreamHealthyChangeRef.current = onStreamHealthyChange;
+  }, [onStreamHealthyChange]);
+
+  useEffect(() => {
     if (!enabled || typeof EventSource === "undefined") {
+      onStreamHealthyChangeRef.current?.(false);
       return;
     }
 
     let cancelled = false;
     let eventSource: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let healthWatchTimer: ReturnType<typeof setInterval> | null = null;
     let mintAbort: AbortController | null = null;
+    let healthy = false;
+    let lastEventAt = 0;
+
+    const setHealthy = (next: boolean) => {
+      if (healthy === next) return;
+      healthy = next;
+      onStreamHealthyChangeRef.current?.(next);
+    };
+
+    const markEvent = () => {
+      lastEventAt = Date.now();
+      setHealthy(true);
+    };
 
     const connect = () => {
       if (cancelled) return;
       eventSource?.close();
       mintAbort?.abort();
       mintAbort = new AbortController();
+      setHealthy(false);
 
       const sinceRevision = getSinceRevisionRef.current();
       const proxyParams = new URLSearchParams();
@@ -67,6 +92,7 @@ export function useTelegramMessagesChatListStream(options: Options): void {
           try {
             const data = JSON.parse((event as MessageEvent).data) as { revision?: number };
             if (typeof data.revision === "number" && data.revision > 0) {
+              markEvent();
               onRevisionRef.current(data.revision);
             }
           } catch {
@@ -75,15 +101,21 @@ export function useTelegramMessagesChatListStream(options: Options): void {
         });
 
         eventSource.addEventListener("ready", () => {
+          markEvent();
           logPageDisplay("messages_chats_stream_ready", {
             sinceRevision: getSinceRevisionRef.current(),
             mode,
           });
         });
 
+        eventSource.addEventListener("ping", () => {
+          markEvent();
+        });
+
         eventSource.onerror = () => {
           eventSource?.close();
           eventSource = null;
+          setHealthy(false);
           if (cancelled) return;
           if (reconnectTimer != null) clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(connect, STREAM_RECONNECT_MS);
@@ -92,12 +124,24 @@ export function useTelegramMessagesChatListStream(options: Options): void {
     };
 
     connect();
+    healthWatchTimer = setInterval(() => {
+      if (cancelled) return;
+      if (!healthy) return;
+      if (lastEventAt > 0 && Date.now() - lastEventAt > STREAM_HEALTH_STALE_MS) {
+        setHealthy(false);
+        logPageDisplay("messages_chats_stream_stale", {
+          silentMs: Date.now() - lastEventAt,
+        });
+      }
+    }, 5_000);
 
     return () => {
       cancelled = true;
       mintAbort?.abort();
       if (reconnectTimer != null) clearTimeout(reconnectTimer);
+      if (healthWatchTimer != null) clearInterval(healthWatchTimer);
       eventSource?.close();
+      setHealthy(false);
     };
   }, [enabled]);
 }
