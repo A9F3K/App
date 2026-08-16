@@ -28,6 +28,7 @@ import { TelegramMessagesConnectionProvider } from "../ui/telegram/TelegramMessa
 import { SettingsProvider } from "../ui/settings/SettingsContext";
 import { ProfileProvider } from "../ui/profile/ProfileContext";
 import { WelcomeEmailAuthProvider } from "../ui/welcome/WelcomeEmailAuthContext";
+import { TonConnectProvider } from "../ui/ton/TonConnectProvider";
 import { useTmaMobileNativeBackNavigation } from "../ui/telegram/useTmaMobileNativeBackNavigation";
 import { logBuildSnapshotOnce, logPageDisplay } from "../ui/pageDisplayLog";
 import { installGlobalVoiceFreezeLogger } from "../ui/components/messages/useVoiceDialogFreezeDetector";
@@ -97,6 +98,7 @@ export default function RootLayout() {
             <SettingsProvider>
             <ProfileProvider>
             <BottomBarLayoutProvider>
+            <TonConnectProvider>
             {Platform.OS === "ios" ? (
               <KeyboardAvoidingView
                 style={styles.keyboardAvoid}
@@ -108,6 +110,7 @@ export default function RootLayout() {
             ) : (
               <RootContent />
             )}
+            </TonConnectProvider>
             </BottomBarLayoutProvider>
             </ProfileProvider>
             </SettingsProvider>

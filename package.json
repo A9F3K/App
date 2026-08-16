@@ -155,6 +155,7 @@
     "@ton/core": "^0.63.1",
     "@ton/crypto": "^3.3.0",
     "@ton/ton": "^16.2.3",
+    "@tonconnect/ui-react": "^3.0.2",
     "@vercel/analytics": "^2.0.1",
     "buffer": "^6.0.3",
     "electron-updater": "^6.8.3",
