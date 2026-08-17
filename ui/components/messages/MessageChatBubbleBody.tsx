@@ -150,6 +150,8 @@ function MessageChatBubbleTextContent({
           alignItems: "baseline",
           alignSelf: "flex-start",
           flexWrap: "nowrap",
+          flexShrink: 0,
+          ...(Platform.OS === "web" ? ({ width: "max-content" } as object) : null),
         }}
       >
         <MessageChatLinkifiedText
@@ -167,8 +169,9 @@ function MessageChatBubbleTextContent({
           style={{
             marginLeft: MESSAGE_BUBBLE_META_GAP_PX,
             flexShrink: 0,
+            minWidth: metaReserveWidthPx > 0 ? metaReserveWidthPx : undefined,
             ...(Platform.OS === "web"
-              ? ({ display: "inline-flex", verticalAlign: "baseline" } as object)
+              ? ({ display: "flex" } as object)
               : { paddingBottom: MESSAGE_BUBBLE_INLINE_META_BASELINE_OFFSET_PX }),
           }}
         >
@@ -183,23 +186,19 @@ function MessageChatBubbleTextContent({
       <View
         style={{
           marginTop,
-          alignSelf: "flex-start",
+          alignSelf: "stretch",
+          width: "100%",
           maxWidth: maxWidthPx,
           minWidth: 0,
           position: "relative",
+          paddingRight: metaPadRight,
+          ...(Platform.OS === "web" ? ({ boxSizing: "border-box" } as object) : null),
         }}
       >
         <MessageChatLinkifiedText
           text={bodyText}
           segments={bodyTextSegments}
-          style={[
-            textStyle,
-            {
-              textAlign: "left",
-              paddingRight: metaPadRight,
-              ...(Platform.OS === "web" ? ({ boxSizing: "border-box" } as object) : null),
-            },
-          ]}
+          style={[textStyle, { textAlign: "left" }]}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchEnabled={emojiContentActive}
           enrichStandardEmojis={emojiContentActive}
@@ -215,6 +214,7 @@ function MessageChatBubbleTextContent({
             alignItems: "baseline",
             zIndex: 1,
             pointerEvents: "none",
+            minWidth: metaReserveWidthPx > 0 ? metaReserveWidthPx : undefined,
           }}
         >
           {timeRow}
@@ -287,9 +287,6 @@ function MessageChatBubbleTimeRow({
     color: lightOnMedia ? "rgba(255,255,255,0.92)" : colors.secondary,
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
     includeFontPadding: false,
-    ...(alignWithBodyBaseline && Platform.OS === "web"
-      ? ({ display: "inline" } as object)
-      : null),
   } as const;
 
   return (
@@ -302,12 +299,10 @@ function MessageChatBubbleTimeRow({
         ...(lightOnMedia && Platform.OS === "web"
           ? ({ textShadow: "0 1px 2px rgba(0,0,0,0.65)" } as object)
           : null),
-        ...(alignWithBodyBaseline && Platform.OS === "web"
-          ? ({ display: "inline-flex", verticalAlign: "baseline" } as object)
-          : null),
         ...(!alignWithBodyBaseline
           ? { minHeight: MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX }
           : null),
+        flexShrink: 0,
       }}
     >
       {callIndicator ? (

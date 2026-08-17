@@ -400,15 +400,8 @@ export function MessageChatMessageRow({
           }
         : nativeBubbleLayout ?? syncTextBubbleLayout;
   const metaPlacement = bubbleLayout?.placement ?? "stacked";
-  const useWebFitContent =
-    Platform.OS === "web" &&
-    columnWidthPx > 0 &&
-    !isBareMediaMessage &&
-    !(showMedia && hasMediaCaption);
-  const bubbleContentWidthPx = useWebFitContent
-    ? bubbleInnerMaxWidth
-    : bubbleLayout?.innerWidthPx ?? bubbleInnerMaxWidth;
-  const bubbleWidth = useWebFitContent ? null : bubbleLayout?.width ?? null;
+  const bubbleContentWidthPx = bubbleLayout?.innerWidthPx ?? bubbleInnerMaxWidth;
+  const bubbleWidth = bubbleLayout?.width ?? null;
   const measureText = bodyText || " ";
   const showChannelBadge = Boolean(item.sender_is_channel) && chatKind !== "channel";
   const isCompactSingleLineRow =
@@ -622,10 +615,17 @@ export function MessageChatMessageRow({
                       overflow: "visible",
                     }),
               },
-              bubbleWidth != null && bubbleWidth > 0 && !useWebFitContent ? { width: bubbleWidth } : null,
-              useWebFitContent
-                ? ({ width: "fit-content", maxWidth: bubbleMaxWidth } as object)
-                : null,
+              bubbleWidth != null && bubbleWidth > 0
+                ? {
+                    width: bubbleWidth,
+                    minWidth: bubbleWidth,
+                    ...(Platform.OS === "web"
+                      ? ({ boxSizing: "border-box" } as object)
+                      : null),
+                  }
+                : Platform.OS === "web"
+                  ? ({ width: "max-content", maxWidth: bubbleMaxWidth } as object)
+                  : null,
             ]}
           >
             <MessageChatBubbleBody

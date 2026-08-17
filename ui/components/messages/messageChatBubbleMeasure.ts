@@ -174,9 +174,14 @@ export function measureMessageBubbleMetaWidthPx(
     MESSAGE_BUBBLE_TIME_FONT_SIZE_PX,
     MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX,
   );
-  return Math.max(
-    MESSAGE_BUBBLE_TIME_MIN_WIDTH_PX,
-    timeWidth + metaExtraWidthPx,
+  // Subpixel / font fallback vs the live bubble time — keep the undercover
+  // wide enough that "11.34 PM" never hangs off the fill.
+  const META_MEASURE_PAD_PX = 6;
+  return Math.ceil(
+    Math.max(
+      MESSAGE_BUBBLE_TIME_MIN_WIDTH_PX,
+      timeWidth + metaExtraWidthPx,
+    ) + META_MEASURE_PAD_PX,
   );
 }
 

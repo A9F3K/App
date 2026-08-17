@@ -505,6 +505,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const [userScrollInteractionTick, setUserScrollInteractionTick] = useState(0);
   const [fabUnreadDisplayTick, setFabUnreadDisplayTick] = useState(0);
   const [frozenUnreadDividerBeforeId, setFrozenUnreadDividerBeforeId] = useState<number | null>(null);
+  const [frozenUnreadDividerCount, setFrozenUnreadDividerCount] = useState(0);
+  const unreadDividerDismissedRef = useRef(false);
   const displayMessagesRef = useRef<MessageChatHistoryItem[]>([]);
   const syncScrollBelowUnreadRef = useRef<(metrics: HspScrollMetrics) => void>(() => {});
   const scheduleSyncScrollBelowUnreadRef = useRef<() => void>(() => {});
@@ -776,6 +778,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       setPrependAnchorRestorePendingSynced(false);
       displaySliceBoundsOverrideRef.current = null;
       setFrozenUnreadDividerBeforeId(null);
+      setFrozenUnreadDividerCount(0);
+      unreadDividerDismissedRef.current = false;
       memoFirstUnreadIdRef.current = null;
       memoUnreadDividerBeforeIdRef.current = null;
       isReplacingHistoryRef.current = false;
@@ -1038,6 +1042,14 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     );
   }, []);
 
+  const dismissUnreadDivider = useCallback(() => {
+    if (unreadDividerDismissedRef.current) return;
+    unreadDividerDismissedRef.current = true;
+    memoUnreadDividerBeforeIdRef.current = null;
+    setFrozenUnreadDividerBeforeId((current) => (current == null ? current : null));
+    setFrozenUnreadDividerCount(0);
+  }, []);
+
   const markUserScrollInteraction = useCallback((direction?: "up" | "down") => {
     if (direction === "up") {
       userScrollingUpRef.current = true;
@@ -1069,7 +1081,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   }, []);
 
   const scrollToBottom = useCallback(() => {
-    markUserScrollInteraction();
+    markUserScrollInteraction("down");
+    dismissUnreadDivider();
     displaySliceBoundsOverrideRef.current = null;
     scrollControllerRef.current?.scrollToEnd();
     followingBottomRef.current = true;
@@ -1094,7 +1107,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         void loadNewerMessagesRef.current();
       }
     });
-  }, [chat.last_message_telegram_id, flushViewInboxMessages, markUserScrollInteraction]);
+  }, [
+    chat.last_message_telegram_id,
+    dismissUnreadDivider,
+    flushViewInboxMessages,
+    markUserScrollInteraction,
+  ]);
 
   const applyProgrammaticScrollY = useCallback((targetY: number) => {
     isScrollTopJustUpdatedRef.current = true;
@@ -1874,11 +1892,14 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       return false;
     }
 
-    if (firstUnreadId != null) {
-      if (memoFirstUnreadIdRef.current !== firstUnreadId) {
+    if (firstUnreadId != null && !unreadDividerDismissedRef.current) {
+      if (memoUnreadDividerBeforeIdRef.current == null) {
         memoFirstUnreadIdRef.current = firstUnreadId;
         memoUnreadDividerBeforeIdRef.current = firstUnreadId;
         setFrozenUnreadDividerBeforeId(firstUnreadId);
+        setFrozenUnreadDividerCount(
+          Math.max(openingUnreadCountRef.current, Math.trunc(chat.unread_count ?? 0)),
+        );
       }
     }
 
@@ -2014,6 +2035,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     return false;
   }, [
     applyProgrammaticScrollY,
+    chat.unread_count,
     enableEdgeLoadingAfterOpen,
     resolveScrollLayoutMap,
     scheduleOpenUnreadAnchorRelease,
@@ -2341,6 +2363,14 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           }
         }
         if (
+          deltaY > 8 &&
+          !programmaticScrollRef.current &&
+          !initialScrollInProgressRef.current &&
+          chatScrollPaintReadyRef.current
+        ) {
+          dismissUnreadDivider();
+        }
+        if (
           Math.abs(deltaY) > 2 &&
           Date.now() < openUnreadAnchorLockUntilRef.current &&
           !programmaticScrollRef.current &&
@@ -2503,6 +2533,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       persistChatScrollPosition,
       resolveEffectiveFollowingBottom,
       unreadCatchUpAwaitingUserScroll,
+      dismissUnreadDivider,
     ],
   );
 
@@ -3110,35 +3141,27 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   }, [displayMessages]);
 
   useEffect(() => {
+    if (unreadDividerDismissedRef.current) {
+      if (frozenUnreadDividerBeforeId != null) {
+        setFrozenUnreadDividerBeforeId(null);
+      }
+      return;
+    }
+    if (frozenUnreadDividerBeforeId != null) return;
+
     const messages = loadedMessages;
     if (messages.length === 0) return;
+    if (appliedHistoryFromPreviewCacheRef.current) return;
 
     const serverUnread = Math.max(0, Math.trunc(chat.unread_count ?? 0));
     const openingUnread = openingUnreadCountRef.current;
-    const hasUnreads = serverUnread > 0 || openingUnread > 0;
-    if (!hasUnreads) {
-      if (frozenUnreadDividerBeforeId != null) {
-        setFrozenUnreadDividerBeforeId(null);
-        memoFirstUnreadIdRef.current = null;
-        memoUnreadDividerBeforeIdRef.current = null;
-      }
-      return;
-    }
+    if (serverUnread <= 0 && openingUnread <= 0) return;
 
-    if (appliedHistoryFromPreviewCacheRef.current) return;
-
-    const readCursor = lastReadInboxMessageIdRef.current;
-    const firstUnread = resolveFirstUnreadMessageId(messages, readCursor);
-    if (firstUnread == null) {
-      if (frozenUnreadDividerBeforeId != null) {
-        setFrozenUnreadDividerBeforeId(null);
-        memoFirstUnreadIdRef.current = null;
-        memoUnreadDividerBeforeIdRef.current = null;
-      }
-      return;
-    }
-
-    if (frozenUnreadDividerBeforeId === firstUnread) return;
+    const firstUnread = resolveFirstUnreadMessageId(
+      messages,
+      lastReadInboxMessageIdRef.current,
+    );
+    if (firstUnread == null) return;
 
     const unreadIndex = messages.findIndex(
       (row) => row.telegram_message_id === firstUnread,
@@ -3158,7 +3181,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     memoFirstUnreadIdRef.current = firstUnread;
     memoUnreadDividerBeforeIdRef.current = firstUnread;
     setFrozenUnreadDividerBeforeId(firstUnread);
-  }, [loadedMessages, frozenUnreadDividerBeforeId, chat.unread_count, readInboxCursorTick]);
+    setFrozenUnreadDividerCount(Math.max(openingUnread, serverUnread));
+  }, [loadedMessages, frozenUnreadDividerBeforeId, chat.unread_count]);
 
   const syncScrollBelowUnread = useCallback(
     (metrics: HspScrollMetrics) => {
@@ -6713,7 +6737,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             {frozenUnreadDividerBeforeId === item.telegram_message_id ? (
               <>
                 <MessageUnreadDivider
-                  unreadCount={Math.max(0, chat.unread_count ?? 0)}
+                  unreadCount={frozenUnreadDividerCount}
                   colors={colors}
                 />
                 <View style={{ height: MESSAGE_BUBBLE_ROW_GAP_PX }} />
