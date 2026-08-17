@@ -58,6 +58,7 @@ import {
   CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX,
   CHOOSE_CURRENCY_TABLE_SCROLL_INDICATOR_THUMB_MIN_PX,
 } from "./chooseCurrencyTableConstants";
+import { prefetchChooseCurrencyYearCharts } from "../../swap/chooseCurrencyYearChartCache";
 import { resolveChooseCurrencyColumnLayout } from "./chooseCurrencyTableLayout";
 import type { ChooseCurrencyVisibleColumn } from "./chooseCurrencyTableLayout";
 import { buildChooseCurrencyColumnMetrics } from "./chooseCurrencyTableMeasure";
@@ -71,6 +72,10 @@ const CONTENT_INSET_PX = layout.contentSideInsetPx;
 const SCROLLBAR_RIGHT_INSET_PX = layout.scrollIndicatorRightInsetPx;
 const HEADER_DIVIDER_HEIGHT_PX = scrollIndicatorHairlineBorderWidthPx();
 const HEADER_BLOCK_HEIGHT_PX = CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX + HEADER_DIVIDER_HEIGHT_PX;
+const SPARKLINE_ROW_STRIDE_PX =
+  CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX +
+  2 * LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX +
+  LIST_ROW_GAP_PX;
 
 function CurrencyIcon({ row }: { row: ChooseCurrencyRow }) {
   const colors = useColors();
@@ -410,6 +415,25 @@ export function ChooseCurrencyTable({
     },
     [onLayout],
   );
+
+  const sparklinePrefetchStart = Math.max(
+    0,
+    Math.floor(scroll.scrollY / SPARKLINE_ROW_STRIDE_PX) - 4,
+  );
+  const sparklinePrefetchCount = Math.max(
+    16,
+    Math.ceil((scroll.layoutH || shellLayoutH || 480) / SPARKLINE_ROW_STRIDE_PX) + 8,
+  );
+
+  useEffect(() => {
+    const end = Math.min(rows.length, sparklinePrefetchStart + sparklinePrefetchCount);
+    const addresses: string[] = [];
+    for (let i = sparklinePrefetchStart; i < end; i++) {
+      const row = rows[i];
+      if (row?.lastYearKind === "sparkline") addresses.push(row.rowKey);
+    }
+    if (addresses.length > 0) prefetchChooseCurrencyYearCharts(addresses);
+  }, [rows, sparklinePrefetchCount, sparklinePrefetchStart]);
 
   const syncScrollMetricsFromDom = useCallback(() => {
     if (Platform.OS !== "web") return;

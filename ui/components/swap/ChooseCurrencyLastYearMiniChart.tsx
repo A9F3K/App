@@ -1,6 +1,7 @@
-import { createElement, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createElement, useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { Platform, View, type LayoutChangeEvent } from "react-native";
 
+import { useElementVisible } from "../messages/useElementVisible";
 import {
   ensureChooseCurrencyYearChart,
   getChooseCurrencyYearChartSnapshot,
@@ -136,16 +137,16 @@ function FlatMiniChartLine() {
 function SparklineMiniChart({ address }: { address: string }) {
   const colors = useColors();
   const [width, setWidth] = useState(0);
-  const [fetchEnabled, setFetchEnabled] = useState(false);
+  const hostRef = useRef<View>(null);
+  // Prefetch a few rows past the fold; skip the rest of FlatList's window so
+  // off-screen cells don't jump the queue ahead of plots the user can see.
+  const nearView = useElementVisible(hostRef as RefObject<Element | null>, {
+    rootMargin: "280px",
+    threshold: 0.01,
+  });
 
-  // Defer sparkline fetches so the main swap chart / home paint win the first DYOR slots.
   useEffect(() => {
-    const timer = setTimeout(() => setFetchEnabled(true), 900);
-    return () => clearTimeout(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!fetchEnabled) return;
+    if (!nearView) return;
     ensureChooseCurrencyYearChart(address);
     // Re-queue if this row stayed idle after a queue drop while still mounted.
     const timer = setInterval(() => {
@@ -153,7 +154,7 @@ function SparklineMiniChart({ address }: { address: string }) {
       if (snap.status === "idle") ensureChooseCurrencyYearChart(address);
     }, 2500);
     return () => clearInterval(timer);
-  }, [address, fetchEnabled]);
+  }, [address, nearView]);
 
   const snapshot = useSyncExternalStore(
     (onStoreChange) => subscribeChooseCurrencyYearChart(address, onStoreChange),
@@ -170,6 +171,7 @@ function SparklineMiniChart({ address }: { address: string }) {
 
   return (
     <View
+      ref={hostRef}
       onLayout={onLayout}
       style={{
         width: "100%",

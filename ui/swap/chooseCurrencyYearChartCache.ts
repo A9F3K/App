@@ -1,4 +1,3 @@
-import { CHART_RATE_LIMIT_MS, TON_JETTON_ADDRESS } from "./swapChartConstants";
 import { fetchJettonChartSeries } from "./fetchSwapChart";
 import { peekSwapChartSeriesCache } from "./swapChartSeriesCache";
 import { isVoiceDialogUiOpen } from "../components/messages/voiceDialogUiGate";
@@ -14,9 +13,14 @@ const IDLE_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "idle" };
 const LOADING_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "loading" };
 const EMPTY_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "empty" };
 
-/** Keep concurrency low — DYOR 429s under parallel chart traffic. */
-const MAX_CONCURRENT = 2;
-const REQUEST_GAP_MS = Math.max(CHART_RATE_LIMIT_MS + 200, 1100);
+/**
+ * Visible-row sparklines used to look lazy because the pump started one
+ * request, then waited 1.1s (and the shared DYOR limiter waited another 1s).
+ * A small parallel pool fills the on-screen column quickly; 429s back off.
+ */
+const MAX_CONCURRENT = 4;
+const REQUEST_GAP_MS = 80;
+const RATE_LIMIT_GAP_MS = 1200;
 const RETRY_BASE_DELAY_MS = 4000;
 const RETRY_MAX_DELAY_MS = 24000;
 /**
@@ -28,8 +32,6 @@ const MAX_QUEUED = 240;
 const EMPTY_RETRY_COOLDOWN_MS = 60_000;
 /** Downsample for 40px-tall sparklines. */
 const MINI_CHART_MAX_POINTS = 48;
-
-const TON_ADDRESS = TON_JETTON_ADDRESS.trim().toLowerCase();
 
 function normalizeAddress(address: string): string {
   return address.trim().toLowerCase();
@@ -44,6 +46,8 @@ const queuedSet = new Set<string>();
 let activeCount = 0;
 let lastStartMs = 0;
 let pumpTimer: ReturnType<typeof setTimeout> | null = null;
+let rateLimitedUntilMs = 0;
+let consecutiveRateLimits = 0;
 
 function notify(address: string): void {
   const set = listeners.get(address);
@@ -79,9 +83,8 @@ function downsample(points: number[]): number[] {
   return out;
 }
 
-function trySeedFromTonMainChart(address: string): boolean {
-  if (address !== TON_ADDRESS) return false;
-  const peek = peekSwapChartSeriesCache(TON_ADDRESS, "day1");
+function trySeedFromSeriesCache(address: string): boolean {
+  const peek = peekSwapChartSeriesCache(address, "day1");
   if (!peek || peek.normalized.length === 0) return false;
   setSnapshot(address, {
     status: "ready",
@@ -108,12 +111,12 @@ async function runFetch(address: string): Promise<void> {
     enqueueFront(address);
     return;
   }
-  if (trySeedFromTonMainChart(address)) return;
+  if (trySeedFromSeriesCache(address)) return;
 
   setSnapshot(address, LOADING_SNAPSHOT);
   const result = await fetchJettonChartSeries(address, "day1", {
-    // Share the global chart limiter with the main swap chart.
-    respectGlobalRateLimit: true,
+    // Sparkline queue has its own concurrency/gap — don't serialize on the 1s main-chart limiter.
+    respectGlobalRateLimit: false,
   });
 
   if (isVoiceDialogUiOpen()) {
@@ -124,6 +127,7 @@ async function runFetch(address: string): Promise<void> {
   }
 
   if (result.ok) {
+    consecutiveRateLimits = 0;
     attemptCount.delete(address);
     setSnapshot(address, {
       status: "ready",
@@ -133,6 +137,10 @@ async function runFetch(address: string): Promise<void> {
   }
 
   if (result.retryable) {
+    if (result.error.toLowerCase().includes("rate limit")) {
+      consecutiveRateLimits += 1;
+      rateLimitedUntilMs = Date.now() + RATE_LIMIT_GAP_MS * consecutiveRateLimits;
+    }
     // Never give up on 429 / network — keep loading and back off.
     const attempts = (attemptCount.get(address) ?? 0) + 1;
     attemptCount.set(address, attempts);
@@ -142,6 +150,14 @@ async function runFetch(address: string): Promise<void> {
 
   attemptCount.delete(address);
   setSnapshot(address, EMPTY_SNAPSHOT);
+}
+
+function currentMaxConcurrent(): number {
+  return consecutiveRateLimits > 0 ? 1 : MAX_CONCURRENT;
+}
+
+function currentRequestGapMs(): number {
+  return consecutiveRateLimits > 0 ? RATE_LIMIT_GAP_MS : REQUEST_GAP_MS;
 }
 
 function pumpQueue(): void {
@@ -155,33 +171,36 @@ function pumpQueue(): void {
       pumpTimer = setTimeout(tick, 2_500);
       return;
     }
-    if (activeCount >= MAX_CONCURRENT || queued.length === 0) return;
 
-    const wait = Math.max(0, REQUEST_GAP_MS - (Date.now() - lastStartMs));
-    if (wait > 0) {
-      pumpTimer = setTimeout(tick, wait);
-      return;
+    while (activeCount < currentMaxConcurrent() && queued.length > 0) {
+      const now = Date.now();
+      const rateWait = Math.max(0, rateLimitedUntilMs - now);
+      const gapWait = Math.max(0, currentRequestGapMs() - (now - lastStartMs));
+      const wait = Math.max(rateWait, gapWait);
+      if (wait > 0) {
+        pumpTimer = setTimeout(tick, wait);
+        return;
+      }
+
+      const address = queued.shift();
+      if (!address) return;
+      queuedSet.delete(address);
+
+      const existing = cache.get(address);
+      if (
+        existing &&
+        (existing.status === "ready" || existing.status === "empty" || existing.status === "loading")
+      ) {
+        continue;
+      }
+
+      activeCount += 1;
+      lastStartMs = Date.now();
+      void runFetch(address).finally(() => {
+        activeCount -= 1;
+        pumpQueue();
+      });
     }
-
-    const address = queued.shift();
-    if (!address) return;
-    queuedSet.delete(address);
-
-    const existing = cache.get(address);
-    if (
-      existing &&
-      (existing.status === "ready" || existing.status === "empty" || existing.status === "loading")
-    ) {
-      pumpQueue();
-      return;
-    }
-
-    activeCount += 1;
-    lastStartMs = Date.now();
-    void runFetch(address).finally(() => {
-      activeCount -= 1;
-      pumpQueue();
-    });
   };
 
   tick();
@@ -255,7 +274,7 @@ export function ensureChooseCurrencyYearChart(address: string): void {
   const key = normalizeAddress(address);
   if (!key || key.startsWith("jetton:")) return;
 
-  if (trySeedFromTonMainChart(key)) return;
+  if (trySeedFromSeriesCache(key)) return;
 
   const existing = cache.get(key);
   if (existing?.status === "ready" || existing?.status === "loading") return;
@@ -268,4 +287,12 @@ export function ensureChooseCurrencyYearChart(address: string): void {
 
   enqueueFront(key);
   pumpQueue();
+}
+
+/** Queue on-screen (and nearby) rows so the first visible plot is fetched first. */
+export function prefetchChooseCurrencyYearCharts(addresses: readonly string[]): void {
+  for (let i = addresses.length - 1; i >= 0; i--) {
+    const address = addresses[i];
+    if (address) ensureChooseCurrencyYearChart(address);
+  }
 }
