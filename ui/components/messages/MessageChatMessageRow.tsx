@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Platform, Pressable, Text, View, type GestureResponderEvent, type TextLayoutEvent } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { useProfileSheet } from "../../profile/ProfileContext";
@@ -400,8 +400,37 @@ export function MessageChatMessageRow({
           }
         : nativeBubbleLayout ?? syncTextBubbleLayout;
   const metaPlacement = bubbleLayout?.placement ?? "stacked";
-  const bubbleContentWidthPx = bubbleLayout?.innerWidthPx ?? bubbleInnerMaxWidth;
-  const bubbleWidth = bubbleLayout?.width ?? null;
+  const bubbleContentWidthPx = bubbleInnerMaxWidth;
+  const bubbleWidth =
+    Platform.OS === "web" && !showMedia ? null : bubbleLayout?.width ?? null;
+  const [webTimeOverflowPx, setWebTimeOverflowPx] = useState(0);
+  const bubbleFillRef = useRef<View>(null);
+
+  useEffect(() => {
+    setWebTimeOverflowPx(0);
+  }, [item.telegram_message_id, bodyText, timeLabel]);
+
+  useLayoutEffect(() => {
+    if (Platform.OS !== "web" || showMedia) return;
+    const node = bubbleFillRef.current as unknown as HTMLElement | null;
+    if (!node || typeof node.querySelector !== "function") return;
+    const time = node.querySelector("[data-bubble-time]");
+    if (!time) return;
+    const bubbleRect = node.getBoundingClientRect();
+    const timeRect = time.getBoundingClientRect();
+    const overflow = Math.ceil(timeRect.right - bubbleRect.right);
+    if (overflow > 1) {
+      setWebTimeOverflowPx((prev) => prev + overflow + 2);
+    }
+  }, [
+    bodyText,
+    bubbleMaxWidth,
+    item.telegram_message_id,
+    metaPlacement,
+    showMedia,
+    timeLabel,
+    webTimeOverflowPx,
+  ]);
   const measureText = bodyText || " ";
   const showChannelBadge = Boolean(item.sender_is_channel) && chatKind !== "channel";
   const isCompactSingleLineRow =
@@ -588,6 +617,8 @@ export function MessageChatMessageRow({
             delayLongPress={400}
           >
           <View
+            ref={bubbleFillRef}
+            nativeID={`message-bubble-fill-${item.telegram_message_id}`}
             style={[
               {
                 alignSelf: "flex-start",
@@ -600,7 +631,9 @@ export function MessageChatMessageRow({
                     }
                   : {
                       borderRadius: MESSAGE_BUBBLE_BORDER_RADIUS_PX,
-                      paddingHorizontal: MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX,
+                      paddingLeft: MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX,
+                      paddingRight:
+                        MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX + webTimeOverflowPx,
                       paddingVertical: isCompactSingleLineRow
                         ? 0
                         : MESSAGE_BUBBLE_PADDING_VERTICAL_PX,
@@ -613,19 +646,16 @@ export function MessageChatMessageRow({
                         : null),
                       backgroundColor: colors.undercover,
                       overflow: "visible",
+                      ...(Platform.OS === "web"
+                        ? ({
+                            width: "max-content",
+                            maxWidth: bubbleMaxWidth,
+                            boxSizing: "border-box",
+                          } as object)
+                        : null),
                     }),
               },
-              bubbleWidth != null && bubbleWidth > 0
-                ? {
-                    width: bubbleWidth,
-                    minWidth: bubbleWidth,
-                    ...(Platform.OS === "web"
-                      ? ({ boxSizing: "border-box" } as object)
-                      : null),
-                  }
-                : Platform.OS === "web"
-                  ? ({ width: "max-content", maxWidth: bubbleMaxWidth } as object)
-                  : null,
+              bubbleWidth != null && bubbleWidth > 0 ? { width: bubbleWidth } : null,
             ]}
           >
             <MessageChatBubbleBody

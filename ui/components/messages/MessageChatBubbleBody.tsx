@@ -291,18 +291,19 @@ function MessageChatBubbleTimeRow({
 
   return (
     <View
+      {...(Platform.OS === "web" ? ({ dataSet: { bubbleTime: "1" } } as object) : null)}
       style={{
         flexDirection: "row",
         alignItems: "center",
         alignSelf,
         overflow: "visible",
+        flexShrink: 0,
         ...(lightOnMedia && Platform.OS === "web"
           ? ({ textShadow: "0 1px 2px rgba(0,0,0,0.65)" } as object)
           : null),
         ...(!alignWithBodyBaseline
           ? { minHeight: MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX }
           : null),
-        flexShrink: 0,
       }}
     >
       {callIndicator ? (
@@ -574,7 +575,15 @@ export function MessageChatBubbleBody({
       style={{
         maxWidth: maxWidthPx,
         alignSelf: "flex-start",
-        width: showMedia && !bodyText ? displayMediaWidthPx : showMedia && bodyText ? mediaWidthPx : undefined,
+        width:
+          showMedia && !bodyText
+            ? displayMediaWidthPx
+            : showMedia && bodyText
+              ? mediaWidthPx
+              : undefined,
+        ...(Platform.OS === "web" && !showMedia
+          ? ({ width: "max-content" } as object)
+          : null),
       }}
     >
       {replyTo ? (

@@ -220,10 +220,13 @@ function RichTextWebRow({
         }
       : singleLine
         ? {
-            display: "block",
+            display: "inline-block",
             whiteSpace: "nowrap",
             overflow: "visible",
-            minWidth: 0,
+            width: "max-content",
+            maxWidth: "none",
+            minWidth: "max-content",
+            flexShrink: 0,
             textAlign: "left",
             ...baseTextCss,
           }
