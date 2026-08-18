@@ -91,9 +91,13 @@ export function groupCallLooksLiveForChat(
   chatHasParticipants: boolean | null | undefined,
 ): boolean {
   if (!groupCallLooksLive(groupCall)) return false;
-  // Explicit false from getChat / updateChatVideoChat wins over stale getGroupCall.
-  if (chatHasParticipants === false) return false;
-  return true;
+  if (chatHasParticipants !== false) return true;
+  // has_participants can lag false right after we leave while others remain.
+  // Only hide leftover shells (stale participant_count, empty recent_speakers).
+  const speakers = Array.isArray(groupCall?.recent_speakers)
+    ? groupCall.recent_speakers.length
+    : 0;
+  return speakers > 0;
 }
 
 /** Verify a chat-bound group call id before painting list rings / voice strip. */

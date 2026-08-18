@@ -66,6 +66,7 @@ import {
 import { clearQueuedNetworkFetches } from "./networkFetchQueue";
 import { clearQueuedChooseCurrencyYearCharts } from "../../swap/chooseCurrencyYearChartCache";
 import { setActiveVoiceDock } from "./activeVoiceDockStore";
+import { normalizeTelegramGroupCallId } from "../../../shared/telegramGroupCallSdp";
 
 const JOIN_BUTTON_HEIGHT_PX = 30;
 const JOIN_BUTTON_TEXT_INSET_PX = 30;
@@ -174,17 +175,26 @@ function pickVoiceMixSpeakerTargets(args: {
   const newestFreshAt = withFreshTdlib.length > 0 ? lastTdlibAt(pickNewest(withFreshTdlib)) : 0;
   const lastTdlibAgeMs = newestFreshAt > 0 ? now - newestFreshAt : null;
   const mixCarry = unmuted.filter(rowInMixCarry);
+  const keepKeys = new Set<string>();
+  for (const row of withFreshTdlib) {
+    for (const k of rowSpeakKeys(row)) keepKeys.add(k);
+  }
+  for (const row of mixCarry) {
+    for (const k of rowSpeakKeys(row)) keepKeys.add(k);
+  }
+  for (const row of remotes) {
+    if (rowSpeakKeys(row).some((k) => keepKeys.has(k))) continue;
+    for (const k of rowSpeakKeys(row)) mixCarrySpeakingKeys.delete(k);
+  }
+  const concurrentTargets = unmuted.filter((row) =>
+    rowSpeakKeys(row).some((k) => keepKeys.has(k)),
+  );
 
+  // Mix RMS is one mixed level — it cannot pick a single winner. Keep every
+  // unmuted remote TDLib still identifies as recently speaking (overlapping talk).
   if (withFreshTdlib.length > 0) {
-    const winner = pickNewest(withFreshTdlib);
-    const winnerKeys = new Set(rowSpeakKeys(winner));
-    for (const row of remotes) {
-      for (const k of rowSpeakKeys(row)) {
-        if (!winnerKeys.has(k)) mixCarrySpeakingKeys.delete(k);
-      }
-    }
     return {
-      targets: [winner],
+      targets: concurrentTargets,
       mixSource: "last_tdlib",
       unmutedCount: unmuted.length,
       lastTdlibAgeMs,
@@ -192,7 +202,7 @@ function pickVoiceMixSpeakerTargets(args: {
   }
   if (mixCarry.length > 0) {
     return {
-      targets: mixCarry,
+      targets: concurrentTargets,
       mixSource: "tdlib_hold",
       unmutedCount: unmuted.length,
       lastTdlibAgeMs,
@@ -1054,8 +1064,30 @@ export function MessageChatVoiceBar({
         }
         const aliases = rowSpeakKeys(row);
         let until = 0;
+        let lastTdlibAt = 0;
         for (const speakKey of aliases) {
           until = Math.max(until, speakingHoldUntilRef.current.get(speakKey) ?? 0);
+          lastTdlibAt = Math.max(
+            lastTdlibAt,
+            lastTdlibSpeakingAtRef.current.get(speakKey) ?? 0,
+          );
+        }
+        const freshTdlib =
+          lastTdlibAt > 0 &&
+          now - lastTdlibAt < VOICE_LAST_TDLIB_SPEAKER_FRESH_MS;
+        // SSE snapshots often list only a subset of overlapping speakers.
+        // While mix RMS is live, keep every recently speaking unmuted face.
+        if (
+          until <= now &&
+          freshTdlib &&
+          voiceJoinedRef.current &&
+          remoteSpeakingRef.current
+        ) {
+          until = now + MIX_SPEAKING_HOLD_MS;
+          for (const speakKey of aliases) {
+            speakingHoldUntilRef.current.set(speakKey, until);
+            mixCarrySpeakingKeysRef.current.add(speakKey);
+          }
         }
         if (until > now) {
           for (const speakKey of aliases) next[speakKey] = true;
@@ -1129,12 +1161,29 @@ export function MessageChatVoiceBar({
         if (
           picked.mixSource === "last_tdlib" ||
           picked.mixSource === "tdlib_hold" ||
-          picked.mixSource === "solo" ||
-          picked.mixSource === "empty"
+          picked.mixSource === "solo"
         ) {
           for (const row of remotes) {
             const aliases = rowSpeakKeys(row);
             if (aliases.some((key) => targetKeys.has(key))) continue;
+            let lastTdlibAt = 0;
+            let until = 0;
+            for (const speakKey of aliases) {
+              lastTdlibAt = Math.max(
+                lastTdlibAt,
+                lastTdlibSpeakingAtRef.current.get(speakKey) ?? 0,
+              );
+              until = Math.max(
+                until,
+                speakingHoldUntilRef.current.get(speakKey) ?? 0,
+              );
+            }
+            const freshTdlib =
+              lastTdlibAt > 0 &&
+              now - lastTdlibAt < VOICE_LAST_TDLIB_SPEAKER_FRESH_MS;
+            // Concurrent speakers share one mix RMS. Never drop a still-fresh
+            // TDLib face (or an active hold) just because another remote is louder.
+            if (freshTdlib || until > now) continue;
             for (const speakKey of aliases) {
               delete next[speakKey];
               speakingHoldUntilRef.current.delete(speakKey);
@@ -2266,12 +2315,13 @@ export function MessageChatVoiceBar({
         targetKeys.add(key);
       }
     }
-    // Drop mix-carried greens on non-targets so wrong faces clear when someone
-    // else talks (do not touch fresh TDLib holds from applySpeakingMap).
+    // Drop mix-carried greens on non-targets so stale faces clear. Keep anyone
+    // TDLib still considers recently speaking — mix RMS is not per-person.
     for (const key of [...mixCarrySpeakingKeysRef.current]) {
       if (targetKeys.has(key)) continue;
       const tdlibAt = lastTdlibSpeakingAtRef.current.get(key) ?? 0;
-      const stillTdlibPulse = tdlibAt > 0 && now - tdlibAt < 1_200;
+      const stillTdlibPulse =
+        tdlibAt > 0 && now - tdlibAt < VOICE_LAST_TDLIB_SPEAKER_FRESH_MS;
       if (stillTdlibPulse) continue;
       mixCarrySpeakingKeysRef.current.delete(key);
       speakingHoldUntilRef.current.delete(key);
@@ -4819,13 +4869,20 @@ export function MessageChatVoiceBar({
       intentionalMuteReapplyAttemptedRef.current.clear();
       listenVolumeNudgeAttemptedRef.current.clear();
       tdlibSelfUserIdRef.current = null;
-      const live = Boolean(result.has_active_voice_chat);
+      const rosterRemotes = participantsRef.current.filter((row) => !row.is_self);
+      const rosterHint = Math.max(
+        rosterTotalHintRef.current,
+        rosterCountHintStateRef.current,
+        rosterRemotes.length,
+      );
+      const liveFromRoster = rosterRemotes.length > 0 || rosterHint > 1;
+      const live = Boolean(result.has_active_voice_chat) || liveFromRoster;
       const keepCallId =
         typeof result.voice_chat_group_call_id === "number" &&
         Number.isFinite(result.voice_chat_group_call_id) &&
         result.voice_chat_group_call_id > 0
           ? Math.trunc(result.voice_chat_group_call_id)
-          : null;
+          : normalizeTelegramGroupCallId(groupCallId);
       // Keep Join/face strip when others remain — only wipe when the call died.
       onLeftVoice?.(live ? { keepJoinPreview: true } : undefined);
       if (live) {
@@ -4845,7 +4902,7 @@ export function MessageChatVoiceBar({
         voice_chat_is_joined: false,
       });
     },
-    [chatId, onLeftVoice, setPresenceConfirmedAndNotify],
+    [chatId, groupCallId, onLeftVoice, setPresenceConfirmedAndNotify],
   );
 
   const onLeave = useCallback(async () => {

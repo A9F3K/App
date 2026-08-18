@@ -383,9 +383,13 @@ export function patchLiveChatFromTdlib(
           };
         }
         if (video.has_participants === false) {
+          // Do not immediately drop a verified live call. has_participants
+          // lags false after we leave while others are still in the call
+          // (in-chat Join preview vanished). Leftovers clear via
+          // updateGroupCall / verifyAndPatchVideoChat.
           return {
             voice_chat_group_call_id: nextCallId,
-            has_active_voice_chat: false,
+            has_active_voice_chat: Boolean(existing?.has_active_voice_chat),
             voice_chat_is_joined: false,
           };
         }

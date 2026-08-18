@@ -186,9 +186,9 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
           result.voice_chat_group_call_id ?? chat.voice_chat_group_call_id ?? null,
         voice_chat_is_joined: false,
       });
-      // After explicit Leave, keep the Join/face preview hidden until the user
-      // rejoins or opens another chat — probe must not resurrect the strip.
-      if (userLeftVoiceRef.current) {
+      // After Leave, never auto-join audio. Still show the Join/face strip
+      // while the group call is live for everyone else.
+      if (userLeftVoiceRef.current && !live) {
         setVoicePresenceConfirmed(false);
         return;
       }
@@ -387,8 +387,8 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   const leaveVoiceUi = useCallback(
     (opts?: { keepJoinPreview?: boolean }) => {
       const keepJoinPreview = Boolean(opts?.keepJoinPreview);
-      // Only latch “hide Join strip” when the call itself is gone.
-      userLeftVoiceRef.current = !keepJoinPreview;
+      // Left audio — Join is explicit. Keep the in-chat preview when others remain.
+      userLeftVoiceRef.current = true;
       clearJoinArmTimer();
       setVoiceEngaged(false);
       voiceEngagedRef.current = false;
@@ -397,7 +397,9 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
       closeVoicePopover();
       setStartedCallId(null);
       setVoiceDialogUiOpen(false);
-      if (!keepJoinPreview) {
+      if (keepJoinPreview) {
+        setVoicePresenceConfirmed(true);
+      } else {
         setVoicePresenceConfirmed(false);
       }
     },
@@ -405,9 +407,12 @@ export function MessageChatPanel({ chat, colors, visible = true }: Props) {
   );
 
   const onVoicePresenceConfirmedChange = useCallback((confirmed: boolean) => {
-    // After Leave on a dead call, ignore late SSE/poll that resurrect presence
-    // until the user explicitly rejoins. Live-call Leave keeps Join preview.
-    if (confirmed && userLeftVoiceRef.current) return;
+    // After Leave, ignore late "still live" only when the call itself is gone.
+    // Live-call Leave must keep the Join/face preview in the chat.
+    if (!confirmed && userLeftVoiceRef.current) {
+      setVoicePresenceConfirmed(false);
+      return;
+    }
     setVoicePresenceConfirmed(confirmed);
   }, []);
 
