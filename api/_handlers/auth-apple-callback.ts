@@ -371,9 +371,16 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
 
     const firstLoginUser = parseAppleFirstLoginUser(userRaw);
     const telegramUsername = resolveAppleUsername({ sub: claims.sub });
+    const appleEmail = claims.email ?? firstLoginUser.email;
     await upsertUserFromTma({
       telegramUsername,
       locale: null,
+      email: appleEmail,
+      displayName: firstLoginUser.displayName,
+      authProvider: "apple",
+      loginSubject: claims.sub,
+      providerUsername: appleEmail,
+      seenVia: "login",
     });
     await deliverWelcomeFeedIfNeeded({ telegramUsername, localePreferred: null }).catch(() => {});
     await upsertAppleIdentity({

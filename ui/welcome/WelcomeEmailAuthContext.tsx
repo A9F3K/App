@@ -37,6 +37,8 @@ export function WelcomeEmailAuthProvider({ children }: { children: ReactNode }) 
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [codeInvalid, setCodeInvalid] = useState(false);
+  const [codeWrong, setCodeWrong] = useState(false);
+  const [codeWrongPulseKey, setCodeWrongPulseKey] = useState(0);
   const [submitting, setSubmitting] = useState(false);
 
   const closeEmailCodeSheet = useCallback(() => {
@@ -44,6 +46,8 @@ export function WelcomeEmailAuthProvider({ children }: { children: ReactNode }) 
     setAttemptId(null);
     setCode("");
     setCodeInvalid(false);
+    setCodeWrong(false);
+    setCodeWrongPulseKey(0);
     setSubmitting(false);
   }, []);
 
@@ -52,6 +56,8 @@ export function WelcomeEmailAuthProvider({ children }: { children: ReactNode }) 
     setAttemptId(input.attemptId);
     setCode("");
     setCodeInvalid(false);
+    setCodeWrong(false);
+    setCodeWrongPulseKey(0);
     setSubmitting(false);
     setVisible(true);
   }, []);
@@ -59,6 +65,7 @@ export function WelcomeEmailAuthProvider({ children }: { children: ReactNode }) 
   const verifyEmailSignIn = useCallback(async () => {
     if (!attemptId) return;
     if (!isValidEmailOtp(code)) {
+      setCodeWrong(false);
       setCodeInvalid(true);
       return;
     }
@@ -94,7 +101,13 @@ export function WelcomeEmailAuthProvider({ children }: { children: ReactNode }) 
         elapsedMs: Date.now() - startedAt,
       });
       if (!response.ok || !json?.ok || json.authenticated !== true) {
-        throw new Error(json?.error || `HTTP_${response.status}`);
+        const errorCode = json?.error || `HTTP_${response.status}`;
+        if (errorCode === "invalid_code") {
+          setCodeWrong(true);
+          setCodeWrongPulseKey((key) => key + 1);
+          return;
+        }
+        throw new Error(errorCode);
       }
       closeEmailCodeSheet();
       await hydrateBrowserSessionFromCookie();
@@ -141,10 +154,13 @@ export function WelcomeEmailAuthProvider({ children }: { children: ReactNode }) 
         email={email}
         code={code}
         codeInvalid={codeInvalid}
+        codeWrong={codeWrong}
+        codeWrongPulseKey={codeWrongPulseKey}
         submitting={submitting}
         onChangeCode={(next) => {
           setCode(next);
           if (codeInvalid) setCodeInvalid(false);
+          if (codeWrong) setCodeWrong(false);
         }}
         onClose={closeEmailCodeSheet}
         onSubmit={verifyEmailSignIn}

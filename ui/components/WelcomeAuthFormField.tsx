@@ -1,5 +1,5 @@
-import { ActivityIndicator, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
-import { useState } from "react";
+import { ActivityIndicator, Animated, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
 import {
   typographyFixedRow40Label,
   typographyRect15,
@@ -20,6 +20,7 @@ const INPUT_TO_BUTTON_GAP = 20;
 const INPUT_TO_BUTTON_GAP_WITH_ERROR = 10;
 const ERROR_LINE_HEIGHT = 30;
 const INPUT_TEXT_INSET_LEFT = 10;
+const ERROR_SHAKE_PX = 10;
 
 type Props = {
   label?: string;
@@ -30,6 +31,8 @@ type Props = {
   textContentType?: "telephoneNumber" | "oneTimeCode" | "password" | "none";
   secureTextEntry?: boolean;
   errorText?: string | null;
+  /** Increment to replay the left/right notice shake. */
+  errorPulseKey?: number;
   submitLabel: string;
   onSubmit: () => void;
   submitDisabled?: boolean;
@@ -46,6 +49,7 @@ export function WelcomeAuthFormField({
   textContentType,
   secureTextEntry,
   errorText,
+  errorPulseKey = 0,
   submitLabel,
   onSubmit,
   submitDisabled,
@@ -55,6 +59,34 @@ export function WelcomeAuthFormField({
   const colors = useColors();
   const { colorScheme } = useTelegram();
   const [hoverSubmit, setHoverSubmit] = useState(false);
+  const errorShakeX = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!errorText || errorPulseKey <= 0) {
+      errorShakeX.stopAnimation();
+      errorShakeX.setValue(0);
+      return;
+    }
+    errorShakeX.stopAnimation();
+    errorShakeX.setValue(0);
+    const step = (toValue: number) =>
+      Animated.timing(errorShakeX, {
+        toValue,
+        duration: 55,
+        useNativeDriver: true,
+      });
+    const animation = Animated.sequence([
+      step(ERROR_SHAKE_PX),
+      step(-ERROR_SHAKE_PX),
+      step(ERROR_SHAKE_PX * 0.6),
+      step(-ERROR_SHAKE_PX * 0.6),
+      step(0),
+    ]);
+    animation.start();
+    return () => {
+      animation.stop();
+    };
+  }, [errorPulseKey, errorShakeX, errorText]);
 
   return (
     <View style={styles.block}>
@@ -92,7 +124,14 @@ export function WelcomeAuthFormField({
         />
       </View>
       {errorText ? (
-        <Text style={[styles.errorText, { color: "#FF0000" }]}>{errorText}</Text>
+        <Animated.View
+          style={{
+            width: "100%",
+            transform: [{ translateX: errorShakeX }],
+          }}
+        >
+          <Text style={[styles.errorText, { color: "#FF0000" }]}>{errorText}</Text>
+        </Animated.View>
       ) : null}
       <Pressable
         accessibilityRole="button"
@@ -184,10 +223,12 @@ const styles = StyleSheet.create({
     }),
   },
   errorText: {
+    width: "100%",
     lineHeight: ERROR_LINE_HEIGHT,
     fontSize: 15,
     fontWeight: "400",
     textAlign: "center",
+    alignSelf: "center",
   },
   submitButton: {
     width: "100%",

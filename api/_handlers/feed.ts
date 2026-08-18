@@ -69,7 +69,17 @@ async function telegramUsernameFromRequest(
   const initData = typeof body?.initData === "string" ? body.initData : "";
   if (!initData) return null;
   const auth = authByInitData(initData);
-  await upsertUserFromTma({ telegramUsername: auth.telegramUsername, locale: auth.locale });
+  await upsertUserFromTma({
+    telegramUsername: auth.telegramUsername,
+    locale: auth.locale,
+    displayName: auth.displayName,
+    pictureUrl: auth.pictureUrl,
+    authProvider: "telegram",
+    loginSubject: auth.telegramUserId ?? auth.telegramUsername,
+    telegramUsernameActual: auth.telegramUsername,
+    providerUsername: auth.telegramUsername,
+    telegramUserId: auth.telegramUserId,
+  });
   return { username: auth.telegramUsername, locale: auth.locale };
 }
 

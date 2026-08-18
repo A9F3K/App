@@ -77,6 +77,13 @@ async function handler(request: Request): Promise<Response> {
     await upsertUserFromTma({
       telegramUsername: auth.telegramUsername,
       locale: auth.locale,
+      displayName: auth.displayName,
+      pictureUrl: auth.pictureUrl,
+      authProvider: 'telegram',
+      loginSubject: auth.telegramUserId ?? auth.telegramUsername,
+      telegramUsernameActual: auth.telegramUsername,
+      providerUsername: auth.telegramUsername,
+      telegramUserId: auth.telegramUserId,
     });
 
     const wallet = await getDefaultWalletByUsername(auth.telegramUsername);

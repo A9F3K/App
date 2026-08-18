@@ -4,6 +4,7 @@
  */
 import { Bot, type Context } from 'grammy';
 import {
+  displayNameFromNameParts,
   normalizeUsername,
   upsertUserFromBot,
 } from '../database/users.js';
@@ -24,7 +25,16 @@ export function createBot(token: string): Bot {
       const locale =
         typeof from.language_code === 'string' ? from.language_code : null;
 
-      await upsertUserFromBot({ telegramUsername, locale });
+      await upsertUserFromBot({
+        telegramUsername,
+        locale,
+        displayName: displayNameFromNameParts(from.first_name, from.last_name),
+        authProvider: 'telegram',
+        loginSubject: String(from.id),
+        telegramUsernameActual: telegramUsername,
+        providerUsername: telegramUsername,
+        telegramUserId: from.id,
+      });
     } catch (err) {
       appError('[bot]', 'upsert_user_failed', undefined, err);
     }

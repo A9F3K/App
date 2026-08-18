@@ -1,5 +1,6 @@
 import dotenv from "dotenv";
 import path from "path";
+import { neon } from "@neondatabase/serverless";
 import { appError } from "../shared/appLog.js";
 
 // Local-only: try to load .env / .env.local when running tools like db:migrate.
@@ -7,7 +8,6 @@ import { appError } from "../shared/appLog.js";
 const cwd = process.cwd();
 dotenv.config({ path: path.join(cwd, ".env") });
 dotenv.config({ path: path.join(cwd, ".env.local") });
-import { neon } from "@neondatabase/serverless";
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -41,6 +41,70 @@ async function runSchemaMigrations() {
 
   await sql`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS display_name TEXT;
+  `;
+
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+  `;
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS picture_url TEXT;
+  `;
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number TEXT;
+  `;
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider TEXT;
+  `;
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS user_key TEXT;
+  `;
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS login_subject TEXT;
+  `;
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_username_actual TEXT;
+  `;
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS provider_username TEXT;
+  `;
+  await sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS telegram_user_id TEXT;
+  `;
+  await sql`
+    UPDATE users
+    SET user_key = telegram_username
+    WHERE user_key IS NULL;
+  `;
+  await sql`
+    UPDATE users
+    SET login_subject = COALESCE(
+      login_subject,
+      CASE
+        WHEN auth_provider = 'email' THEN email
+        WHEN auth_provider = 'google' THEN email
+        WHEN auth_provider = 'apple' THEN email
+        WHEN auth_provider = 'github' THEN provider_username
+        WHEN auth_provider = 'telegram' THEN COALESCE(telegram_user_id, provider_username, telegram_username)
+        ELSE NULL
+      END
+    )
+    WHERE login_subject IS NULL;
+  `;
+  await sql`
+    UPDATE users
+    SET telegram_username_actual = COALESCE(telegram_username_actual, provider_username)
+    WHERE auth_provider = 'telegram'
+      AND telegram_username_actual IS NULL
+      AND provider_username IS NOT NULL;
+  `;
+  await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_user_key
+      ON users(user_key);
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_users_email
+      ON users(email)
+      WHERE email IS NOT NULL;
   `;
 
   // wallets table
@@ -189,6 +253,10 @@ async function runSchemaMigrations() {
       updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       last_login_at       TIMESTAMPTZ
     );
+  `;
+
+  await sql`
+    ALTER TABLE auth_identities ADD COLUMN IF NOT EXISTS email TEXT;
   `;
 
   await sql`

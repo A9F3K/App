@@ -166,6 +166,7 @@ export async function upsertTelegramIdentity(input: {
   pictureUrl: string | null;
   phoneNumber: string | null;
   claimsVersion: string | null;
+  email?: string | null;
 }): Promise<void> {
   await sql`
     INSERT INTO auth_identities (
@@ -174,6 +175,7 @@ export async function upsertTelegramIdentity(input: {
       telegram_username,
       telegram_id,
       username,
+      email,
       display_name,
       picture_url,
       phone_number,
@@ -188,6 +190,7 @@ export async function upsertTelegramIdentity(input: {
       ${input.telegramUsername},
       ${input.telegramId},
       ${input.username},
+      ${input.email ?? null},
       ${input.displayName},
       ${input.pictureUrl},
       ${input.phoneNumber},
@@ -198,11 +201,12 @@ export async function upsertTelegramIdentity(input: {
     )
     ON CONFLICT (provider, provider_subject) DO UPDATE
       SET telegram_username = EXCLUDED.telegram_username,
-          telegram_id = EXCLUDED.telegram_id,
-          username = EXCLUDED.username,
-          display_name = EXCLUDED.display_name,
-          picture_url = EXCLUDED.picture_url,
-          phone_number = EXCLUDED.phone_number,
+          telegram_id = COALESCE(EXCLUDED.telegram_id, auth_identities.telegram_id),
+          username = COALESCE(EXCLUDED.username, auth_identities.username),
+          email = COALESCE(auth_identities.email, EXCLUDED.email),
+          display_name = COALESCE(EXCLUDED.display_name, auth_identities.display_name),
+          picture_url = COALESCE(EXCLUDED.picture_url, auth_identities.picture_url),
+          phone_number = COALESCE(EXCLUDED.phone_number, auth_identities.phone_number),
           claims_version = EXCLUDED.claims_version,
           updated_at = NOW(),
           last_login_at = NOW();
@@ -224,6 +228,7 @@ export async function upsertGoogleIdentity(input: {
       telegram_username,
       telegram_id,
       username,
+      email,
       display_name,
       picture_url,
       phone_number,
@@ -238,6 +243,7 @@ export async function upsertGoogleIdentity(input: {
       ${input.telegramUsername},
       NULL,
       ${input.email},
+      ${input.email},
       ${input.displayName},
       ${input.pictureUrl},
       NULL,
@@ -248,9 +254,10 @@ export async function upsertGoogleIdentity(input: {
     )
     ON CONFLICT (provider, provider_subject) DO UPDATE
       SET telegram_username = EXCLUDED.telegram_username,
-          username = EXCLUDED.username,
-          display_name = EXCLUDED.display_name,
-          picture_url = EXCLUDED.picture_url,
+          username = COALESCE(auth_identities.username, EXCLUDED.username),
+          email = COALESCE(auth_identities.email, EXCLUDED.email),
+          display_name = COALESCE(EXCLUDED.display_name, auth_identities.display_name),
+          picture_url = COALESCE(EXCLUDED.picture_url, auth_identities.picture_url),
           claims_version = EXCLUDED.claims_version,
           updated_at = NOW(),
           last_login_at = NOW();
@@ -273,6 +280,7 @@ export async function upsertGithubIdentity(input: {
       telegram_username,
       telegram_id,
       username,
+      email,
       display_name,
       picture_url,
       phone_number,
@@ -286,7 +294,8 @@ export async function upsertGithubIdentity(input: {
       ${input.providerSubject},
       ${input.telegramUsername},
       NULL,
-      ${input.email ?? input.login},
+      ${input.login},
+      ${input.email},
       ${input.displayName},
       ${input.pictureUrl},
       NULL,
@@ -297,9 +306,10 @@ export async function upsertGithubIdentity(input: {
     )
     ON CONFLICT (provider, provider_subject) DO UPDATE
       SET telegram_username = EXCLUDED.telegram_username,
-          username = EXCLUDED.username,
-          display_name = EXCLUDED.display_name,
-          picture_url = EXCLUDED.picture_url,
+          username = COALESCE(auth_identities.username, EXCLUDED.username),
+          email = COALESCE(auth_identities.email, EXCLUDED.email),
+          display_name = COALESCE(EXCLUDED.display_name, auth_identities.display_name),
+          picture_url = COALESCE(EXCLUDED.picture_url, auth_identities.picture_url),
           claims_version = EXCLUDED.claims_version,
           updated_at = NOW(),
           last_login_at = NOW();
@@ -320,6 +330,7 @@ export async function upsertEmailIdentity(input: {
       telegram_username,
       telegram_id,
       username,
+      email,
       display_name,
       picture_url,
       phone_number,
@@ -334,6 +345,7 @@ export async function upsertEmailIdentity(input: {
       ${input.telegramUsername},
       NULL,
       ${input.email},
+      ${input.email},
       ${input.displayName},
       NULL,
       NULL,
@@ -344,7 +356,8 @@ export async function upsertEmailIdentity(input: {
     )
     ON CONFLICT (provider, provider_subject) DO UPDATE
       SET telegram_username = EXCLUDED.telegram_username,
-          username = EXCLUDED.username,
+          username = COALESCE(auth_identities.username, EXCLUDED.username),
+          email = COALESCE(auth_identities.email, EXCLUDED.email),
           display_name = COALESCE(EXCLUDED.display_name, auth_identities.display_name),
           claims_version = EXCLUDED.claims_version,
           updated_at = NOW(),
@@ -366,6 +379,7 @@ export async function upsertAppleIdentity(input: {
       telegram_username,
       telegram_id,
       username,
+      email,
       display_name,
       picture_url,
       phone_number,
@@ -380,6 +394,7 @@ export async function upsertAppleIdentity(input: {
       ${input.telegramUsername},
       NULL,
       ${input.email},
+      ${input.email},
       ${input.displayName},
       NULL,
       NULL,
@@ -391,6 +406,7 @@ export async function upsertAppleIdentity(input: {
     ON CONFLICT (provider, provider_subject) DO UPDATE
       SET telegram_username = EXCLUDED.telegram_username,
           username = COALESCE(EXCLUDED.username, auth_identities.username),
+          email = COALESCE(auth_identities.email, EXCLUDED.email),
           display_name = COALESCE(EXCLUDED.display_name, auth_identities.display_name),
           claims_version = EXCLUDED.claims_version,
           updated_at = NOW(),

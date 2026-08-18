@@ -1,12 +1,16 @@
 import crypto from 'crypto';
 import { getSessionByHash } from '../../database/telegramAuth.js';
-import { normalizeUsername } from '../../database/users.js';
+import { displayNameFromNameParts, normalizeUsername } from '../../database/users.js';
 import { getSessionTokenFromRequest } from '../_lib/session-auth.js';
 import { sha256Hex } from '../_lib/telegram-oidc.js';
 
 type TelegramUserPayload = {
+  id?: number;
   username?: string;
+  first_name?: string;
+  last_name?: string;
   language_code?: string;
+  photo_url?: string;
   [key: string]: unknown;
 };
 
@@ -120,6 +124,9 @@ function verifyTelegramWebAppInitData(
 export type AuthResult = {
   telegramUsername: string;
   locale: string | null;
+  displayName: string | null;
+  pictureUrl: string | null;
+  telegramUserId: string | null;
 };
 
 export function authByInitData(initData: string): AuthResult {
@@ -141,7 +148,13 @@ export function authByInitData(initData: string): AuthResult {
   }
   const locale =
     typeof user.language_code === 'string' ? user.language_code : null;
-  return { telegramUsername, locale };
+  return {
+    telegramUsername,
+    locale,
+    displayName: displayNameFromNameParts(user.first_name, user.last_name),
+    pictureUrl: typeof user.photo_url === 'string' ? user.photo_url : null,
+    telegramUserId: user.id != null ? String(user.id) : null,
+  };
 }
 
 type CookieRequest = Request | {
@@ -157,7 +170,13 @@ export async function authBySessionCookie(request: CookieRequest): Promise<AuthR
   if (Date.parse(row.expires_at) <= Date.now()) return null;
   const telegramUsername = normalizeUsername(row.telegram_username);
   if (!telegramUsername) return null;
-  return { telegramUsername, locale: null };
+  return {
+    telegramUsername,
+    locale: null,
+    displayName: null,
+    pictureUrl: null,
+    telegramUserId: null,
+  };
 }
 
 /** Telegram Mini App initData, or browser session cookie when initData is absent. */

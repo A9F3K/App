@@ -200,6 +200,12 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
     await upsertUserFromTma({
       telegramUsername,
       locale: null,
+      email,
+      displayName: emailDisplayNameFromAddress(email),
+      authProvider: "email",
+      loginSubject: email,
+      providerUsername: email,
+      seenVia: "login",
     });
     await deliverWelcomeFeedIfNeeded({ telegramUsername, localePreferred: null }).catch(() => {});
     await upsertEmailIdentity({

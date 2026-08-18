@@ -30,6 +30,7 @@ export type GoogleIdTokenClaims = {
   email_verified?: boolean;
   name?: string;
   picture?: string;
+  locale?: string;
 };
 
 let jwksCache: { keys: Jwk[]; fetchedAtMs: number } | null = null;

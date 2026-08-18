@@ -320,6 +320,13 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
     await upsertUserFromTma({
       telegramUsername,
       locale: null,
+      email: profile.email,
+      displayName: profile.name ?? profile.login,
+      pictureUrl: profile.avatar_url,
+      authProvider: "github",
+      loginSubject: providerSubject,
+      providerUsername: profile.login,
+      seenVia: "login",
     });
     await deliverWelcomeFeedIfNeeded({ telegramUsername, localePreferred: null }).catch(() => {});
     await upsertGithubIdentity({

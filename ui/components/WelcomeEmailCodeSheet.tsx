@@ -9,6 +9,8 @@ type Props = {
   email: string;
   code: string;
   codeInvalid: boolean;
+  codeWrong: boolean;
+  codeWrongPulseKey: number;
   submitting: boolean;
   onChangeCode: (next: string) => void;
   onClose: () => void;
@@ -20,6 +22,8 @@ export function WelcomeEmailCodeSheet({
   email,
   code,
   codeInvalid,
+  codeWrong,
+  codeWrongPulseKey,
   submitting,
   onChangeCode,
   onClose,
@@ -45,7 +49,14 @@ export function WelcomeEmailCodeSheet({
         keyboardType="number-pad"
         textContentType="oneTimeCode"
         inputId="welcome-email-code-input"
-        errorText={codeInvalid ? t("welcome.auth.emailCodeInvalid") : null}
+        errorText={
+          codeWrong
+            ? t("welcome.auth.emailCodeWrong")
+            : codeInvalid
+              ? t("welcome.auth.emailCodeInvalid")
+              : null
+        }
+        errorPulseKey={codeWrongPulseKey}
         submitLabel={t("welcome.auth.signInButton")}
         onSubmit={onSubmit}
         submitting={submitting}

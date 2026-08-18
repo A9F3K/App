@@ -293,7 +293,14 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
     const telegramUsername = resolveGoogleUsername({ sub: claims.sub });
     await upsertUserFromTma({
       telegramUsername,
-      locale: null,
+      locale: claims.locale ?? null,
+      email: claims.email ?? null,
+      displayName: claims.name ?? null,
+      pictureUrl: claims.picture ?? null,
+      authProvider: "google",
+      loginSubject: claims.sub,
+      providerUsername: claims.email ?? null,
+      seenVia: "login",
     });
     await deliverWelcomeFeedIfNeeded({ telegramUsername, localePreferred: null }).catch(() => {});
     await upsertGoogleIdentity({

@@ -9,6 +9,7 @@ import {
 } from '../database/feed.js';
 import { resolveFeedCatalogLocaleFromLanguageTag } from '../locales/resolveFeedCatalogLocale.js';
 import {
+  displayNameFromNameParts,
   getDisplayNameForUsername,
   normalizeUsername,
   upsertUserFromTma,
@@ -84,6 +85,7 @@ type TelegramUserPayload = {
   first_name?: string;
   last_name?: string;
   language_code?: string;
+  photo_url?: string;
   [key: string]: unknown;
 };
 
@@ -390,7 +392,17 @@ export async function handlePost(
       : null;
   const dbStart = Date.now();
   try {
-    const userRow = await upsertUserFromTma({ telegramUsername, locale });
+    const userRow = await upsertUserFromTma({
+      telegramUsername,
+      locale,
+      displayName: displayNameFromNameParts(user.first_name, user.last_name),
+      pictureUrl: typeof user.photo_url === 'string' ? user.photo_url : null,
+      authProvider: 'telegram',
+      loginSubject: user.id != null ? String(user.id) : telegramUsername,
+      telegramUsernameActual: telegramUsername,
+      providerUsername: telegramUsername,
+      telegramUserId: user.id,
+    });
     const displayName =
       userRow?.displayName ?? (await getDisplayNameForUsername(telegramUsername));
     const wallet = await getDefaultWalletByUsername(telegramUsername);

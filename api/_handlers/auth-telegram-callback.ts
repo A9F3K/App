@@ -306,6 +306,15 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
     await upsertUserFromTma({
       telegramUsername,
       locale: null,
+      displayName: claims.name ?? null,
+      pictureUrl: claims.picture ?? null,
+      phoneNumber: claims.phone_number ?? null,
+      authProvider: "telegram",
+      loginSubject: claims.sub,
+      telegramUsernameActual: claims.preferred_username ?? null,
+      providerUsername: claims.preferred_username ?? null,
+      telegramUserId: claims.id != null ? String(claims.id) : claims.sub,
+      seenVia: "login",
     });
     await deliverWelcomeFeedIfNeeded({ telegramUsername, localePreferred: null }).catch(() => {});
     await upsertTelegramIdentity({
