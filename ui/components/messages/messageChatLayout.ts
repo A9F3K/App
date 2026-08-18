@@ -64,7 +64,6 @@ export function inlineEmojiHostCss(
 }
 export const MESSAGE_BUBBLE_TIME_FONT_SIZE_PX = 11;
 export const MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX = 15;
-export const MESSAGE_BUBBLE_TIME_MIN_WIDTH_PX = 52;
 export const MESSAGE_CHAT_CHECKMARK_SIZE_PX = 14;
 export const MESSAGE_CHAT_CHECKMARK_GAP_PX = 3;
 /** Horizontal gap between message text and time/checks when sharing a line. */

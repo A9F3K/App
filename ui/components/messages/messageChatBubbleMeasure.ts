@@ -7,7 +7,6 @@ import {
   MESSAGE_BUBBLE_PADDING_HORIZONTAL_PX,
   MESSAGE_BUBBLE_TIME_FONT_SIZE_PX,
   MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX,
-  MESSAGE_BUBBLE_TIME_MIN_WIDTH_PX,
 } from "./messageChatLayout";
 
 export type BubbleMetaPlacement = "inline" | "lastLine" | "stacked";
@@ -168,21 +167,15 @@ export function measureMessageBubbleMetaWidthPx(
   timeLabel: string,
   metaExtraWidthPx = 0,
 ): number {
-  if (!timeLabel) return metaExtraWidthPx;
+  if (!timeLabel) return Math.ceil(Math.max(0, metaExtraWidthPx));
   const timeWidth = measureTextGlyphWidth(
     timeLabel,
     MESSAGE_BUBBLE_TIME_FONT_SIZE_PX,
     MESSAGE_BUBBLE_TIME_LINE_HEIGHT_PX,
   );
-  // Subpixel / font fallback vs the live bubble time — keep the undercover
-  // wide enough that "11.34 PM" never hangs off the fill.
-  const META_MEASURE_PAD_PX = 6;
-  return Math.ceil(
-    Math.max(
-      MESSAGE_BUBBLE_TIME_MIN_WIDTH_PX,
-      timeWidth + metaExtraWidthPx,
-    ) + META_MEASURE_PAD_PX,
-  );
+  // Subpixel only — do not floor to a checks-sized slot when ticks are absent.
+  const META_MEASURE_PAD_PX = 2;
+  return Math.ceil(Math.max(0, timeWidth + metaExtraWidthPx) + META_MEASURE_PAD_PX);
 }
 
 /** Single-line inline row: body glyphs + gap + time/checks. */

@@ -125,7 +125,7 @@ function MessageChatBubbleTextContent({
       colors={colors}
       outgoingStatus={outgoingStatus}
       isOutgoing={isOutgoing}
-      alignSelf={metaPlacement === "stacked" ? "flex-end" : undefined}
+      alignSelf={metaPlacement === "inline" ? "flex-start" : "flex-end"}
       alignWithBodyBaseline={metaPlacement === "inline" || metaPlacement === "lastLine"}
       callIndicator={callIndicator}
     />
@@ -169,7 +169,6 @@ function MessageChatBubbleTextContent({
           style={{
             marginLeft: MESSAGE_BUBBLE_META_GAP_PX,
             flexShrink: 0,
-            minWidth: metaReserveWidthPx > 0 ? metaReserveWidthPx : undefined,
             ...(Platform.OS === "web"
               ? ({ display: "flex" } as object)
               : { paddingBottom: MESSAGE_BUBBLE_INLINE_META_BASELINE_OFFSET_PX }),
