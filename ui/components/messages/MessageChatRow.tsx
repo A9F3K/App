@@ -114,6 +114,7 @@ export function MessageChatRow({
   colors,
   timePendingLabel,
   onPress,
+  onLongPress,
   onAvatarPress,
   onPrefetch,
 }: {
@@ -123,6 +124,7 @@ export function MessageChatRow({
   colors: ThemeColors;
   timePendingLabel: string;
   onPress?: () => void;
+  onLongPress?: () => void;
   /** Opens peer/chat profile without selecting the row when provided. */
   onAvatarPress?: () => void;
   onPrefetch?: () => void;
@@ -226,6 +228,7 @@ export function MessageChatRow({
       isActive={isActive}
       colors={colors}
       onPress={onPress}
+      onLongPress={onLongPress}
     >
       <View
         ref={rowRef}

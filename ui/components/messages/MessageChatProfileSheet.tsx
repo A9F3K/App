@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Modal,
@@ -50,7 +50,14 @@ import {
 } from "./messageListLayout";
 import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import { MessageChatProfileMediaSheet } from "./MessageChatProfileMediaSheet";
+import { MessageChatProfilePlaylistSheet } from "./MessageChatProfilePlaylistSheet";
 import type { ProfileMediaKind } from "../../telegram/fetchTelegramUserProfile";
+import {
+  getMusicPlayer,
+  startMusicPlaylist,
+  subscribeMusicPlayer,
+} from "../../music/musicPlayerStore";
+import { unlockMusicAutoplay } from "../../music/musicAudioElement";
 
 /** Layout matches the profile design sheet (≈380×740 content frame). */
 const SHEET_MAX_WIDTH_PX = 380;
@@ -227,6 +234,12 @@ export function MessageChatProfileSheet({
   const [blockPending, setBlockPending] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   const [mediaKindOpen, setMediaKindOpen] = useState<ProfileMediaKind | null>(null);
+  const [playlistOpen, setPlaylistOpen] = useState(false);
+  const musicPlayer = useSyncExternalStore(
+    subscribeMusicPlayer,
+    getMusicPlayer,
+    getMusicPlayer,
+  );
 
   useEffect(() => {
     if (!visible || Platform.OS !== "web" || typeof document === "undefined") return;
@@ -247,6 +260,7 @@ export function MessageChatProfileSheet({
       setProfile(null);
       setIsBlocked(false);
       setMediaKindOpen(null);
+      setPlaylistOpen(false);
       return;
     }
     const controller = new AbortController();
@@ -275,6 +289,7 @@ export function MessageChatProfileSheet({
   const bio = profile?.bio?.trim() || null;
   const phone = profile?.phone_number?.trim() || null;
   const music = profile?.music ?? null;
+  const playlist = profile?.playlist ?? [];
   const channel = profile?.channel ?? null;
   const media = profile?.media ?? null;
   const iconUrl = chat ? resolveTelegramThreadAvatarUrl(chat) : null;
@@ -384,8 +399,35 @@ export function MessageChatProfileSheet({
     });
   };
 
+  const handleOpenPlaylist = () => {
+    if (playlist.length === 0) return;
+    const uid = playlist[0]?.user_id;
+    const alreadyThis =
+      musicPlayer.visible &&
+      uid != null &&
+      musicPlayer.tracks.some((row) => row.user_id === uid);
+    if (!alreadyThis) {
+      unlockMusicAutoplay();
+      startMusicPlaylist(playlist, 0);
+    }
+    setPlaylistOpen(true);
+  };
+
   if (!chat || !visible) return null;
 
+  const displayedMusic = (() => {
+    const uid = profile?.user_id;
+    if (uid != null && musicPlayer.visible) {
+      const current = musicPlayer.tracks[musicPlayer.index];
+      if (current && current.user_id === uid) {
+        return { artist: current.artist, title: current.title };
+      }
+    }
+    if (playlist[0]) {
+      return { artist: playlist[0].artist, title: playlist[0].title };
+    }
+    return music;
+  })();
   const blockAccent = isBlocked ? UNBLOCK_COLOR : BLOCK_COLOR;
   const blockLabel = isBlocked
     ? t("messages.profile.unblock")
@@ -506,32 +548,40 @@ export function MessageChatProfileSheet({
         </ProfileActionButton>
       </View>
 
-      {music ? (
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "center",
-            marginTop: SECTION_GAP_PX,
-            paddingHorizontal: 8,
-          }}
-        >
-          <ProfileMusicNoteIcon color={colors.primary} size={14} />
-          <Text
-            numberOfLines={1}
-            style={textBase(colors.primary, { marginLeft: 8, flexShrink: 1 })}
+      {displayedMusic ? (
+        <>
+          <ProfileDivider colors={colors} />
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t("messages.profile.playlistTitle")}
+            onPress={playlist.length > 0 ? handleOpenPlaylist : undefined}
+            disabled={playlist.length === 0}
+            style={({ pressed }) => ({
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+              paddingHorizontal: 8,
+              opacity: pressed && playlist.length > 0 ? 0.7 : 1,
+            })}
           >
-            {music.artist}
-            {music.title ? (
-              <Text style={{ color: colors.secondary }}>{` – ${music.title}`}</Text>
-            ) : null}
-          </Text>
-        </View>
+            <ProfileMusicNoteIcon color={colors.primary} size={14} />
+            <Text
+              numberOfLines={1}
+              style={textBase(colors.primary, { marginLeft: 8, flexShrink: 1 })}
+            >
+              {displayedMusic.artist}
+              {displayedMusic.title ? (
+                <Text style={{ color: colors.secondary }}>{` – ${displayedMusic.title}`}</Text>
+              ) : null}
+            </Text>
+          </Pressable>
+          <ProfileDivider colors={colors} />
+        </>
       ) : null}
 
       {channel ? (
         <>
-          <ProfileDivider colors={colors} />
+          {displayedMusic ? null : <ProfileDivider colors={colors} />}
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={channel.title}
@@ -692,6 +742,16 @@ export function MessageChatProfileSheet({
         chat={chat}
         onClose={() => setMediaKindOpen(null)}
         onNavigateToMessage={onClose}
+      />
+      <MessageChatProfilePlaylistSheet
+        visible={playlistOpen}
+        tracks={playlist}
+        fallbackCoverUrl={iconUrl}
+        onBack={() => setPlaylistOpen(false)}
+        onClose={() => {
+          setPlaylistOpen(false);
+          onClose();
+        }}
       />
     </View>
   );

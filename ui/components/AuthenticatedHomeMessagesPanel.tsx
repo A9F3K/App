@@ -64,7 +64,7 @@ import {
 } from "./messages/voiceDialogUiGate";
 import { telegramEmojiDebug } from "./messages/telegramEmojiDebug";
 import { useTelegramMessagesChatListStream } from "./messages/useTelegramMessagesChatListStream";
-import { fetchTelegramChatListSearch, type TelegramChatListSearchHit } from "../telegram/fetchTelegramChatListSearch";
+import { fetchTelegramChatListSearch, rememberTelegramFoundChat, clearTelegramRecentFoundChats, removeTelegramRecentFoundChat, type TelegramChatListSearchHit } from "../telegram/fetchTelegramChatListSearch";
 
 function normalizeSearchNeedle(raw: string): string {
   return raw.trim().toLowerCase().replace(/^@+/, "");
@@ -139,6 +139,11 @@ function remoteSearchHitToRow(hit: TelegramChatListSearchHit): MessageChatRowDat
     list_tier: "positioned",
   };
 }
+
+type ChatListDisplayItem =
+  | { kind: "chat"; key: string; row: MessageChatRowData }
+  | { kind: "sectionHeader"; key: string; title: string }
+  | { kind: "messagesFooter"; key: string; count: number };
 
 type Props = {
   colors: ThemeColors;
@@ -564,7 +569,7 @@ const CHAT_LIST_STREAM_ENABLED = typeof EventSource !== "undefined";
 const CHAT_LIST_AUTO_LOAD_MORE_MS = 1_800;
 
 export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Props) {
-  const { t } = useAppStrings();
+  const { t, tf } = useAppStrings();
   const { openProfileSheet } = useProfileSheet();
   const { authReady, isAuthenticated } = useAuth();
   const { isTelegramMessagesConnected, refreshStatus } = useTelegramMessagesConnection();
@@ -584,9 +589,14 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const [emptyListConfirmed, setEmptyListConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chatListSearchQuery, setChatListSearchQuery] = useState("");
-  const [remoteSearchChatIds, setRemoteSearchChatIds] = useState<number[]>([]);
+  const [chatListSearchFocused, setChatListSearchFocused] = useState(false);
   const [remoteSearchPeerUserIds, setRemoteSearchPeerUserIds] = useState<number[]>([]);
-  const [remoteSearchHits, setRemoteSearchHits] = useState<TelegramChatListSearchHit[]>([]);
+  const [remoteDirectHits, setRemoteDirectHits] = useState<TelegramChatListSearchHit[]>([]);
+  const [remoteGlobalHits, setRemoteGlobalHits] = useState<TelegramChatListSearchHit[]>([]);
+  const [remoteMessageHits, setRemoteMessageHits] = useState<TelegramChatListSearchHit[]>([]);
+  const [remoteMessageCount, setRemoteMessageCount] = useState(0);
+  const [recentSearchHits, setRecentSearchHits] = useState<TelegramChatListSearchHit[]>([]);
+  const [recentSearchLoaded, setRecentSearchLoaded] = useState(false);
   const selectedChat = useAuthenticatedHomeSelectedChat();
   const middleColumnFocus = useAuthenticatedHomeMiddleColumnFocus();
   const selectedChatId = selectedChat?.telegram_chat_id ?? null;
@@ -1408,6 +1418,9 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         void warmupTelegramChatSession(item.telegram_chat_id);
       });
       openAuthenticatedHomeChatHistory(item);
+      if (chatListSearchFocused || chatListSearchQuery.trim()) {
+        void rememberTelegramFoundChat(item.telegram_chat_id);
+      }
       void import("./messages/messageChatAvatarPrefetch").then(
         ({ prefetchOpenChatListAvatar, prefetchOpenChatAvatars }) => {
           prefetchOpenChatListAvatar(item);
@@ -1418,7 +1431,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         },
       );
     },
-    [chatSelectionEnabled],
+    [chatListSearchFocused, chatListSearchQuery, chatSelectionEnabled],
   );
 
   const handleRowPrefetch = useCallback((item: MessageChatRowData) => {
@@ -1436,20 +1449,15 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     () => normalizeSearchNeedle(chatListSearchQuery),
     [chatListSearchQuery],
   );
-  const remoteSearchChatIdSet = useMemo(
-    () => new Set(remoteSearchChatIds),
-    [remoteSearchChatIds],
-  );
-  const remoteSearchPeerUserIdSet = useMemo(
-    () => new Set(remoteSearchPeerUserIds),
-    [remoteSearchPeerUserIds],
-  );
-
+  const recentsMode = chatListSearchFocused && !searchNeedle;
+  const listSearchActive = Boolean(searchNeedle) || recentsMode;
   useEffect(() => {
     if (!isTelegramMessagesConnected || !searchNeedle) {
-      setRemoteSearchChatIds([]);
       setRemoteSearchPeerUserIds([]);
-      setRemoteSearchHits([]);
+      setRemoteDirectHits([]);
+      setRemoteGlobalHits([]);
+      setRemoteMessageHits([]);
+      setRemoteMessageCount(0);
       return;
     }
     const controller = new AbortController();
@@ -1457,14 +1465,19 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       void fetchTelegramChatListSearch(chatListSearchQuery, controller.signal).then((result) => {
         if (controller.signal.aborted) return;
         if (!result.ok) return;
-        setRemoteSearchChatIds(result.chatIds);
         setRemoteSearchPeerUserIds(result.peerUserIds);
-        setRemoteSearchHits(result.chats);
+        setRemoteDirectHits(result.directChats);
+        setRemoteGlobalHits(result.globalChats);
+        setRemoteMessageHits(result.messageChats);
+        setRemoteMessageCount(result.messageCount);
         logPageDisplay("messages_chat_list_search", {
           query: chatListSearchQuery.trim(),
           chatIdCount: result.chatIds.length,
           peerUserIdCount: result.peerUserIds.length,
-          stubCount: result.chats.length,
+          directCount: result.directChats.length,
+          globalCount: result.globalChats.length,
+          messageChatCount: result.messageChats.length,
+          messageCount: result.messageCount,
           sampleTitles: result.chats
             .slice(0, 5)
             .map((row) => row.title)
@@ -1478,50 +1491,162 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     };
   }, [chatListSearchQuery, isTelegramMessagesConnected, searchNeedle]);
 
-  const displayChats = useMemo(() => {
-    if (!searchNeedle) return sortedChats;
-    const localIds = new Set(sortedChats.map((row) => row.telegram_chat_id));
-    const matched = sortedChats.filter((row) => {
-      if (chatMatchesLocalSearch(row, searchNeedle)) return true;
-      if (remoteSearchChatIdSet.has(row.telegram_chat_id)) return true;
-      if (
-        row.peer_user_id != null &&
-        Number.isFinite(row.peer_user_id) &&
-        remoteSearchPeerUserIdSet.has(Math.trunc(row.peer_user_id))
-      ) {
-        return true;
-      }
-      return false;
+  useEffect(() => {
+    if (!isTelegramMessagesConnected || !recentsMode) return;
+    const controller = new AbortController();
+    void fetchTelegramChatListSearch("", controller.signal, { recent: true }).then((result) => {
+      if (controller.signal.aborted) return;
+      setRecentSearchLoaded(true);
+      if (!result.ok) return;
+      setRecentSearchHits(result.chats);
     });
-    // Include TDLib hits that are not in the scroll-synced window yet.
-    const remoteOnly: MessageChatRowData[] = [];
-    for (const hit of remoteSearchHits) {
-      if (localIds.has(hit.chatId)) continue;
-      if (matched.some((row) => row.telegram_chat_id === hit.chatId)) continue;
-      remoteOnly.push(remoteSearchHitToRow(hit));
+    return () => {
+      controller.abort();
+    };
+  }, [isTelegramMessagesConnected, recentsMode]);
+
+  const handleClearRecentSearch = useCallback(() => {
+    void clearTelegramRecentFoundChats().then((ok) => {
+      if (!ok) return;
+      setRecentSearchHits([]);
+      setRecentSearchLoaded(true);
+    });
+  }, []);
+
+  const handleRemoveRecentSearch = useCallback(
+    (chatId: number) => {
+      void removeTelegramRecentFoundChat(chatId).then((ok) => {
+        if (!ok) return;
+        setRecentSearchHits((prev) => prev.filter((hit) => hit.chatId !== chatId));
+      });
+    },
+    [],
+  );
+
+  const remoteDirectChatIdSet = useMemo(
+    () => new Set(remoteDirectHits.map((hit) => hit.chatId)),
+    [remoteDirectHits],
+  );
+
+  const displayListItems = useMemo((): ChatListDisplayItem[] => {
+    if (recentsMode) {
+      const liveById = new Map(sortedChats.map((row) => [row.telegram_chat_id, row]));
+      return recentSearchHits.map((hit) => ({
+        kind: "chat" as const,
+        key: `chat-${hit.chatId}`,
+        row: liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit),
+      }));
     }
-    const combined = [...matched, ...remoteOnly];
-    return combined
+    if (!searchNeedle) {
+      return sortedChats.map((row) => ({
+        kind: "chat" as const,
+        key: `chat-${row.telegram_chat_id}`,
+        row,
+      }));
+    }
+
+    const liveById = new Map(sortedChats.map((row) => [row.telegram_chat_id, row]));
+    const directPeerIdSet = new Set(remoteSearchPeerUserIds);
+    for (const hit of remoteDirectHits) {
+      if (hit.peerUserId != null && Number.isFinite(hit.peerUserId) && hit.peerUserId !== 0) {
+        directPeerIdSet.add(Math.trunc(hit.peerUserId));
+      }
+    }
+
+    const directIds = new Set<number>();
+    const directRows: MessageChatRowData[] = [];
+    const localDirect = sortedChats
+      .filter((row) => {
+        if (chatMatchesLocalSearch(row, searchNeedle)) return true;
+        if (remoteDirectChatIdSet.has(row.telegram_chat_id)) return true;
+        if (
+          row.peer_user_id != null &&
+          Number.isFinite(row.peer_user_id) &&
+          directPeerIdSet.has(Math.trunc(row.peer_user_id))
+        ) {
+          return true;
+        }
+        return false;
+      })
       .map((row, index) => ({
         row,
         index,
         rank: chatSearchRank(
           row,
           searchNeedle,
-          remoteSearchChatIdSet.has(row.telegram_chat_id) ||
+          remoteDirectChatIdSet.has(row.telegram_chat_id) ||
             (row.peer_user_id != null &&
-              remoteSearchPeerUserIdSet.has(Math.trunc(row.peer_user_id))),
+              directPeerIdSet.has(Math.trunc(row.peer_user_id))),
         ),
       }))
       .sort((a, b) => a.rank - b.rank || a.index - b.index)
       .map((entry) => entry.row);
+
+    for (const row of localDirect) {
+      if (directIds.has(row.telegram_chat_id)) continue;
+      directIds.add(row.telegram_chat_id);
+      directRows.push(row);
+    }
+    for (const hit of remoteDirectHits) {
+      if (directIds.has(hit.chatId)) continue;
+      directIds.add(hit.chatId);
+      directRows.push(liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit));
+    }
+
+    const globalRows = remoteGlobalHits
+      .filter((hit) => !directIds.has(hit.chatId))
+      .map((hit) => liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit));
+    const globalIdSet = new Set(globalRows.map((row) => row.telegram_chat_id));
+
+    const messageRows = remoteMessageHits
+      .filter((hit) => !directIds.has(hit.chatId) && !globalIdSet.has(hit.chatId))
+      .map((hit) => liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit));
+
+    const items: ChatListDisplayItem[] = [];
+    for (const row of directRows) {
+      items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
+    }
+    if (globalRows.length > 0) {
+      items.push({
+        kind: "sectionHeader",
+        key: "search-global-header",
+        title: t("messages.search.globalResults"),
+      });
+      for (const row of globalRows) {
+        items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
+      }
+    }
+    for (const row of messageRows) {
+      items.push({ kind: "chat", key: `chat-msg-${row.telegram_chat_id}`, row });
+    }
+    if (remoteMessageCount > 0) {
+      items.push({
+        kind: "messagesFooter",
+        key: "search-messages-footer",
+        count: remoteMessageCount,
+      });
+    }
+    return items;
   }, [
-    remoteSearchChatIdSet,
-    remoteSearchHits,
-    remoteSearchPeerUserIdSet,
+    recentsMode,
+    recentSearchHits,
+    remoteDirectChatIdSet,
+    remoteDirectHits,
+    remoteGlobalHits,
+    remoteMessageCount,
+    remoteMessageHits,
     searchNeedle,
     sortedChats,
+    t,
   ]);
+
+  const displayChats = useMemo(
+    () =>
+      displayListItems
+        .filter((item): item is Extract<ChatListDisplayItem, { kind: "chat" }> => item.kind === "chat")
+        .map((item) => item.row),
+    [displayListItems],
+  );
 
   const cachedChatCount = chatListSync?.cachedCount ?? chats.length;
   const chatListRowStride = chatListRowStridePx(wideListChrome);
@@ -1542,8 +1667,19 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const chatListScrollMetrics = getChatListScrollMetrics();
   const chatListEffectiveLayoutH =
     chatListScrollMetrics.layoutH > 0 ? chatListScrollMetrics.layoutH : 480;
-  const chatListVirtualTotalCount = displayChats.length;
+  const chatListVirtualTotalCount = listSearchActive
+    ? displayListItems.length
+    : displayChats.length;
   const chatListVirtualWindow = useMemo(() => {
+    if (listSearchActive) {
+      return {
+        enabled: false,
+        startIndex: 0,
+        endIndex: Math.max(0, displayListItems.length - 1),
+        topSpacerPx: 0,
+        bottomSpacerPx: 0,
+      };
+    }
     const next = resolveChatListVirtualWindow(chatListVirtualTotalCount, {
       scrollY: chatListScrollMetrics.scrollY,
       layoutH: chatListEffectiveLayoutH,
@@ -1564,6 +1700,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     chatListVirtualTotalCount,
     chatListEffectiveLayoutH,
     chatListScrollMetrics.scrollY,
+    displayListItems.length,
+    listSearchActive,
   ]);
   chatListVirtualWindowRef.current = chatListVirtualWindow;
 
@@ -1630,19 +1768,23 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const mayHaveMoreOnServer = needsPositionedPage || needsTier3Page;
   const showBottomLoader =
     !searchNeedle &&
+    !recentsMode &&
     (syncInProgress ||
       tier3InProgress ||
       (chatListAtBottomRef.current && mayHaveMoreOnServer));
 
-  const visibleChats = chatListVirtualWindow.enabled
-    ? displayChats.slice(
-        Math.min(chatListVirtualWindow.startIndex, displayChats.length),
-        Math.min(displayChats.length, chatListVirtualWindow.endIndex + 1),
+  const visibleListItems = chatListVirtualWindow.enabled
+    ? displayListItems.slice(
+        Math.min(chatListVirtualWindow.startIndex, displayListItems.length),
+        Math.min(displayListItems.length, chatListVirtualWindow.endIndex + 1),
       )
-    : displayChats;
+    : displayListItems;
   const visibleChatStartIndex = chatListVirtualWindow.enabled
     ? chatListVirtualWindow.startIndex
     : 0;
+  const visibleChats = visibleListItems
+    .filter((item): item is Extract<ChatListDisplayItem, { kind: "chat" }> => item.kind === "chat")
+    .map((item) => item.row);
   const visibleChatIdsKey = visibleChats
     .map((row) => row.telegram_chat_id)
     .join(",");
@@ -1683,7 +1825,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   }, [chatListSync?.inProgress]);
 
   useEffect(() => {
-    if (searchNeedle) return;
+    if (listSearchActive) return;
     if (!chatListAtBottomRef.current) return;
     if (isVoiceDialogUiOpen()) return;
     if (mayHaveMoreOnServer) {
@@ -1694,14 +1836,14 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     needsPositionedPage,
     requestLoadMoreChats,
     displayChats.length,
-    searchNeedle,
+    listSearchActive,
   ]);
 
   // Background sync alone is not enough if SSE is quiet — keep paging until the
   // gateway reports the main list (and tier-3 tail) is complete.
   useEffect(() => {
     if (!authReady || !isTelegramMessagesConnected) return;
-    if (searchNeedle) return;
+    if (listSearchActive) return;
     if (!mayHaveMoreOnServer) return;
 
     const tick = () => {
@@ -1717,12 +1859,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     mayHaveMoreOnServer,
     needsPositionedPage,
     requestLoadMoreChats,
-    searchNeedle,
+    listSearchActive,
   ]);
 
   const handleChatListNearBottom = useCallback(() => {
     chatListAtBottomRef.current = true;
-    if (searchNeedle) return;
+    if (listSearchActive) return;
     if (isVoiceDialogUiOpen()) return;
     void loadChatsRef.current({
       silent: true,
@@ -1739,7 +1881,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     needsPositionedPage,
     needsTier3Page,
     requestLoadMoreChats,
-    searchNeedle,
+    listSearchActive,
   ]);
 
   useEffect(() => {
@@ -1749,28 +1891,74 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     };
   }, [handleChatListNearBottom]);
 
-  const renderChatRows = (items: MessageChatRowData[], startIndex: number) => (
+  const renderListItems = (items: ChatListDisplayItem[], startIndex: number) => (
     <>
       {chatListVirtualWindow.enabled && chatListVirtualWindow.topSpacerPx > 0 ? (
         <View style={{ height: chatListVirtualWindow.topSpacerPx }} />
       ) : null}
       {items.map((item, index) => {
         const absoluteIndex = startIndex + index;
+        if (item.kind === "sectionHeader") {
+          return (
+            <View
+              key={item.key}
+              style={{
+                backgroundColor: colors.undercover,
+                paddingVertical: 8,
+                paddingHorizontal: layout.contentSideInsetPx,
+                marginBottom: 2,
+              }}
+            >
+              <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
+                {item.title}
+              </Text>
+            </View>
+          );
+        }
+        if (item.kind === "messagesFooter") {
+          return (
+            <View
+              key={item.key}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                borderTopWidth: 1,
+                borderTopColor: colors.highlight,
+                paddingVertical: 10,
+                paddingHorizontal: layout.contentSideInsetPx,
+                marginTop: 2,
+              }}
+            >
+              <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
+                {tf("messages.search.messagesFound", { count: item.count })}
+              </Text>
+              <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
+                {t("messages.search.allChats")}
+              </Text>
+            </View>
+          );
+        }
         return (
-          <View key={item.telegram_chat_id}>
+          <View key={item.key}>
             <MessageChatRow
-              item={item}
-              isLast={absoluteIndex === displayChats.length - 1 && !showBottomLoader}
+              item={item.row}
+              isLast={absoluteIndex === displayListItems.length - 1 && !showBottomLoader}
               isActive={
                 chatSelectionEnabled &&
                 middleColumnFocus === "chat" &&
-                selectedChatId === item.telegram_chat_id
+                selectedChatId === item.row.telegram_chat_id
               }
               colors={colors}
               timePendingLabel={t("feed.timePending")}
-              onPress={chatSelectionEnabled ? () => handleChatPress(item) : undefined}
-              onAvatarPress={() => openProfileSheet(item)}
-              onPrefetch={() => handleRowPrefetch(item)}
+              onPress={chatSelectionEnabled ? () => handleChatPress(item.row) : undefined}
+              onLongPress={
+                recentsMode
+                  ? () => handleRemoveRecentSearch(item.row.telegram_chat_id)
+                  : undefined
+              }
+              onAvatarPress={() => openProfileSheet(item.row)}
+              onPrefetch={() => handleRowPrefetch(item.row)}
             />
           </View>
         );
@@ -1779,7 +1967,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         <View style={{ height: chatListVirtualWindow.bottomSpacerPx }} />
       ) : null}
       <ChatListBottomSentinel
-        enabled={!searchNeedle && sortedChats.length > 0}
+        enabled={!listSearchActive && sortedChats.length > 0}
         onNearBottom={handleChatListNearBottom}
       />
     </>
@@ -1794,11 +1982,45 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     <MessageChatListSearchField
       value={chatListSearchQuery}
       onChangeText={setChatListSearchQuery}
+      onFocus={() => setChatListSearchFocused(true)}
+      onBlur={() => setChatListSearchFocused(false)}
+      onDismiss={() => {
+        setChatListSearchFocused(false);
+        setChatListSearchQuery("");
+      }}
+      showClear={chatListSearchFocused || chatListSearchQuery.trim().length > 0}
       placeholder={t("messages.search.placeholder")}
       clearAccessibilityLabel={t("messages.search.clear")}
       marginBottomPx={chatListSearchMarginBelow}
     />
   );
+
+  const recentsHeader =
+    recentsMode && recentSearchLoaded && displayChats.length > 0 ? (
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 6,
+          minHeight: 24,
+        }}
+      >
+        <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
+          {t("messages.search.recentsTitle")}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("messages.search.recentsClear")}
+          onPress={handleClearRecentSearch}
+          style={({ pressed }) => ({ opacity: pressed ? 0.65 : 1, paddingVertical: 4, paddingLeft: 8 })}
+        >
+          <Text style={{ color: colors.accent, fontSize: 13, lineHeight: 18 }}>
+            {t("messages.search.recentsClear")}
+          </Text>
+        </Pressable>
+      </View>
+    ) : null;
 
   if (!isTelegramMessagesConnected) {
     return (
@@ -1849,8 +2071,9 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     );
   }
 
+  const searchResultChatCount = displayListItems.filter((item) => item.kind === "chat").length;
   const searchEmpty =
-    searchNeedle.length > 0 && displayChats.length === 0 ? (
+    searchNeedle.length > 0 && searchResultChatCount === 0 && remoteMessageCount === 0 ? (
       <Text
         style={{
           textAlign: "center",
@@ -1862,14 +2085,27 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       >
         {t("messages.search.noResults")}
       </Text>
+    ) : recentsMode && recentSearchLoaded && displayChats.length === 0 ? (
+      <Text
+        style={{
+          textAlign: "center",
+          color: colors.secondary,
+          fontSize: 15,
+          lineHeight: 20,
+          paddingVertical: 16,
+        }}
+      >
+        {t("messages.search.recentsEmpty")}
+      </Text>
     ) : null;
 
   const list = (
     <View style={{ width: "100%", alignSelf: "stretch" }} pointerEvents="box-none">
       <View style={listShellStyle} pointerEvents="box-none">
         {searchField}
+        {recentsHeader}
         {searchEmpty}
-        {renderChatRows(visibleChats, visibleChatStartIndex)}
+        {renderListItems(visibleListItems, visibleChatStartIndex)}
       </View>
     </View>
   );
@@ -1885,6 +2121,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       onScrollBeginDrag={handleClearSelection}
     >
       {searchField}
+      {recentsHeader}
       {searchEmpty}
       {renderChatRows(visibleChats, visibleChatStartIndex)}
       <Pressable style={{ flexGrow: 1, minHeight: 1 }} onPress={handleClearSelection} />

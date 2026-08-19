@@ -1110,22 +1110,23 @@ function normalizeGlobalSearchQuery(query: string): {
   return { trimmed, bare, looksLikeUsername };
 }
 
-export async function searchChatsForUser(
-  telegramUsername: string,
-  query: string,
-): Promise<ChatSearchHit[]> {
-  const record = await requireReadySession(telegramUsername, 90_000);
-  if (!record) return [];
+export type CategorizedChatSearchBuckets = {
+  direct: ChatSearchHit[];
+  global: ChatSearchHit[];
+};
 
+async function collectCategorizedChatSearchBuckets(
+  client: Client,
+  query: string,
+): Promise<{ direct: Map<number, ChatSearchHit>; global: Map<number, ChatSearchHit> }> {
   const { trimmed, bare, looksLikeUsername } = normalizeGlobalSearchQuery(query);
-  if (!trimmed) return [];
-  // Prefer bare username when the user typed @name; otherwise keep spaces for channel titles.
+  const direct = new Map<number, ChatSearchHit>();
+  const global = new Map<number, ChatSearchHit>();
+  if (!trimmed) return { direct, global };
+
   const textQuery = trimmed.startsWith("@") ? bare : trimmed;
 
-  const collected = new Map<number, ChatSearchHit>();
-  const client = record.client;
-
-  // Local known chats (offline). TDLib `searchChats` takes only query + limit — no chat_list.
+  // tdesktop: top section — local + server-known chats (with message previews).
   try {
     const result = (await client.invoke({
       _: "searchChats",
@@ -1133,27 +1134,12 @@ export async function searchChatsForUser(
       limit: 50,
     })) as { chat_ids?: number[] };
     for (const chatId of result.chat_ids ?? []) {
-      await collectChatSearchHit(client, chatId, collected);
+      await collectChatSearchHit(client, chatId, direct);
     }
   } catch {
     /* skip */
   }
 
-  // Recently opened search hits (Telegram global-search recents).
-  try {
-    const result = (await client.invoke({
-      _: "searchRecentlyFoundChats",
-      query: textQuery,
-      limit: 30,
-    })) as { chat_ids?: number[] };
-    for (const chatId of result.chat_ids ?? []) {
-      await collectChatSearchHit(client, chatId, collected);
-    }
-  } catch {
-    /* optional / older TDLib */
-  }
-
-  // Server-side search among chats this account knows (beyond local cache pages).
   try {
     const result = (await client.invoke({
       _: "searchChatsOnServer",
@@ -1161,14 +1147,26 @@ export async function searchChatsForUser(
       limit: 40,
     })) as { chat_ids?: number[] };
     for (const chatId of result.chat_ids ?? []) {
-      await collectChatSearchHit(client, chatId, collected);
+      await collectChatSearchHit(client, chatId, direct);
     }
   } catch {
     /* optional method / older TDLib */
   }
 
-  // Global public users + channels/supergroups (not already in the chat list).
-  // Username-prefix lookups need ≥5 chars; title search works for shorter channel names.
+  // tdesktop: "Global search results" — recents + public directory.
+  try {
+    const result = (await client.invoke({
+      _: "searchRecentlyFoundChats",
+      query: textQuery,
+      limit: 30,
+    })) as { chat_ids?: number[] };
+    for (const chatId of result.chat_ids ?? []) {
+      await collectChatSearchHit(client, chatId, global);
+    }
+  } catch {
+    /* optional / older TDLib */
+  }
+
   try {
     const publicQuery = looksLikeUsername ? bare : textQuery;
     if (publicQuery.length > 0) {
@@ -1177,14 +1175,13 @@ export async function searchChatsForUser(
         query: publicQuery,
       })) as { chat_ids?: number[] };
       for (const chatId of (result.chat_ids ?? []).slice(0, 40)) {
-        await collectChatSearchHit(client, chatId, collected, looksLikeUsername ? bare : null);
+        await collectChatSearchHit(client, chatId, global, looksLikeUsername ? bare : null);
       }
     }
   } catch {
     /* optional */
   }
 
-  // Exact public username (e.g. durov / @durov / HyperlinksSpaceChat).
   if (looksLikeUsername) {
     try {
       const chat = (await client.invoke({
@@ -1192,28 +1189,69 @@ export async function searchChatsForUser(
         username: bare,
       })) as TdChat;
       if (typeof chat?.id === "number") {
-        await collectChatSearchHit(client, chat.id, collected, bare);
+        await collectChatSearchHit(client, chat.id, global, bare);
       }
     } catch {
       /* username not found / private */
     }
   }
 
-  return [...collected.values()];
+  for (const chatId of direct.keys()) {
+    global.delete(chatId);
+  }
+
+  return { direct, global };
 }
 
-/** Global message search — returns distinct chat ids with matching message text. */
-export async function searchMessagesChatIdsForUser(
+export async function searchChatsCategorizedForUser(
   telegramUsername: string,
   query: string,
-): Promise<number[]> {
+): Promise<CategorizedChatSearchBuckets> {
+  const record = await requireReadySession(telegramUsername, 90_000);
+  if (!record) return { direct: [], global: [] };
+
+  const { trimmed } = normalizeGlobalSearchQuery(query);
+  if (!trimmed) return { direct: [], global: [] };
+
+  const { direct, global } = await collectCategorizedChatSearchBuckets(record.client, query);
+  return {
+    direct: [...direct.values()],
+    global: [...global.values()],
+  };
+}
+
+export async function searchChatsForUser(
+  telegramUsername: string,
+  query: string,
+): Promise<ChatSearchHit[]> {
   const record = await requireReadySession(telegramUsername, 90_000);
   if (!record) return [];
 
-  const trimmed = query.trim().replace(/^@+/, "").trim();
+  const { trimmed } = normalizeGlobalSearchQuery(query);
   if (!trimmed) return [];
 
+  const { direct, global } = await collectCategorizedChatSearchBuckets(record.client, query);
+  return [...direct.values(), ...global.values()];
+}
+
+export type MessageSearchResult = {
+  chatIds: number[];
+  messageCount: number;
+};
+
+/** Global message search — distinct chat ids plus total message hit count (tdesktop footer). */
+export async function searchMessagesForUser(
+  telegramUsername: string,
+  query: string,
+): Promise<MessageSearchResult> {
+  const record = await requireReadySession(telegramUsername, 90_000);
+  if (!record) return { chatIds: [], messageCount: 0 };
+
+  const trimmed = query.trim().replace(/^@+/, "").trim();
+  if (!trimmed) return { chatIds: [], messageCount: 0 };
+
   const collected = new Set<number>();
+  let messageCount = 0;
   for (const chatList of [{ _: "chatListMain" as const }, { _: "chatListArchive" as const }]) {
     try {
       const result = (await record.client.invoke({
@@ -1227,7 +1265,12 @@ export async function searchMessagesChatIdsForUser(
         filter: { _: "searchMessagesFilterEmpty" },
         min_date: 0,
         max_date: 0,
-      })) as { messages?: Array<{ chat_id?: number }> };
+      })) as { messages?: Array<{ chat_id?: number }>; total_count?: number };
+      const total =
+        typeof result.total_count === "number" && Number.isFinite(result.total_count)
+          ? Math.trunc(result.total_count)
+          : (result.messages?.length ?? 0);
+      messageCount += total;
       for (const message of result.messages ?? []) {
         const chatId = typeof message.chat_id === "number" ? message.chat_id : 0;
         if (Number.isFinite(chatId) && chatId !== 0) collected.add(Math.trunc(chatId));
@@ -1236,7 +1279,16 @@ export async function searchMessagesChatIdsForUser(
       /* skip list */
     }
   }
-  return [...collected];
+  return { chatIds: [...collected], messageCount };
+}
+
+/** Global message search — returns distinct chat ids with matching message text. */
+export async function searchMessagesChatIdsForUser(
+  telegramUsername: string,
+  query: string,
+): Promise<number[]> {
+  const result = await searchMessagesForUser(telegramUsername, query);
+  return result.chatIds;
 }
 
 /** Hydrate chat ids (e.g. message-search hits) into displayable search stubs. */
@@ -1251,6 +1303,77 @@ export async function hydrateChatSearchHitsForUser(
     await collectChatSearchHit(record.client, raw, collected);
   }
   return [...collected.values()];
+}
+
+/** Empty-query recents (`searchChats` with query "" — recently found/opened chats). */
+export async function searchRecentlyFoundChatsForUser(
+  telegramUsername: string,
+  limit = 50,
+): Promise<ChatSearchHit[]> {
+  const record = await requireReadySession(telegramUsername, 90_000);
+  if (!record) return [];
+  let chatIds: number[] = [];
+  try {
+    const result = (await record.client.invoke({
+      _: "searchChats",
+      query: "",
+      limit,
+    })) as { chat_ids?: number[] };
+    chatIds = (result.chat_ids ?? [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isFinite(id) && id !== 0)
+      .map((id) => Math.trunc(id));
+  } catch {
+    return [];
+  }
+  return hydrateChatSearchHitsForUser(telegramUsername, chatIds);
+}
+
+export async function removeRecentlyFoundChatForUser(
+  telegramUsername: string,
+  chatId: number,
+): Promise<boolean> {
+  if (!Number.isFinite(chatId) || chatId === 0) return false;
+  const record = await requireReadySession(telegramUsername, 90_000);
+  if (!record) return false;
+  try {
+    await record.client.invoke({
+      _: "removeRecentlyFoundChat",
+      chat_id: Math.trunc(chatId),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function clearRecentlyFoundChatsForUser(telegramUsername: string): Promise<boolean> {
+  const record = await requireReadySession(telegramUsername, 90_000);
+  if (!record) return false;
+  try {
+    await record.client.invoke({ _: "clearRecentlyFoundChats" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function addRecentlyFoundChatForUser(
+  telegramUsername: string,
+  chatId: number,
+): Promise<boolean> {
+  if (!Number.isFinite(chatId) || chatId === 0) return false;
+  const record = await requireReadySession(telegramUsername, 90_000);
+  if (!record) return false;
+  try {
+    await record.client.invoke({
+      _: "addRecentlyFoundChat",
+      chat_id: Math.trunc(chatId),
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function searchContactsForUser(
@@ -1554,6 +1677,32 @@ export async function getUserProfileForUser(
     peerUserId != null && Number.isFinite(peerUserId) ? Math.trunc(peerUserId) : null,
   );
   return { ok: true, profile };
+}
+
+export async function getProfileAudioFileForUser(
+  telegramUsername: string,
+  userId: number,
+  fileId: number,
+): Promise<{ data: Buffer; mime: string } | null> {
+  if (!Number.isFinite(userId) || userId === 0) return null;
+  if (!Number.isFinite(fileId) || fileId <= 0) return null;
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) return null;
+  const { readProfileAudioBytes } = await import("./profileMusic.js");
+  return readProfileAudioBytes(record.client, Math.trunc(userId), Math.trunc(fileId));
+}
+
+export async function getProfileAudioCoverForUser(
+  telegramUsername: string,
+  userId: number,
+  fileId: number,
+): Promise<{ data: Buffer; mime: string } | null> {
+  if (!Number.isFinite(userId) || userId === 0) return null;
+  if (!Number.isFinite(fileId) || fileId <= 0) return null;
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) return null;
+  const { readProfileAudioCoverBytes } = await import("./profileMusic.js");
+  return readProfileAudioCoverBytes(record.client, Math.trunc(userId), Math.trunc(fileId));
 }
 
 export async function blockUserForUser(

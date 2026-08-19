@@ -2,6 +2,13 @@ import type { Client } from "tdl";
 import { formattedTextPlain, type TdChat } from "./chatPreview.js";
 import { emojiStatusCustomIdFromUser } from "./emojiStatus.js";
 import { userDisplayNameFromTdUser, isBotFromTdUser } from "./tdUserProfile.js";
+import {
+  listUserProfileAudios,
+  parseTdProfileAudio,
+  type TelegramProfileAudioTrack,
+} from "./profileMusic.js";
+
+export type { TelegramProfileAudioTrack };
 
 export type TelegramUserProfilePayload = {
   user_id: number | null;
@@ -15,6 +22,7 @@ export type TelegramUserProfilePayload = {
   is_blocked: boolean;
   emoji_status_custom_emoji_id: string | null;
   music: { artist: string; title: string } | null;
+  playlist: TelegramProfileAudioTrack[];
   channel: {
     chat_id: number;
     title: string;
@@ -288,6 +296,7 @@ export async function fetchTelegramUserProfile(
     is_blocked: false,
     emoji_status_custom_emoji_id: null,
     music: null,
+    playlist: [],
     channel: null,
     media: emptyMedia,
   };
@@ -296,6 +305,10 @@ export async function fetchTelegramUserProfile(
     resolvedChatId !== 0
       ? loadMediaCounts(client, resolvedChatId)
       : Promise.resolve(emptyMedia);
+  const playlistPromise =
+    resolvedUserId != null
+      ? listUserProfileAudios(client, resolvedUserId)
+      : Promise.resolve([] as TelegramProfileAudioTrack[]);
 
   if (resolvedUserId != null) {
     try {
@@ -323,11 +336,24 @@ export async function fetchTelegramUserProfile(
         bot_info?: { description?: string };
         personal_chat_id?: number;
         personalChatId?: number;
+        first_profile_audio?: unknown;
+        firstProfileAudio?: unknown;
       };
       const bio = formattedTextPlain(full.bio)?.trim() || null;
       if (bio) base.bio = bio;
       else if (typeof full.bot_info?.description === "string" && full.bot_info.description.trim()) {
         base.bio = full.bot_info.description.trim();
+      }
+      const firstAudio = parseTdProfileAudio(
+        full.first_profile_audio ?? full.firstProfileAudio,
+        resolvedUserId,
+      );
+      if (firstAudio) {
+        base.music = {
+          artist: firstAudio.artist,
+          title: firstAudio.title,
+        };
+        base.playlist = [firstAudio];
       }
       const personalChatId = Number(
         full.personal_chat_id ?? full.personalChatId ?? 0,
@@ -376,7 +402,13 @@ export async function fetchTelegramUserProfile(
     }
   }
 
-  base.media = await mediaPromise;
+  const [media, playlist] = await Promise.all([mediaPromise, playlistPromise]);
+  base.media = media;
+  if (playlist.length > 0) {
+    base.playlist = playlist;
+    const first = playlist[0]!;
+    base.music = { artist: first.artist, title: first.title };
+  }
   return base;
 }
 

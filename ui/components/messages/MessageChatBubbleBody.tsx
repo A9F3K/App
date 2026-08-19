@@ -13,7 +13,7 @@ import type {
   MessageChatKind,
   MessageChatReplyPreview,
 } from "./messageChatHistoryTypes";
-import { isDisplayableMediaMessage, messageShowsOutgoingChecks, resolveMessageOutgoingStatus, resolveOutgoingStatusForDisplay, shouldShowMessageSenderHeader } from "./messageChatHistoryTypes";
+import { isDisplayableMediaMessage, messageChatAudioCaptionText, messageShowsOutgoingChecks, resolveMessageOutgoingStatus, resolveOutgoingStatusForDisplay, shouldShowMessageSenderHeader } from "./messageChatHistoryTypes";
 import {
   MESSAGE_BUBBLE_BORDER_RADIUS_PX,
   MESSAGE_BUBBLE_FONT_SIZE_PX,
@@ -47,6 +47,7 @@ import {
   messageChatCallArrowWidthPx,
 } from "./MessageChatCallArrow";
 import { formatMessageCallLabel } from "./formatMessageCallLabel";
+import { MessageChatAudioContent } from "./MessageChatAudioContent";
 import { groupSenderDisplayColor } from "./groupSenderColor";
 import { MessageChatLinkifiedText } from "./MessageChatLinkifiedText";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
@@ -491,9 +492,12 @@ export function MessageChatBubbleBody({
   const showChannelBadge = Boolean(item.sender_is_channel) && chatKind !== "channel";
   const contentKind: MessageChatContentKind = item.content_kind ?? "other";
   const isCall = contentKind === "call";
+  const isAudio = contentKind === "audio" && Boolean(item.audio);
   const bodyText = isCall
     ? formatMessageCallLabel(item.is_outgoing, t)
-    : item.text.trim();
+    : isAudio
+      ? messageChatAudioCaptionText(item)
+      : item.text.trim();
   const showMedia = isDisplayableMediaMessage(item);
   const mediaHasProgress = messageMediaShowsProgressBar(contentKind);
   const overlayMediaMeta =
@@ -689,6 +693,19 @@ export function MessageChatBubbleBody({
         </View>
       ) : null}
 
+      {isAudio ? (
+        <View
+          style={{
+            marginTop: showSenderHeader || showChannelBadge ? 4 : 0,
+            marginBottom: bodyText ? 6 : 0,
+            alignSelf: "stretch",
+            minWidth: 220,
+          }}
+        >
+          <MessageChatAudioContent chatId={chatId} item={item} colors={colors} />
+        </View>
+      ) : null}
+
       {bodyText || (timeLabel && !showMedia) ? (
         <View
           style={
@@ -719,9 +736,13 @@ export function MessageChatBubbleBody({
                 ? 0
                 : showMedia && bodyText
                   ? 0
-                  : showSenderHeader || showChannelBadge || showMedia
-                    ? 4
-                    : 0
+                  : isAudio
+                    ? bodyText
+                      ? 0
+                      : 4
+                    : showSenderHeader || showChannelBadge || showMedia
+                      ? 4
+                      : 0
             }
             metaPlacement={metaPlacement}
             metaReserveWidthPx={metaReserveWidthPx}

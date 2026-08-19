@@ -33,6 +33,27 @@ export type NormalizedChartSeries = {
 
 let lastChartApiCallMs = 0;
 
+let mainChartFetchDepth = 0;
+let onMainChartFetchIdle: (() => void) | null = null;
+
+/** Pause currency-table sparklines while the swap panel main chart is fetching. */
+export function beginMainChartFetch(): void {
+  mainChartFetchDepth += 1;
+}
+
+export function endMainChartFetch(): void {
+  mainChartFetchDepth = Math.max(0, mainChartFetchDepth - 1);
+  if (mainChartFetchDepth === 0) onMainChartFetchIdle?.();
+}
+
+export function isMainChartFetchActive(): boolean {
+  return mainChartFetchDepth > 0;
+}
+
+export function setOnMainChartFetchIdle(listener: (() => void) | null): void {
+  onMainChartFetchIdle = listener;
+}
+
 async function respectChartRateLimit(): Promise<void> {
   const elapsed = Date.now() - lastChartApiCallMs;
   if (elapsed < CHART_RATE_LIMIT_MS) {

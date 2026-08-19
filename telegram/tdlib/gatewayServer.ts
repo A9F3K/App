@@ -25,6 +25,8 @@ import {
   getMessageMediaForUser,
   getUserAvatarImageForUser,
   getUserProfileForUser,
+  getProfileAudioFileForUser,
+  getProfileAudioCoverForUser,
   blockUserForUser,
   unblockUserForUser,
   searchChatLinksForUser,
@@ -48,8 +50,13 @@ import {
   RESYNC_HTTP_SESSION_WAIT_MS,
   RESYNC_RESTORE_SESSION_WAIT_MS,
   searchChatsForUser,
+  searchChatsCategorizedForUser,
   searchContactsForUser,
-  searchMessagesChatIdsForUser,
+  searchMessagesForUser,
+  searchRecentlyFoundChatsForUser,
+  addRecentlyFoundChatForUser,
+  removeRecentlyFoundChatForUser,
+  clearRecentlyFoundChatsForUser,
   hydrateChatSearchHitsForUser,
   focusChatForUser,
   viewChatInboxMessagesForUser,
@@ -326,31 +333,37 @@ export function startTdlibGatewayServer(): http.Server {
             return;
           }
           const messageSearchWithBudget = Promise.race([
-            searchMessagesChatIdsForUser(telegramUsername, query),
-            new Promise<number[]>((resolve) => {
-              setTimeout(() => resolve([]), 6_000);
+            searchMessagesForUser(telegramUsername, query),
+            new Promise<{ chatIds: number[]; messageCount: number }>((resolve) => {
+              setTimeout(() => resolve({ chatIds: [], messageCount: 0 }), 6_000);
             }),
           ]);
-          const [contacts, chats, messageChatIds] = await Promise.all([
+          const [contacts, categorized, messageSearch] = await Promise.all([
             searchContactsForUser(telegramUsername, query),
-            searchChatsForUser(telegramUsername, query),
+            searchChatsCategorizedForUser(telegramUsername, query),
             messageSearchWithBudget,
           ]);
-          const byChatId = new Map<
-            number,
-            {
-              chatId: number;
-              title: string;
-              peerUserId: number | null;
-              peerUsername: string | null;
-              chatUsername: string | null;
-              chatKind: string | null;
-            }
-          >();
+          type SearchChatRow = {
+            chatId: number;
+            title: string;
+            peerUserId: number | null;
+            peerUsername: string | null;
+            chatUsername: string | null;
+            chatKind: string | null;
+          };
+          const directByChatId = new Map<number, SearchChatRow>();
+          const globalByChatId = new Map<number, SearchChatRow>();
           const peerUserIds = new Set<number>();
-          for (const row of chats) {
-            if (!Number.isFinite(row.chatId) || row.chatId === 0) continue;
-            byChatId.set(Math.trunc(row.chatId), {
+          const ingestHit = (bucket: Map<number, SearchChatRow>, row: {
+            chatId: number;
+            title: string;
+            peerUserId: number | null;
+            peerUsername: string | null;
+            chatUsername: string | null;
+            chatKind: string | null;
+          }) => {
+            if (!Number.isFinite(row.chatId) || row.chatId === 0) return;
+            bucket.set(Math.trunc(row.chatId), {
               chatId: Math.trunc(row.chatId),
               title: row.title,
               peerUserId: row.peerUserId,
@@ -361,15 +374,22 @@ export function startTdlibGatewayServer(): http.Server {
             if (row.peerUserId != null && Number.isFinite(row.peerUserId) && row.peerUserId !== 0) {
               peerUserIds.add(Math.trunc(row.peerUserId));
             }
+          };
+          for (const row of categorized.direct) {
+            ingestHit(directByChatId, row);
+          }
+          for (const row of categorized.global) {
+            if (directByChatId.has(Math.trunc(row.chatId))) continue;
+            ingestHit(globalByChatId, row);
           }
           for (const row of contacts) {
             if (row.chatId != null && Number.isFinite(row.chatId) && row.chatId !== 0) {
               const chatId = Math.trunc(row.chatId);
-              if (!byChatId.has(chatId)) {
+              if (!directByChatId.has(chatId)) {
                 const title = [row.firstName, row.lastName].filter(Boolean).join(" ").trim()
                   || row.username
                   || `User ${row.userId}`;
-                byChatId.set(chatId, {
+                ingestHit(directByChatId, {
                   chatId,
                   title,
                   peerUserId: Math.trunc(row.userId),
@@ -383,10 +403,15 @@ export function startTdlibGatewayServer(): http.Server {
               peerUserIds.add(Math.trunc(row.userId));
             }
           }
-          // Message hits: hydrate real titles for chats missed by name search.
-          const missingMessageIds = messageChatIds.filter((chatId) => {
+          const messageByChatId = new Map<number, SearchChatRow>();
+          const missingMessageIds = messageSearch.chatIds.filter((chatId) => {
             const id = Math.trunc(chatId);
-            return Number.isFinite(id) && id !== 0 && !byChatId.has(id);
+            return (
+              Number.isFinite(id) &&
+              id !== 0 &&
+              !directByChatId.has(id) &&
+              !globalByChatId.has(id)
+            );
           });
           if (missingMessageIds.length > 0) {
             const hydrated = await hydrateChatSearchHitsForUser(
@@ -394,30 +419,21 @@ export function startTdlibGatewayServer(): http.Server {
               missingMessageIds,
             );
             for (const row of hydrated) {
-              byChatId.set(row.chatId, {
-                chatId: row.chatId,
-                title: row.title,
-                peerUserId: row.peerUserId,
-                peerUsername: row.peerUsername,
-                chatUsername: row.chatUsername,
-                chatKind: row.chatKind,
-              });
-              if (
-                row.peerUserId != null &&
-                Number.isFinite(row.peerUserId) &&
-                row.peerUserId !== 0
-              ) {
-                peerUserIds.add(Math.trunc(row.peerUserId));
-              }
+              ingestHit(messageByChatId, row);
             }
           }
-          const chatRows = [...byChatId.values()];
+          const directChats = [...directByChatId.values()];
+          const globalChats = [...globalByChatId.values()];
+          const messageChats = [...messageByChatId.values()];
+          const chatRows = [...directChats, ...globalChats, ...messageChats];
           logGateway("chats_search_served", {
             telegramUsername,
             query,
             contactCount: contacts.length,
-            chatCount: chats.length,
-            messageChatCount: messageChatIds.length,
+            directChatCount: directChats.length,
+            globalChatCount: globalChats.length,
+            messageChatCount: messageChats.length,
+            messageCount: messageSearch.messageCount,
             chatIdCount: chatRows.length,
             peerUserIdCount: peerUserIds.size,
             sampleTitles: chatRows
@@ -430,9 +446,81 @@ export function startTdlibGatewayServer(): http.Server {
             chatIds: chatRows.map((row) => row.chatId),
             peerUserIds: [...peerUserIds],
             chats: chatRows,
+            directChats,
+            globalChats,
+            messageChats,
+            messageChatIds: messageSearch.chatIds,
+            messageCount: messageSearch.messageCount,
             contacts,
-            messageChatIds,
           });
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/chats/recent") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "telegram_username_required" });
+            return;
+          }
+          const chats = await searchRecentlyFoundChatsForUser(telegramUsername);
+          const peerUserIds = [
+            ...new Set(
+              chats
+                .map((row) => row.peerUserId)
+                .filter((id): id is number => id != null && Number.isFinite(id) && id !== 0)
+                .map((id) => Math.trunc(id)),
+            ),
+          ];
+          logGateway("chats_recent_served", {
+            telegramUsername,
+            chatCount: chats.length,
+            sampleTitles: chats
+              .slice(0, 5)
+              .map((row) => row.title)
+              .join(" | "),
+          });
+          sendJson(res, 200, {
+            ok: true,
+            chatIds: chats.map((row) => row.chatId),
+            peerUserIds,
+            chats,
+          });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chats/recent") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: unknown;
+            chatId?: unknown;
+            chat_id?: unknown;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          const chatId = Number(body.chatId ?? body.chat_id);
+          if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0) {
+            sendJson(res, 400, { ok: false, error: "username_and_chat_id_required" });
+            return;
+          }
+          const ok = await addRecentlyFoundChatForUser(telegramUsername, chatId);
+          sendJson(res, ok ? 200 : 502, { ok });
+          return;
+        }
+
+        if (req.method === "DELETE" && pathname === "/v1/chats/recent") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "telegram_username_required" });
+            return;
+          }
+          const chatIdRaw = url.searchParams.get("chatId") ?? url.searchParams.get("chat_id");
+          const chatId = chatIdRaw != null ? Number(chatIdRaw) : NaN;
+          if (Number.isFinite(chatId) && chatId !== 0) {
+            const ok = await removeRecentlyFoundChatForUser(telegramUsername, chatId);
+            sendJson(res, ok ? 200 : 502, { ok });
+            return;
+          }
+          const ok = await clearRecentlyFoundChatsForUser(telegramUsername);
+          sendJson(res, ok ? 200 : 502, { ok });
           return;
         }
 
@@ -1638,6 +1726,96 @@ export function startTdlibGatewayServer(): http.Server {
             ms: Date.now() - started,
           });
           sendJson(res, 200, { ok: true, profile: result.profile });
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/user/profile-audio") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const peerUserId = Number(url.searchParams.get("userId"));
+          const fileId = Number(url.searchParams.get("fileId"));
+          if (
+            !telegramUsername ||
+            !Number.isFinite(peerUserId) ||
+            peerUserId === 0 ||
+            !Number.isFinite(fileId) ||
+            fileId <= 0
+          ) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const started = Date.now();
+          const media = await getProfileAudioFileForUser(
+            telegramUsername,
+            peerUserId,
+            fileId,
+          );
+          if (!media) {
+            logGateway("profile_audio_unavailable", {
+              telegramUsername,
+              userId: safeTelegramUserIdForLog(peerUserId) ?? null,
+              fileId,
+              ms: Date.now() - started,
+            });
+            sendJson(res, 404, { ok: false, error: "audio_unavailable" });
+            return;
+          }
+          logGateway("profile_audio_ok", {
+            telegramUsername,
+            userId: safeTelegramUserIdForLog(peerUserId) ?? null,
+            fileId,
+            bytes: media.data.length,
+            mime: media.mime,
+            ms: Date.now() - started,
+          });
+          res.statusCode = 200;
+          res.setHeader("Content-Type", media.mime);
+          res.setHeader("Cache-Control", "private, max-age=3600");
+          res.end(media.data);
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/user/profile-audio-cover") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          const peerUserId = Number(url.searchParams.get("userId"));
+          const fileId = Number(url.searchParams.get("fileId"));
+          if (
+            !telegramUsername ||
+            !Number.isFinite(peerUserId) ||
+            peerUserId === 0 ||
+            !Number.isFinite(fileId) ||
+            fileId <= 0
+          ) {
+            sendJson(res, 400, { ok: false, error: "invalid_params" });
+            return;
+          }
+          const started = Date.now();
+          const media = await getProfileAudioCoverForUser(
+            telegramUsername,
+            peerUserId,
+            fileId,
+          );
+          if (!media) {
+            logGateway("profile_audio_cover_unavailable", {
+              telegramUsername,
+              userId: safeTelegramUserIdForLog(peerUserId) ?? null,
+              fileId,
+              ms: Date.now() - started,
+            });
+            sendJson(res, 404, { ok: false, error: "cover_unavailable" });
+            return;
+          }
+          logGateway("profile_audio_cover_ok", {
+            telegramUsername,
+            userId: safeTelegramUserIdForLog(peerUserId) ?? null,
+            fileId,
+            bytes: media.data.length,
+            mime: media.mime,
+            ms: Date.now() - started,
+          });
+          res.statusCode = 200;
+          res.setHeader("Content-Type", media.mime);
+          res.setHeader("Cache-Control", "public, max-age=86400");
+          res.end(media.data);
           return;
         }
 

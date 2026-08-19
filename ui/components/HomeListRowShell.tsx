@@ -17,6 +17,7 @@ type Props = {
   isActive?: boolean;
   colors: ThemeColors;
   onPress?: () => void;
+  onLongPress?: () => void;
   onHoverIn?: () => void;
   children: ReactNode;
 };
@@ -43,6 +44,7 @@ export function HomeListRowShell({
   isActive = false,
   colors,
   onPress,
+  onLongPress,
   onHoverIn,
   children,
 }: Props) {
@@ -70,6 +72,7 @@ export function HomeListRowShell({
       accessibilityRole="button"
       accessibilityState={{ selected: isActive }}
       onPress={onPress}
+      onLongPress={onLongPress}
       onHoverIn={onHoverIn}
       style={({ pressed, hovered }) => ({
         marginHorizontal: -columnBleedPx,

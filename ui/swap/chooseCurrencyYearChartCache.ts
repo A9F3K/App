@@ -1,4 +1,8 @@
-import { fetchJettonChartSeries } from "./fetchSwapChart";
+import {
+  fetchJettonChartSeries,
+  isMainChartFetchActive,
+  setOnMainChartFetchIdle,
+} from "./fetchSwapChart";
 import { peekSwapChartSeriesCache } from "./swapChartSeriesCache";
 import { isVoiceDialogUiOpen } from "../components/messages/voiceDialogUiGate";
 
@@ -18,9 +22,9 @@ const EMPTY_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "empty" };
  * request, then waited 1.1s (and the shared DYOR limiter waited another 1s).
  * A small parallel pool fills the on-screen column quickly; 429s back off.
  */
-const MAX_CONCURRENT = 4;
-const REQUEST_GAP_MS = 80;
-const RATE_LIMIT_GAP_MS = 1200;
+const MAX_CONCURRENT = 2;
+const REQUEST_GAP_MS = 120;
+const RATE_LIMIT_GAP_MS = 1500;
 const RETRY_BASE_DELAY_MS = 4000;
 const RETRY_MAX_DELAY_MS = 24000;
 /**
@@ -115,8 +119,7 @@ async function runFetch(address: string): Promise<void> {
 
   setSnapshot(address, LOADING_SNAPSHOT);
   const result = await fetchJettonChartSeries(address, "day1", {
-    // Sparkline queue has its own concurrency/gap — don't serialize on the 1s main-chart limiter.
-    respectGlobalRateLimit: false,
+    respectGlobalRateLimit: true,
   });
 
   if (isVoiceDialogUiOpen()) {
@@ -171,6 +174,10 @@ function pumpQueue(): void {
       pumpTimer = setTimeout(tick, 2_500);
       return;
     }
+    if (isMainChartFetchActive()) {
+      pumpTimer = setTimeout(tick, 150);
+      return;
+    }
 
     while (activeCount < currentMaxConcurrent() && queued.length > 0) {
       const now = Date.now();
@@ -211,6 +218,10 @@ export function clearQueuedChooseCurrencyYearCharts(): void {
   queued.length = 0;
   queuedSet.clear();
 }
+
+setOnMainChartFetchIdle(() => {
+  pumpQueue();
+});
 
 export function getChooseCurrencyYearChartSnapshot(address: string): ChooseCurrencyYearChartSnapshot {
   return cache.get(normalizeAddress(address)) ?? IDLE_SNAPSHOT;

@@ -2,6 +2,7 @@ import type { Client } from "tdl";
 import type { FormattedTextSegment } from "../../shared/formattedTextSegments.js";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
 import { previewSegmentsFromMessage } from "./formattedTextSegments.js";
+import { audioDisplayLabel, parseTdAudioMeta } from "./audioMeta.js";
 
 export type TdMessage = {
   id?: number;
@@ -516,6 +517,11 @@ export function previewFromMessage(msg: TdMessage | undefined | null): string | 
   const type = c._;
   if (typeof type !== "string") return null;
 
+  if (type === "messageAudio") {
+    const meta = parseTdAudioMeta(c);
+    return truncatePreview(meta ? audioDisplayLabel(meta) : "Audio");
+  }
+
   const primary = extractPrimaryMessageText(c as Record<string, unknown>, type);
   if (primary) return truncatePreview(primary);
 
@@ -531,7 +537,6 @@ export function previewFromMessage(msg: TdMessage | undefined | null): string | 
   if (type === "messageAnimation") return "GIF";
   if (type === "messageVoiceNote") return "Voice message";
   if (type === "messageVideoNote") return "Video message";
-  if (type === "messageAudio") return "Audio";
   if (type === "messagePoll") return "Poll";
   if (type === "messageLocation") return "Location";
   if (type === "messageContact") return "Contact";

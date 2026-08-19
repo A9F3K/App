@@ -11,6 +11,11 @@ import {
   getActiveVoiceDock,
   subscribeActiveVoiceDock,
 } from "./activeVoiceDockStore";
+import {
+  getMusicPlayer,
+  MUSIC_CONTROL_BAR_HEIGHT_PX,
+  subscribeMusicPlayer,
+} from "../../music/musicPlayerStore";
 
 type Props = {
   colors: ThemeColors;
@@ -124,6 +129,11 @@ export function ActiveVoiceCallDock({ colors, inline = false }: Props) {
     getActiveVoiceDock,
     () => null,
   );
+  const musicVisible = useSyncExternalStore(
+    subscribeMusicPlayer,
+    () => getMusicPlayer().visible,
+    () => false,
+  );
   if (!dock) return null;
 
   if (inline || Platform.OS !== "web" || typeof document === "undefined") {
@@ -135,7 +145,7 @@ export function ActiveVoiceCallDock({ colors, inline = false }: Props) {
       pointerEvents="box-none"
       style={{
         position: "fixed" as unknown as "absolute",
-        top: 0,
+        top: musicVisible ? MUSIC_CONTROL_BAR_HEIGHT_PX : 0,
         left: 0,
         right: 0,
         zIndex: 9500,

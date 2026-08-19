@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
@@ -15,6 +16,10 @@ type Props = {
   clearAccessibilityLabel: string;
   /** Gap below the field to the first chat hover top edge. */
   marginBottomPx: number;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  onDismiss?: () => void;
+  showClear?: boolean;
 };
 
 /** Chat-list search rectangle — Join-button height/fill (`undercover`), secondary placeholder. */
@@ -24,9 +29,15 @@ export function MessageChatListSearchField({
   placeholder,
   clearAccessibilityLabel,
   marginBottomPx,
+  onFocus,
+  onBlur,
+  onDismiss,
+  showClear,
 }: Props) {
   const colors = useColors();
+  const inputRef = useRef<TextInput>(null);
   const hasText = value.trim().length > 0;
+  const clearVisible = showClear ?? hasText;
 
   return (
     <View
@@ -40,8 +51,11 @@ export function MessageChatListSearchField({
       ]}
     >
       <TextInput
+        ref={inputRef}
         value={value}
         onChangeText={onChangeText}
+        onFocus={onFocus}
+        onBlur={onBlur}
         placeholder={placeholder}
         placeholderTextColor={colors.secondary}
         autoCapitalize="none"
@@ -56,19 +70,33 @@ export function MessageChatListSearchField({
           {
             color: colors.primary,
             fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-            paddingRight: hasText ? CLEAR_HIT_PX : TEXT_INSET_X_PX,
+            paddingRight: clearVisible ? CLEAR_HIT_PX : TEXT_INSET_X_PX,
             ...(Platform.OS === "web"
               ? ({ outlineStyle: "none" } as Record<string, string>)
               : {}),
           },
         ]}
       />
-      {hasText ? (
+      {clearVisible ? (
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={clearAccessibilityLabel}
           hitSlop={8}
-          onPress={() => onChangeText("")}
+          onPress={() => {
+            if (hasText) {
+              onChangeText("");
+              return;
+            }
+            inputRef.current?.blur();
+            onDismiss?.();
+          }}
+          {...(Platform.OS === "web"
+            ? {
+                onMouseDown: (event: { preventDefault?: () => void }) => {
+                  if (hasText) event.preventDefault?.();
+                },
+              }
+            : {})}
           style={({ pressed }) => [styles.clear, { opacity: pressed ? 0.65 : 1 }]}
         >
           <VoiceWindowCrossIcon color={colors.secondary} size={13} />

@@ -17,6 +17,7 @@ import { messageTextSegments } from "./formattedTextSegments.js";
 import { segmentsContainTelegramEmoji } from "../../shared/formattedTextSegments.js";
 import { largestPhotoDimensions } from "./photoParse.js";
 import { resolveTdUserProfile, type TdUserProfileCache } from "./tdUserProfile.js";
+import { parseTdAudioMeta } from "./audioMeta.js";
 
 export type ChatKind = "private" | "group" | "supergroup" | "channel";
 
@@ -27,6 +28,7 @@ export type MessageContentKind =
   | "document"
   | "animation"
   | "sticker"
+  | "audio"
   | "call"
   | "other";
 
@@ -64,6 +66,13 @@ export type MappedChatHistoryMessage = {
   reply_to_message_id?: number | null;
   /** Ended call was answered / had duration (messageCall only). */
   call_success?: boolean | null;
+  audio?: {
+    artist: string;
+    title: string;
+    duration_sec: number;
+    size_bytes: number;
+    cover_data_url: string | null;
+  } | null;
 };
 
 type UserProfileCache = Map<number, TdUserProfileCache>;
@@ -92,6 +101,7 @@ function messageContentKind(message: TdMessage): MessageContentKind {
   if (type === "messageDocument") return "document";
   if (type === "messageAnimation") return "animation";
   if (type === "messageSticker") return "sticker";
+  if (type === "messageAudio") return "audio";
   if (type === "messageCall") return "call";
   return "other";
 }
@@ -689,9 +699,11 @@ export async function mapHistoryMessage(
   }
 
   const isCall = isCallMessage(resolved);
+  const isAudio = messageContentKind(resolved) === "audio";
+  const audioMeta = isAudio ? parseTdAudioMeta(resolved.content) : null;
   const text = bodyText(resolved).trim();
   const hasMedia = hasDisplayableMedia(resolved);
-  if (!text && !hasMedia && !isCall) return null;
+  if (!text && !hasMedia && !isCall && !isAudio) return null;
 
   const sender = await resolveSenderName(client, resolved, chat, userCache, chatCache);
   const senderChatIdValue = senderChatId(resolved);
@@ -733,5 +745,16 @@ export async function mapHistoryMessage(
     reply_to: replyTo,
     reply_to_message_id: replyToMessageId,
     ...(isCall ? { call_success: parseCallSuccess(resolved) } : {}),
+    ...(audioMeta
+      ? {
+          audio: {
+            artist: audioMeta.artist,
+            title: audioMeta.title,
+            duration_sec: audioMeta.duration_sec,
+            size_bytes: audioMeta.size_bytes,
+            cover_data_url: audioMeta.cover_data_url,
+          },
+        }
+      : {}),
   };
 }

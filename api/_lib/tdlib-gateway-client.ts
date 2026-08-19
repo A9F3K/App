@@ -1685,6 +1685,16 @@ export type GatewayUserProfile = {
   is_bot: boolean;
   emoji_status_custom_emoji_id: string | null;
   music: { artist: string; title: string } | null;
+  playlist: Array<{
+    user_id: number;
+    file_id: number;
+    artist: string;
+    title: string;
+    duration_sec: number;
+    size_bytes: number;
+    cover_data_url: string | null;
+    cover_file_id: number | null;
+  }>;
   channel: {
     chat_id: number;
     title: string;
@@ -1728,6 +1738,60 @@ export async function gatewayFetchUserProfile(
     return { ok: true, profile: profile as GatewayUserProfile };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewayFetchProfileAudioFile(
+  telegramUsername: string,
+  userId: number,
+  fileId: number,
+): Promise<{ data: ArrayBuffer; mime: string } | null> {
+  const base = getGatewayBaseUrl();
+  const secret = getGatewaySecret();
+  const params = new URLSearchParams({
+    telegramUsername,
+    userId: String(Math.trunc(userId)),
+    fileId: String(Math.trunc(fileId)),
+  });
+  const url = `${base}/v1/user/profile-audio?${params.toString()}`;
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { "X-Gateway-Secret": secret },
+    });
+    if (!response.ok) return null;
+    const mime = response.headers.get("Content-Type") || "audio/mpeg";
+    const data = await response.arrayBuffer();
+    return { data, mime };
+  } catch {
+    return null;
+  }
+}
+
+export async function gatewayFetchProfileAudioCover(
+  telegramUsername: string,
+  userId: number,
+  fileId: number,
+): Promise<{ data: ArrayBuffer; mime: string } | null> {
+  const base = getGatewayBaseUrl();
+  const secret = getGatewaySecret();
+  const params = new URLSearchParams({
+    telegramUsername,
+    userId: String(Math.trunc(userId)),
+    fileId: String(Math.trunc(fileId)),
+  });
+  const url = `${base}/v1/user/profile-audio-cover?${params.toString()}`;
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { "X-Gateway-Secret": secret },
+    });
+    if (!response.ok) return null;
+    const mime = response.headers.get("Content-Type") || "image/jpeg";
+    const data = await response.arrayBuffer();
+    return { data, mime };
+  } catch {
+    return null;
   }
 }
 
@@ -2068,10 +2132,24 @@ export async function gatewaySearchChats(
   chatIds: number[];
   peerUserIds: number[];
   chats: TelegramChatListSearchHit[];
+  directChats: TelegramChatListSearchHit[];
+  globalChats: TelegramChatListSearchHit[];
+  messageChats: TelegramChatListSearchHit[];
+  messageCount: number;
   error?: string;
 }> {
   const trimmed = query.trim();
-  if (!trimmed) return { chatIds: [], peerUserIds: [], chats: [] };
+  if (!trimmed) {
+    return {
+      chatIds: [],
+      peerUserIds: [],
+      chats: [],
+      directChats: [],
+      globalChats: [],
+      messageChats: [],
+      messageCount: 0,
+    };
+  }
   const params = new URLSearchParams({
     telegramUsername,
     query: trimmed,
@@ -2085,55 +2163,210 @@ export async function gatewaySearchChats(
         chatIds: [],
         peerUserIds: [],
         chats: [],
+        directChats: [],
+        globalChats: [],
+        messageChats: [],
+        messageCount: 0,
         error: typeof json.error === "string" ? json.error : "search_failed",
       };
     }
-    const chatIds = Array.isArray(json.chatIds)
-      ? json.chatIds
-          .map((id) => Number(id))
-          .filter((id) => Number.isFinite(id) && id !== 0)
-          .map((id) => Math.trunc(id))
-      : [];
-    const peerUserIds = Array.isArray(json.peerUserIds)
-      ? json.peerUserIds
-          .map((id) => Number(id))
-          .filter((id) => Number.isFinite(id) && id !== 0)
-          .map((id) => Math.trunc(id))
-      : [];
-    const chats: TelegramChatListSearchHit[] = [];
-    if (Array.isArray(json.chats)) {
-      for (const raw of json.chats) {
-        if (!raw || typeof raw !== "object") continue;
-        const row = raw as Record<string, unknown>;
-        const chatId = Number(row.chatId);
-        if (!Number.isFinite(chatId) || chatId === 0) continue;
-        const peerUserIdRaw = Number(row.peerUserId);
-        const kind = row.chatKind;
-        chats.push({
-          chatId: Math.trunc(chatId),
-          title: typeof row.title === "string" && row.title.trim() ? row.title.trim() : `Chat ${chatId}`,
-          peerUserId:
-            Number.isFinite(peerUserIdRaw) && peerUserIdRaw !== 0
-              ? Math.trunc(peerUserIdRaw)
-              : null,
-          peerUsername: typeof row.peerUsername === "string" ? row.peerUsername : null,
-          chatUsername: typeof row.chatUsername === "string" ? row.chatUsername : null,
-          chatKind:
-            kind === "private" ||
-            kind === "group" ||
-            kind === "supergroup" ||
-            kind === "channel"
-              ? kind
-              : null,
-        });
-      }
-    }
-    return { chatIds, peerUserIds, chats };
+    return parseChatSearchPayload(json);
   } catch (err) {
     return {
       chatIds: [],
       peerUserIds: [],
       chats: [],
+      directChats: [],
+      globalChats: [],
+      messageChats: [],
+      messageCount: 0,
+      error: err instanceof Error ? err.message : "gateway_unreachable",
+    };
+  }
+}
+
+function parseChatSearchHitRows(rawRows: unknown): TelegramChatListSearchHit[] {
+  const chats: TelegramChatListSearchHit[] = [];
+  if (!Array.isArray(rawRows)) return chats;
+  for (const raw of rawRows) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    const chatId = Number(row.chatId);
+    if (!Number.isFinite(chatId) || chatId === 0) continue;
+    const peerUserIdRaw = Number(row.peerUserId);
+    const kind = row.chatKind;
+    chats.push({
+      chatId: Math.trunc(chatId),
+      title: typeof row.title === "string" && row.title.trim() ? row.title.trim() : `Chat ${chatId}`,
+      peerUserId:
+        Number.isFinite(peerUserIdRaw) && peerUserIdRaw !== 0
+          ? Math.trunc(peerUserIdRaw)
+          : null,
+      peerUsername: typeof row.peerUsername === "string" ? row.peerUsername : null,
+      chatUsername: typeof row.chatUsername === "string" ? row.chatUsername : null,
+      chatKind:
+        kind === "private" ||
+        kind === "group" ||
+        kind === "supergroup" ||
+        kind === "channel"
+          ? kind
+          : null,
+    });
+  }
+  return chats;
+}
+
+function parseChatSearchPayload(json: Record<string, unknown>): {
+  chatIds: number[];
+  peerUserIds: number[];
+  chats: TelegramChatListSearchHit[];
+  directChats: TelegramChatListSearchHit[];
+  globalChats: TelegramChatListSearchHit[];
+  messageChats: TelegramChatListSearchHit[];
+  messageCount: number;
+} {
+  const chatIds = Array.isArray(json.chatIds)
+    ? json.chatIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id !== 0)
+        .map((id) => Math.trunc(id))
+    : [];
+  const peerUserIds = Array.isArray(json.peerUserIds)
+    ? json.peerUserIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id !== 0)
+        .map((id) => Math.trunc(id))
+    : [];
+  const chats = parseChatSearchHitRows(json.chats);
+  const directChats = parseChatSearchHitRows(json.directChats);
+  const globalChats = parseChatSearchHitRows(json.globalChats);
+  const messageChats = parseChatSearchHitRows(json.messageChats);
+  const messageCountRaw = Number(json.messageCount);
+  const messageCount =
+    Number.isFinite(messageCountRaw) && messageCountRaw >= 0
+      ? Math.trunc(messageCountRaw)
+      : 0;
+  return {
+    chatIds,
+    peerUserIds,
+    chats,
+    directChats: directChats.length > 0 ? directChats : chats,
+    globalChats,
+    messageChats,
+    messageCount,
+  };
+}
+
+export async function gatewaySearchRecentChats(
+  telegramUsername: string,
+): Promise<{
+  chatIds: number[];
+  peerUserIds: number[];
+  chats: TelegramChatListSearchHit[];
+  error?: string;
+}> {
+  const params = new URLSearchParams({ telegramUsername });
+  try {
+    const { response, json } = await gatewayFetch(`/v1/chats/recent?${params.toString()}`, {
+      method: "GET",
+    });
+    if (!response.ok || json.ok === false) {
+      return {
+        chatIds: [],
+        peerUserIds: [],
+        chats: [],
+        error: typeof json.error === "string" ? json.error : "recent_chats_failed",
+      };
+    }
+    return parseChatSearchPayload(json);
+  } catch (err) {
+    return {
+      chatIds: [],
+      peerUserIds: [],
+      chats: [],
+      error: err instanceof Error ? err.message : "gateway_unreachable",
+    };
+  }
+}
+
+export async function gatewayAddRecentlyFoundChat(
+  telegramUsername: string,
+  chatId: number,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return { ok: false, error: "chat_id_required" };
+  }
+  try {
+    const { response, json } = await gatewayFetch("/v1/chats/recent", {
+      method: "POST",
+      body: JSON.stringify({
+        telegramUsername,
+        chatId: Math.trunc(chatId),
+      }),
+    });
+    if (!response.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: typeof json.error === "string" ? json.error : "recent_chat_add_failed",
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "gateway_unreachable",
+    };
+  }
+}
+
+export async function gatewayRemoveRecentlyFoundChat(
+  telegramUsername: string,
+  chatId: number,
+): Promise<{ ok: boolean; error?: string }> {
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return { ok: false, error: "chat_id_required" };
+  }
+  const params = new URLSearchParams({
+    telegramUsername,
+    chatId: String(Math.trunc(chatId)),
+  });
+  try {
+    const { response, json } = await gatewayFetch(`/v1/chats/recent?${params.toString()}`, {
+      method: "DELETE",
+    });
+    if (!response.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: typeof json.error === "string" ? json.error : "recent_chat_remove_failed",
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "gateway_unreachable",
+    };
+  }
+}
+
+export async function gatewayClearRecentlyFoundChats(
+  telegramUsername: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const params = new URLSearchParams({ telegramUsername });
+  try {
+    const { response, json } = await gatewayFetch(`/v1/chats/recent?${params.toString()}`, {
+      method: "DELETE",
+    });
+    if (!response.ok || json.ok === false) {
+      return {
+        ok: false,
+        error: typeof json.error === "string" ? json.error : "recent_chats_clear_failed",
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
       error: err instanceof Error ? err.message : "gateway_unreachable",
     };
   }

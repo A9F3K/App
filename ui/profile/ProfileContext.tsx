@@ -8,9 +8,12 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { View } from "react-native";
 import type { MessageChatRowData } from "../components/messages/MessageChatRow";
 import { MessageChatProfileSheet } from "../components/messages/MessageChatProfileSheet";
 import { ActiveVoiceCallDock } from "../components/messages/ActiveVoiceCallDock";
+import { GlobalMusicControlBar } from "../components/music/GlobalMusicControlBar";
+import { MusicPlayerEngine } from "../music/MusicPlayerEngine";
 import { PrivateCallLoadingShell } from "../components/messages/PrivateCallLoadingShell";
 import { useColors } from "../theme";
 import { logPageDisplay } from "../pageDisplayLog";
@@ -161,9 +164,14 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
   return (
     <ProfileContext.Provider value={value}>
-      {children}
-      {/* Global minimized-call dock — visible on every layout (1/2/3 columns). */}
-      <ActiveVoiceCallDock colors={colors} />
+      <View style={{ flex: 1, minHeight: 0, width: "100%", alignSelf: "stretch" }}>
+        <GlobalMusicControlBar colors={colors} />
+        <ActiveVoiceCallDock colors={colors} inline />
+        <View style={{ flex: 1, minHeight: 0, width: "100%", alignSelf: "stretch" }}>
+          {children}
+        </View>
+      </View>
+      <MusicPlayerEngine />
       <MessageChatProfileSheet
         visible={profileSheetVisible}
         chat={profileChat}

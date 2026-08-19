@@ -1,3 +1,4 @@
+wider avatar shine
 email of the user in db when sign in through google
 Unreads bug
 Several streams

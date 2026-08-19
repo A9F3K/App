@@ -1,4 +1,5 @@
 import type { MessageChatHistoryItem } from "./messageChatHistoryTypes";
+import { messageChatAudioDisplayLabel } from "./messageChatHistoryTypes";
 
 /** Short label for reply preview when the message has no text body. */
 export function messageChatActionPreviewText(item: MessageChatHistoryItem): string {
@@ -10,6 +11,9 @@ export function messageChatActionPreviewText(item: MessageChatHistoryItem): stri
   if (kind === "animation") return "GIF";
   if (kind === "sticker") return "Sticker";
   if (kind === "document") return "File";
+  if (kind === "audio") {
+    return item.audio ? messageChatAudioDisplayLabel(item.audio) : "Audio";
+  }
   if (kind === "call") return "Call";
   if (item.has_media) return "Media";
   return "Message";

@@ -42,9 +42,10 @@ export function ChooseCurrencyPanelContent({
   const { t } = useAppStrings();
   const { width: windowWidth } = useWindowDimensions();
   const pickerMode = useSwapCurrencyPicker();
+  const pickerActive = pickerMode != null;
   const isBrowse = pickerMode === "browse";
   const { rows, isLoading, isFetchingMore, error, loadMore } =
-    useChooseCurrencyRows(walletAddress);
+    useChooseCurrencyRows(walletAddress, pickerActive);
   const contentInset = layout.contentSideInsetPx;
   const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   const scrollShellBleed = { marginHorizontal: -contentInset };
@@ -95,6 +96,7 @@ export function ChooseCurrencyPanelContent({
           onLoadMore={loadMore}
           onSelectRow={handleSelectRow}
           columnShellWidthPx={splitMetrics?.middleColumnWidthPx ?? 0}
+          prefetchCharts={pickerActive}
         />
       </View>
       {showInlineDealAction ? (

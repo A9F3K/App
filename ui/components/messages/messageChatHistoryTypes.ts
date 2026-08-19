@@ -12,6 +12,7 @@ export type MessageChatContentKind =
   | "document"
   | "animation"
   | "sticker"
+  | "audio"
   | "call"
   | "other";
 
@@ -31,8 +32,35 @@ export type MessageChatReplyPreview = {
   sender_accent_color_dark?: string | null;
 };
 
+export function messageChatAudioDisplayLabel(
+  audio: Pick<MessageChatAudioPayload, "artist" | "title">,
+): string {
+  const artist = audio.artist.trim();
+  const title = audio.title.trim();
+  if (artist && title && artist !== title) return `${artist} – ${title}`;
+  return artist || title || "Audio";
+}
+
+export function messageChatAudioCaptionText(
+  item: Pick<MessageChatHistoryItem, "content_kind" | "audio" | "text">,
+): string {
+  const trimmed = item.text.trim();
+  if (item.content_kind !== "audio" || !item.audio) return trimmed;
+  if (!trimmed || trimmed === "Audio") return "";
+  if (trimmed === messageChatAudioDisplayLabel(item.audio)) return "";
+  return trimmed;
+}
+
 /** Outgoing message delivery state for bubble checkmarks. */
 export type MessageOutgoingStatus = "pending" | "delivered" | "read" | "failed";
+
+export type MessageChatAudioPayload = {
+  artist: string;
+  title: string;
+  duration_sec: number;
+  size_bytes: number;
+  cover_data_url: string | null;
+};
 
 export type MessageChatHistoryItem = {
   telegram_message_id: number;
@@ -65,6 +93,7 @@ export type MessageChatHistoryItem = {
   reply_to_message_id?: number | null;
   /** Ended call was answered / had duration (content_kind call). */
   call_success?: boolean | null;
+  audio?: MessageChatAudioPayload | null;
 };
 
 export type HistoryMessageContext = {
@@ -361,6 +390,10 @@ export function enrichHistoryMessageDisplay(item: MessageChatHistoryItem): Messa
     }
   }
 
+  if (contentKind === "audio" && text.trim() === "Audio") {
+    text = "";
+  }
+
   if (text.trim() === GENERIC_BODY_TEXT_LABEL) {
     text = "";
   }
@@ -505,5 +538,6 @@ export function mergeHistoryMessageRow(
           : (incomingEnriched.reply_to ?? prevEnriched.reply_to ?? null),
     reply_to_message_id:
       incomingEnriched.reply_to_message_id ?? prevEnriched.reply_to_message_id ?? null,
+    audio: incomingEnriched.audio ?? prevEnriched.audio ?? null,
   });
 }

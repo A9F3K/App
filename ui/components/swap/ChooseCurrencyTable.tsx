@@ -355,6 +355,8 @@ type Props = {
   onSelectRow?: (row: ChooseCurrencyRow) => void;
   /** Measured middle split-column width (px); authoritative on wide home. */
   columnShellWidthPx?: number;
+  /** When false, skip DYOR sparkline prefetch (panel hidden via display:none). */
+  prefetchCharts?: boolean;
 };
 
 export function ChooseCurrencyTable({
@@ -365,6 +367,7 @@ export function ChooseCurrencyTable({
   onLoadMore,
   onSelectRow,
   columnShellWidthPx = 0,
+  prefetchCharts = true,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
   const defaultRows = useMemo(() => [buildChooseCurrencyDllrRow(locale)] as const, [locale]);
@@ -426,6 +429,7 @@ export function ChooseCurrencyTable({
   );
 
   useEffect(() => {
+    if (!prefetchCharts) return;
     const end = Math.min(rows.length, sparklinePrefetchStart + sparklinePrefetchCount);
     const addresses: string[] = [];
     for (let i = sparklinePrefetchStart; i < end; i++) {
@@ -433,7 +437,7 @@ export function ChooseCurrencyTable({
       if (row?.lastYearKind === "sparkline") addresses.push(row.rowKey);
     }
     if (addresses.length > 0) prefetchChooseCurrencyYearCharts(addresses);
-  }, [rows, sparklinePrefetchCount, sparklinePrefetchStart]);
+  }, [prefetchCharts, rows, sparklinePrefetchCount, sparklinePrefetchStart]);
 
   const syncScrollMetricsFromDom = useCallback(() => {
     if (Platform.OS !== "web") return;

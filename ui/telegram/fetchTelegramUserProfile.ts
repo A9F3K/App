@@ -1,5 +1,18 @@
 import { buildApiUrl } from "../../api/_base";
 
+export type TelegramProfileAudioTrack = {
+  user_id: number;
+  file_id: number;
+  artist: string;
+  title: string;
+  duration_sec: number;
+  size_bytes: number;
+  cover_data_url: string | null;
+  cover_file_id: number | null;
+  chat_id?: number | null;
+  message_id?: number | null;
+};
+
 export type TelegramUserProfile = {
   user_id: number | null;
   chat_id: number;
@@ -12,6 +25,7 @@ export type TelegramUserProfile = {
   is_blocked: boolean;
   emoji_status_custom_emoji_id: string | null;
   music: { artist: string; title: string } | null;
+  playlist: TelegramProfileAudioTrack[];
   channel: {
     chat_id: number;
     title: string;
@@ -73,6 +87,7 @@ export async function fetchTelegramUserProfile(
       profile: {
         ...json.profile,
         is_blocked: Boolean(json.profile.is_blocked),
+        playlist: Array.isArray(json.profile.playlist) ? json.profile.playlist : [],
       },
     };
   } catch (err) {
@@ -190,4 +205,50 @@ export async function fetchTelegramChatMedia(
     }
     return { ok: false, error: err instanceof Error ? err.message : "fetch_failed" };
   }
+}
+
+export function telegramProfileAudioUrl(userId: number, fileId: number): string {
+  return buildApiUrl(
+    `/api/telegram-messages-profile-audio?user_id=${encodeURIComponent(String(Math.trunc(userId)))}&file_id=${encodeURIComponent(String(Math.trunc(fileId)))}`,
+  );
+}
+
+export function telegramProfileAudioCoverUrl(userId: number, fileId: number): string {
+  return buildApiUrl(
+    `/api/telegram-messages-profile-audio-cover?user_id=${encodeURIComponent(String(Math.trunc(userId)))}&file_id=${encodeURIComponent(String(Math.trunc(fileId)))}`,
+  );
+}
+
+export function telegramChatMessageAudioUrl(chatId: number, messageId: number): string {
+  return buildApiUrl(
+    `/api/telegram-messages-media?chat_id=${encodeURIComponent(String(Math.trunc(chatId)))}&message_id=${encodeURIComponent(String(Math.trunc(messageId)))}`,
+  );
+}
+
+export function musicTrackPlaybackKey(track: TelegramProfileAudioTrack): string {
+  if (
+    track.chat_id != null &&
+    Number.isFinite(track.chat_id) &&
+    track.chat_id !== 0 &&
+    track.message_id != null &&
+    Number.isFinite(track.message_id) &&
+    track.message_id !== 0
+  ) {
+    return `msg:${Math.trunc(track.chat_id)}:${Math.trunc(track.message_id)}`;
+  }
+  return `file:${Math.trunc(track.user_id)}:${Math.trunc(track.file_id)}`;
+}
+
+export function musicTrackPlaybackUrl(track: TelegramProfileAudioTrack): string {
+  if (
+    track.chat_id != null &&
+    Number.isFinite(track.chat_id) &&
+    track.chat_id !== 0 &&
+    track.message_id != null &&
+    Number.isFinite(track.message_id) &&
+    track.message_id !== 0
+  ) {
+    return telegramChatMessageAudioUrl(track.chat_id, track.message_id);
+  }
+  return telegramProfileAudioUrl(track.user_id, track.file_id);
 }

@@ -1,5 +1,7 @@
 import {
   fetchJettonChartSeries,
+  beginMainChartFetch,
+  endMainChartFetch,
   type NormalizedChartSeries,
 } from "./fetchSwapChart";
 import type { SwapChartResolution } from "./swapChartConstants";
@@ -37,7 +39,14 @@ export async function loadSwapChartSeriesCached(
   const existing = inFlight.get(key);
   if (existing) return existing;
 
-  const promise = fetchJettonChartSeries(address, resolution).then((result) => {
+  const promise = (async () => {
+    beginMainChartFetch();
+    try {
+      return await fetchJettonChartSeries(address, resolution);
+    } finally {
+      endMainChartFetch();
+    }
+  })().then((result) => {
     inFlight.delete(key);
     if (result.ok) {
       seriesCache.set(key, result.series);

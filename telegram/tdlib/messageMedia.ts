@@ -32,6 +32,7 @@ function mediaDownloadTimeoutMs(contentType: string | undefined): number {
     return MEDIA_VIDEO_DOWNLOAD_TIMEOUT_MS;
   }
   if (contentType === "messagePhoto") return MEDIA_DOWNLOAD_TIMEOUT_MS;
+  if (contentType === "messageAudio") return 90_000;
   return 30_000;
 }
 
@@ -43,6 +44,11 @@ function mimeFromPath(filePath: string): string {
   if (lower.endsWith(".mp4")) return "video/mp4";
   if (lower.endsWith(".webm")) return "video/webm";
   if (lower.endsWith(".tgs")) return "application/x-tgsticker";
+  if (lower.endsWith(".mp3")) return "audio/mpeg";
+  if (lower.endsWith(".m4a") || lower.endsWith(".aac")) return "audio/mp4";
+  if (lower.endsWith(".ogg") || lower.endsWith(".opus")) return "audio/ogg";
+  if (lower.endsWith(".flac")) return "audio/flac";
+  if (lower.endsWith(".wav")) return "audio/wav";
   return "image/jpeg";
 }
 
@@ -140,7 +146,7 @@ function pickNestedFileId(media: unknown): number | null {
   const row = media as Record<string, unknown>;
   const direct = pickFileIdFromTdFile(row);
   if (direct != null) return direct;
-  for (const key of ["video", "animation", "sticker", "document", "photo"]) {
+  for (const key of ["video", "animation", "sticker", "document", "photo", "audio"]) {
     const nested = row[key];
     const id = pickFileIdFromTdFile(nested);
     if (id != null) return id;
@@ -162,6 +168,10 @@ function mimeFromMessageContent(content: Record<string, unknown>): string | null
     const mime = (content.sticker as { mime_type?: string } | undefined)?.mime_type;
     return typeof mime === "string" && mime.trim() ? mime.trim() : null;
   }
+  if (type === "messageAudio") {
+    const mime = (content.audio as { mime_type?: string } | undefined)?.mime_type;
+    return typeof mime === "string" && mime.trim() ? mime.trim() : "audio/mpeg";
+  }
   return null;
 }
 
@@ -182,6 +192,10 @@ function mediaFileIdFromMessage(message: TdMessage): number | null {
   if (type === "messageSticker") {
     const sticker = row.sticker as { sticker?: { id?: number }; thumbnail?: unknown } | undefined;
     return pickNestedFileId(sticker);
+  }
+  if (type === "messageAudio") {
+    const audio = row.audio as { audio?: { id?: number }; thumbnail?: unknown } | undefined;
+    return pickNestedFileId(audio);
   }
   return null;
 }
@@ -223,6 +237,9 @@ function resolveMediaMime(
   ) {
     mime = "video/mp4";
   }
+  if (contentType === "messageAudio" && (!contentMime || pathMime === "image/jpeg")) {
+    mime = contentMime ?? "audio/mpeg";
+  }
   return mime;
 }
 
@@ -251,6 +268,12 @@ function mediaThumbnailFileIdFromMessage(message: TdMessage): number | null {
   if (type === "messageVideo") return pickThumbnailFileId(row.video);
   if (type === "messageAnimation") return pickThumbnailFileId(row.animation);
   if (type === "messageSticker") return pickThumbnailFileId(row.sticker);
+  if (type === "messageAudio") {
+    const audio = row.audio as
+      | { thumbnail?: unknown; album_cover_thumbnail?: { file?: unknown } }
+      | undefined;
+    return pickThumbnailFileId(audio) ?? pickFileIdFromTdFile(audio?.album_cover_thumbnail?.file);
+  }
   return null;
 }
 

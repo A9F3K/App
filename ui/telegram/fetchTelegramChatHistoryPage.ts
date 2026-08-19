@@ -2,6 +2,7 @@ import { buildApiUrl } from "../../api/_base";
 import { normalizeFormattedTextSegments } from "../../shared/formattedTextSegments";
 import { safeTelegramUserIdForLog } from "../../shared/appLog";
 import type {
+  MessageChatAudioPayload,
   MessageChatContentKind,
   MessageChatHistoryItem,
   MessageChatKind,
@@ -39,6 +40,28 @@ function normalizeChatKind(raw: unknown): MessageChatKind | null {
   return null;
 }
 
+function parseHistoryAudio(raw: unknown): MessageChatAudioPayload | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const artist = typeof row.artist === "string" ? row.artist : "";
+  const title = typeof row.title === "string" ? row.title : "";
+  const duration = Number(row.duration_sec ?? row.durationSec);
+  const size = Number(row.size_bytes ?? row.sizeBytes);
+  const cover =
+    typeof row.cover_data_url === "string" && row.cover_data_url.trim()
+      ? row.cover_data_url.trim()
+      : typeof row.coverDataUrl === "string" && row.coverDataUrl.trim()
+        ? row.coverDataUrl.trim()
+        : null;
+  return {
+    artist,
+    title,
+    duration_sec: Number.isFinite(duration) && duration > 0 ? Math.trunc(duration) : 0,
+    size_bytes: Number.isFinite(size) && size > 0 ? Math.trunc(size) : 0,
+    cover_data_url: cover,
+  };
+}
+
 export function normalizeHistoryMessage(
   raw: unknown,
   peerUserId: number | null | undefined,
@@ -58,12 +81,14 @@ export function normalizeHistoryMessage(
     contentKindRaw === "document" ||
     contentKindRaw === "animation" ||
     contentKindRaw === "sticker" ||
+    contentKindRaw === "audio" ||
     contentKindRaw === "call" ||
     contentKindRaw === "other"
       ? (contentKindRaw as MessageChatContentKind)
       : undefined;
   const isCall = contentKind === "call";
-  if (!text.trim() && !hasMedia && !isCall) return null;
+  const isAudio = contentKind === "audio";
+  if (!text.trim() && !hasMedia && !isCall && !isAudio) return null;
   const senderUserId = Number(row.sender_user_id);
   const senderChatId = Number(row.sender_chat_id);
   const safeSenderUserId = safeTelegramUserIdForLog(senderUserId) ?? null;
@@ -152,6 +177,7 @@ export function normalizeHistoryMessage(
     reply_to: replyTo,
     reply_to_message_id: replyToMessageId,
     call_success: isCall ? Boolean(row.call_success ?? row.callSuccess) : undefined,
+    audio: parseHistoryAudio(row.audio),
   });
 }
 

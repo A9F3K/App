@@ -13,6 +13,7 @@ import { formatMessageChatBubbleTime } from "./formatMessageChatBubbleTime";
 import type { MessageChatHistoryItem, MessageChatKind } from "./messageChatHistoryTypes";
 import {
   isDisplayableMediaMessage,
+  messageChatAudioCaptionText,
   messageShowsOutgoingChecks,
   resolveOutgoingStatusForDisplay,
   shouldShowMessageSenderHeader,
@@ -45,6 +46,7 @@ import { resolveMessageMediaDimensions } from "./MessageChatMediaContent";
 import { messageChatOutgoingChecksWidthPx } from "./MessageChatOutgoingChecks";
 import { messageChatCallArrowWidthPx } from "./MessageChatCallArrow";
 import { formatMessageCallLabel } from "./formatMessageCallLabel";
+import { messageChatAudioInnerWidthPx } from "./MessageChatAudioContent";
 import type { MessageChatRowData } from "./MessageChatRow";
 import { resolveTelegramThreadAvatarUrl } from "./resolveTelegramThreadAvatarUrl";
 import { resolveMessageSenderDisplayName } from "./resolveMessageSenderDisplayName";
@@ -208,7 +210,12 @@ export function MessageChatMessageRow({
   );
 
   const isCall = item.content_kind === "call";
-  const bodyText = isCall ? formatMessageCallLabel(item.is_outgoing, t) : item.text.trim();
+  const isAudio = item.content_kind === "audio" && Boolean(item.audio);
+  const bodyText = isCall
+    ? formatMessageCallLabel(item.is_outgoing, t)
+    : isAudio
+      ? messageChatAudioCaptionText(item)
+      : item.text.trim();
   const timeLabel = formatMessageChatBubbleTime(item.sent_at);
   const outgoingStatusForLayout = resolveOutgoingStatusForDisplay(item, chatKind ?? chat.chat_kind, chat);
   const showOutgoingChecks = messageShowsOutgoingChecks(item, {
@@ -245,6 +252,7 @@ export function MessageChatMessageRow({
 
   const extraInnerWidthPx = useMemo(() => {
     let extra = 0;
+    if (isAudio) extra = Math.max(extra, messageChatAudioInnerWidthPx());
     if (showMedia) extra = Math.max(extra, effectiveMediaWidthPx);
     if (showSenderHeader) {
       if (senderDisplayName) {
@@ -285,6 +293,7 @@ export function MessageChatMessageRow({
     item.reply_to,
     item.sender_name,
     item.sender_user_id,
+    isAudio,
     senderDisplayName,
     showMedia,
     showSenderHeader,
@@ -435,6 +444,7 @@ export function MessageChatMessageRow({
   const showChannelBadge = Boolean(item.sender_is_channel) && chatKind !== "channel";
   const isCompactSingleLineRow =
     !showMedia &&
+    !isAudio &&
     !item.reply_to &&
     !showSenderHeader &&
     !showChannelBadge &&
