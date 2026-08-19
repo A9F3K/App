@@ -50,10 +50,11 @@ import {
 } from "./messageListLayout";
 import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import { MessageChatProfileMediaSheet } from "./MessageChatProfileMediaSheet";
-import { MessageChatProfilePlaylistSheet } from "./MessageChatProfilePlaylistSheet";
 import type { ProfileMediaKind } from "../../telegram/fetchTelegramUserProfile";
+import { useProfileSheet } from "../../profile/ProfileContext";
 import {
   getMusicPlayer,
+  setMusicTracks,
   startMusicPlaylist,
   subscribeMusicPlayer,
 } from "../../music/musicPlayerStore";
@@ -229,12 +230,12 @@ export function MessageChatProfileSheet({
   const colors = useColors();
   const { t, tf, locale } = useAppStrings();
   const { colorScheme } = useTelegram();
+  const { openMusicPlaylistSheet } = useProfileSheet();
   const { height: windowHeight } = useWindowDimensions();
   const [profile, setProfile] = useState<TelegramUserProfile | null>(null);
   const [blockPending, setBlockPending] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   const [mediaKindOpen, setMediaKindOpen] = useState<ProfileMediaKind | null>(null);
-  const [playlistOpen, setPlaylistOpen] = useState(false);
   const musicPlayer = useSyncExternalStore(
     subscribeMusicPlayer,
     getMusicPlayer,
@@ -260,7 +261,6 @@ export function MessageChatProfileSheet({
       setProfile(null);
       setIsBlocked(false);
       setMediaKindOpen(null);
-      setPlaylistOpen(false);
       return;
     }
     const controller = new AbortController();
@@ -402,16 +402,18 @@ export function MessageChatProfileSheet({
 
   const handleOpenPlaylist = () => {
     if (playlist.length === 0) return;
+    unlockMusicAutoplay();
     const uid = playlist[0]?.user_id;
-    const alreadyThis =
+    const playingThisUser =
       musicPlayer.visible &&
       uid != null &&
       musicPlayer.tracks.some((row) => row.user_id === uid);
-    if (!alreadyThis) {
-      unlockMusicAutoplay();
+    if (!playingThisUser) {
       startMusicPlaylist(playlist, 0);
+    } else {
+      setMusicTracks(playlist, musicPlayer.tracks[musicPlayer.index]?.file_id);
     }
-    setPlaylistOpen(true);
+    openMusicPlaylistSheet();
   };
 
   if (!chat || !visible) return null;
@@ -743,16 +745,6 @@ export function MessageChatProfileSheet({
         chat={chat}
         onClose={() => setMediaKindOpen(null)}
         onNavigateToMessage={onClose}
-      />
-      <MessageChatProfilePlaylistSheet
-        visible={playlistOpen}
-        tracks={playlist}
-        fallbackCoverUrl={iconUrl}
-        onBack={() => setPlaylistOpen(false)}
-        onClose={() => {
-          setPlaylistOpen(false);
-          onClose();
-        }}
       />
     </View>
   );

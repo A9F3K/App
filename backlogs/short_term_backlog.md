@@ -1,3 +1,4 @@
+not all tracks, pictures lazy loading
 fix bots displayal, for users as well
 email of the user in db when sign in through google
 Unreads bug

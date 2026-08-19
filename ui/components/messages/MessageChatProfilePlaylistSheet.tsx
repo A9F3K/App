@@ -52,7 +52,6 @@ const ROW_GAP_PX = 10;
 type Props = {
   visible: boolean;
   tracks: TelegramProfileAudioTrack[];
-  fallbackCoverUrl: string | null;
   onClose: () => void;
   onBack: () => void;
 };
@@ -82,12 +81,12 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-function trackCoverUri(track: TelegramProfileAudioTrack, fallback: string | null): string | null {
+function trackCoverUri(track: TelegramProfileAudioTrack): string | null {
   if (track.cover_data_url) return track.cover_data_url;
   if (track.cover_file_id != null) {
     return telegramProfileAudioCoverUrl(track.user_id, track.cover_file_id);
   }
-  return fallback;
+  return null;
 }
 
 function samePlaylist(tracks: TelegramProfileAudioTrack[]): boolean {
@@ -99,7 +98,6 @@ function samePlaylist(tracks: TelegramProfileAudioTrack[]): boolean {
 export function MessageChatProfilePlaylistSheet({
   visible,
   tracks,
-  fallbackCoverUrl,
   onClose,
   onBack,
 }: Props) {
@@ -268,7 +266,7 @@ export function MessageChatProfilePlaylistSheet({
               const meta = [formatClock(track.duration_sec), formatSize(track.size_bytes)]
                 .filter(Boolean)
                 .join(", ");
-              const cover = trackCoverUri(track, fallbackCoverUrl);
+              const cover = trackCoverUri(track);
               const isLast = index === localTracks.length - 1;
               return (
                 <View
@@ -345,19 +343,19 @@ export function MessageChatProfilePlaylistSheet({
                       </Text>
                     ) : null}
                   </Pressable>
-                  <View
-                    style={{
-                      width: COVER_PX,
-                      height: COVER_PX,
-                      borderRadius: 4,
-                      overflow: "hidden",
-                      backgroundColor: colors.undercover,
-                    }}
-                  >
-                    {cover ? (
+                  {cover ? (
+                    <View
+                      style={{
+                        width: COVER_PX,
+                        height: COVER_PX,
+                        borderRadius: 4,
+                        overflow: "hidden",
+                        backgroundColor: colors.undercover,
+                      }}
+                    >
                       <Image source={{ uri: cover }} style={{ width: COVER_PX, height: COVER_PX }} />
-                    ) : null}
-                  </View>
+                    </View>
+                  ) : null}
                 </View>
               );
             })

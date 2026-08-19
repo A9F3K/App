@@ -21,6 +21,7 @@ import {
 export function MusicPlayerEngine(): null {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const loadedKeyRef = useRef<string>("");
+  const loadingKeyRef = useRef<string>("");
   const objectUrlRef = useRef<string>("");
   const loadSeqRef = useRef(0);
 
@@ -89,9 +90,34 @@ export function MusicPlayerEngine(): null {
       }
     };
 
+    const waitForCanPlay = (el: HTMLAudioElement): Promise<void> =>
+      new Promise((resolve, reject) => {
+        if (el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+          resolve();
+          return;
+        }
+        const onReady = () => {
+          cleanup();
+          resolve();
+        };
+        const onFail = () => {
+          cleanup();
+          reject(new Error("audio_load_failed"));
+        };
+        const cleanup = () => {
+          el.removeEventListener("canplay", onReady);
+          el.removeEventListener("loadeddata", onReady);
+          el.removeEventListener("error", onFail);
+        };
+        el.addEventListener("canplay", onReady);
+        el.addEventListener("loadeddata", onReady);
+        el.addEventListener("error", onFail);
+      });
+
     const loadTrack = (key: string, src: string) => {
+      if (loadingKeyRef.current === key) return;
+      loadingKeyRef.current = key;
       const seq = ++loadSeqRef.current;
-      loadedKeyRef.current = key;
       void (async () => {
         try {
           const response = await fetch(src, { credentials: "include" });
@@ -101,11 +127,20 @@ export function MusicPlayerEngine(): null {
           revokeObjectUrl();
           const objectUrl = URL.createObjectURL(blob);
           objectUrlRef.current = objectUrl;
+          audio.pause();
           audio.src = objectUrl;
           audio.load();
+          await waitForCanPlay(audio);
+          if (seq !== loadSeqRef.current) return;
+          loadedKeyRef.current = key;
+          loadingKeyRef.current = "";
           applyPlayback();
         } catch {
           if (seq !== loadSeqRef.current) return;
+          loadingKeyRef.current = "";
+          if (loadedKeyRef.current === key) {
+            loadedKeyRef.current = "";
+          }
           setMusicPlaying(false);
         }
       })();
@@ -117,18 +152,21 @@ export function MusicPlayerEngine(): null {
       const key = track ? musicTrackPlaybackKey(track) : "";
 
       if (!snap.visible || !track) {
-        if (loadedKeyRef.current) {
+        if (loadedKeyRef.current || loadingKeyRef.current) {
           audio.pause();
           audio.removeAttribute("src");
           audio.load();
           loadedKeyRef.current = "";
+          loadingKeyRef.current = "";
           revokeObjectUrl();
         }
         return;
       }
 
       if (loadedKeyRef.current !== key) {
-        loadTrack(key, musicTrackPlaybackUrl(track));
+        if (loadingKeyRef.current !== key) {
+          loadTrack(key, musicTrackPlaybackUrl(track));
+        }
         return;
       }
 
@@ -149,6 +187,7 @@ export function MusicPlayerEngine(): null {
       audio.load();
       audioRef.current = null;
       loadedKeyRef.current = "";
+      loadingKeyRef.current = "";
       revokeObjectUrl();
     };
   }, []);

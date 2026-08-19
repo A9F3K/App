@@ -25,6 +25,7 @@ import {
   toggleMusicShuffle,
 } from "../../music/musicPlayerStore";
 import { unlockMusicAutoplay } from "../../music/musicAudioElement";
+import { useProfileSheet } from "../../profile/ProfileContext";
 import {
   MusicCloseIcon,
   MusicLoopIcon,
@@ -59,6 +60,7 @@ function iconHit(pressed: boolean) {
 
 export function GlobalMusicControlBar({ colors }: Props) {
   const { t } = useAppStrings();
+  const { openMusicPlaylistSheet } = useProfileSheet();
   const snap = useSyncExternalStore(subscribeMusicPlayer, getMusicPlayer, getMusicPlayer);
   const [volumeOpen, setVolumeOpen] = useState(false);
   const volumeAnchorRef = useRef<View>(null);
@@ -202,15 +204,27 @@ export function GlobalMusicControlBar({ colors }: Props) {
         >
           <MusicNextIcon color={colors.primary} size={14} />
         </Pressable>
-        <Text
-          numberOfLines={1}
-          style={[
-            typographyFixedRow30Label,
-            { color: colors.primary, fontFamily: font, flex: 1, minWidth: 0 },
-          ]}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("messages.profile.playlistTitle")}
+          onPress={openMusicPlaylistSheet}
+          style={({ pressed }) => ({
+            flex: 1,
+            minWidth: 0,
+            justifyContent: "center",
+            opacity: pressed ? 0.7 : 1,
+          })}
         >
-          {title}
-        </Text>
+          <Text
+            numberOfLines={1}
+            style={[
+              typographyFixedRow30Label,
+              { color: colors.primary, fontFamily: font },
+            ]}
+          >
+            {title}
+          </Text>
+        </Pressable>
         <Text
           style={[
             typographyFixedRow30Label,

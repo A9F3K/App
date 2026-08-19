@@ -6,13 +6,16 @@ import {
   useContext,
   useMemo,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { View } from "react-native";
 import type { MessageChatRowData } from "../components/messages/MessageChatRow";
 import { MessageChatProfileSheet } from "../components/messages/MessageChatProfileSheet";
+import { MessageChatProfilePlaylistSheet } from "../components/messages/MessageChatProfilePlaylistSheet";
 import { ActiveVoiceCallDock } from "../components/messages/ActiveVoiceCallDock";
 import { GlobalMusicControlBar } from "../components/music/GlobalMusicControlBar";
+import { getMusicPlayer, subscribeMusicPlayer } from "../music/musicPlayerStore";
 import { MusicPlayerEngine } from "../music/MusicPlayerEngine";
 import { PrivateCallLoadingShell } from "../components/messages/PrivateCallLoadingShell";
 import { useColors } from "../theme";
@@ -82,6 +85,8 @@ type ProfileContextValue = {
   profileChat: MessageChatRowData | null;
   openProfileSheet: (target: ProfileSheetTarget | MessageChatRowData) => void;
   closeProfileSheet: () => void;
+  openMusicPlaylistSheet: () => void;
+  closeMusicPlaylistSheet: () => void;
   startPrivateCall: (target: ProfileSheetTarget | MessageChatRowData) => void;
   endPrivateCall: () => void;
 };
@@ -95,6 +100,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const [privateCallVisible, setPrivateCallVisible] = useState(false);
   const [privateCallOpenSeq, setPrivateCallOpenSeq] = useState(0);
   const [privateCallAlive, setPrivateCallAlive] = useState(false);
+  const [musicPlaylistSheetVisible, setMusicPlaylistSheetVisible] = useState(false);
+  const musicSnap = useSyncExternalStore(subscribeMusicPlayer, getMusicPlayer, getMusicPlayer);
 
   const openProfileSheet = useCallback((target: ProfileSheetTarget | MessageChatRowData) => {
     const chat = toProfileChat(target);
@@ -117,6 +124,15 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
   const closeProfileSheet = useCallback(() => {
     setProfileSheetVisible(false);
+  }, []);
+
+  const openMusicPlaylistSheet = useCallback(() => {
+    if (getMusicPlayer().tracks.length === 0) return;
+    setMusicPlaylistSheetVisible(true);
+  }, []);
+
+  const closeMusicPlaylistSheet = useCallback(() => {
+    setMusicPlaylistSheetVisible(false);
   }, []);
 
   /** Minimize only — keep the TDLib call alive and show the global dock. */
@@ -160,6 +176,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       profileChat,
       openProfileSheet,
       closeProfileSheet,
+      openMusicPlaylistSheet,
+      closeMusicPlaylistSheet,
       startPrivateCall,
       endPrivateCall,
     }),
@@ -168,6 +186,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       profileChat,
       openProfileSheet,
       closeProfileSheet,
+      openMusicPlaylistSheet,
+      closeMusicPlaylistSheet,
       startPrivateCall,
       endPrivateCall,
     ],
@@ -192,6 +212,12 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         onCall={() => {
           if (profileChat) startPrivateCall(profileChat);
         }}
+      />
+      <MessageChatProfilePlaylistSheet
+        visible={musicPlaylistSheetVisible && musicSnap.tracks.length > 0}
+        tracks={musicSnap.tracks}
+        onBack={closeMusicPlaylistSheet}
+        onClose={closeMusicPlaylistSheet}
       />
       {privateCallAlive && privateCallChat ? (
         <Suspense
