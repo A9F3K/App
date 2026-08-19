@@ -53,9 +53,6 @@ export function SwapPanelContent() {
     effectivePriceUsd,
   } = useSwapChart("d", {
     jettonAddress: chartJettonAddress,
-    // Do not load/compete while Currencies covers this panel — load the
-    // selected asset when the form becomes visible.
-    enabled: swapFormVisible,
   });
 
   useEffect(() => {

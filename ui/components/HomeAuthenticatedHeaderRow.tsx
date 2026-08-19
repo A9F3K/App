@@ -249,7 +249,8 @@ export function HomeAuthenticatedHeaderRow({
       style={[
         StyleSheet.absoluteFillObject,
         {
-          justifyContent: "center",
+          paddingTop: AH.headerWideSidePaddingVerticalPx,
+          justifyContent: "flex-start",
           alignItems: "center",
           zIndex: AH.wideMenuOverlayZIndex,
         },
@@ -319,7 +320,12 @@ export function HomeAuthenticatedHeaderRow({
             flexDirection: "row",
             alignItems: atOrAboveFirstBreakpoint ? "stretch" : "flex-start",
             width: "100%",
-            ...(atOrAboveFirstBreakpoint ? { position: "relative" as const } : {}),
+            ...(atOrAboveFirstBreakpoint
+              ? {
+                  position: "relative" as const,
+                  height: AH.headerWideRowHeightPx,
+                }
+              : {}),
           }}
         >
       <View
@@ -328,8 +334,8 @@ export function HomeAuthenticatedHeaderRow({
             ? {
                 flex: 1,
                 minWidth: 0,
-                flexDirection: "row",
-                justifyContent: "flex-start",
+                paddingVertical: AH.headerWideSidePaddingVerticalPx,
+                justifyContent: "space-between",
                 alignItems: "flex-start",
               }
             : {
@@ -341,48 +347,77 @@ export function HomeAuthenticatedHeaderRow({
               }
         }
       >
-        <View
-          style={{
-            flexDirection: "column",
-            alignItems: "flex-start",
-            ...(atOrAboveFirstBreakpoint ? {} : { flex: 1, alignSelf: "stretch", minWidth: 0 }),
-          }}
-        >
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={tf("home.header.walletAddressA11y", { snippet: displaySnippet })}
-            accessibilityHint={t("home.header.copyWalletHint")}
-            disabled={!trimmed}
-            hitSlop={AH.headerPressableHitSlop}
-            onPress={() => {
-              void copyFullWalletAddress();
-            }}
-            style={atOrAboveFirstBreakpoint ? undefined : { alignSelf: "stretch" }}
-          >
-            <Text style={[homeWalletAddressHeaderText, { color: colors.secondary }]}>
-              {displaySnippet}
+        {atOrAboveFirstBreakpoint ? (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={tf("home.header.walletAddressA11y", { snippet: displaySnippet })}
+              accessibilityHint={t("home.header.copyWalletHint")}
+              disabled={!trimmed}
+              hitSlop={AH.headerPressableHitSlop}
+              onPress={() => {
+                void copyFullWalletAddress();
+              }}
+            >
+              <Text
+                style={[
+                  homeWalletAddressHeaderText,
+                  { color: colors.secondary, lineHeight: homeWalletAddressHeaderText.fontSize },
+                ]}
+              >
+                {displaySnippet}
+              </Text>
+            </Pressable>
+            <Text
+              style={[homeWalletBalanceHeaderText, { color: colors.primary }]}
+              accessibilityLabel={t("home.header.balanceA11y")}
+            >
+              1$
             </Text>
-          </Pressable>
-          <Text
-            style={[
-              homeWalletBalanceHeaderText,
-              {
-                marginTop: AH.walletBalanceBelowAddressGap,
-                color: colors.primary,
-              },
-            ]}
-            accessibilityLabel={t("home.header.balanceA11y")}
-          >
-            1$
-          </Text>
-        </View>
+          </>
+        ) : (
+          <View style={{ flex: 1, alignSelf: "stretch", minWidth: 0 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={tf("home.header.walletAddressA11y", { snippet: displaySnippet })}
+              accessibilityHint={t("home.header.copyWalletHint")}
+              disabled={!trimmed}
+              hitSlop={AH.headerPressableHitSlop}
+              onPress={() => {
+                void copyFullWalletAddress();
+              }}
+              style={{ alignSelf: "stretch" }}
+            >
+              <Text style={[homeWalletAddressHeaderText, { color: colors.secondary }]}>
+                {displaySnippet}
+              </Text>
+            </Pressable>
+            <Text
+              style={[
+                homeWalletBalanceHeaderText,
+                {
+                  marginTop: AH.walletBalanceBelowAddressGap,
+                  color: colors.primary,
+                },
+              ]}
+              accessibilityLabel={t("home.header.balanceA11y")}
+            >
+              1$
+            </Text>
+          </View>
+        )}
       </View>
       <View
         style={{
           flexDirection: "column",
           alignItems: "flex-end",
           ...(atOrAboveFirstBreakpoint
-            ? { flex: 1, minWidth: 0 }
+            ? {
+                flex: 1,
+                minWidth: 0,
+                paddingVertical: AH.headerWideSidePaddingVerticalPx,
+                justifyContent: "space-between",
+              }
             : { flexShrink: 0, marginLeft: ("auto" as const) }),
         }}
       >
@@ -476,12 +511,17 @@ export function HomeAuthenticatedHeaderRow({
             flexDirection: "row",
             alignItems: "stretch",
             justifyContent: "flex-end",
-            marginTop: AH.walletBalanceBelowAddressGap,
+            ...(atOrAboveFirstBreakpoint ? {} : { marginTop: AH.walletBalanceBelowAddressGap }),
           }}
         >
           <View style={{ justifyContent: "center" }}>
             <Text
-              style={[homeHeaderProfileNameText, { color: colors.primary }]}
+              style={[
+                homeHeaderProfileNameText,
+                atOrAboveFirstBreakpoint
+                  ? { color: colors.primary, lineHeight: homeHeaderProfileNameText.fontSize }
+                  : { color: colors.primary },
+              ]}
               accessibilityLabel={displayName}
               numberOfLines={1}
             >
@@ -519,7 +559,6 @@ export function HomeAuthenticatedHeaderRow({
         <View
           pointerEvents="none"
           style={{
-            marginTop: AH.headerDividerTopGap,
             height: AH.headerDividerHeight,
             width: "100%",
             backgroundColor: colors.highlight,

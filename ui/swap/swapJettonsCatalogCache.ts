@@ -4,7 +4,6 @@ import type { SwapJetton } from "./swapJettonsTypes";
 
 const PAGE_SIZE = 100;
 const MAX_PAGES = 100;
-const PAGE_FETCH_DELAY_MS = 180;
 const UI_FLUSH_INTERVAL_MS = 350;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -90,10 +89,6 @@ function flushNow(): void {
   notifyListeners();
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function isCacheFresh(): boolean {
   return jettons.length > 0 && Date.now() - lastFetchTime < CACHE_TTL_MS;
 }
@@ -161,9 +156,8 @@ async function runCatalogLoad(fromScroll = false): Promise<void> {
 
       if (!hasMore) break;
 
-      if (fromScroll) break;
-
-      await delay(PAGE_FETCH_DELAY_MS);
+      // One page per invocation — further pages load on table scroll (`requestSwapJettonsNextPage`).
+      break;
     }
     logPageDisplay("swap_jettons_catalog_done", {
       fromScroll,
@@ -222,7 +216,7 @@ export function getSwapJettonsCatalogSnapshot(): CatalogSnapshot {
   return getSnapshot();
 }
 
-/** First page immediately; remaining pages load in the background with throttled UI updates. */
+/** First catalog page; more pages load when the currency table scrolls near the end. */
 export function ensureSwapJettonsCatalogLoading(): void {
   if (isCacheFresh() && !hasMore) return;
   if (loadPromise) return;

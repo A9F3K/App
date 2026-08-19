@@ -249,12 +249,11 @@ export function MessageChatProfilePlaylistSheet({
           flex: 1,
           minHeight: 0,
           marginTop: 4,
-          paddingHorizontal: PAD_X_PX,
         }}
       >
         <HspScrollColumn
           style={{ flex: 1, minHeight: 0 }}
-          contentContainerStyle={{ paddingBottom: 0 }}
+          contentContainerStyle={{ paddingHorizontal: PAD_X_PX, paddingBottom: 0 }}
           scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
           containOverscroll
         >

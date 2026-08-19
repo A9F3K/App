@@ -252,6 +252,10 @@ export const layout = {
     walletBalanceBelowAddressGap: 22,
     /** Vertical gap (px) between header row content and full-width divider below (wide layout only). */
     headerDividerTopGap: 22,
+    /** Wide multicolumn header content row height (px); side columns use {@link headerWideSidePaddingVerticalPx} inset. */
+    headerWideRowHeightPx: 100,
+    /** Top/bottom inset (px) for left/right header columns in wide multicolumn layout. */
+    headerWideSidePaddingVerticalPx: 15,
     /** Horizontal gap (px) between profile name and chevron on authenticated home header (`assets/header/right.svg`). */
     headerProfileChevronAfterNameGap: 5,
     /** Two-column body under header: default first column width (px) when `width > firstBreakpoint`. */
