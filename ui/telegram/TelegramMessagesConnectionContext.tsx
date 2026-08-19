@@ -38,6 +38,8 @@ export type MtprotoAuthState =
 
 type TelegramMessagesConnectionCtx = {
   isTelegramMessagesConnected: boolean;
+  /** TDLib `getMe` user id when messages are connected. */
+  connectedTelegramUserId: number | null;
   /** Bumps when Telegram connects so inline emoji components refetch sticker bytes. */
   emojiFetchEpoch: number;
   connectPending: boolean;
@@ -99,6 +101,7 @@ function isMidConnectAuth(state: MtprotoAuthState): boolean {
 export function TelegramMessagesConnectionProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, authReady, sessionTelegramMessagesConnected } = useAuth();
   const [isTelegramMessagesConnected, setConnected] = useState(false);
+  const [connectedTelegramUserId, setConnectedTelegramUserId] = useState<number | null>(null);
   const [emojiFetchEpoch, setEmojiFetchEpoch] = useState(0);
   const [connectPending, setConnectPending] = useState(false);
   const [connectSheetVisible, setConnectSheetVisible] = useState(false);
@@ -141,14 +144,23 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     logTelegramConnect("refresh_status_start", { isAuthenticated, authReady });
     if (!isAuthenticated) {
       setConnected(false);
+      setConnectedTelegramUserId(null);
       return false;
     }
     const statusUrl = buildApiUrl("/api/telegram-messages-status");
     try {
       const response = await fetch(statusUrl, { method: "GET", credentials: "include" });
-      const json = (await response.json().catch(() => ({}))) as { ok?: boolean; connected?: boolean };
+      const json = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        connected?: boolean;
+        telegram_user_id?: number | null;
+      };
       const connected = response.ok && json.ok === true && json.connected === true;
       setConnected(connected);
+      const userIdRaw = Number(json.telegram_user_id);
+      setConnectedTelegramUserId(
+        connected && Number.isFinite(userIdRaw) && userIdRaw > 0 ? Math.trunc(userIdRaw) : null,
+      );
       logTelegramConnect("refresh_status_ok", { connected, status: response.status, url: statusUrl });
       logPageDisplay("telegram_messages_status", { connected, status: response.status });
       return connected;
@@ -156,6 +168,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       const message = error instanceof Error ? error.message : String(error);
       logTelegramConnect("refresh_status_error", { message, url: statusUrl });
       setConnected(false);
+      setConnectedTelegramUserId(null);
       return false;
     }
   }, [isAuthenticated, authReady]);
@@ -774,12 +787,14 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       /* ignore */
     }
     setConnected(false);
+    setConnectedTelegramUserId(null);
     await refreshStatusInner();
   }, [refreshStatusInner]);
 
   const value = useMemo(
     (): TelegramMessagesConnectionCtx => ({
       isTelegramMessagesConnected,
+      connectedTelegramUserId,
       emojiFetchEpoch,
       connectPending,
       connectSheetVisible,
@@ -801,6 +816,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     }),
     [
       isTelegramMessagesConnected,
+      connectedTelegramUserId,
       emojiFetchEpoch,
       connectPending,
       connectSheetVisible,

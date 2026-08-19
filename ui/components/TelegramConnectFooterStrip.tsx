@@ -25,6 +25,7 @@ import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConne
 import { useSettingsSheet } from "../settings/SettingsContext";
 import { useBottomBarLayout } from "./BottomBarLayoutContext";
 import { useTelegram } from "./Telegram";
+import { useMessagesChatListSearchActiveOptional } from "../messages/MessagesChatListSearchContext";
 import { SettingsIcon } from "./icons/SettingsIcon";
 import { ShieldIcon } from "./icons/ShieldIcon";
 import { TelegramLogoIcon } from "./icons/TelegramLogoIcon";
@@ -91,11 +92,11 @@ export function TelegramConnectFooterStrip({
   const pathname = useResolvedPathname();
   const { isAuthenticated } = useAuth();
   const { width: windowWidth } = useWindowDimensions();
-  const { isTelegramMessagesConnected, openConnectSheet, disconnectTelegramMessages } =
-    useTelegramMessagesConnection();
+  const { isTelegramMessagesConnected, openConnectSheet } = useTelegramMessagesConnection();
   const { openSettingsSheet } = useSettingsSheet();
   const { barHeight: bottomBarHeight, footerDockedToScreenEdge } = useBottomBarLayout();
   const { isInTelegram, layoutStartup } = useTelegram();
+  const chatListSearchActive = useMessagesChatListSearchActiveOptional();
   const bottomBarDock = authenticatedHomeBottomBarDock(pathname, windowWidth, isAuthenticated);
 
   const hideBottomBorder =
@@ -112,7 +113,7 @@ export function TelegramConnectFooterStrip({
     isAuthenticatedHome && bottomBarDock === "screenFooter" && windowWidth <= layout.authenticatedHome.firstBreakpoint;
 
   const label = isTelegramMessagesConnected
-    ? t("home.mainColumnFooter.telegramMessagesDisconnect")
+    ? ""
     : t("home.mainColumnFooter.telegramMessages");
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
@@ -157,10 +158,6 @@ export function TelegramConnectFooterStrip({
   }
 
   const handleConnectPress = () => {
-    if (isTelegramMessagesConnected) {
-      void disconnectTelegramMessages();
-      return;
-    }
     if (onConnectPress) {
       onConnectPress();
     } else {
@@ -199,15 +196,19 @@ export function TelegramConnectFooterStrip({
         </View>
 
         <View style={[styles.row, { paddingHorizontal: layout.contentSideInsetPx }]}>
-          <Pressable accessibilityRole="button" onPress={onPowerPress} style={styles.chipPressable}>
-            <LiquidGlassShaderUndercover size={CHIP_SIZE_PX} phaseOffset={0.41} isLightTheme={isLightTheme}>
-              <ShieldIcon
-                powerColor={powerColor}
-                width={SHIELD_ICON_WIDTH_PX}
-                height={SHIELD_ICON_HEIGHT_PX}
-              />
-            </LiquidGlassShaderUndercover>
-          </Pressable>
+          {!chatListSearchActive ? (
+            <Pressable accessibilityRole="button" onPress={onPowerPress} style={styles.chipPressable}>
+              <LiquidGlassShaderUndercover size={CHIP_SIZE_PX} phaseOffset={0.41} isLightTheme={isLightTheme}>
+                <ShieldIcon
+                  powerColor={powerColor}
+                  width={SHIELD_ICON_WIDTH_PX}
+                  height={SHIELD_ICON_HEIGHT_PX}
+                />
+              </LiquidGlassShaderUndercover>
+            </Pressable>
+          ) : (
+            <View style={styles.chipSpacer} />
+          )}
 
           {pillWidth > 0 ? (
             <Pressable
@@ -238,11 +239,15 @@ export function TelegramConnectFooterStrip({
             </Pressable>
           ) : null}
 
-          <Pressable accessibilityRole="button" onPress={handleSettingsPress} style={styles.chipPressable}>
-            <LiquidGlassShaderUndercover size={CHIP_SIZE_PX} phaseOffset={0.08} isLightTheme={isLightTheme}>
-              <SettingsIcon color={iconColor} size={ICON_SIZE_PX} />
-            </LiquidGlassShaderUndercover>
-          </Pressable>
+          {!chatListSearchActive ? (
+            <Pressable accessibilityRole="button" onPress={handleSettingsPress} style={styles.chipPressable}>
+              <LiquidGlassShaderUndercover size={CHIP_SIZE_PX} phaseOffset={0.08} isLightTheme={isLightTheme}>
+                <SettingsIcon color={iconColor} size={ICON_SIZE_PX} />
+              </LiquidGlassShaderUndercover>
+            </Pressable>
+          ) : (
+            <View style={styles.chipSpacer} />
+          )}
         </View>
       </View>
     </View>
@@ -284,6 +289,11 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   chipPressable: {
+    width: CHIP_SIZE_PX,
+    height: CHIP_SIZE_PX,
+    flexShrink: 0,
+  },
+  chipSpacer: {
     width: CHIP_SIZE_PX,
     height: CHIP_SIZE_PX,
     flexShrink: 0,

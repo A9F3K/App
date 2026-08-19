@@ -32,7 +32,7 @@ import {
   demoteQueuedNetworkFetches,
 } from "./messages/networkFetchQueue";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
-import { MessageChatListSearchField } from "./messages/MessageChatListSearchField";
+import { useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
 import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
 import {
   getChatListSyncStatus,
@@ -41,6 +41,10 @@ import {
 } from "./messages/chatListSyncStatus";
 import { setChatListBottomLoaderActive } from "./messages/chatListBottomLoaderStatus";
 import { setChatListNearBottomHandler } from "./messages/chatListNearBottom";
+import {
+  invokeChatListSearchScrollToEnd,
+  setChatListSearchScrollToEndHandler,
+} from "./messages/chatListSearchScrollAnchor";
 import {
   getChatListScrollMetrics,
   subscribeChatListScrollMetrics,
@@ -53,10 +57,8 @@ import {
 } from "./messages/chatListVirtualWindow";
 import {
   chatListRowStridePx,
-  chatListSearchBlockHeightPx,
-  chatListSearchMarginBelowPx,
+  chatListShellTopInsetPx,
   homeListShellStyle,
-  MESSAGE_CHAT_LIST_SEARCH_VERTICAL_INSET_PX,
 } from "./messages/messageListLayout";
 import {
   isVoiceDialogUiOpen,
@@ -588,8 +590,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
    */
   const [emptyListConfirmed, setEmptyListConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [chatListSearchQuery, setChatListSearchQuery] = useState("");
-  const [chatListSearchFocused, setChatListSearchFocused] = useState(false);
+  const {
+    chatListSearchQuery,
+    setChatListSearchQuery,
+    chatListSearchFocused,
+    setChatListSearchFocused,
+  } = useMessagesChatListSearch();
   const [remoteSearchPeerUserIds, setRemoteSearchPeerUserIds] = useState<number[]>([]);
   const [remoteDirectHits, setRemoteDirectHits] = useState<TelegramChatListSearchHit[]>([]);
   const [remoteGlobalHits, setRemoteGlobalHits] = useState<TelegramChatListSearchHit[]>([]);
@@ -1531,11 +1537,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const displayListItems = useMemo((): ChatListDisplayItem[] => {
     if (recentsMode) {
       const liveById = new Map(sortedChats.map((row) => [row.telegram_chat_id, row]));
-      return recentSearchHits.map((hit) => ({
+      const recentItems = recentSearchHits.map((hit) => ({
         kind: "chat" as const,
         key: `chat-${hit.chatId}`,
         row: liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit),
       }));
+      return [...recentItems].reverse();
     }
     if (!searchNeedle) {
       return sortedChats.map((row) => ({
@@ -1603,8 +1610,15 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       .map((hit) => liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit));
 
     const items: ChatListDisplayItem[] = [];
-    for (const row of directRows) {
-      items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
+    if (remoteMessageCount > 0) {
+      items.push({
+        kind: "messagesFooter",
+        key: "search-messages-footer",
+        count: remoteMessageCount,
+      });
+    }
+    for (const row of messageRows) {
+      items.push({ kind: "chat", key: `chat-msg-${row.telegram_chat_id}`, row });
     }
     if (globalRows.length > 0) {
       items.push({
@@ -1616,15 +1630,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
       }
     }
-    for (const row of messageRows) {
-      items.push({ kind: "chat", key: `chat-msg-${row.telegram_chat_id}`, row });
-    }
-    if (remoteMessageCount > 0) {
-      items.push({
-        kind: "messagesFooter",
-        key: "search-messages-footer",
-        count: remoteMessageCount,
-      });
+    for (const row of directRows) {
+      items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
     }
     return items;
   }, [
@@ -1650,9 +1657,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
 
   const cachedChatCount = chatListSync?.cachedCount ?? chats.length;
   const chatListRowStride = chatListRowStridePx(wideListChrome);
-  const chatListSearchMarginBelow = chatListSearchMarginBelowPx(wideListChrome);
-  const chatListShellTopInset =
-    MESSAGE_CHAT_LIST_SEARCH_VERTICAL_INSET_PX + chatListSearchBlockHeightPx(wideListChrome);
+  const chatListShellTopInset = chatListShellTopInsetPx(wideListChrome);
 
   useEffect(() => {
     return subscribeChatListScrollMetrics(() => {
@@ -1891,6 +1896,18 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     };
   }, [handleChatListNearBottom]);
 
+  useEffect(() => {
+    if (!listSearchActive) return;
+    const frame = requestAnimationFrame(() => {
+      invokeChatListSearchScrollToEnd();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [listSearchActive, displayListItems.length, chatListSearchQuery, remoteMessageCount]);
+
+  const searchListAnchorMinHeightPx = listSearchActive
+    ? Math.max(chatListEffectiveLayoutH - chatListShellTopInset, 0)
+    : undefined;
+
   const renderListItems = (items: ChatListDisplayItem[], startIndex: number) => (
     <>
       {chatListVirtualWindow.enabled && chatListVirtualWindow.topSpacerPx > 0 ? (
@@ -1923,11 +1940,14 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
-                borderTopWidth: 1,
+                borderBottomWidth: listSearchActive ? 1 : 0,
+                borderTopWidth: listSearchActive ? 0 : 1,
+                borderBottomColor: colors.highlight,
                 borderTopColor: colors.highlight,
                 paddingVertical: 10,
                 paddingHorizontal: layout.contentSideInsetPx,
-                marginTop: 2,
+                marginTop: listSearchActive ? 0 : 2,
+                marginBottom: listSearchActive ? 2 : 0,
               }}
             >
               <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
@@ -1973,27 +1993,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     </>
   );
 
-  const listShellStyle = {
-    ...homeListShellStyle(wideListChrome),
-    paddingTop: MESSAGE_CHAT_LIST_SEARCH_VERTICAL_INSET_PX,
-  };
-
-  const searchField = (
-    <MessageChatListSearchField
-      value={chatListSearchQuery}
-      onChangeText={setChatListSearchQuery}
-      onFocus={() => setChatListSearchFocused(true)}
-      onBlur={() => setChatListSearchFocused(false)}
-      onDismiss={() => {
-        setChatListSearchFocused(false);
-        setChatListSearchQuery("");
-      }}
-      showClear={chatListSearchFocused || chatListSearchQuery.trim().length > 0}
-      placeholder={t("messages.search.placeholder")}
-      clearAccessibilityLabel={t("messages.search.clear")}
-      marginBottomPx={chatListSearchMarginBelow}
-    />
-  );
+  const listShellStyle = homeListShellStyle(wideListChrome);
 
   const recentsHeader =
     recentsMode && recentSearchLoaded && displayChats.length > 0 ? (
@@ -2101,8 +2101,18 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
 
   const list = (
     <View style={{ width: "100%", alignSelf: "stretch" }} pointerEvents="box-none">
-      <View style={listShellStyle} pointerEvents="box-none">
-        {searchField}
+      <View
+        style={[
+          listShellStyle,
+          listSearchActive
+            ? {
+                minHeight: searchListAnchorMinHeightPx,
+                justifyContent: "flex-end",
+              }
+            : null,
+        ]}
+        pointerEvents="box-none"
+      >
         {recentsHeader}
         {searchEmpty}
         {renderListItems(visibleListItems, visibleChatStartIndex)}

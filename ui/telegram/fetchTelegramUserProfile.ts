@@ -1,4 +1,8 @@
 import { buildApiUrl } from "../../api/_base";
+import {
+  runQueuedNetworkFetch,
+  type NetworkFetchPriority,
+} from "../components/messages/networkFetchQueue";
 
 export type TelegramProfileAudioTrack = {
   user_id: number;
@@ -61,6 +65,7 @@ export async function fetchTelegramUserProfile(
   chatId: number,
   peerUserId?: number | null,
   signal?: AbortSignal,
+  options?: { priority?: NetworkFetchPriority },
 ): Promise<FetchTelegramUserProfileResult> {
   const hasChat = Number.isFinite(chatId) && chatId !== 0;
   const hasUser =
@@ -71,31 +76,34 @@ export async function fetchTelegramUserProfile(
   const params = new URLSearchParams();
   if (hasChat) params.set("chat_id", String(Math.trunc(chatId)));
   if (hasUser) params.set("user_id", String(Math.trunc(peerUserId!)));
-  try {
-    const response = await fetch(
-      buildApiUrl(`/api/telegram-messages-profile?${params.toString()}`),
-      { method: "GET", credentials: "include", signal },
-    );
-    const json = (await response.json().catch(() => null)) as
-      | { ok?: boolean; profile?: TelegramUserProfile; error?: string }
-      | null;
-    if (!response.ok || !json?.ok || !json.profile) {
-      return { ok: false, error: json?.error ?? "profile_unavailable" };
+  const priority = options?.priority ?? "high";
+  return runQueuedNetworkFetch(async () => {
+    try {
+      const response = await fetch(
+        buildApiUrl(`/api/telegram-messages-profile?${params.toString()}`),
+        { method: "GET", credentials: "include", signal },
+      );
+      const json = (await response.json().catch(() => null)) as
+        | { ok?: boolean; profile?: TelegramUserProfile; error?: string }
+        | null;
+      if (!response.ok || !json?.ok || !json.profile) {
+        return { ok: false, error: json?.error ?? "profile_unavailable" };
+      }
+      return {
+        ok: true,
+        profile: {
+          ...json.profile,
+          is_blocked: Boolean(json.profile.is_blocked),
+          playlist: Array.isArray(json.profile.playlist) ? json.profile.playlist : [],
+        },
+      };
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return { ok: false, error: "aborted" };
+      }
+      return { ok: false, error: err instanceof Error ? err.message : "fetch_failed" };
     }
-    return {
-      ok: true,
-      profile: {
-        ...json.profile,
-        is_blocked: Boolean(json.profile.is_blocked),
-        playlist: Array.isArray(json.profile.playlist) ? json.profile.playlist : [],
-      },
-    };
-  } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      return { ok: false, error: "aborted" };
-    }
-    return { ok: false, error: err instanceof Error ? err.message : "fetch_failed" };
-  }
+  }, { priority });
 }
 
 export async function blockTelegramUser(userId: number): Promise<{ ok: boolean; error?: string }> {

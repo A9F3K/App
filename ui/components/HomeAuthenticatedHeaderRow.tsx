@@ -42,9 +42,10 @@ import {
 
 const AH = layout.authenticatedHome;
 
-/** Wide multicolumn header: fixed top/bottom content bands inside {@link AH.headerWideSidePaddingVerticalPx} inset. */
+/** Wide multicolumn header: 15 + 30 + 10 + 30 + 15 = {@link AH.headerWideRowHeightPx}. */
 const WIDE_HEADER_BAND_PX = AH.headerIconDisplaySize;
 const WIDE_HEADER_PAD_PX = AH.headerWideSidePaddingVerticalPx;
+const WIDE_HEADER_MID_GAP_PX = AH.headerWideSideMiddleGapPx;
 
 const wideHeaderSideColumnStyle = {
   flex: 1,
@@ -52,27 +53,16 @@ const wideHeaderSideColumnStyle = {
   height: "100%" as const,
   paddingTop: WIDE_HEADER_PAD_PX,
   paddingBottom: WIDE_HEADER_PAD_PX,
-  justifyContent: "space-between" as const,
+  gap: WIDE_HEADER_MID_GAP_PX,
 };
 
-const wideHeaderTopBandStyle = {
+const wideHeaderBandStyle = {
   height: WIDE_HEADER_BAND_PX,
-  justifyContent: "flex-start" as const,
+  justifyContent: "center" as const,
 };
 
-const wideHeaderBottomBandStyle = {
-  height: WIDE_HEADER_BAND_PX,
-  justifyContent: "flex-end" as const,
-};
-
-const wideHeaderAddressTextStyle = {
-  lineHeight: homeWalletAddressHeaderText.fontSize,
-  textAlignVertical: "top" as const,
-};
-
-const wideHeaderProfileTextStyle = {
-  textAlignVertical: "bottom" as const,
-};
+const wideHeaderTopBandStyle = wideHeaderBandStyle;
+const wideHeaderBottomBandStyle = wideHeaderBandStyle;
 
 const HEADER_ICONS_BEFORE_LANG: readonly {
   id: "copy" | "edit" | "key";
@@ -281,8 +271,7 @@ export function HomeAuthenticatedHeaderRow({
       style={[
         StyleSheet.absoluteFillObject,
         {
-          paddingTop: WIDE_HEADER_PAD_PX,
-          justifyContent: "flex-start",
+          justifyContent: "center",
           alignItems: "center",
           zIndex: AH.wideMenuOverlayZIndex,
         },
@@ -291,7 +280,7 @@ export function HomeAuthenticatedHeaderRow({
       <View
         style={{
           flexDirection: "row",
-          alignItems: "flex-start",
+          alignItems: "center",
           justifyContent: "center",
           width: wideMenuStripWidth,
         }}
@@ -388,11 +377,7 @@ export function HomeAuthenticatedHeaderRow({
                 }}
               >
                 <Text
-                  style={[
-                    homeWalletAddressHeaderText,
-                    wideHeaderAddressTextStyle,
-                    { color: colors.secondary },
-                  ]}
+                  style={[homeWalletAddressHeaderText, { color: colors.secondary }]}
                 >
                   {displaySnippet}
                 </Text>
@@ -540,7 +525,7 @@ export function HomeAuthenticatedHeaderRow({
         <View
           style={{
             flexDirection: "row",
-            alignItems: "flex-end",
+            alignItems: "center",
             justifyContent: "flex-end",
             ...(atOrAboveFirstBreakpoint
               ? wideHeaderBottomBandStyle
@@ -548,12 +533,7 @@ export function HomeAuthenticatedHeaderRow({
           }}
         >
           <Text
-            style={[
-              homeHeaderProfileNameText,
-              atOrAboveFirstBreakpoint
-                ? { ...wideHeaderProfileTextStyle, color: colors.primary }
-                : { color: colors.primary },
-            ]}
+            style={[homeHeaderProfileNameText, { color: colors.primary }]}
             accessibilityLabel={displayName}
             numberOfLines={1}
           >

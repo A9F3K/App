@@ -268,6 +268,7 @@ export function MessageChatProfileSheet({
       chat.telegram_chat_id,
       chat.peer_user_id ?? null,
       controller.signal,
+      { priority: "critical" },
     ).then((result) => {
       if (controller.signal.aborted) return;
       if (result.ok) {
@@ -463,7 +464,7 @@ export function MessageChatProfileSheet({
           colors={colors}
           scheme={colorScheme}
           loadEnabled
-          fetchPriority="high"
+          fetchPriority="critical"
         />
         <View
           style={{

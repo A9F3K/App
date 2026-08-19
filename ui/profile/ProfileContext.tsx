@@ -19,6 +19,11 @@ import { useColors } from "../theme";
 import { logPageDisplay } from "../pageDisplayLog";
 import { unlockVoiceAutoplay } from "../telegram/unlockVoiceAutoplay";
 import { startPrivateCallRingback } from "../telegram/privateCallRingback";
+import {
+  clearQueuedNormalNetworkFetches,
+  demoteQueuedNetworkFetches,
+} from "../components/messages/networkFetchQueue";
+import { fetchTelegramUserProfile } from "../telegram/fetchTelegramUserProfile";
 
 /** Lazy — avoids ProfileContext ↔ VoicePopover circular import via private-call host. */
 const MessageChatPrivateCallHost = lazy(() =>
@@ -98,6 +103,14 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       peerUserId: chat.peer_user_id ?? null,
       title: chat.title,
     });
+    demoteQueuedNetworkFetches();
+    clearQueuedNormalNetworkFetches();
+    void fetchTelegramUserProfile(
+      chat.telegram_chat_id,
+      chat.peer_user_id ?? null,
+      undefined,
+      { priority: "critical" },
+    );
     setProfileChat(chat);
     setProfileSheetVisible(true);
   }, []);

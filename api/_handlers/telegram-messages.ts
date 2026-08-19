@@ -3,6 +3,7 @@ import {
   getConnection,
   isTelegramMessagesConnected,
 } from "../../database/telegramMessages.js";
+import { getMtprotoSession } from "../../database/telegramMtproto.js";
 import { revokeMtprotoSession } from "../../database/telegramMtproto.js";
 import { applyAuthApiCors, authApiPreflightResponse } from "../_lib/auth-cors.js";
 import { telegramUsernameFromSessionCookie } from "../_lib/session-auth.js";
@@ -288,6 +289,13 @@ export async function telegramMessagesStatusHandler(
 
   const connected = await isTelegramMessagesConnected(userOrRes);
   const conn = connected ? await getConnection(userOrRes) : null;
+  const session = connected ? await getMtprotoSession(userOrRes) : null;
+  const telegramUserId =
+    session?.telegram_user_id != null &&
+    Number.isFinite(session.telegram_user_id) &&
+    session.telegram_user_id > 0
+      ? Math.trunc(session.telegram_user_id)
+      : null;
   return finishJson(
     request,
     res,
@@ -295,6 +303,7 @@ export async function telegramMessagesStatusHandler(
       ok: true,
       connected,
       connected_at: conn?.connected_at ?? null,
+      telegram_user_id: telegramUserId,
     },
     200,
   );

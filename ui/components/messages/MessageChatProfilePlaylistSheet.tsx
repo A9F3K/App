@@ -236,14 +236,15 @@ export function MessageChatProfilePlaylistSheet({
             <VoiceWindowCrossIcon color={colors.primary} size={15} />
           </ProfileOpenHitTarget>
         </View>
-        <View
-          style={{
-            height: hairline,
-            backgroundColor: colors.highlight,
-            alignSelf: "stretch",
-          }}
-        />
       </View>
+      <View
+        style={{
+          height: hairline,
+          width: "100%",
+          alignSelf: "stretch",
+          backgroundColor: colors.accent,
+        }}
+      />
       <View
         style={{
           flex: 1,

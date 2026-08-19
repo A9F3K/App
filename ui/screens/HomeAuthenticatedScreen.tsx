@@ -12,10 +12,9 @@ import { ActivityIndicator, Button, Platform, Text, View, useWindowDimensions } 
 import { GlobalBottomBar } from "../components/GlobalBottomBar";
 import { AiSearchColumnEmptyState } from "../components/ai/AiSearchColumnEmptyState";
 import { useBottomBarLayout } from "../components/BottomBarLayoutContext";
-import {
-  MainColumnInactiveFooter,
-  SendColumnInactiveFooter,
-} from "../components/InactiveWelcomeColumnFooter";
+import { MessagesColumnFooter } from "../components/MessagesColumnFooter";
+import { MessagesChatListSearchProvider, useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
+import { SendColumnInactiveFooter } from "../components/InactiveWelcomeColumnFooter";
 import { SwapColumnFooter } from "../components/swap/SwapColumnFooter";
 import { HomeAuthenticatedHeaderRow } from "../components/HomeAuthenticatedHeaderRow";
 import { AuthenticatedHomeLeftNavStrip } from "../components/AuthenticatedHomeLeftNavStrip";
@@ -29,6 +28,7 @@ import {
 } from "../components/messages/chatListBottomLoaderStatus";
 import { invokeChatListNearBottom } from "../components/messages/chatListNearBottom";
 import { setChatListScrollMetrics } from "../components/messages/chatListScrollMetrics";
+import { setChatListSearchScrollToEndHandler } from "../components/messages/chatListSearchScrollAnchor";
 import { MessageChatWriteBottomBar } from "../components/messages/MessageChatWriteBottomBar";
 import { GetPanelContent } from "../components/get/GetPanelContent";
 import { SendPanelContent } from "../components/send/SendPanelContent";
@@ -584,10 +584,20 @@ function markWalletSecretStoredOnServer(
 }
 
 export function HomeAuthenticatedScreen() {
+  return (
+    <MessagesChatListSearchProvider>
+      <HomeAuthenticatedScreenMain />
+    </MessagesChatListSearchProvider>
+  );
+}
+
+function HomeAuthenticatedScreenMain() {
   const colors = useColors();
   const router = useRouter();
   const { t, tf, translateFlowError } = useAppStrings();
   const homeNavIndex = useAuthenticatedHomeLeftNavIndex();
+  const { listSearchActive } = useMessagesChatListSearch();
+  const messagesSearchScrollMode = homeNavIndex === 1 && listSearchActive;
   const chatListBottomLoaderActive = useSyncExternalStore(
     subscribeChatListBottomLoaderActive,
     isChatListBottomLoaderActive,
@@ -595,6 +605,22 @@ export function HomeAuthenticatedScreen() {
   );
   const showChatListBottomLoader = chatListBottomLoaderActive && homeNavIndex === 1;
   const homeLeftScrollRef = useRef<HspScrollColumnHandle | null>(null);
+  useEffect(() => {
+    setChatListSearchScrollToEndHandler(() => {
+      homeLeftScrollRef.current?.scrollToEnd();
+    });
+    return () => setChatListSearchScrollToEndHandler(null);
+  }, []);
+  useEffect(() => {
+    if (!messagesSearchScrollMode) {
+      homeLeftScrollRef.current?.scrollToY(0);
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      homeLeftScrollRef.current?.scrollToEnd();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [messagesSearchScrollMode]);
   const handleHomeLeftScrollNearBottom = useCallback(() => {
     if (homeNavIndex !== 1) return;
     invokeChatListNearBottom();
@@ -718,11 +744,11 @@ export function HomeAuthenticatedScreen() {
       router.push("/get" as any);
     }
   }, [isWideHome, rightPanel, pathname, router]);
-  const { draftText } = useBottomBarLayout();
+  const { draftText, barHeight: bottomBarHeight, footerDockedToScreenEdge } = useBottomBarLayout();
   const embeddedAiBar = aiBarDock === "screenFooter" ? null : <GlobalBottomBar />;
   const aiSearchColumnContent =
     aiBarDock === "splitColumn3" && draftText.trim().length === 0 ? <AiSearchColumnEmptyState /> : null;
-  const mainColumnFooter = <MainColumnInactiveFooter />;
+  const mainColumnFooter = <MessagesColumnFooter showSearch={homeNavIndex === 1} />;
   const swapColumnFooter = <SwapColumnFooter />;
   const sendColumnFooter = <SendColumnInactiveFooter />;
   const smartColumnFooter = <SmartColumnFooter />;
@@ -1519,8 +1545,17 @@ export function HomeAuthenticatedScreen() {
   const homeCompactScrollContentStyle = {
     flexGrow: 0,
     paddingTop: layout.authenticatedHome.contentInsetTop,
-    paddingBottom: layout.authenticatedHome.contentInsetBottom,
+    paddingBottom:
+      layout.authenticatedHome.contentInsetBottom +
+      (!isWideHome ? layout.bottomBar.barMinHeight : 0),
+    ...(messagesSearchScrollMode ? { flexGrow: 1 as const } : {}),
   } as const;
+  const homeLeftScrollContentStyle = isWideHome
+    ? {
+        ...homeWideScrollContentStyle,
+        ...(messagesSearchScrollMode ? { flexGrow: 1 as const } : {}),
+      }
+    : homeCompactScrollContentStyle;
 
   const homeMainColumnBlocks = (
     <>
@@ -1641,7 +1676,9 @@ export function HomeAuthenticatedScreen() {
       {homeLeftScrollShell(
         <HspScrollColumn
           style={{ flex: 1, minHeight: 0 }}
-          contentContainerStyle={homeWideScrollContentStyle}
+          contentContainerStyle={homeLeftScrollContentStyle}
+          initialScrollPosition={messagesSearchScrollMode ? "bottom" : "top"}
+          stickToBottomOnResize={messagesSearchScrollMode}
           nearBottomThresholdPx={240}
           onNearBottom={handleHomeLeftScrollNearBottom}
           onScrollPositionChange={handleHomeLeftScrollPositionChange}
@@ -1655,7 +1692,9 @@ export function HomeAuthenticatedScreen() {
     homeLeftScrollShell(
       <HspScrollColumn
         style={{ flex: 1, minHeight: 0 }}
-        contentContainerStyle={homeCompactScrollContentStyle}
+        contentContainerStyle={homeLeftScrollContentStyle}
+        initialScrollPosition={messagesSearchScrollMode ? "bottom" : "top"}
+        stickToBottomOnResize={messagesSearchScrollMode}
         nearBottomThresholdPx={240}
         onNearBottom={handleHomeLeftScrollNearBottom}
         onScrollPositionChange={handleHomeLeftScrollPositionChange}
@@ -1753,47 +1792,67 @@ export function HomeAuthenticatedScreen() {
   );
 
   return (
-    <AuthenticatedHomeChrome
-      header={isWideHome ? homeHeaderRow : null}
-      belowHeader={null}
-      edgePadding={isWideHome ? "wide" : false}
-    >
-      <AuthenticatedHomeSplitBody
-        onSplitLayoutMetricsChange={onSplitLayoutMetricsChange}
-        leftColumnFooter={isWideHome ? mainColumnFooter : null}
-        farRight={aiSearchColumnContent}
-        left={homeLeftColumn}
-        right={homeWideRightColumn}
-        middleColumnFooter={
-          messagesChatOpen
-            ? isTripleColumn && selectedMessageChat?.chat_kind !== "channel"
-              ? <MessageChatWriteBottomBar />
-              : !isTripleColumn
-                ? embeddedAiBar
-                : null
-            : headerPanelVisibleOnWide && sendActiveOnWide
-            ? isTripleColumn
-              ? sendColumnFooter
-              : embeddedAiBar
-            : headerPanelVisibleOnWide && tradeActiveOnWide
-              ? isTripleColumn
-                ? null
-                : embeddedAiBar
-            : headerPanelVisibleOnWide && swapActiveOnWide
-              ? isTripleColumn
-                ? swapColumnFooter
-                : embeddedAiBar
-              : headerPanelVisibleOnWide && smartActiveOnWide
-                ? isTripleColumn
-                  ? smartColumnFooter
-                  : embeddedAiBar
-                : aiBarDock === "splitColumn2"
+    <>
+      <AuthenticatedHomeChrome
+        header={isWideHome ? homeHeaderRow : null}
+        belowHeader={null}
+        edgePadding={isWideHome ? "wide" : false}
+      >
+        <AuthenticatedHomeSplitBody
+          onSplitLayoutMetricsChange={onSplitLayoutMetricsChange}
+          leftColumnFooter={isWideHome ? mainColumnFooter : null}
+          farRight={aiSearchColumnContent}
+          left={homeLeftColumn}
+          right={homeWideRightColumn}
+          middleColumnFooter={
+            messagesChatOpen
+              ? isTripleColumn && selectedMessageChat?.chat_kind !== "channel"
+                ? <MessageChatWriteBottomBar />
+                : !isTripleColumn
                   ? embeddedAiBar
                   : null
-        }
-        thirdColumnFooter={aiBarDock === "splitColumn3" ? embeddedAiBar : null}
-      />
-    </AuthenticatedHomeChrome>
+              : headerPanelVisibleOnWide && sendActiveOnWide
+              ? isTripleColumn
+                ? sendColumnFooter
+                : embeddedAiBar
+              : headerPanelVisibleOnWide && tradeActiveOnWide
+                ? isTripleColumn
+                  ? null
+                  : embeddedAiBar
+              : headerPanelVisibleOnWide && swapActiveOnWide
+                ? isTripleColumn
+                  ? swapColumnFooter
+                  : embeddedAiBar
+                : headerPanelVisibleOnWide && smartActiveOnWide
+                  ? isTripleColumn
+                    ? smartColumnFooter
+                    : embeddedAiBar
+                  : aiBarDock === "splitColumn2"
+                    ? embeddedAiBar
+                    : null
+          }
+          thirdColumnFooter={aiBarDock === "splitColumn3" ? embeddedAiBar : null}
+        />
+      </AuthenticatedHomeChrome>
+      {!isWideHome ? (
+        <View
+          pointerEvents="box-none"
+          style={{
+            position: Platform.OS === "web" ? ("fixed" as unknown as "absolute") : "absolute",
+            left: 0,
+            right: 0,
+            bottom:
+              bottomBarHeight +
+              layout.bottomBar.topRuleHeightPx +
+              (footerDockedToScreenEdge ? layout.bottomBar.bottomRuleHeightPx : 0),
+            width: "100%",
+            zIndex: 998,
+          }}
+        >
+          {mainColumnFooter}
+        </View>
+      ) : null}
+    </>
   );
 }
 
