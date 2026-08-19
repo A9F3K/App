@@ -42,6 +42,38 @@ import {
 
 const AH = layout.authenticatedHome;
 
+/** Wide multicolumn header: fixed top/bottom content bands inside {@link AH.headerWideSidePaddingVerticalPx} inset. */
+const WIDE_HEADER_BAND_PX = AH.headerIconDisplaySize;
+const WIDE_HEADER_PAD_PX = AH.headerWideSidePaddingVerticalPx;
+
+const wideHeaderSideColumnStyle = {
+  flex: 1,
+  minWidth: 0,
+  height: "100%" as const,
+  paddingTop: WIDE_HEADER_PAD_PX,
+  paddingBottom: WIDE_HEADER_PAD_PX,
+  justifyContent: "space-between" as const,
+};
+
+const wideHeaderTopBandStyle = {
+  height: WIDE_HEADER_BAND_PX,
+  justifyContent: "flex-start" as const,
+};
+
+const wideHeaderBottomBandStyle = {
+  height: WIDE_HEADER_BAND_PX,
+  justifyContent: "flex-end" as const,
+};
+
+const wideHeaderAddressTextStyle = {
+  lineHeight: homeWalletAddressHeaderText.fontSize,
+  textAlignVertical: "top" as const,
+};
+
+const wideHeaderProfileTextStyle = {
+  textAlignVertical: "bottom" as const,
+};
+
 const HEADER_ICONS_BEFORE_LANG: readonly {
   id: "copy" | "edit" | "key";
   labelKey: AppStringKey;
@@ -249,7 +281,7 @@ export function HomeAuthenticatedHeaderRow({
       style={[
         StyleSheet.absoluteFillObject,
         {
-          paddingTop: AH.headerWideSidePaddingVerticalPx,
+          paddingTop: WIDE_HEADER_PAD_PX,
           justifyContent: "flex-start",
           alignItems: "center",
           zIndex: AH.wideMenuOverlayZIndex,
@@ -259,7 +291,7 @@ export function HomeAuthenticatedHeaderRow({
       <View
         style={{
           flexDirection: "row",
-          alignItems: "center",
+          alignItems: "flex-start",
           justifyContent: "center",
           width: wideMenuStripWidth,
         }}
@@ -324,6 +356,7 @@ export function HomeAuthenticatedHeaderRow({
               ? {
                   position: "relative" as const,
                   height: AH.headerWideRowHeightPx,
+                  overflow: "visible" as const,
                 }
               : {}),
           }}
@@ -331,13 +364,7 @@ export function HomeAuthenticatedHeaderRow({
       <View
         style={
           atOrAboveFirstBreakpoint
-            ? {
-                flex: 1,
-                minWidth: 0,
-                paddingVertical: AH.headerWideSidePaddingVerticalPx,
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-              }
+            ? { ...wideHeaderSideColumnStyle, alignItems: "flex-start" }
             : {
                 flex: 1,
                 minWidth: 0,
@@ -349,31 +376,36 @@ export function HomeAuthenticatedHeaderRow({
       >
         {atOrAboveFirstBreakpoint ? (
           <>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={tf("home.header.walletAddressA11y", { snippet: displaySnippet })}
-              accessibilityHint={t("home.header.copyWalletHint")}
-              disabled={!trimmed}
-              hitSlop={AH.headerPressableHitSlop}
-              onPress={() => {
-                void copyFullWalletAddress();
-              }}
-            >
-              <Text
-                style={[
-                  homeWalletAddressHeaderText,
-                  { color: colors.secondary, lineHeight: homeWalletAddressHeaderText.fontSize },
-                ]}
+            <View style={wideHeaderTopBandStyle}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={tf("home.header.walletAddressA11y", { snippet: displaySnippet })}
+                accessibilityHint={t("home.header.copyWalletHint")}
+                disabled={!trimmed}
+                hitSlop={AH.headerPressableHitSlop}
+                onPress={() => {
+                  void copyFullWalletAddress();
+                }}
               >
-                {displaySnippet}
+                <Text
+                  style={[
+                    homeWalletAddressHeaderText,
+                    wideHeaderAddressTextStyle,
+                    { color: colors.secondary },
+                  ]}
+                >
+                  {displaySnippet}
+                </Text>
+              </Pressable>
+            </View>
+            <View style={wideHeaderBottomBandStyle}>
+              <Text
+                style={[homeWalletBalanceHeaderText, { color: colors.primary }]}
+                accessibilityLabel={t("home.header.balanceA11y")}
+              >
+                1$
               </Text>
-            </Pressable>
-            <Text
-              style={[homeWalletBalanceHeaderText, { color: colors.primary }]}
-              accessibilityLabel={t("home.header.balanceA11y")}
-            >
-              1$
-            </Text>
+            </View>
           </>
         ) : (
           <View style={{ flex: 1, alignSelf: "stretch", minWidth: 0 }}>
@@ -412,12 +444,7 @@ export function HomeAuthenticatedHeaderRow({
           flexDirection: "column",
           alignItems: "flex-end",
           ...(atOrAboveFirstBreakpoint
-            ? {
-                flex: 1,
-                minWidth: 0,
-                paddingVertical: AH.headerWideSidePaddingVerticalPx,
-                justifyContent: "space-between",
-              }
+            ? { ...wideHeaderSideColumnStyle, alignItems: "flex-end" }
             : { flexShrink: 0, marginLeft: ("auto" as const) }),
         }}
       >
@@ -428,7 +455,11 @@ export function HomeAuthenticatedHeaderRow({
             gap: AH.headerIconGap,
             justifyContent: "flex-end",
             ...(atOrAboveFirstBreakpoint
-              ? ({ position: "relative" as const, zIndex: 2 } as const)
+              ? ({
+                  ...wideHeaderTopBandStyle,
+                  position: "relative" as const,
+                  zIndex: 2,
+                } as const)
               : {}),
           }}
         >
@@ -509,29 +540,28 @@ export function HomeAuthenticatedHeaderRow({
         <View
           style={{
             flexDirection: "row",
-            alignItems: "stretch",
+            alignItems: "flex-end",
             justifyContent: "flex-end",
-            ...(atOrAboveFirstBreakpoint ? {} : { marginTop: AH.walletBalanceBelowAddressGap }),
+            ...(atOrAboveFirstBreakpoint
+              ? wideHeaderBottomBandStyle
+              : { marginTop: AH.walletBalanceBelowAddressGap }),
           }}
         >
-          <View style={{ justifyContent: "center" }}>
-            <Text
-              style={[
-                homeHeaderProfileNameText,
-                atOrAboveFirstBreakpoint
-                  ? { color: colors.primary, lineHeight: homeHeaderProfileNameText.fontSize }
-                  : { color: colors.primary },
-              ]}
-              accessibilityLabel={displayName}
-              numberOfLines={1}
-            >
-              {displayName}
-            </Text>
-          </View>
+          <Text
+            style={[
+              homeHeaderProfileNameText,
+              atOrAboveFirstBreakpoint
+                ? { ...wideHeaderProfileTextStyle, color: colors.primary }
+                : { color: colors.primary },
+            ]}
+            accessibilityLabel={displayName}
+            numberOfLines={1}
+          >
+            {displayName}
+          </Text>
           <View
             style={{
               marginLeft: AH.headerProfileChevronAfterNameGap,
-              justifyContent: "center",
             }}
           >
             <HeaderProfileChevronIcon color={menuIconStrokeColor(colors, "highlight")} />

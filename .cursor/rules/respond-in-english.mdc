@@ -1,0 +1,12 @@
+---
+description: Always respond in English
+alwaysApply: true
+---
+
+# Response language
+
+Always write user-facing replies in **English**, including explanations, summaries, commit messages (when asked), and PR descriptions (when asked).
+
+- Use clear, concise technical English.
+- Code comments and identifiers stay consistent with existing project conventions (may be English or another language if the codebase already uses it).
+- Do not switch to another language unless the user explicitly asks for a reply in that language.

@@ -154,13 +154,14 @@ function AuthenticatedHomeChrome({
   header,
   /** Optional strip below the header (e.g. active voice dock on Swap/Trade). */
   belowHeader,
-  /** When false (compact home), vertical insets live in scroll content so the indicator spans header→footer. */
+  /** When false (compact home), vertical insets live in scroll content so the indicator spans header→footer.
+   *  `"wide"`: top inset matches {@link layout.authenticatedHome.headerWideSidePaddingVerticalPx}. */
   edgePadding = true,
 }: {
   children: ReactNode;
   header?: ReactNode | null;
   belowHeader?: ReactNode | null;
-  edgePadding?: boolean;
+  edgePadding?: boolean | "wide";
 }) {
   const colors = useColors();
   const p = layout.authenticatedHome;
@@ -180,7 +181,12 @@ function AuthenticatedHomeChrome({
         style={{
           flex: 1,
           width: "100%",
-          paddingTop: edgePadding ? p.contentInsetTop : 0,
+          paddingTop:
+            edgePadding === "wide"
+              ? 0
+              : edgePadding
+                ? p.contentInsetTop
+                : 0,
           paddingBottom: edgePadding ? p.contentInsetBottom : 0,
         }}
       >
@@ -1312,7 +1318,7 @@ export function HomeAuthenticatedScreen() {
 
   if (status === "idle" || status === "loading") {
     return (
-      <AuthenticatedHomeChrome edgePadding={isWideHome}>
+      <AuthenticatedHomeChrome edgePadding={isWideHome ? "wide" : false}>
         <HomeAuthenticatedHeaderRow
           walletAddress={effectiveWalletAddress ?? ""}
           displayName={headerDisplayName}
@@ -1371,7 +1377,7 @@ export function HomeAuthenticatedScreen() {
 
   if (status === "error") {
     return (
-      <AuthenticatedHomeChrome edgePadding={isWideHome}>
+      <AuthenticatedHomeChrome edgePadding={isWideHome ? "wide" : false}>
         <HomeAuthenticatedHeaderRow
           walletAddress={effectiveWalletAddress ?? ""}
           displayName={headerDisplayName}
@@ -1426,7 +1432,7 @@ export function HomeAuthenticatedScreen() {
 
   if (status === "dev") {
     return (
-      <AuthenticatedHomeChrome edgePadding={isWideHome}>
+      <AuthenticatedHomeChrome edgePadding={isWideHome ? "wide" : false}>
         <HomeAuthenticatedHeaderRow
           walletAddress={effectiveWalletAddress ?? ""}
           displayName={headerDisplayName}
@@ -1750,7 +1756,7 @@ export function HomeAuthenticatedScreen() {
     <AuthenticatedHomeChrome
       header={isWideHome ? homeHeaderRow : null}
       belowHeader={null}
-      edgePadding={isWideHome}
+      edgePadding={isWideHome ? "wide" : false}
     >
       <AuthenticatedHomeSplitBody
         onSplitLayoutMetricsChange={onSplitLayoutMetricsChange}
