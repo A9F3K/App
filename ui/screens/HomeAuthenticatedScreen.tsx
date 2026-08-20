@@ -13,7 +13,7 @@ import { GlobalBottomBar } from "../components/GlobalBottomBar";
 import { AiSearchColumnEmptyState } from "../components/ai/AiSearchColumnEmptyState";
 import { useBottomBarLayout } from "../components/BottomBarLayoutContext";
 import { MessagesColumnFooter } from "../components/MessagesColumnFooter";
-import { MessagesChatListSearchProvider, useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
+import { useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
 import { SendColumnInactiveFooter } from "../components/InactiveWelcomeColumnFooter";
 import { SwapColumnFooter } from "../components/swap/SwapColumnFooter";
 import { HomeAuthenticatedHeaderRow } from "../components/HomeAuthenticatedHeaderRow";
@@ -584,11 +584,7 @@ function markWalletSecretStoredOnServer(
 }
 
 export function HomeAuthenticatedScreen() {
-  return (
-    <MessagesChatListSearchProvider>
-      <HomeAuthenticatedScreenMain />
-    </MessagesChatListSearchProvider>
-  );
+  return <HomeAuthenticatedScreenMain />;
 }
 
 function HomeAuthenticatedScreenMain() {
@@ -623,11 +619,13 @@ function HomeAuthenticatedScreenMain() {
   }, [messagesSearchScrollMode]);
   const handleHomeLeftScrollNearBottom = useCallback(() => {
     if (homeNavIndex !== 1) return;
+    // Search/recents use bottom-anchored lists — do not page the main chat list.
+    if (listSearchActive) return;
     invokeChatListNearBottom();
     requestAnimationFrame(() => {
       homeLeftScrollRef.current?.clearNearBottomLatch();
     });
-  }, [homeNavIndex]);
+  }, [homeNavIndex, listSearchActive]);
   const handleHomeLeftScrollPositionChange = useCallback(
     (metrics: { scrollY: number; layoutH: number; contentH: number }) => {
       if (homeNavIndex !== 1) return;
@@ -1534,7 +1532,7 @@ function HomeAuthenticatedScreenMain() {
     paddingTop: layout.authenticatedHome.contentInsetTop,
     paddingBottom:
       layout.authenticatedHome.contentInsetBottom +
-      (!isWideHome ? layout.bottomBar.barMinHeight : 0),
+      (!isWideHome ? layout.bottomBar.barMinHeight * 2 : 0),
     ...(messagesSearchScrollMode ? { flexGrow: 1 as const } : {}),
   } as const;
   const homeLeftScrollContentStyle = isWideHome
@@ -1640,14 +1638,6 @@ function HomeAuthenticatedScreenMain() {
    * Compact: wallet header → nav strip → feed scroll inside one column (header/nav pinned above scroll).
    * Wide: header pinned in chrome; nav pinned; feed scrolls in the left column only.
    */
-  const homeCompactMainBlock = (
-    <>
-      {homeHeaderRow}
-      {homeLeftNavStrip}
-      <View style={homeMainColumnInsetStyle}>{homeMainColumnBlocks}</View>
-    </>
-  );
-
   const homeLeftScrollShell = (scrollColumn: ReactNode) => (
     <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
       {scrollColumn}
@@ -1657,9 +1647,15 @@ function HomeAuthenticatedScreenMain() {
     </View>
   );
 
-  const homeLeftColumn = isWideHome ? (
+  /**
+   * Keep feed/messages panels on a stable tree path across wide↔narrow so chat
+   * state does not remount/clear when the first breakpoint flips (one-column mode).
+   * Compact header/nav stay as reserved siblings (hidden when wide) so panel fibers
+   * keep the same index.
+   */
+  const homeLeftColumn = (
     <>
-      {homeLeftNavStrip}
+      {isWideHome ? homeLeftNavStrip : null}
       {homeLeftScrollShell(
         <HspScrollColumn
           style={{ flex: 1, minHeight: 0 }}
@@ -1671,25 +1667,22 @@ function HomeAuthenticatedScreenMain() {
           onScrollPositionChange={handleHomeLeftScrollPositionChange}
           scrollControllerRef={homeLeftScrollRef}
         >
-          {homeMainColumnBlocks}
+          <View
+            pointerEvents={isWideHome ? "none" : "auto"}
+            style={isWideHome ? ({ display: "none" } as const) : undefined}
+          >
+            {!isWideHome ? homeHeaderRow : null}
+          </View>
+          <View
+            pointerEvents={isWideHome ? "none" : "auto"}
+            style={isWideHome ? ({ display: "none" } as const) : undefined}
+          >
+            {!isWideHome ? homeLeftNavStrip : null}
+          </View>
+          <View style={isWideHome ? undefined : homeMainColumnInsetStyle}>{homeMainColumnBlocks}</View>
         </HspScrollColumn>,
       )}
     </>
-  ) : (
-    homeLeftScrollShell(
-      <HspScrollColumn
-        style={{ flex: 1, minHeight: 0 }}
-        contentContainerStyle={homeLeftScrollContentStyle}
-        initialScrollPosition={messagesSearchScrollMode ? "bottom" : "top"}
-        stickToBottomOnResize={messagesSearchScrollMode}
-        nearBottomThresholdPx={240}
-        onNearBottom={handleHomeLeftScrollNearBottom}
-        onScrollPositionChange={handleHomeLeftScrollPositionChange}
-        scrollControllerRef={homeLeftScrollRef}
-      >
-        {homeCompactMainBlock}
-      </HspScrollColumn>,
-    )
   );
 
   const homeWideRightColumn = (

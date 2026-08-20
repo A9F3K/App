@@ -9,6 +9,7 @@ import { ShieldIcon } from "./icons/ShieldIcon";
 import { useAuth } from "../../auth/AuthContext";
 import { useResolvedPathname } from "../useResolvedPathname";
 import { useSettingsSheet } from "../settings/SettingsContext";
+import { useMessagesChatListSearchActiveOptional } from "../messages/MessagesChatListSearchContext";
 
 const AH = layout.authenticatedHome;
 const FS = layout.floatingShield;
@@ -79,6 +80,12 @@ export function FloatingShield() {
   const showTelegramConnectStrip =
     isAuthenticatedHome && bottomBarDock === "screenFooter" && shieldOnRight;
   const { openSettingsSheet } = useSettingsSheet();
+  const chatListSearchActive = useMessagesChatListSearchActiveOptional();
+
+  // Hide while chat-list search is focused or has a query (root chrome shares the search provider).
+  if (chatListSearchActive) {
+    return null;
+  }
 
   if (showTelegramConnectStrip) {
     return null;

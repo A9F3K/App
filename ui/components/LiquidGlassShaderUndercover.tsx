@@ -26,6 +26,11 @@ type Props = {
   contentAlign?: "center" | "top";
   /** Override automatic inner inset (px); use `0` for pill layouts with explicit padding. */
   contentInsetPx?: number;
+  /**
+   * When false, the glass underlay never captures pointer events so nested inputs/buttons work
+   * (e.g. chat-list search pill). Default true for icon chips inside a Pressable.
+   */
+  capturePointerEvents?: boolean;
   children: ReactNode;
 };
 
@@ -73,6 +78,7 @@ export function LiquidGlassShaderUndercover({
   isLightTheme,
   contentAlign = "center",
   contentInsetPx,
+  capturePointerEvents = true,
   children,
 }: Props) {
   const chipWidth = width ?? size;
@@ -199,27 +205,35 @@ export function LiquidGlassShaderUndercover({
         <GLView pointerEvents="none" style={glLayerStyle} onContextCreate={onContextCreate} />
       </View>
       <View style={clip} pointerEvents="box-none" collapsable={false}>
-        <Svg
-          width={chipWidth}
-          height={chipHeight}
-          style={StyleSheet.absoluteFill}
-          pointerEvents="box-none"
-        >
-          {isCircle ? (
-            <Circle cx={chipWidth / 2} cy={chipHeight / 2} r={hitR} fill="transparent" pointerEvents="auto" />
-          ) : (
-            <Rect
-              x={0}
-              y={0}
-              width={chipWidth}
-              height={chipHeight}
-              rx={borderRadius}
-              ry={borderRadius}
-              fill="transparent"
-              pointerEvents="auto"
-            />
-          )}
-        </Svg>
+        {capturePointerEvents ? (
+          <Svg
+            width={chipWidth}
+            height={chipHeight}
+            style={StyleSheet.absoluteFill}
+            pointerEvents="box-none"
+          >
+            {isCircle ? (
+              <Circle
+                cx={chipWidth / 2}
+                cy={chipHeight / 2}
+                r={hitR}
+                fill="transparent"
+                pointerEvents="auto"
+              />
+            ) : (
+              <Rect
+                x={0}
+                y={0}
+                width={chipWidth}
+                height={chipHeight}
+                rx={borderRadius}
+                ry={borderRadius}
+                fill="transparent"
+                pointerEvents="auto"
+              />
+            )}
+          </Svg>
+        ) : null}
         <View
           style={[
             styles.foreground,

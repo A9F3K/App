@@ -23,3 +23,5 @@ ENV TDLIB_DB_ROOT=/data/tdlib
 EXPOSE 8787
 
 CMD ["npx", "tsx", "scripts/run-tdlib-gateway.ts"]
+
+# redeploy-bump 20260820194544

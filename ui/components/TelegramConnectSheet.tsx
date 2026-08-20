@@ -222,11 +222,18 @@ export function TelegramConnectSheet() {
     connectCodeDelivery?.type !== "authenticationCodeTypeTelegramMessage" ||
     Boolean(connectCodeDelivery?.nextType);
 
+  const sheetTitle = showPassword
+    ? t("messages.connectSheetPasswordTitle")
+    : showCode
+      ? t("messages.connectSheetCodeTitle")
+      : t("messages.connectSheetTitle");
+
   return (
     <AppModalSheet
       visible={connectSheetVisible}
       onClose={onClose}
-      title={t("messages.connectSheetTitle")}
+      title={sheetTitle}
+      titleEmphasis={showPassword || showCode ? "primary" : "default"}
       footer={
         <AppModalSheetBackFooter
           onClose={onClose}
@@ -337,13 +344,10 @@ export function TelegramConnectSheet() {
           <Text
             style={[
               typographyRect15,
-              appModalSheetStyles.title,
-              { color: colors.primary, marginBottom: 4, textAlign: "center" },
+              appModalSheetStyles.bodySupporting,
+              { color: colors.secondary },
             ]}
           >
-            {t("messages.connectSheetCodeTitle")}
-          </Text>
-          <Text style={[typographyRect15, appModalSheetStyles.body, { color: colors.secondary, marginBottom: 4 }]}>
             {codeDeliveryHint}
           </Text>
           <WelcomeAuthFormField
@@ -367,7 +371,7 @@ export function TelegramConnectSheet() {
             <Pressable
               accessibilityRole="button"
               onPress={onResendCode}
-              style={[appModalSheetStyles.button, { marginTop: 8, alignSelf: "center" }]}
+              style={[appModalSheetStyles.button, { marginTop: 8, alignSelf: "flex-start" }]}
               disabled={connectPending}
             >
               <Text style={[typographyFixedRow40Label, { color: colors.primary }]}>
@@ -378,7 +382,7 @@ export function TelegramConnectSheet() {
           <Pressable
             accessibilityRole="button"
             onPress={onSwitchToQr}
-            style={[appModalSheetStyles.button, { marginTop: 8, alignSelf: "center" }]}
+            style={[appModalSheetStyles.button, { marginTop: 8, alignSelf: "flex-start" }]}
             disabled={connectPending}
           >
             <Text style={[typographyFixedRow40Label, { color: colors.primary }]}>
@@ -393,13 +397,10 @@ export function TelegramConnectSheet() {
           <Text
             style={[
               typographyRect15,
-              appModalSheetStyles.title,
-              { color: colors.primary, marginBottom: 4, textAlign: "center" },
+              appModalSheetStyles.bodySupporting,
+              { color: colors.secondary },
             ]}
           >
-            {t("messages.connectSheetPasswordTitle")}
-          </Text>
-          <Text style={[typographyRect15, appModalSheetStyles.body, { color: colors.secondary, marginBottom: 4 }]}>
             {t("messages.connectSheetPasswordBody")}
           </Text>
           <WelcomeAuthFormField

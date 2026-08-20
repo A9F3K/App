@@ -1498,13 +1498,24 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   }, [chatListSearchQuery, isTelegramMessagesConnected, searchNeedle]);
 
   useEffect(() => {
-    if (!isTelegramMessagesConnected || !recentsMode) return;
+    if (!isTelegramMessagesConnected || !recentsMode) {
+      if (!recentsMode) {
+        setRecentSearchLoaded(false);
+      }
+      return;
+    }
     const controller = new AbortController();
+    setRecentSearchLoaded(false);
     void fetchTelegramChatListSearch("", controller.signal, { recent: true }).then((result) => {
       if (controller.signal.aborted) return;
-      setRecentSearchLoaded(true);
-      if (!result.ok) return;
+      if (!result.ok) {
+        if (result.error === "aborted") return;
+        setRecentSearchHits([]);
+        setRecentSearchLoaded(true);
+        return;
+      }
       setRecentSearchHits(result.chats);
+      setRecentSearchLoaded(true);
     });
     return () => {
       controller.abort();
@@ -1535,14 +1546,14 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   );
 
   const displayListItems = useMemo((): ChatListDisplayItem[] => {
+    // Search/recents use column-reverse: first array item sits nearest the search field (bottom).
     if (recentsMode) {
       const liveById = new Map(sortedChats.map((row) => [row.telegram_chat_id, row]));
-      const recentItems = recentSearchHits.map((hit) => ({
+      return recentSearchHits.map((hit) => ({
         kind: "chat" as const,
         key: `chat-${hit.chatId}`,
         row: liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit),
       }));
-      return [...recentItems].reverse();
     }
     if (!searchNeedle) {
       return sortedChats.map((row) => ({
@@ -1610,15 +1621,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       .map((hit) => liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit));
 
     const items: ChatListDisplayItem[] = [];
-    if (remoteMessageCount > 0) {
-      items.push({
-        kind: "messagesFooter",
-        key: "search-messages-footer",
-        count: remoteMessageCount,
-      });
-    }
-    for (const row of messageRows) {
-      items.push({ kind: "chat", key: `chat-msg-${row.telegram_chat_id}`, row });
+    for (const row of directRows) {
+      items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
     }
     if (globalRows.length > 0) {
       items.push({
@@ -1630,8 +1634,15 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
       }
     }
-    for (const row of directRows) {
-      items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
+    for (const row of messageRows) {
+      items.push({ kind: "chat", key: `chat-msg-${row.telegram_chat_id}`, row });
+    }
+    if (remoteMessageCount > 0) {
+      items.push({
+        kind: "messagesFooter",
+        key: "search-messages-footer",
+        count: remoteMessageCount,
+      });
     }
     return items;
   }, [
@@ -1915,6 +1926,10 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       ) : null}
       {items.map((item, index) => {
         const absoluteIndex = startIndex + index;
+        // column-reverse: first item is nearest the search field (visual bottom).
+        const isVisualBottomEdge = listSearchActive
+          ? absoluteIndex === 0
+          : absoluteIndex === displayListItems.length - 1 && !showBottomLoader;
         if (item.kind === "sectionHeader") {
           return (
             <View
@@ -1923,7 +1938,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
                 backgroundColor: colors.undercover,
                 paddingVertical: 8,
                 paddingHorizontal: layout.contentSideInsetPx,
-                marginBottom: 2,
+                marginBottom: listSearchActive ? 0 : 2,
+                marginTop: listSearchActive ? 2 : 0,
               }}
             >
               <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
@@ -1940,14 +1956,14 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
-                borderBottomWidth: listSearchActive ? 1 : 0,
-                borderTopWidth: listSearchActive ? 0 : 1,
+                borderBottomWidth: listSearchActive ? 0 : 1,
+                borderTopWidth: listSearchActive ? 1 : 0,
                 borderBottomColor: colors.highlight,
                 borderTopColor: colors.highlight,
                 paddingVertical: 10,
                 paddingHorizontal: layout.contentSideInsetPx,
-                marginTop: listSearchActive ? 0 : 2,
-                marginBottom: listSearchActive ? 2 : 0,
+                marginTop: listSearchActive ? 2 : 0,
+                marginBottom: listSearchActive ? 0 : 2,
               }}
             >
               <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
@@ -1963,7 +1979,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           <View key={item.key}>
             <MessageChatRow
               item={item.row}
-              isLast={absoluteIndex === displayListItems.length - 1 && !showBottomLoader}
+              isLast={isVisualBottomEdge}
               isActive={
                 chatSelectionEnabled &&
                 middleColumnFocus === "chat" &&
@@ -1986,10 +2002,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       {chatListVirtualWindow.enabled && chatListVirtualWindow.bottomSpacerPx > 0 ? (
         <View style={{ height: chatListVirtualWindow.bottomSpacerPx }} />
       ) : null}
-      <ChatListBottomSentinel
-        enabled={!listSearchActive && sortedChats.length > 0}
-        onNearBottom={handleChatListNearBottom}
-      />
+      {!listSearchActive ? (
+        <ChatListBottomSentinel
+          enabled={sortedChats.length > 0}
+          onNearBottom={handleChatListNearBottom}
+        />
+      ) : null}
     </>
   );
 
@@ -2002,7 +2020,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           flexDirection: "row",
           alignItems: "center",
           justifyContent: "space-between",
-          marginBottom: 6,
+          marginTop: 6,
+          marginBottom: 0,
           minHeight: 24,
         }}
       >
@@ -2114,15 +2133,17 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           listSearchActive
             ? {
                 minHeight: searchListAnchorMinHeightPx,
-                justifyContent: "flex-end",
+                // Grow upward from the search field: first result sits at the visual bottom.
+                flexDirection: "column-reverse",
+                justifyContent: "flex-start",
               }
             : null,
         ]}
         pointerEvents="box-none"
       >
-        {recentsHeader}
-        {searchEmpty}
         {renderListItems(visibleListItems, visibleChatStartIndex)}
+        {searchEmpty}
+        {recentsHeader}
       </View>
     </View>
   );

@@ -9,7 +9,7 @@ import {
   View,
   type ReactNode,
 } from "react-native";
-import { layout, typographyFixedRow40Label, typographyRect15, useColors } from "../theme";
+import { layout, typographyFixedRow40Label, typographyRect15, typographySansSemibold, useColors } from "../theme";
 import { HspScrollColumn } from "./HspScrollColumn";
 
 export const appModalSheetStyles = StyleSheet.create({
@@ -41,10 +41,24 @@ export const appModalSheetStyles = StyleSheet.create({
   },
   title: {
     marginBottom: 10,
+    textAlign: "left",
+  },
+  /** Primary sheet heading — semibold, left-aligned hierarchy. */
+  titlePrimary: {
+    marginBottom: 8,
+    textAlign: "left",
+    fontSize: 17,
+    lineHeight: 22,
   },
   body: {
     marginBottom: 12,
-    textAlign: "center",
+    textAlign: "left",
+  },
+  bodySupporting: {
+    marginBottom: 16,
+    textAlign: "left",
+    fontSize: 14,
+    lineHeight: 20,
   },
   hint: {
     marginTop: 12,
@@ -97,9 +111,18 @@ type Props = {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** Stronger left-aligned heading for single-step dialogs (e.g. 2FA password). */
+  titleEmphasis?: "default" | "primary";
 };
 
-export function AppModalSheet({ visible, onClose, title, children, footer }: Props) {
+export function AppModalSheet({
+  visible,
+  onClose,
+  title,
+  children,
+  footer,
+  titleEmphasis = "default",
+}: Props) {
   const colors = useColors();
   const { height: windowHeight } = useWindowDimensions();
 
@@ -152,7 +175,14 @@ export function AppModalSheet({ visible, onClose, title, children, footer }: Pro
               : {})}
             onStartShouldSetResponder={() => true}
           >
-            <Text style={[typographyRect15, appModalSheetStyles.title, { color: colors.primary }]}>
+            <Text
+              style={[
+                titleEmphasis === "primary"
+                  ? [typographySansSemibold, appModalSheetStyles.titlePrimary]
+                  : [typographyRect15, appModalSheetStyles.title],
+                { color: colors.primary },
+              ]}
+            >
               {title}
             </Text>
             {children}

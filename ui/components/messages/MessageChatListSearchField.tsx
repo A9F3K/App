@@ -135,6 +135,7 @@ export function MessageChatListSearchField({
             contentInsetPx={0}
             phaseOffset={0.22}
             isLightTheme={isLightTheme}
+            capturePointerEvents={false}
           >
             <View style={[styles.liquidGlassInner, { width: liquidGlassWidth, height: fieldHeightPx }]}>
               {inputNode}

@@ -161,6 +161,12 @@ export function HspScrollColumn({
   const scrollRef = useRef<ComponentRef<typeof ScrollView>>(null);
   const didInitialTopResetRef = useRef(false);
   const didInitialBottomScrollRef = useRef(false);
+  const prevInitialScrollPositionRef = useRef(initialScrollPosition);
+  if (prevInitialScrollPositionRef.current !== initialScrollPosition) {
+    prevInitialScrollPositionRef.current = initialScrollPosition;
+    didInitialTopResetRef.current = false;
+    didInitialBottomScrollRef.current = false;
+  }
   const nearTopFiredRef = useRef(false);
   const nearBottomFiredRef = useRef(false);
   const scrollMetricsRef = useRef({ layoutH: 0, contentH: 0, scrollY: 0 });

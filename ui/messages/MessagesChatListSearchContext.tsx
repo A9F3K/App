@@ -2,10 +2,8 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useState,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 
@@ -23,36 +21,13 @@ const MessagesChatListSearchContext = createContext<MessagesChatListSearchContex
   null,
 );
 
-/** Global snapshot for chrome outside the provider tree (e.g. footer strip in `_layout`). */
-let listSearchActiveExternal = false;
-const listSearchActiveListeners = new Set<() => void>();
-
-function setListSearchActiveExternal(next: boolean): void {
-  if (listSearchActiveExternal === next) return;
-  listSearchActiveExternal = next;
-  for (const listener of listSearchActiveListeners) {
-    listener();
-  }
-}
-
-export function subscribeMessagesChatListSearchActive(listener: () => void): () => void {
-  listSearchActiveListeners.add(listener);
-  return () => {
-    listSearchActiveListeners.delete(listener);
-  };
-}
-
-export function getMessagesChatListSearchActiveSnapshot(): boolean {
-  return listSearchActiveExternal;
-}
-
-/** Safe outside `MessagesChatListSearchProvider` — returns false when inactive. */
+/**
+ * Safe outside `MessagesChatListSearchProvider` — returns false when inactive.
+ * Provider must wrap both the messages UI and root chrome (FloatingShield / footer strip).
+ */
 export function useMessagesChatListSearchActiveOptional(): boolean {
-  return useSyncExternalStore(
-    subscribeMessagesChatListSearchActive,
-    getMessagesChatListSearchActiveSnapshot,
-    () => false,
-  );
+  const ctx = useContext(MessagesChatListSearchContext);
+  return ctx?.listSearchActive ?? false;
 }
 
 export function MessagesChatListSearchProvider({ children }: { children: ReactNode }) {
@@ -65,11 +40,6 @@ export function MessagesChatListSearchProvider({ children }: { children: ReactNo
   }, []);
 
   const listSearchActive = chatListSearchFocused || chatListSearchQuery.trim().length > 0;
-
-  useEffect(() => {
-    setListSearchActiveExternal(listSearchActive);
-    return () => setListSearchActiveExternal(false);
-  }, [listSearchActive]);
 
   const value = useMemo(
     () => ({

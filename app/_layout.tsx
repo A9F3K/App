@@ -25,6 +25,7 @@ import { BottomBarLayoutProvider, useBottomBarLayout } from "../ui/components/Bo
 import { FloatingShield } from "../ui/components/FloatingShield";
 import { TelegramConnectFooterStrip } from "../ui/components/TelegramConnectFooterStrip";
 import { TelegramMessagesConnectionProvider } from "../ui/telegram/TelegramMessagesConnectionContext";
+import { MessagesChatListSearchProvider } from "../ui/messages/MessagesChatListSearchContext";
 import { SettingsProvider } from "../ui/settings/SettingsContext";
 import { ProfileProvider } from "../ui/profile/ProfileContext";
 import { WelcomeEmailAuthProvider } from "../ui/welcome/WelcomeEmailAuthContext";
@@ -99,6 +100,7 @@ export default function RootLayout() {
             <ProfileProvider>
             <BottomBarLayoutProvider>
             <TonConnectProvider>
+            <MessagesChatListSearchProvider>
             {Platform.OS === "ios" ? (
               <KeyboardAvoidingView
                 style={styles.keyboardAvoid}
@@ -110,6 +112,7 @@ export default function RootLayout() {
             ) : (
               <RootContent />
             )}
+            </MessagesChatListSearchProvider>
             </TonConnectProvider>
             </BottomBarLayoutProvider>
             </ProfileProvider>

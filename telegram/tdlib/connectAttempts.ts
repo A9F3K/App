@@ -1357,7 +1357,7 @@ export async function hydrateChatSearchHitsForUser(
   return [...collected.values()];
 }
 
-/** Empty-query recents (`searchChats` with query "" — recently found/opened chats). */
+/** Empty-query recents — TDLib `searchRecentlyFoundChats` (search history), not all known chats. */
 export async function searchRecentlyFoundChatsForUser(
   telegramUsername: string,
   limit = 50,
@@ -1367,7 +1367,7 @@ export async function searchRecentlyFoundChatsForUser(
   let chatIds: number[] = [];
   try {
     const result = (await record.client.invoke({
-      _: "searchChats",
+      _: "searchRecentlyFoundChats",
       query: "",
       limit,
     })) as { chat_ids?: number[] };
@@ -1376,6 +1376,7 @@ export async function searchRecentlyFoundChatsForUser(
       .filter((id) => Number.isFinite(id) && id !== 0)
       .map((id) => Math.trunc(id));
   } catch {
+    // Older TDLib / transient: fall back to empty rather than dumping all known chats.
     return [];
   }
   return hydrateChatSearchHitsForUser(telegramUsername, chatIds);

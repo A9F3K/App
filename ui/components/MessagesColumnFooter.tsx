@@ -12,12 +12,15 @@ import {
 } from "react-native";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
+import { useSettingsSheet } from "../settings/SettingsContext";
 import { layout, typographyFixedRow40Label, useColors } from "../theme";
-import { BottomBarHeightReporter, useBottomBarLayout } from "./BottomBarLayoutContext";
+import { useBottomBarLayout } from "./BottomBarLayoutContext";
 import { useTelegram } from "./Telegram";
 import { useAuth } from "../../auth/AuthContext";
 import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConnectionContext";
 import { MenuHamburgerIcon } from "./icons/MenuHamburgerIcon";
+import { SettingsIcon } from "./icons/SettingsIcon";
+import { ShieldIcon } from "./icons/ShieldIcon";
 import { TelegramLogoIcon } from "./icons/TelegramLogoIcon";
 import { LiquidGlassShaderUndercover } from "./LiquidGlassShaderUndercover";
 import { MessageChatListSearchField } from "./messages/MessageChatListSearchField";
@@ -38,17 +41,31 @@ const MENU_BTN_PX = 30;
 const LIQUID_GLASS_CHIP_PX = 40;
 const LIQUID_GLASS_PILL_HEIGHT_PX = 40;
 const MENU_SEARCH_GAP_PX = 10;
+const SHIELD_ICON_WIDTH_PX = 20;
+const SHIELD_ICON_HEIGHT_PX = 22;
+const SETTINGS_ICON_SIZE_PX = 20;
 
 type Props = {
   /** When false, only the menu button is shown (search hidden). */
   showSearch?: boolean;
 };
 
-function ColumnFooterChrome({ children }: { children: ReactNode }) {
+function ColumnFooterChrome({
+  children,
+  /** Transparent chrome so liquid-glass chips overlay the chat list (narrow home). */
+  overlayContent = false,
+}: {
+  children: ReactNode;
+  overlayContent?: boolean;
+}) {
   const colors = useColors();
   const { themeBgReady, isInTelegram, layoutStartup } = useTelegram();
   const { footerDockedToScreenEdge } = useBottomBarLayout();
-  const backgroundColor = themeBgReady ? colors.background : "transparent";
+  const backgroundColor = overlayContent
+    ? "transparent"
+    : themeBgReady
+      ? colors.background
+      : "transparent";
   const topBorderColor = colors.highlight;
   const hideBottomBorder =
     (isInTelegram && !layoutStartup.isTelegramMiniAppDesktop) || !footerDockedToScreenEdge;
@@ -59,18 +76,22 @@ function ColumnFooterChrome({ children }: { children: ReactNode }) {
         styles.wrapper,
         {
           backgroundColor,
-          borderTopWidth: 1,
+          borderTopWidth: overlayContent ? 0 : 1,
           borderTopColor: topBorderColor,
-          borderBottomWidth: hideBottomBorder ? 0 : 1,
+          borderBottomWidth: hideBottomBorder || overlayContent ? 0 : 1,
           borderBottomColor: topBorderColor,
         },
       ]}
+      pointerEvents="box-none"
     >
-      <BottomBarHeightReporter height={BAR_HEIGHT} />
-      <View style={[styles.container, { height: BAR_HEIGHT, backgroundColor }]}>
+      {/* Do not report height here — GlobalBottomBar owns screen-edge barHeight. */}
+      <View
+        style={[styles.container, { height: BAR_HEIGHT, backgroundColor }]}
+        pointerEvents="box-none"
+      >
         {children}
       </View>
-      {!hideBottomBorder ? (
+      {!hideBottomBorder && !overlayContent ? (
         <View style={[styles.bottomDivider, { backgroundColor: topBorderColor }]} />
       ) : null}
     </View>
@@ -119,7 +140,7 @@ function ConnectTelegramFooterButton({
 
   if (narrow) {
     return (
-      <ColumnFooterChrome>
+      <ColumnFooterChrome overlayContent>
         {Platform.OS !== "web" ? (
           <Text
             key={label}
@@ -133,7 +154,7 @@ function ConnectTelegramFooterButton({
         <View onLayout={onRowLayout} style={[styles.row, { height: BAR_HEIGHT, justifyContent: "center" }]}>
           {pillWidth > 0 ? (
             <Pressable accessibilityRole="button" onPress={onPress} style={styles.connectPillPressable}>
-              <LiquidGlassShaderUndercover
+                <LiquidGlassShaderUndercover
                 key={`${label}-${pillWidth}`}
                 shape="pill"
                 width={pillWidth}
@@ -141,6 +162,7 @@ function ConnectTelegramFooterButton({
                 contentInsetPx={0}
                 phaseOffset={0.22}
                 isLightTheme={isLightTheme}
+                capturePointerEvents={false}
               >
                 <View style={[styles.connectPillContent, { width: pillWidth }]}>
                   <View style={styles.connectPillLogo}>
@@ -179,8 +201,8 @@ function ConnectTelegramFooterButton({
 }
 
 /**
- * Left-column footer: menu chip + optional messages search field (wide), or liquid-glass menu + search (single column).
- * When Telegram is disconnected, shows Connect Telegram instead of menu/search.
+ * Left-column footer: menu + search (wide), or liquid-glass Menu → Settings → Shield → Search (narrow).
+ * When Telegram is disconnected, shows Connect Telegram instead.
  */
 export function MessagesColumnFooter({ showSearch = true }: Props) {
   const colors = useColors();
@@ -188,17 +210,21 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
   const { width: windowWidth } = useWindowDimensions();
   const { sessionTelegramMessagesConnected } = useAuth();
   const { isTelegramMessagesConnected, openConnectSheet } = useTelegramMessagesConnection();
+  const { openSettingsSheet } = useSettingsSheet();
   const {
     chatListSearchQuery,
     setChatListSearchQuery,
     chatListSearchFocused,
     setChatListSearchFocused,
     dismissChatListSearch,
+    listSearchActive,
   } = useMessagesChatListSearch();
   const [menuOpen, setMenuOpen] = useState(false);
 
   const isNarrow = windowWidth <= layout.authenticatedHome.firstBreakpoint;
   const isLightTheme = colors.primary === "#000000";
+  const powerColor = isLightTheme ? "#000000" : "#FFFFFF";
+  const searchExpanded = isNarrow && listSearchActive;
 
   if (!isTelegramMessagesConnected && sessionTelegramMessagesConnected !== true) {
     return (
@@ -217,7 +243,12 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
       onPress={() => setMenuOpen(true)}
       style={styles.liquidGlassChipPressable}
     >
-      <LiquidGlassShaderUndercover size={LIQUID_GLASS_CHIP_PX} phaseOffset={0.41} isLightTheme={isLightTheme}>
+      <LiquidGlassShaderUndercover
+        size={LIQUID_GLASS_CHIP_PX}
+        phaseOffset={0.41}
+        isLightTheme={isLightTheme}
+        capturePointerEvents={false}
+      >
         <MenuHamburgerIcon color={colors.secondary} size={13} />
       </LiquidGlassShaderUndercover>
     </Pressable>
@@ -240,29 +271,81 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
     </Pressable>
   );
 
+  const settingsButton = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t("settings.sheetTitle")}
+      onPress={openSettingsSheet}
+      style={styles.liquidGlassChipPressable}
+    >
+      <LiquidGlassShaderUndercover
+        size={LIQUID_GLASS_CHIP_PX}
+        phaseOffset={0.08}
+        isLightTheme={isLightTheme}
+        capturePointerEvents={false}
+      >
+        <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
+      </LiquidGlassShaderUndercover>
+    </Pressable>
+  );
+
+  const shieldChip = (
+    <View style={styles.liquidGlassChipPressable} pointerEvents="none">
+      <LiquidGlassShaderUndercover
+        size={LIQUID_GLASS_CHIP_PX}
+        phaseOffset={0.41}
+        isLightTheme={isLightTheme}
+        capturePointerEvents={false}
+      >
+        <ShieldIcon
+          powerColor={powerColor}
+          width={SHIELD_ICON_WIDTH_PX}
+          height={SHIELD_ICON_HEIGHT_PX}
+        />
+      </LiquidGlassShaderUndercover>
+    </View>
+  );
+
+  const searchField = showSearch ? (
+    <View style={{ flex: 1, minWidth: 0 }}>
+      <MessageChatListSearchField
+        value={chatListSearchQuery}
+        onChangeText={setChatListSearchQuery}
+        onFocus={() => setChatListSearchFocused(true)}
+        onBlur={() => setChatListSearchFocused(false)}
+        onDismiss={dismissChatListSearch}
+        showClear={chatListSearchFocused || chatListSearchQuery.trim().length > 0}
+        placeholder={t("messages.search.placeholder")}
+        clearAccessibilityLabel={t("messages.search.clear")}
+        marginBottomPx={0}
+        variant={isNarrow ? "liquidGlass" : "undercover"}
+        isLightTheme={isLightTheme}
+      />
+    </View>
+  ) : (
+    <View style={{ flex: 1, minWidth: 0 }} />
+  );
+
   return (
     <>
-      <ColumnFooterChrome>
+      <ColumnFooterChrome overlayContent={isNarrow}>
         <View style={[styles.row, { height: BAR_HEIGHT, gap: MENU_SEARCH_GAP_PX }]}>
-          {menuButton}
-          {showSearch ? (
-            <View style={{ flex: 1, minWidth: 0 }}>
-              <MessageChatListSearchField
-                value={chatListSearchQuery}
-                onChangeText={setChatListSearchQuery}
-                onFocus={() => setChatListSearchFocused(true)}
-                onBlur={() => setChatListSearchFocused(false)}
-                onDismiss={dismissChatListSearch}
-                showClear={chatListSearchFocused || chatListSearchQuery.trim().length > 0}
-                placeholder={t("messages.search.placeholder")}
-                clearAccessibilityLabel={t("messages.search.clear")}
-                marginBottomPx={0}
-                variant={isNarrow ? "liquidGlass" : "undercover"}
-                isLightTheme={isLightTheme}
-              />
-            </View>
+          {isNarrow ? (
+            searchExpanded ? (
+              searchField
+            ) : (
+              <>
+                {menuButton}
+                {settingsButton}
+                {shieldChip}
+                {searchField}
+              </>
+            )
           ) : (
-            <View style={{ flex: 1, minWidth: 0 }} />
+            <>
+              {menuButton}
+              {searchField}
+            </>
           )}
         </View>
       </ColumnFooterChrome>

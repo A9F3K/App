@@ -121,6 +121,8 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   const warmupInFlightRef = useRef(false);
   const reconnectInFlightRef = useRef(false);
   const wasTelegramConnectedRef = useRef(false);
+  /** After status confirms DB link is gone, back off silent warmup (avoids 403 spam loops). */
+  const notConnectedBackoffUntilRef = useRef(0);
 
   const bumpEmojiFetchEpoch = useCallback(() => {
     resetTelegramEmojiFetchCaches();
@@ -178,6 +180,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
 
   const silentWarmupSession = useCallback(async () => {
     if (warmupInFlightRef.current) return;
+    if (Date.now() < notConnectedBackoffUntilRef.current) return;
     warmupInFlightRef.current = true;
     logTelegramConnect("silent_warmup_start");
     try {
@@ -217,10 +220,21 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
           return;
         }
         if (response.status === 403 && json.error === "not_connected") {
+          // Session cookie still says linked — refresh status once; do not spam warmup.
           if (sessionTelegramMessagesConnected === true && attempt + 1 < maxAttempts) {
-            await new Promise((resolve) => setTimeout(resolve, 800));
-            continue;
+            const stillLinked = await refreshStatusInner();
+            if (stillLinked) {
+              await new Promise((resolve) => setTimeout(resolve, 800));
+              continue;
+            }
+            logTelegramConnect("silent_warmup_not_connected_confirmed", {
+              attempt: attempt + 1,
+            });
+            notConnectedBackoffUntilRef.current = Date.now() + 60_000;
+            setConnected(false);
+            return;
           }
+          notConnectedBackoffUntilRef.current = Date.now() + 60_000;
           setConnected(false);
           return;
         }
@@ -229,6 +243,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
           return;
         }
         if (json.gatewayReady) {
+          notConnectedBackoffUntilRef.current = 0;
           setConnected(true);
           logPageDisplay("telegram_messages_gateway_ready");
           void import("../authenticatedHomeSelectedChat").then(({ getAuthenticatedHomeSelectedChatSnapshot }) => {
@@ -250,6 +265,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
           continue;
         }
         if (json.connected !== false) {
+          notConnectedBackoffUntilRef.current = 0;
           setConnected(true);
         }
         return;
@@ -260,7 +276,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     } finally {
       warmupInFlightRef.current = false;
     }
-  }, [sessionTelegramMessagesConnected]);
+  }, [refreshStatusInner, sessionTelegramMessagesConnected]);
 
   const applyConnectSnapshot = useCallback(
     (json: {
