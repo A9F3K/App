@@ -177,9 +177,8 @@ export function AuthenticatedHomeLeftNavStrip({
         : layoutIsWide
           ? 0
           : AH.leftNavStripMarginTopPx;
-  /** Bottom hairline: only after `firstBreakpoint`, and only when the split is actually multi-column. */
-  const showBottomMenuRule =
-    layoutIsWide && (chromeFromSplit ? splitMetrics.columnCount >= 2 : true);
+  /** Bottom hairline under Feed/Messages/… — full strip width in every layout (music-bar track). */
+  const showBottomMenuRule = true;
 
   const fadeGradientIdRight = useId().replace(/[^a-zA-Z0-9_-]/g, "_");
   const fadeGradientIdLeft = useId().replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -203,10 +202,8 @@ export function AuthenticatedHomeLeftNavStrip({
   const lineT = menuStripRuleThickness();
   /** Edge fades; matches `contentSideInsetPx` (15px) in theme. */
   const fadeW = AH.leftNavStripRightFadeWidthPx;
-  const scrollbarGapAboveBorder = AH.leftNavStripScrollbarAboveBorderPx;
-  const thumbBottomSnapped = snapToPixelGrid(
-    (showBottomMenuRule ? lineT : 0) + scrollbarGapAboveBorder,
-  );
+  /** Thumb sits on the divider (music seek bar), not above it. */
+  const thumbBottomSnapped = 0;
 
   const onOuterLayout = useCallback((e: LayoutChangeEvent) => {
     setOuterW(Math.round(e.nativeEvent.layout.width));
@@ -450,10 +447,10 @@ export function AuthenticatedHomeLeftNavStrip({
     return {
       width: thumbSnapW,
       height: lineT,
-      backgroundColor: colors.accent,
+      backgroundColor: colors.primary,
       ...(Platform.OS === "web" ? ({ willChange: "transform" } as ViewStyle) : null),
     };
-  }, [showScrollbar, thumbW, thumbSnapW, colors.accent, lineT]);
+  }, [showScrollbar, thumbW, thumbSnapW, colors.primary, lineT]);
 
   const labelStyle = (active: boolean) => ({
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
@@ -635,7 +632,7 @@ export function AuthenticatedHomeLeftNavStrip({
       bottomRuleColorRole: "colors.highlight",
       scrollbarTrackVisible: showScrollbar,
       scrollbarThumbBottomOffsetPx: thumbBottomSnapped,
-      scrollbarGapAboveBorderThemePx: scrollbarGapAboveBorder,
+      scrollbarGapAboveBorderThemePx: AH.leftNavStripScrollbarAboveBorderPx,
       platform: Platform.OS,
       devicePixelRatio: dpr,
       alignmentChange: alignmentEvent,
@@ -659,7 +656,6 @@ export function AuthenticatedHomeLeftNavStrip({
     showScrollbar,
     lineT,
     thumbBottomSnapped,
-    scrollbarGapAboveBorder,
     chromeFromSplit,
     splitMetrics,
   ]);

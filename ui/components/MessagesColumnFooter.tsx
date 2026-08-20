@@ -201,7 +201,8 @@ function ConnectTelegramFooterButton({
 }
 
 /**
- * Left-column footer: menu + search (wide), or liquid-glass Menu → Settings → Shield → Search (narrow).
+ * Left-column footer: menu + search; wide also places Settings + Shield after search.
+ * Narrow uses FloatingShield for Settings/Shield so the search field keeps width.
  * When Telegram is disconnected, shows Connect Telegram instead.
  */
 export function MessagesColumnFooter({ showSearch = true }: Props) {
@@ -271,43 +272,47 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
     </Pressable>
   );
 
-  const settingsButton = (
+  const settingsButtonWide = (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={t("settings.sheetTitle")}
       onPress={openSettingsSheet}
-      style={styles.liquidGlassChipPressable}
+      style={({ pressed }) => ({
+        width: MENU_BTN_PX,
+        height: MENU_BTN_PX,
+        backgroundColor: colors.undercover,
+        alignItems: "center",
+        justifyContent: "center",
+        opacity: pressed ? 0.75 : 1,
+        flexShrink: 0,
+      })}
     >
-      <LiquidGlassShaderUndercover
-        size={LIQUID_GLASS_CHIP_PX}
-        phaseOffset={0.08}
-        isLightTheme={isLightTheme}
-        capturePointerEvents={false}
-      >
-        <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
-      </LiquidGlassShaderUndercover>
+      <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
     </Pressable>
   );
 
-  const shieldChip = (
-    <View style={styles.liquidGlassChipPressable} pointerEvents="none">
-      <LiquidGlassShaderUndercover
-        size={LIQUID_GLASS_CHIP_PX}
-        phaseOffset={0.41}
-        isLightTheme={isLightTheme}
-        capturePointerEvents={false}
-      >
-        <ShieldIcon
-          powerColor={powerColor}
-          width={SHIELD_ICON_WIDTH_PX}
-          height={SHIELD_ICON_HEIGHT_PX}
-        />
-      </LiquidGlassShaderUndercover>
+  const shieldChipWide = (
+    <View
+      style={{
+        width: MENU_BTN_PX,
+        height: MENU_BTN_PX,
+        backgroundColor: colors.undercover,
+        alignItems: "center",
+        justifyContent: "center",
+        flexShrink: 0,
+      }}
+      pointerEvents="none"
+    >
+      <ShieldIcon
+        powerColor={powerColor}
+        width={SHIELD_ICON_WIDTH_PX}
+        height={SHIELD_ICON_HEIGHT_PX}
+      />
     </View>
   );
 
   const searchField = showSearch ? (
-    <View style={{ flex: 1, minWidth: 0 }}>
+    <View style={{ flex: 1, minWidth: isNarrow ? 96 : 0 }}>
       <MessageChatListSearchField
         value={chatListSearchQuery}
         onChangeText={setChatListSearchQuery}
@@ -336,8 +341,6 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
             ) : (
               <>
                 {menuButton}
-                {settingsButton}
-                {shieldChip}
                 {searchField}
               </>
             )
@@ -345,6 +348,8 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
             <>
               {menuButton}
               {searchField}
+              {settingsButtonWide}
+              {shieldChipWide}
             </>
           )}
         </View>

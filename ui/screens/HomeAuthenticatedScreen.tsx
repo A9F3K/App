@@ -1659,7 +1659,11 @@ function HomeAuthenticatedScreenMain() {
   const homeLeftColumn = (
     <>
       {isWideHome ? homeLeftNavStrip : null}
-      {!isWideHome ? homeHeaderRow : null}
+      {!isWideHome ? (
+        <View style={{ paddingTop: layout.authenticatedHome.contentInsetTop, width: "100%" }}>
+          {homeHeaderRow}
+        </View>
+      ) : null}
       {!isWideHome ? homeLeftNavStrip : null}
       {homeLeftScrollShell(
         <HspScrollColumn

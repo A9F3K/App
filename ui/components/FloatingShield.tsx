@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
-import { authenticatedHomeBottomBarDock, layout, useColors } from "../theme";
+import { layout, useColors } from "../theme";
 import { useBottomBarLayout } from "./BottomBarLayoutContext";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { LiquidGlassShaderUndercover } from "./LiquidGlassShaderUndercover";
@@ -68,7 +68,6 @@ export function FloatingShield() {
   const { width: windowWidth } = useWindowDimensions();
   const pathname = useResolvedPathname();
   const { isAuthenticated } = useAuth();
-  const bottomBarDock = authenticatedHomeBottomBarDock(pathname, windowWidth, isAuthenticated);
   /** Match authenticated home: narrow / welcome-style width keeps the stack on the right; wide moves it to the left. */
   const shieldOnRight = windowWidth <= AH.firstBreakpoint;
   const { barHeight: bottomBarHeight, footerDockedToScreenEdge } = useBottomBarLayout();
@@ -77,8 +76,8 @@ export function FloatingShield() {
 
   const isAuthenticatedHome =
     isAuthenticated && (pathname === "/" || pathname === "" || pathname == null);
-  const showTelegramConnectStrip =
-    isAuthenticatedHome && bottomBarDock === "screenFooter" && shieldOnRight;
+  /** Wide authenticated home: Settings + Shield live in the messages column footer (right of search). */
+  const iconsInMessagesColumnFooter = isAuthenticatedHome && !shieldOnRight;
   const { openSettingsSheet } = useSettingsSheet();
   const chatListSearchActive = useMessagesChatListSearchActiveOptional();
 
@@ -87,7 +86,7 @@ export function FloatingShield() {
     return null;
   }
 
-  if (showTelegramConnectStrip) {
+  if (iconsInMessagesColumnFooter) {
     return null;
   }
 

@@ -292,7 +292,11 @@ export const layout = {
     /**
      * Left column top nav strip: gap (px) between the horizontal scroll thumb and the bottom rule (strip width).
      */
-    leftNavStripScrollbarAboveBorderPx: 3,
+    /**
+     * Gap (px) between the Feed/Messages/… horizontal scroll thumb and the strip bottom hairline.
+     * `0` = thumb overlays the divider (music progress-bar style).
+     */
+    leftNavStripScrollbarAboveBorderPx: 0,
     /** Left column nav strip: width (px) of each horizontal edge fade (15px; mirrors `contentSideInsetPx`). */
     leftNavStripRightFadeWidthPx: contentSideInsetPx,
     /** Vertical scroll thumb layer inside {@link HspScrollColumn}; above {@link splitPaneDividerOverlayZIndex} at column seams. */

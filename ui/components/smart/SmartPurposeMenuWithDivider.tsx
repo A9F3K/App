@@ -90,7 +90,6 @@ export function SmartPurposeMenuWithDivider({
 }: Props) {
   const colors = useColors();
   const lineT = ruleThicknessPx();
-  const scrollGapAboveLinePx = layout.authenticatedHome.leftNavStripScrollbarAboveBorderPx;
   const contentInset = layout.contentSideInsetPx;
   const menuPaddingPx = MENU_SCROLL_PADDING_PX;
   const menuPaddingTotalPx = menuPaddingPx * 2;
@@ -161,7 +160,8 @@ export function SmartPurposeMenuWithDivider({
   );
   const thumbSnapLeft = snapScrollIndicatorCoordPx(thumbLeft);
   const thumbSnapW = Math.max(1, snapScrollIndicatorCoordPx(thumbW));
-  const thumbBottomPx = snapScrollIndicatorCoordPx(lineT + scrollGapAboveLinePx);
+  /** Overlay the divider track (music progress style), not a gap above it. */
+  const thumbBottomPx = 0;
 
   const scrollContentContainerStyle = useMemo(
     (): ViewStyle => ({
@@ -398,51 +398,53 @@ export function SmartPurposeMenuWithDivider({
       <View style={{ position: "relative", width: "100%", alignSelf: "stretch" }}>
         <View style={{ height: gapAboveDividerPx }} />
 
-        {showScrollbar ? (
-          <View
-            style={{
-              position: "absolute",
-              left: -contentInset,
-              right: -contentInset,
-              bottom: thumbBottomPx,
-              paddingHorizontal: overflowLinePaddingPx,
-              zIndex: 1,
-              pointerEvents: "box-none",
-            }}
-          >
+        <View style={{ position: "relative", width: "100%", alignSelf: "stretch" }}>
+          <SmartGradientDivider
+            variant={fits ? "gradient" : "solid"}
+            horizontalPaddingPx={fits ? 0 : overflowLinePaddingPx}
+          />
+
+          {showScrollbar ? (
             <View
-              onLayout={onTrackLayout}
               style={{
-                height: lineT,
-                overflow: "visible",
+                position: "absolute",
+                left: -contentInset,
+                right: -contentInset,
+                bottom: thumbBottomPx,
+                paddingHorizontal: overflowLinePaddingPx,
+                zIndex: 1,
+                pointerEvents: "box-none",
               }}
             >
-              <ScrollIndicatorDragHandle
-                axis="horizontal"
-                trackSpan={scrollTrackWidth}
-                thumbSpan={thumbSnapW}
-                thumbOffset={thumbSnapLeft}
-                scrollRange={scrollRange}
-                onScrollTo={scrollToX}
-                crossAxisVisualSpan={lineT}
+              <View
+                onLayout={onTrackLayout}
+                style={{
+                  height: lineT,
+                  overflow: "visible",
+                }}
               >
-                <View
-                  style={{
-                    width: thumbSnapW,
-                    height: lineT,
-                    backgroundColor: colors.accent,
-                    ...(Platform.OS === "web" ? ({ willChange: "transform" } as ViewStyle) : null),
-                  }}
-                />
-              </ScrollIndicatorDragHandle>
+                <ScrollIndicatorDragHandle
+                  axis="horizontal"
+                  trackSpan={scrollTrackWidth}
+                  thumbSpan={thumbSnapW}
+                  thumbOffset={thumbSnapLeft}
+                  scrollRange={scrollRange}
+                  onScrollTo={scrollToX}
+                  crossAxisVisualSpan={lineT}
+                >
+                  <View
+                    style={{
+                      width: thumbSnapW,
+                      height: lineT,
+                      backgroundColor: colors.primary,
+                      ...(Platform.OS === "web" ? ({ willChange: "transform" } as ViewStyle) : null),
+                    }}
+                  />
+                </ScrollIndicatorDragHandle>
+              </View>
             </View>
-          </View>
-        ) : null}
-
-        <SmartGradientDivider
-          variant={fits ? "gradient" : "solid"}
-          horizontalPaddingPx={fits ? 0 : overflowLinePaddingPx}
-        />
+          ) : null}
+        </View>
       </View>
     </>
   );
