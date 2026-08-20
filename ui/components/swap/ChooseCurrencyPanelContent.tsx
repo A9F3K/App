@@ -19,6 +19,7 @@ import { useAuthenticatedHomeSplitLayoutMetrics } from "../AuthenticatedHomeSpli
 import { ChooseCurrencySubheader } from "./ChooseCurrencySubheader";
 import { ChooseCurrencyTable } from "./ChooseCurrencyTable";
 import { SwapDealActionRow } from "./SwapDealActionRow";
+import { SmartGradientDivider } from "../smart/SmartGradientDivider";
 import type { ChooseCurrencyRow } from "./chooseCurrencyTableTypes";
 
 type Props = {
@@ -100,15 +101,17 @@ export function ChooseCurrencyPanelContent({
         />
       </View>
       {showInlineDealAction ? (
-        <View
-          style={{
-            width: "100%",
-            paddingVertical: 15,
-            paddingHorizontal: contentInset,
-            ...scrollShellBleed,
-          }}
-        >
-          <SwapDealActionRow density="compact" />
+        <View style={{ width: "100%", alignSelf: "stretch" }}>
+          {/* Same rule as under the currencies table column legend. */}
+          <SmartGradientDivider />
+          <View
+            style={{
+              width: "100%",
+              paddingVertical: 15,
+            }}
+          >
+            <SwapDealActionRow density="compact" />
+          </View>
         </View>
       ) : null}
     </View>

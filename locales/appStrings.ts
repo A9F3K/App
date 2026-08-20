@@ -41,6 +41,9 @@ const en = {
   "ai.search.emptyList":
     "1. Analise messages and social messages\n2. Conduct smart decisions while trading or swaping\n3.Delegate actions to the program",
   "ai.search.emptyTryPrompts": "Try this prompts:",
+  "ai.agents.newAgent": "New Agent",
+  "ai.agents.addTab": "New agent",
+  "ai.agents.closeTab": "Close agent",
 
   "common.back": "Back",
   "common.close": "Close",
@@ -546,6 +549,9 @@ const ru = {
   "ai.search.emptyList":
     "1. Анализируй сообщения и посты в соцсетях\n2. Принимай умные решения при торговле и обмене\n3. Автоматизируй действия в программе",
   "ai.search.emptyTryPrompts": "Попробуй эти промпты:",
+  "ai.agents.newAgent": "Новый агент",
+  "ai.agents.addTab": "Новый агент",
+  "ai.agents.closeTab": "Закрыть агента",
 
   "common.back": "Назад",
   "common.close": "Закрыть",
@@ -1051,6 +1057,9 @@ const zh = {
   "ai.search.emptyIntro": "AI 与搜索将协助你完成程序中的一切操作。",
   "ai.search.emptyList": "1. 分析消息与社交内容\n2. 在交易或兑换时做出更聪明的决策\n3. 将操作委托给程序执行",
   "ai.search.emptyTryPrompts": "试试这些提示：",
+  "ai.agents.newAgent": "新代理",
+  "ai.agents.addTab": "新建代理",
+  "ai.agents.closeTab": "关闭代理",
   "common.back": "返回",
   "common.close": "关闭",
   "common.debug": "调试",

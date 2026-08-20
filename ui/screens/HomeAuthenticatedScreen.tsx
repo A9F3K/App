@@ -729,10 +729,10 @@ function HomeAuthenticatedScreenMain() {
       router.replace("/" as any);
     }
   }, [isWideHome, pathname, router]);
-  const { draftText, barHeight: bottomBarHeight, footerDockedToScreenEdge } = useBottomBarLayout();
+  const { barHeight: bottomBarHeight, footerDockedToScreenEdge } = useBottomBarLayout();
   const embeddedAiBar = aiBarDock === "screenFooter" ? null : <GlobalBottomBar />;
   const aiSearchColumnContent =
-    aiBarDock === "splitColumn3" && draftText.trim().length === 0 ? <AiSearchColumnEmptyState /> : null;
+    aiBarDock === "splitColumn3" ? <AiSearchColumnEmptyState /> : null;
   const mainColumnFooter = <MessagesColumnFooter showSearch={homeNavIndex === 1} />;
   const swapColumnFooter = <SwapColumnFooter />;
   const sendColumnFooter = <SendColumnInactiveFooter />;
@@ -1529,25 +1529,29 @@ function HomeAuthenticatedScreenMain() {
   /** Compact: vertical chrome insets scroll with the main column. */
   const homeCompactScrollContentStyle = {
     flexGrow: 0,
-    paddingTop: layout.authenticatedHome.contentInsetTop,
+    // Header/nav are pinned above the scroll in one-column mode — no extra top inset here.
+    paddingTop: 0,
     paddingBottom:
       layout.authenticatedHome.contentInsetBottom +
-      (!isWideHome ? layout.bottomBar.barMinHeight * 2 : 0),
-    ...(messagesSearchScrollMode ? { flexGrow: 1 as const } : {}),
+      (!isWideHome
+        ? // Messages footer + AI bar overlay the scroll; keep last rows clear of both.
+          layout.bottomBar.barMinHeight * 2
+        : 0),
+    // Do not flexGrow during search — that stretched the list and left a large gap
+    // between results and the search field.
   } as const;
   const homeLeftScrollContentStyle = isWideHome
     ? {
         ...homeWideScrollContentStyle,
-        ...(messagesSearchScrollMode ? { flexGrow: 1 as const } : {}),
       }
     : homeCompactScrollContentStyle;
 
   const homeMainColumnBlocks = (
     <>
-      <AuthenticatedHomePersistedPanelSlot active={homeNavIndex === 0}>
+      <AuthenticatedHomePersistedPanelSlot active={homeNavIndex === 0} fillActive={!messagesSearchScrollMode}>
         <AuthenticatedHomeFeedPanel colors={colors} scrollable={false} />
       </AuthenticatedHomePersistedPanelSlot>
-      <AuthenticatedHomePersistedPanelSlot active={homeNavIndex === 1}>
+      <AuthenticatedHomePersistedPanelSlot active={homeNavIndex === 1} fillActive={!messagesSearchScrollMode}>
         <AuthenticatedHomeMessagesPanel colors={colors} scrollable={false} />
       </AuthenticatedHomePersistedPanelSlot>
       {flowError ? (
@@ -1648,14 +1652,15 @@ function HomeAuthenticatedScreenMain() {
   );
 
   /**
-   * Keep feed/messages panels on a stable tree path across wide↔narrow so chat
-   * state does not remount/clear when the first breakpoint flips (one-column mode).
-   * Compact header/nav stay as reserved siblings (hidden when wide) so panel fibers
-   * keep the same index.
+   * Compact: pin wallet header + nav above the scroll so search results move under them.
+   * Wide: nav pinned beside the scroll; panels stay the sole scroll child so wide↔narrow
+   * does not remount feed/messages state.
    */
   const homeLeftColumn = (
     <>
       {isWideHome ? homeLeftNavStrip : null}
+      {!isWideHome ? homeHeaderRow : null}
+      {!isWideHome ? homeLeftNavStrip : null}
       {homeLeftScrollShell(
         <HspScrollColumn
           style={{ flex: 1, minHeight: 0 }}
@@ -1667,18 +1672,6 @@ function HomeAuthenticatedScreenMain() {
           onScrollPositionChange={handleHomeLeftScrollPositionChange}
           scrollControllerRef={homeLeftScrollRef}
         >
-          <View
-            pointerEvents={isWideHome ? "none" : "auto"}
-            style={isWideHome ? ({ display: "none" } as const) : undefined}
-          >
-            {!isWideHome ? homeHeaderRow : null}
-          </View>
-          <View
-            pointerEvents={isWideHome ? "none" : "auto"}
-            style={isWideHome ? ({ display: "none" } as const) : undefined}
-          >
-            {!isWideHome ? homeLeftNavStrip : null}
-          </View>
           <View style={isWideHome ? undefined : homeMainColumnInsetStyle}>{homeMainColumnBlocks}</View>
         </HspScrollColumn>,
       )}

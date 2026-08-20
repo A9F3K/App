@@ -20,6 +20,7 @@ import {
 import { useProfileSheet } from "../../profile/ProfileContext";
 import { layout, typographyFixedRow30Label, useColors } from "../../theme";
 import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesConnectionContext";
+import { fetchTelegramUserProfile } from "../../telegram/fetchTelegramUserProfile";
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
 import { SettingsIcon } from "../icons/SettingsIcon";
@@ -163,7 +164,7 @@ function AccountLogoutCross({
 export function MessagesSideMenu({ visible, onClose }: Props) {
   const colors = useColors();
   const { t } = useAppStrings();
-  const { displayName, telegramUsername, colorScheme } = useTelegram();
+  const { telegramUsername, colorScheme } = useTelegram();
   const {
     isTelegramMessagesConnected,
     connectedTelegramUserId,
@@ -175,6 +176,9 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   const musicTopInset = musicSnap.visible ? MUSIC_CONTROL_BAR_HEIGHT_PX : 0;
   const [mounted, setMounted] = useState(visible);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  /** Telegram first + last name (and username) from TDLib profile — not the app display_name. */
+  const [telegramDisplayName, setTelegramDisplayName] = useState<string | null>(null);
+  const [telegramProfileUsername, setTelegramProfileUsername] = useState<string | null>(null);
 
   useEffect(() => {
     if (visible) {
@@ -187,9 +191,34 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     return () => clearTimeout(timer);
   }, [visible]);
 
-  const usernameAt = formatTelegramUsernameAt(telegramUsername);
+  useEffect(() => {
+    if (!visible || !isTelegramMessagesConnected || connectedTelegramUserId == null) {
+      if (!isTelegramMessagesConnected) {
+        setTelegramDisplayName(null);
+        setTelegramProfileUsername(null);
+      }
+      return;
+    }
+    const controller = new AbortController();
+    void fetchTelegramUserProfile(0, connectedTelegramUserId, controller.signal, {
+      priority: "critical",
+    }).then((result) => {
+      if (controller.signal.aborted || !result.ok) return;
+      const title = result.profile.title?.trim() || null;
+      if (title) setTelegramDisplayName(title);
+      if (result.profile.username?.trim()) {
+        setTelegramProfileUsername(result.profile.username.trim());
+      }
+    });
+    return () => controller.abort();
+  }, [visible, isTelegramMessagesConnected, connectedTelegramUserId]);
+
+  const resolvedUsername = telegramProfileUsername ?? telegramUsername;
+  const usernameAt = formatTelegramUsernameAt(resolvedUsername);
   const profileTitle =
-    displayName?.trim() || usernameAt?.replace(/^@+/, "") || t("messages.sideMenu.myProfile");
+    telegramDisplayName?.trim() ||
+    usernameAt?.replace(/^@+/, "") ||
+    t("messages.sideMenu.myProfile");
   const avatarInitials = useMemo(() => extractChatAvatarInitials(profileTitle), [profileTitle]);
   const selfAvatarUrl = useMemo(() => {
     if (connectedTelegramUserId == null) return null;
@@ -209,7 +238,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       telegram_chat_id: 0,
       title: profileTitle,
       peer_user_id: connectedTelegramUserId,
-      peer_username: telegramUsername,
+      peer_username: resolvedUsername,
       chat_kind: "private",
       avatar_url: selfAvatarUrl,
     });
@@ -220,8 +249,8 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     onClose,
     openProfileSheet,
     profileTitle,
+    resolvedUsername,
     selfAvatarUrl,
-    telegramUsername,
   ]);
 
   /** Multi-account switcher appears only when two or more sessions are connected. */

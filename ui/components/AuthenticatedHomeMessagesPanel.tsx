@@ -1915,10 +1915,6 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     return () => cancelAnimationFrame(frame);
   }, [listSearchActive, displayListItems.length, chatListSearchQuery, remoteMessageCount]);
 
-  const searchListAnchorMinHeightPx = listSearchActive
-    ? Math.max(chatListEffectiveLayoutH - chatListShellTopInset, 0)
-    : undefined;
-
   const renderListItems = (items: ChatListDisplayItem[], startIndex: number) => (
     <>
       {chatListVirtualWindow.enabled && chatListVirtualWindow.topSpacerPx > 0 ? (
@@ -2132,8 +2128,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           listShellStyle,
           listSearchActive
             ? {
-                minHeight: searchListAnchorMinHeightPx,
                 // Grow upward from the search field: first result sits at the visual bottom.
+                // No minHeight — stretching to the viewport left a large empty gap above the field.
                 flexDirection: "column-reverse",
                 justifyContent: "flex-start",
               }
