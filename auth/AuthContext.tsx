@@ -9,6 +9,8 @@ import {
 import { kickEagerTelegramMessagesWarmup } from "./eagerTelegramMessagesWarmup";
 import { useAppStrings } from "../locales/AppStringsContext";
 import { logPageDisplay } from "../ui/pageDisplayLog";
+import { rehydrateAuthenticatedHomeLeftNavFromStorage } from "../ui/authenticatedHomeLeftNavIndex";
+import { clearExplicitSignOut, markExplicitSignOut, readAuthHint, writeAuthHint } from "./authHint";
 
 export type AuthContextValue = {
   isAuthenticated: boolean;
@@ -18,34 +20,15 @@ export type AuthContextValue = {
   sessionFeedItems: unknown[] | null;
   /** Telegram MTProto messages link persisted for this account (survives app logout/login). */
   sessionTelegramMessagesConnected: boolean | null;
-  signIn: () => void;
+  /**
+   * Begin signed-in UX. Pass `{ optimistic: false }` for Mini App Telegram sign-in so Home
+   * waits until `/api/telegram` mints the session cookie (avoids welcome↔home flicker).
+   */
+  signIn: (options?: { optimistic?: boolean }) => void;
   signOut: () => void;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-const AUTH_HINT_STORAGE_KEY = "hs_auth_hint_v1";
-
-type AuthHint = "in" | "out";
-
-function writeAuthHint(value: AuthHint): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(AUTH_HINT_STORAGE_KEY, value);
-  } catch {
-    // ignore storage failures (private mode, strict browser settings)
-  }
-}
-
-function readAuthHint(): AuthHint | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const value = window.localStorage.getItem(AUTH_HINT_STORAGE_KEY);
-    if (value === "in" || value === "out") return value;
-  } catch {
-    // ignore
-  }
-  return null;
-}
 
 function dispatchAuthLifecycleEvent(name: "hsp-auth-signed-in" | "hsp-auth-signed-out"): void {
   if (typeof document === "undefined") return;
@@ -113,8 +96,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     installDesktopAuthFetch();
     if (readAuthHint() === "in") {
       setAuthenticated(true);
-      // Start gateway warmup before session returns — Home effects can lag seconds.
-      kickEagerTelegramMessagesWarmup("auth_hint");
+      // Warmup only after session confirms MTProto link — auth_hint warmup raced session
+      // GET and could revoke the DB link while session still returned connected=true.
     }
     setAuthHydrated(true);
   }, []);
@@ -139,7 +122,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         kickEagerTelegramMessagesWarmup("auth_session");
       }
       writeAuthHint(authenticated ? "in" : "out");
+      if (authenticated) {
+        clearExplicitSignOut();
+      }
       setAuthenticated(authenticated);
+      if (authenticated) {
+        rehydrateAuthenticatedHomeLeftNavFromStorage();
+      }
       // skip_feed returns []; keep prior session feed only when still signed in.
       if (!authenticated) {
         setSessionFeedItems(null);
@@ -204,15 +193,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [refreshAuthSession]);
 
-  const signIn = useCallback(() => {
+  const signIn = useCallback((options?: { optimistic?: boolean }) => {
+    const optimistic = options?.optimistic !== false;
+    clearExplicitSignOut();
     writeAuthHint("in");
+    rehydrateAuthenticatedHomeLeftNavFromStorage();
+    // Dispatch first so TMA can start /api/telegram session mint immediately.
+    dispatchAuthLifecycleEvent("hsp-auth-signed-in");
+    if (!optimistic) {
+      // Mini App: keep welcome until register issues the cookie + session-updated refresh.
+      return;
+    }
     setAuthenticated(true);
     setAuthReady(true);
-    dispatchAuthLifecycleEvent("hsp-auth-signed-in");
+    // Cookie should already exist (OIDC/email). Refreshing before mint would flash welcome.
     void refreshAuthSession();
   }, [refreshAuthSession]);
 
   const signOut = useCallback(() => {
+    markExplicitSignOut();
     writeAuthHint("out");
     setAuthenticated(false);
     setAuthReady(true);

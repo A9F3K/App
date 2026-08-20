@@ -55,18 +55,16 @@ function connectErrorMessage(error: string | null, t: (key: string) => string): 
   if (
     error === "session_expired_restart" ||
     error === "authorization_closed" ||
-    error === "Not Found"
+    error === "Not Found" ||
+    error === "attempt_not_found" ||
+    error === "gateway_attempt_lost"
   ) {
     return t("messages.connectErrorSessionExpired");
   }
   if (error === "attempt_id_and_password_required") {
     return t("messages.connectErrorPasswordRequest");
   }
-  if (
-    error === "not_found" ||
-    error === "attempt_not_found" ||
-    error === "session_not_ready"
-  ) {
+  if (error === "not_found" || error === "session_not_ready") {
     return t("messages.connectErrorGatewayPhoneEndpoint");
   }
   return error;

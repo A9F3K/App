@@ -573,7 +573,7 @@ const CHAT_LIST_AUTO_LOAD_MORE_MS = 1_800;
 export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Props) {
   const { t, tf } = useAppStrings();
   const { openProfileSheet } = useProfileSheet();
-  const { authReady, isAuthenticated } = useAuth();
+  const { authReady, isAuthenticated, sessionTelegramMessagesConnected } = useAuth();
   const { isTelegramMessagesConnected, refreshStatus } = useTelegramMessagesConnection();
   const [chats, setChats] = useState<MessageChatRowData[]>([]);
   const [chatListSync, setChatListSync] = useState<ChatListSyncStatus | null>(null);
@@ -2023,6 +2023,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     ) : null;
 
   if (!isTelegramMessagesConnected) {
+    if (sessionTelegramMessagesConnected === true) {
+      return (
+        <View style={[listShellStyle, { paddingVertical: 24, alignItems: "center" }]}>
+          <ActivityIndicator size="small" color={colors.primary} />
+        </View>
+      );
+    }
     return (
       <View style={[listShellStyle, { paddingVertical: 24, alignItems: "center" }]}>
         <Text

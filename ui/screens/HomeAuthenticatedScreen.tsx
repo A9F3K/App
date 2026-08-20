@@ -724,26 +724,13 @@ function HomeAuthenticatedScreenMain() {
     if (!wasWide || isWideHome) {
       return;
     }
-    if (rightPanel === "swap" && pathname !== "/swap") {
-      router.push("/swap" as any);
-      return;
+    // Single-column home: main screen follows left-nav (feed/messages/…), not the wide right pane.
+    const onHomePath =
+      pathname == null || pathname === "" || pathname === "/" || pathname === "/home";
+    if (!onHomePath) {
+      router.replace("/" as any);
     }
-    if (rightPanel === "trade" && pathname !== "/trade") {
-      router.push("/trade" as any);
-      return;
-    }
-    if (rightPanel === "smart" && pathname !== "/smart") {
-      router.push("/smart" as any);
-      return;
-    }
-    if (rightPanel === "send" && pathname !== "/send") {
-      router.push("/send" as any);
-      return;
-    }
-    if (rightPanel === "get" && pathname !== "/get") {
-      router.push("/get" as any);
-    }
-  }, [isWideHome, rightPanel, pathname, router]);
+  }, [isWideHome, pathname, router]);
   const { draftText, barHeight: bottomBarHeight, footerDockedToScreenEdge } = useBottomBarLayout();
   const embeddedAiBar = aiBarDock === "screenFooter" ? null : <GlobalBottomBar />;
   const aiSearchColumnContent =

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import {
-  Image,
   Modal,
   Platform,
   Pressable,
@@ -16,6 +15,7 @@ import { useColors, layout, type ThemeColors } from "../../theme";
 import { HspScrollColumn } from "../HspScrollColumn";
 import { appModalSheetStyles } from "../AppModalSheet";
 import {
+  fetchTelegramUserProfile,
   telegramProfileAudioCoverUrl,
   type TelegramProfileAudioTrack,
 } from "../../telegram/fetchTelegramUserProfile";
@@ -37,6 +37,10 @@ import {
 import { VoiceWindowCrossIcon } from "./MessageChatVoiceControlIcons";
 import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import {
+  MessageChatProfileAudioCoverImage,
+  prefetchMessageChatProfileAudioCover,
+} from "./MessageChatProfileAudioCoverImage";
+import {
   MESSAGE_FONT_SIZE_PX,
   MESSAGE_LINE_HEIGHT_PX,
 } from "./messageListLayout";
@@ -44,10 +48,14 @@ import {
 const SHEET_MAX_WIDTH_PX = 380;
 const PAD_X_PX = 20;
 const PAD_TOP_PX = 20;
+const SCROLL_PAD_BOTTOM_PX = 24;
 const PROFILE_OVERLAY_Z = 10070;
 const COVER_PX = 40;
 const PLAY_BTN_PX = 28;
 const ROW_GAP_PX = 10;
+/** Approximate row height for viewport-based cover fetch window. */
+const PLAYLIST_ROW_STRIDE_PX = 56;
+const PLAYLIST_COVER_PREFETCH_ROWS = 4;
 
 type Props = {
   visible: boolean;
@@ -106,11 +114,65 @@ export function MessageChatProfilePlaylistSheet({
   const { height: windowHeight } = useWindowDimensions();
   const player = useSyncExternalStore(subscribeMusicPlayer, getMusicPlayer, getMusicPlayer);
   const [localTracks, setLocalTracks] = useState(tracks);
+  const [scrollY, setScrollY] = useState(0);
+  const [scrollLayoutH, setScrollLayoutH] = useState(0);
   const dragFromRef = useRef<number | null>(null);
+  const playlistRefreshGenRef = useRef(0);
 
   useEffect(() => {
     setLocalTracks(tracks);
   }, [tracks, visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    const userId =
+      getMusicPlayer().tracks[0]?.user_id ??
+      tracks[0]?.user_id;
+    if (userId == null || !Number.isFinite(userId) || userId === 0) return;
+
+    const refreshGen = playlistRefreshGenRef.current + 1;
+    playlistRefreshGenRef.current = refreshGen;
+    let cancelled = false;
+
+    void fetchTelegramUserProfile(0, userId, undefined, { priority: "high" }).then((result) => {
+      if (cancelled || refreshGen !== playlistRefreshGenRef.current || !result.ok) return;
+      const full = result.profile.playlist;
+      if (full.length === 0) return;
+      setLocalTracks(full);
+      const snap = getMusicPlayer();
+      if (snap.visible && snap.tracks.some((row) => row.user_id === userId)) {
+        setMusicTracks(full, snap.tracks[snap.index]?.file_id);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // Refresh once when the sheet opens; full list comes from profile API (may exceed player queue).
+  }, [visible]);
+
+  const coverFetchWindow = useMemo(() => {
+    const layoutH = scrollLayoutH > 0 ? scrollLayoutH : 480;
+    const start = Math.max(
+      0,
+      Math.floor(scrollY / PLAYLIST_ROW_STRIDE_PX) - PLAYLIST_COVER_PREFETCH_ROWS,
+    );
+    const end = Math.min(
+      localTracks.length - 1,
+      Math.ceil((scrollY + layoutH) / PLAYLIST_ROW_STRIDE_PX) + PLAYLIST_COVER_PREFETCH_ROWS,
+    );
+    return { start, end };
+  }, [localTracks.length, scrollLayoutH, scrollY]);
+
+  useEffect(() => {
+    if (!visible) return;
+    for (let i = coverFetchWindow.start; i <= coverFetchWindow.end; i += 1) {
+      const track = localTracks[i];
+      if (!track) continue;
+      const cover = trackCoverUri(track);
+      if (cover) prefetchMessageChatProfileAudioCover(cover, { priority: "high" });
+    }
+  }, [coverFetchWindow.end, coverFetchWindow.start, localTracks, visible]);
 
   const hairline =
     Platform.OS === "web"
@@ -252,9 +314,16 @@ export function MessageChatProfilePlaylistSheet({
       >
         <HspScrollColumn
           style={{ flex: 1, minHeight: 0 }}
-          contentContainerStyle={{ paddingHorizontal: PAD_X_PX, paddingBottom: 0 }}
+          contentContainerStyle={{ paddingHorizontal: PAD_X_PX, paddingBottom: SCROLL_PAD_BOTTOM_PX }}
           scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
           containOverscroll
+          onScrollPositionChange={(metrics) => {
+            setScrollY(metrics.scrollY);
+            setScrollLayoutH(metrics.layoutH);
+          }}
+          onMetricsChange={(metrics) => {
+            setScrollLayoutH(metrics.layoutH);
+          }}
         >
           {localTracks.length === 0 ? (
             <Text style={[textBase(colors.secondary), { paddingTop: 8 }]}>
@@ -267,6 +336,8 @@ export function MessageChatProfilePlaylistSheet({
                 .filter(Boolean)
                 .join(", ");
               const cover = trackCoverUri(track);
+              const coverLoadEnabled =
+                index >= coverFetchWindow.start && index <= coverFetchWindow.end;
               const isLast = index === localTracks.length - 1;
               return (
                 <View
@@ -353,7 +424,12 @@ export function MessageChatProfilePlaylistSheet({
                         backgroundColor: colors.undercover,
                       }}
                     >
-                      <Image source={{ uri: cover }} style={{ width: COVER_PX, height: COVER_PX }} />
+                      <MessageChatProfileAudioCoverImage
+                        uri={cover}
+                        sizePx={COVER_PX}
+                        loadEnabled={coverLoadEnabled}
+                        fetchPriority="high"
+                      />
                     </View>
                   ) : null}
                 </View>

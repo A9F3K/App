@@ -849,11 +849,9 @@ export async function telegramMessagesResyncHandler(
     if (action === "restoring") {
       return gatewayResyncWarmingResponse(request, res, result, "session_restoring");
     }
-    await revokeMtprotoSession(userOrRes);
-    await disconnectTelegramMessages(userOrRes);
     return finishJson(request, res, {
       ok: false,
-      connected: false,
+      connected: true,
       needsReconnect: true,
       chatCount: 0,
       error: result.error ?? "no_session",
@@ -3307,11 +3305,11 @@ export async function telegramMessagesWarmupHandler(
         error: "session_restoring",
       });
     }
-    await revokeMtprotoSession(userOrRes);
-    await disconnectTelegramMessages(userOrRes);
+    // Keep the product-level link in DB; client will resume MTProto silently.
+    // Revoking here raced auth/session and surfaced a false "disconnected" UI.
     return finishJson(request, res, {
       ok: false,
-      connected: false,
+      connected: true,
       needsReconnect: true,
       gatewayReady: false,
       authState: warm.authState,

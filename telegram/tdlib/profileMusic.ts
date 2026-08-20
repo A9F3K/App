@@ -103,25 +103,35 @@ export async function listUserProfileAudios(
   userId: number,
 ): Promise<TelegramProfileAudioTrack[]> {
   if (!Number.isFinite(userId) || userId === 0) return [];
+  const uid = Math.trunc(userId);
+  const pageLimit = 100;
+  const tracks: TelegramProfileAudioTrack[] = [];
+  const seen = new Set<number>();
   try {
-    const result = (await client.invoke({
-      _: "getUserProfileAudios",
-      user_id: Math.trunc(userId),
-      offset: 0,
-      limit: 100,
-    })) as { audios?: unknown };
-    const rows = Array.isArray(result.audios) ? result.audios : [];
-    const tracks: TelegramProfileAudioTrack[] = [];
-    const seen = new Set<number>();
-    for (const row of rows) {
-      const track = parseTdProfileAudio(row, Math.trunc(userId));
-      if (!track || seen.has(track.file_id)) continue;
-      seen.add(track.file_id);
-      tracks.push(track);
+    let offset = 0;
+    for (let page = 0; page < 20; page += 1) {
+      const result = (await client.invoke({
+        _: "getUserProfileAudios",
+        user_id: uid,
+        offset,
+        limit: pageLimit,
+      })) as { audios?: unknown; total_count?: number };
+      const rows = Array.isArray(result.audios) ? result.audios : [];
+      for (const row of rows) {
+        const track = parseTdProfileAudio(row, uid);
+        if (!track || seen.has(track.file_id)) continue;
+        seen.add(track.file_id);
+        tracks.push(track);
+      }
+      if (rows.length === 0) break;
+      offset += rows.length;
+      const total = Number(result.total_count ?? 0);
+      if (Number.isFinite(total) && total > 0 && offset >= total) break;
+      if (rows.length < pageLimit) break;
     }
     return tracks;
   } catch {
-    return [];
+    return tracks;
   }
 }
 

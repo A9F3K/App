@@ -353,7 +353,9 @@ export function WelcomeAuthButtons() {
         triggerHaptic("light");
       }
       logPageDisplay("welcome_telegram_miniapp_sign_in", { actuallyInTelegram });
-      signIn();
+      // Stay on welcome until /api/telegram issues the cookie; optimistic Home races a
+      // session GET that still returns unauthenticated and flickers back to welcome.
+      signIn({ optimistic: false });
       router.replace("/");
       return;
     }

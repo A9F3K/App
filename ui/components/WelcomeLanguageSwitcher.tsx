@@ -96,10 +96,17 @@ const styles = StyleSheet.create({
     }),
   },
   label: {
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 14,
+    lineHeight: 18,
     fontWeight: "400",
     textAlign: "center",
     includeFontPadding: false,
+    ...(Platform.OS === "web"
+      ? ({
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        } as const)
+      : null),
   },
 });

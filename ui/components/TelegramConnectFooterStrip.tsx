@@ -1,22 +1,17 @@
-import { useCallback, useEffect, useId, useMemo, useState } from "react";
+import { useCallback, useId, useState } from "react";
 import {
   Platform,
   Pressable,
   StyleSheet,
-  Text,
   useWindowDimensions,
   View,
   type LayoutChangeEvent,
-  type NativeSyntheticEvent,
-  type TextLayoutEventData,
 } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
-import { useAppStrings } from "../../locales/AppStringsContext";
 import {
   authenticatedHomeBottomBarDock,
   layout,
-  typographyFixedRow40Label,
   useColors,
 } from "../theme";
 import { useAuth } from "../../auth/AuthContext";
@@ -28,17 +23,7 @@ import { useTelegram } from "./Telegram";
 import { useMessagesChatListSearchActiveOptional } from "../messages/MessagesChatListSearchContext";
 import { SettingsIcon } from "./icons/SettingsIcon";
 import { ShieldIcon } from "./icons/ShieldIcon";
-import { TelegramLogoIcon } from "./icons/TelegramLogoIcon";
 import { LiquidGlassShaderUndercover } from "./LiquidGlassShaderUndercover";
-import {
-  measureTelegramConnectPillLabelLineWidthPx,
-  TELEGRAM_CONNECT_PILL_LOGO_LEFT_PX,
-  TELEGRAM_CONNECT_PILL_LOGO_SIZE_PX,
-  TELEGRAM_CONNECT_PILL_LOGO_TO_TEXT_GAP_PX,
-  TELEGRAM_CONNECT_PILL_TEXT_RIGHT_PX,
-  telegramConnectMaxPillWidthInStripPx,
-  telegramConnectPillWidthFromLabelLinePx,
-} from "./telegramConnectPillMeasure";
 
 const STRIP_HEIGHT_PX = 60;
 const CHIP_SIZE_PX = 40;
@@ -48,7 +33,6 @@ const SHIELD_ICON_HEIGHT_PX = 22;
 const PILL_HEIGHT_PX = 40;
 
 type Props = {
-  onConnectPress?: () => void;
   onPowerPress?: () => void;
   onSettingsPress?: () => void;
 };
@@ -79,20 +63,15 @@ function StripBackgroundGradient({
 }
 
 /**
- * Floating 60px overlay above the AI & Search top divider when Telegram message streaming is disconnected (mobile).
- * Does not consume layout space — content scrolls underneath the gradient underlay.
+ * Floating overlay above the messages footer on narrow home when Telegram is connected:
+ * shield + settings liquid-glass chips (connect lives in {@link MessagesColumnFooter}).
  */
-export function TelegramConnectFooterStrip({
-  onConnectPress,
-  onPowerPress,
-  onSettingsPress,
-}: Props) {
+export function TelegramConnectFooterStrip({ onPowerPress, onSettingsPress }: Props) {
   const colors = useColors();
-  const { t } = useAppStrings();
   const pathname = useResolvedPathname();
   const { isAuthenticated } = useAuth();
   const { width: windowWidth } = useWindowDimensions();
-  const { isTelegramMessagesConnected, openConnectSheet } = useTelegramMessagesConnection();
+  const { isTelegramMessagesConnected } = useTelegramMessagesConnection();
   const { openSettingsSheet } = useSettingsSheet();
   const { barHeight: bottomBarHeight, footerDockedToScreenEdge } = useBottomBarLayout();
   const { isInTelegram, layoutStartup } = useTelegram();
@@ -101,7 +80,6 @@ export function TelegramConnectFooterStrip({
 
   const hideBottomBorder =
     (isInTelegram && !layoutStartup.isTelegramMiniAppDesktop) || !footerDockedToScreenEdge;
-  /** Sit above the footer top rule; `barHeight` excludes wrapper borders. */
   const stripBottomOffsetPx =
     bottomBarHeight +
     layout.bottomBar.topRuleHeightPx +
@@ -111,59 +89,19 @@ export function TelegramConnectFooterStrip({
     isAuthenticated && (pathname === "/" || pathname === "" || pathname == null);
   const isNarrowHome =
     isAuthenticatedHome && bottomBarDock === "screenFooter" && windowWidth <= layout.authenticatedHome.firstBreakpoint;
-
-  const label = isTelegramMessagesConnected
-    ? ""
-    : t("home.mainColumnFooter.telegramMessages");
   const isLightTheme = colors.primary === "#000000";
   const iconColor = colors.primary;
   const powerColor = isLightTheme ? "#000000" : "#FFFFFF";
   const [stripWidth, setStripWidth] = useState(0);
-  const [nativeLabelLineWidth, setNativeLabelLineWidth] = useState(0);
 
   const onStripLayout = useCallback((event: LayoutChangeEvent) => {
     const next = Math.ceil(event.nativeEvent.layout.width);
     setStripWidth((current) => (current === next ? current : next));
   }, []);
 
-  const onNativeLabelTextLayout = useCallback((event: NativeSyntheticEvent<TextLayoutEventData>) => {
-    const lineWidth = Math.ceil(event.nativeEvent.lines[0]?.width ?? 0);
-    setNativeLabelLineWidth((current) => (current === lineWidth ? current : lineWidth));
-  }, []);
-
-  useEffect(() => {
-    setNativeLabelLineWidth(0);
-  }, [label]);
-
-  const webLabelLineWidth = useMemo(
-    () => (Platform.OS === "web" ? measureTelegramConnectPillLabelLineWidthPx(label) : 0),
-    [label],
-  );
-
-  const maxPillWidthPx = telegramConnectMaxPillWidthInStripPx(
-    stripWidth,
-    CHIP_SIZE_PX,
-    layout.contentSideInsetPx,
-  );
-
-  const labelLineWidth = Platform.OS === "web" ? webLabelLineWidth : nativeLabelLineWidth;
-
-  const pillWidth = useMemo(() => {
-    if (!label || stripWidth <= 0 || labelLineWidth <= 0) return 0;
-    return telegramConnectPillWidthFromLabelLinePx(labelLineWidth, maxPillWidthPx);
-  }, [label, stripWidth, labelLineWidth, maxPillWidthPx]);
-
-  if (!isNarrowHome || !footerDockedToScreenEdge) {
+  if (!isNarrowHome || !footerDockedToScreenEdge || !isTelegramMessagesConnected) {
     return null;
   }
-
-  const handleConnectPress = () => {
-    if (onConnectPress) {
-      onConnectPress();
-    } else {
-      openConnectSheet();
-    }
-  };
 
   const handleSettingsPress = () => {
     if (onSettingsPress) {
@@ -175,17 +113,6 @@ export function TelegramConnectFooterStrip({
 
   return (
     <View pointerEvents="box-none" style={[styles.overlayHost, { bottom: stripBottomOffsetPx }]}>
-      {Platform.OS !== "web" && stripWidth > 0 ? (
-        <Text
-          key={label}
-          style={[typographyFixedRow40Label, styles.pillLabelMeasure]}
-          numberOfLines={1}
-          onTextLayout={onNativeLabelTextLayout}
-        >
-          {label}
-        </Text>
-      ) : null}
-
       <View onLayout={onStripLayout} style={styles.strip} pointerEvents="box-none">
         <View style={styles.blockUndercover} pointerEvents="none">
           <StripBackgroundGradient
@@ -210,34 +137,7 @@ export function TelegramConnectFooterStrip({
             <View style={styles.chipSpacer} />
           )}
 
-          {pillWidth > 0 ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={handleConnectPress}
-              style={[styles.pillPressable, { width: pillWidth, maxWidth: maxPillWidthPx }]}
-            >
-              <LiquidGlassShaderUndercover
-                key={`${label}-${pillWidth}`}
-                shape="pill"
-                width={pillWidth}
-                height={PILL_HEIGHT_PX}
-                contentInsetPx={0}
-                phaseOffset={0.22}
-                isLightTheme={isLightTheme}
-              >
-                <View style={[styles.pillContent, { width: pillWidth }]}>
-                  <View style={styles.pillLogo}>
-                    <TelegramLogoIcon size={TELEGRAM_CONNECT_PILL_LOGO_SIZE_PX} />
-                  </View>
-                  <Text
-                    style={[typographyFixedRow40Label, styles.pillLabel, { color: colors.primary }]}
-                  >
-                    {label}
-                  </Text>
-                </View>
-              </LiquidGlassShaderUndercover>
-            </Pressable>
-          ) : null}
+          <View style={styles.centerSpacer} />
 
           {!chatListSearchActive ? (
             <Pressable accessibilityRole="button" onPress={handleSettingsPress} style={styles.chipPressable}>
@@ -288,6 +188,10 @@ const styles = StyleSheet.create({
     height: PILL_HEIGHT_PX,
     zIndex: 1,
   },
+  centerSpacer: {
+    flex: 1,
+    minWidth: 0,
+  },
   chipPressable: {
     width: CHIP_SIZE_PX,
     height: CHIP_SIZE_PX,
@@ -296,37 +200,6 @@ const styles = StyleSheet.create({
   chipSpacer: {
     width: CHIP_SIZE_PX,
     height: CHIP_SIZE_PX,
-    flexShrink: 0,
-  },
-  pillPressable: {
-    height: PILL_HEIGHT_PX,
-    minHeight: PILL_HEIGHT_PX,
-    flexShrink: 0,
-  },
-  pillContent: {
-    flexDirection: "row",
-    alignItems: "center",
-    height: PILL_HEIGHT_PX,
-    minHeight: PILL_HEIGHT_PX,
-    paddingLeft: TELEGRAM_CONNECT_PILL_LOGO_LEFT_PX,
-    paddingRight: TELEGRAM_CONNECT_PILL_TEXT_RIGHT_PX,
-    gap: TELEGRAM_CONNECT_PILL_LOGO_TO_TEXT_GAP_PX,
-  },
-  pillLogo: {
-    width: TELEGRAM_CONNECT_PILL_LOGO_SIZE_PX,
-    height: TELEGRAM_CONNECT_PILL_LOGO_SIZE_PX,
-    flexShrink: 0,
-  },
-  pillLabel: {
-    flexShrink: 1,
-    minWidth: 0,
-  },
-  pillLabelMeasure: {
-    position: "absolute",
-    opacity: 0,
-    top: -10_000,
-    left: 0,
-    pointerEvents: "none",
     flexShrink: 0,
   },
 });

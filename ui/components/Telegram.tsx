@@ -35,6 +35,7 @@ import {
 } from "./telegramWebApp";
 import type { TelegramLayoutStartupSnapshot } from "./telegramWebApp";
 import { buildApiUrl } from "../../api/_base";
+import { shouldIssueAuthSessionFromHint } from "../../auth/authHint";
 import { takeFreshAuthSessionPayload, waitForAuthSessionCache } from "../../auth/lastAuthSessionCache";
 import { appError, appLog } from "../../shared/appLog";
 import {
@@ -817,6 +818,7 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
 
       const url = buildApiUrl("/api/telegram");
       const fetchStartedAt = Date.now();
+      const issueSession = shouldIssueAuthSessionFromHint();
 
       setDebug((d) =>
         patchTelegramDebug(d, {
@@ -826,7 +828,11 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
           lastLog: "fetch start",
         }),
       );
-      appLog("[TMA register]", "fetch_start", { url, initDataLength: initData.length });
+      appLog("[TMA register]", "fetch_start", {
+        url,
+        initDataLength: initData.length,
+        issueSession,
+      });
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
@@ -835,7 +841,7 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ initData }),
+        body: JSON.stringify({ initData, issueSession }),
         signal: controller.signal,
       })
         .then(async (res) => {
@@ -843,6 +849,7 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
           const durationMs = Date.now() - fetchStartedAt;
           const json = await res.json().catch(() => ({}));
           const apiMsg = json?.error ?? (json?.ok ? "ok" : String(res.status));
+          const sessionIssued = (json as { session_issued?: unknown }).session_issued === true;
 
           setDebug((d) =>
             patchTelegramDebug(d, {
@@ -852,7 +859,13 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
               lastLog: `status ${res.status} ${durationMs}ms`,
             }),
           );
-          appLog("[TMA register]", "response", { status: res.status, ms: durationMs, body: apiMsg });
+          appLog("[TMA register]", "response", {
+            status: res.status,
+            ms: durationMs,
+            body: apiMsg,
+            issueSession,
+            sessionIssued,
+          });
 
           if (!res.ok || !json?.ok) {
             throw new Error(json?.error || `HTTP ${res.status}`);
@@ -871,7 +884,8 @@ export function TelegramProvider({ children }: { children: React.ReactNode }) {
             Array.isArray(fiRaw) && fiRaw.length > 0 ? (fiRaw as TelegramFeedBootstrapRow[]) : null,
           );
           setStatus("ok");
-          if (typeof document !== "undefined") {
+          // Only refresh auth when a session cookie was minted (avoids re-login after logout).
+          if (sessionIssued && typeof document !== "undefined") {
             document.dispatchEvent(new CustomEvent("hsp-auth-session-updated"));
           }
         })

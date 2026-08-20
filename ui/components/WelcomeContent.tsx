@@ -15,16 +15,19 @@ import { WelcomeLanguageSwitcher } from "./WelcomeLanguageSwitcher";
 import { isActuallyInTelegram } from "./telegramWebApp";
 import { HspScrollColumn } from "./HspScrollColumn";
 
-const CONTENT_GAP_BELOW_HEADER = 20;
+const CONTENT_GAP_BELOW_HEADER = 16;
 const MAX_TEXT_WIDTH = 360;
 const WIDE_LAYOUT_MIN_WIDTH = 480;
-const GAP_ABOVE_AUTH_BUTTONS = 20;
-const GAP_ABOVE_LANGUAGE_SWITCHER = 20;
-const SUBTITLE_TOP_INDENT_WIDE = 10;
+/** Title → language */
+const GAP_TITLE_TO_LANGUAGE = 14;
+/** Language → subtitle */
+const GAP_LANGUAGE_TO_SUBTITLE = 10;
+/** Subtitle → auth */
+const GAP_SUBTITLE_TO_AUTH = 22;
 
 const HEADING_FONT_WIDE = 35;
-const HEADING_LINE_NARROW = 38;
-const HEADING_LINE_WIDE = 40;
+const HEADING_LINE_NARROW = 30;
+const HEADING_LINE_WIDE = 42;
 
 /**
  * Welcome marketing + auth controls. Rendered at `/` when unauthenticated (same URL as signed-in home).
@@ -209,24 +212,26 @@ export function WelcomeContent() {
             { paddingHorizontal: layout.contentSideInsetPx, paddingTop: CONTENT_GAP_BELOW_HEADER },
           ]}
         >
-          <View style={styles.headingBlock}>
-            <Text
-              style={[
-                styles.headingText,
-                isWideLayout ? styles.headingTextWide : styles.headingTextNarrow,
-                { color: colors.primary },
-              ]}
-            >
-              {t("welcome.title")}
-            </Text>
-          </View>
-          <View style={styles.languageBlock}>
-            <WelcomeLanguageSwitcher />
-          </View>
-          <View style={[styles.subtitleBlock, isWideLayout && styles.subtitleBlockWide]}>
-            <Text style={[styles.subtitleText, { color: colors.secondary }]}>
-              {t("welcome.subtitle")}
-            </Text>
+          <View style={styles.introBlock}>
+            <View style={styles.headingBlock}>
+              <Text
+                style={[
+                  styles.headingText,
+                  isWideLayout ? styles.headingTextWide : styles.headingTextNarrow,
+                  { color: colors.primary },
+                ]}
+              >
+                {t("welcome.title")}
+              </Text>
+            </View>
+            <View style={styles.languageBlock}>
+              <WelcomeLanguageSwitcher />
+            </View>
+            <View style={styles.subtitleBlock}>
+              <Text style={[styles.subtitleText, { color: colors.secondary }]}>
+                {t("welcome.subtitle")}
+              </Text>
+            </View>
           </View>
           <View style={styles.authBlock}>
             <WelcomeAuthButtons />
@@ -252,16 +257,18 @@ const styles = StyleSheet.create({
   content: {
     alignItems: "center",
   },
+  introBlock: {
+    width: "100%",
+    maxWidth: MAX_TEXT_WIDTH,
+    alignItems: "center",
+  },
   subtitleBlock: {
     width: "100%",
     maxWidth: MAX_TEXT_WIDTH,
-  },
-  subtitleBlockWide: {
-    marginTop: SUBTITLE_TOP_INDENT_WIDE,
+    marginTop: GAP_LANGUAGE_TO_SUBTITLE,
   },
   subtitleText: {
     fontSize: 15,
-    /** Tighter than 30 — large line boxes sat visually low with Noto in centered blocks. */
     lineHeight: 22,
     fontWeight: "400",
     textAlign: "center",
@@ -291,13 +298,13 @@ const styles = StyleSheet.create({
   languageBlock: {
     width: "100%",
     maxWidth: MAX_TEXT_WIDTH,
-    marginTop: GAP_ABOVE_LANGUAGE_SWITCHER,
+    marginTop: GAP_TITLE_TO_LANGUAGE,
     alignItems: "center",
   },
   authBlock: {
     width: "100%",
     maxWidth: MAX_TEXT_WIDTH,
-    marginTop: GAP_ABOVE_AUTH_BUTTONS,
+    marginTop: GAP_SUBTITLE_TO_AUTH,
     alignItems: "center",
   },
 });

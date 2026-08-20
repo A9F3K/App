@@ -266,22 +266,28 @@ function isSecureRequest(
   return typeof proto === 'string' && proto.split(',')[0]?.trim() === 'https';
 }
 
-async function jsonWithAuthSession(
+async function jsonTelegramRegisterSuccess(
   body: Record<string, unknown>,
   telegramUsername: string,
   request: Request | { headers?: Record<string, string | string[] | undefined>; url?: string },
+  issueSession: boolean,
 ): Promise<Response> {
   const telegram_messages_connected = await isTelegramMessagesConnected(telegramUsername);
-  const { setCookie } = await issueAuthSession({
-    telegramUsername,
-    secure: isSecureRequest(request),
-  });
   const headers = new Headers({ 'content-type': 'application/json' });
-  headers.append('Set-Cookie', setCookie);
-  return new Response(JSON.stringify({ ...body, telegram_messages_connected }), {
-    status: 200,
-    headers,
-  });
+  if (issueSession) {
+    const { setCookie } = await issueAuthSession({
+      telegramUsername,
+      secure: isSecureRequest(request),
+    });
+    headers.append('Set-Cookie', setCookie);
+  }
+  return new Response(
+    JSON.stringify({ ...body, telegram_messages_connected, session_issued: issueSession }),
+    {
+      status: 200,
+      headers,
+    },
+  );
 }
 
 export async function handlePost(
@@ -308,6 +314,8 @@ export async function handlePost(
 
   const initData =
     typeof body?.initData === 'string' ? body.initData : '';
+  /** Client opts in after welcome Sign in / prior session; false after explicit logout. */
+  const issueSession = body?.issueSession === true;
   if (!initData) {
     log('reject', {
       reason: 'missing_initData',
@@ -423,9 +431,10 @@ export async function handlePost(
         telegramUsername,
         hasWallet: true,
         feedItems: feed_items.length,
+        issueSession,
         totalMs: Date.now() - startMs,
       });
-      return jsonWithAuthSession(
+      return jsonTelegramRegisterSuccess(
         {
           ok: true,
           telegram_username: telegramUsername,
@@ -445,6 +454,7 @@ export async function handlePost(
         },
         telegramUsername,
         request,
+        issueSession,
       );
     }
 
@@ -452,9 +462,10 @@ export async function handlePost(
       telegramUsername,
       hasWallet: false,
       feedItems: feed_items.length,
+      issueSession,
       totalMs: Date.now() - startMs,
     });
-    return jsonWithAuthSession(
+    return jsonTelegramRegisterSuccess(
       {
         ok: true,
         telegram_username: telegramUsername,
@@ -465,6 +476,7 @@ export async function handlePost(
       },
       telegramUsername,
       request,
+      issueSession,
     );
   } catch (e) {
     logErr('db_upsert_failed', e);

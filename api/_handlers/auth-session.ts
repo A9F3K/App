@@ -210,17 +210,18 @@ async function handler(request: AnyRequest, res?: NodeRes): Promise<Response | v
   // Overlap wallet/profile/connected/feed/connection — do not serialize
   // getConnection behind the first batch (cold session felt "lazy").
   const connectedPromise = isTelegramMessagesConnected(row.telegram_username);
-  const connectionPromise = connectedPromise.then((connected) =>
-    connected ? getConnection(row.telegram_username) : Promise.resolve(null),
-  );
-  const [displayName, wallet, telegramMessagesConnected, feed_items, telegramMessagesConn] =
-    await Promise.all([
-      getDisplayNameForUsername(row.telegram_username),
-      getDefaultWalletByUsername(row.telegram_username),
-      connectedPromise,
-      feedPromise,
-      connectionPromise,
-    ]);
+  const [displayName, wallet, _telegramMessagesConnectedInitial, feed_items] = await Promise.all([
+    getDisplayNameForUsername(row.telegram_username),
+    getDefaultWalletByUsername(row.telegram_username),
+    connectedPromise,
+    feedPromise,
+  ]);
+  // Re-check after parallel work — eager gateway warmup can revoke the link while
+  // connectedPromise was already in flight (session then lied connected=true).
+  const telegramMessagesConnected = await isTelegramMessagesConnected(row.telegram_username);
+  const telegramMessagesConn = telegramMessagesConnected
+    ? await getConnection(row.telegram_username)
+    : null;
   const feedFields = { feed_items };
   const telegramMessagesFields = {
     telegram_messages_connected: telegramMessagesConnected,

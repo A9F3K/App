@@ -202,6 +202,7 @@ function failAttempt(record: AttemptRecord, error: string): void {
   record.authState = "failed";
   record.error = error;
   clearConnectWatchdog(record);
+  unpinConnectAuth(record.telegramUsername);
   logConnectEvent(record, "connect_failed", { error });
 }
 
@@ -379,6 +380,7 @@ async function finalizeReady(record: AttemptRecord): Promise<void> {
   record.qrLink = null;
   record.error = null;
   clearStoredAuthMethod(record.telegramUsername);
+  unpinConnectAuth(record.telegramUsername);
   attachLiveChatSync(record);
   logConnectEvent(record, "connect_ready", {
     chatCount: record.chatCount ?? 0,
@@ -490,8 +492,29 @@ const IN_PROGRESS_PHONE_STATES = new Set<ConnectAuthState>([
   "wait_password",
 ]);
 
+const MID_CONNECT_STATES = new Set<ConnectAuthState>([
+  "initializing",
+  "wait_qr",
+  "wait_phone",
+  "wait_code",
+  "wait_password",
+]);
+
 function isInProgressPhoneAttempt(record: AttemptRecord): boolean {
   return record.authMethod === "phone" && IN_PROGRESS_PHONE_STATES.has(record.authState);
+}
+
+function isMidConnectAttempt(record: AttemptRecord): boolean {
+  return MID_CONNECT_STATES.has(record.authState);
+}
+
+function pinConnectAuth(record: AttemptRecord): void {
+  pinGatewayUserSession(record.telegramUsername, "connect_auth");
+  touchGatewayUserActivity(record.telegramUsername);
+}
+
+function unpinConnectAuth(telegramUsername: string): void {
+  unpinGatewayUserSession(telegramUsername, "connect_auth");
 }
 
 export async function startConnectAttempt(
@@ -510,17 +533,25 @@ export async function startConnectAttempt(
     const existingId = activeByUser.get(telegramUsername);
     if (existingId) {
       const existing = attempts.get(existingId);
-      if (
-        existing &&
-        existing.authState !== "failed" &&
-        Date.now() - existing.createdAt < 15 * 60_000
-      ) {
-        if (isInProgressPhoneAttempt(existing) && authMethod === "qr") {
+      if (existing && existing.authState !== "failed") {
+        // Never clobber an in-flight QR / phone / 2FA attempt (unless fresh=true).
+        // Concurrent warmup/resume used to dispose mid-connect → client poll 404 attempt_not_found.
+        if (isMidConnectAttempt(existing)) {
+          pinConnectAuth(existing);
+          logConnectEvent(existing, "connect_reuse_mid_auth", {
+            requestedAuthMethod: authMethod,
+            ageMs: Date.now() - existing.createdAt,
+          });
           return snapshot(existing);
         }
-        if (existing.authMethod === authMethod) {
-          if (existing.authState === "ready") attachLiveChatSync(existing);
-          return snapshot(existing);
+        if (Date.now() - existing.createdAt < 15 * 60_000) {
+          if (isInProgressPhoneAttempt(existing) && authMethod === "qr") {
+            return snapshot(existing);
+          }
+          if (existing.authMethod === authMethod) {
+            if (existing.authState === "ready") attachLiveChatSync(existing);
+            return snapshot(existing);
+          }
         }
       }
       disposeAttempt(existingId);
@@ -559,6 +590,7 @@ export async function startConnectAttempt(
 
   attempts.set(attemptId, record);
   activeByUser.set(telegramUsername, attemptId);
+  pinConnectAuth(record);
   if (authMethod === "phone") {
     writeStoredAuthMethod(telegramUsername, "phone");
   }
@@ -581,7 +613,13 @@ export async function startConnectAttempt(
 
 export function getConnectAttempt(attemptId: string): ConnectAttemptSnapshot | null {
   const record = attempts.get(attemptId);
-  return record ? snapshot(record) : null;
+  if (!record) return null;
+  if (isMidConnectAttempt(record)) {
+    pinConnectAuth(record);
+  } else {
+    touchGatewayUserActivity(record.telegramUsername);
+  }
+  return snapshot(record);
 }
 
 export async function submitConnectPhoneNumber(
@@ -787,6 +825,7 @@ async function disposeAttemptAsync(attemptId: string): Promise<void> {
   if (!record) return;
   detachLiveChatSync(record.telegramUsername);
   clearConnectWatchdog(record);
+  unpinConnectAuth(record.telegramUsername);
   attempts.delete(attemptId);
   if (activeByUser.get(record.telegramUsername) === attemptId) {
     activeByUser.delete(record.telegramUsername);
@@ -807,6 +846,13 @@ export async function softUnloadGatewayUserSession(telegramUsername: string): Pr
   const attemptId = activeByUser.get(telegramUsername);
   if (!attemptId) {
     clearGatewayUserIdleState(telegramUsername);
+    return;
+  }
+  const record = attempts.get(attemptId);
+  // Mid-QR / 2FA must never be idle-unloaded even if a pin was missed.
+  if (record && isMidConnectAttempt(record)) {
+    pinConnectAuth(record);
+    logConnectEvent(record, "connect_idle_unload_skipped_mid_auth", {});
     return;
   }
   await disposeAttemptAsync(attemptId);
@@ -861,6 +907,12 @@ export async function ensureGatewayUserSession(
 
   const active = getActiveRecord(telegramUsername);
   if (active?.client && active.authState === "ready") {
+    touchGatewayUserActivity(telegramUsername);
+    return active;
+  }
+  // Do not kick off a restore/replace while the user is scanning QR or entering 2FA.
+  if (active && isMidConnectAttempt(active)) {
+    pinConnectAuth(active);
     touchGatewayUserActivity(telegramUsername);
     return active;
   }

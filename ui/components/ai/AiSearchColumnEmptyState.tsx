@@ -2,7 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Text, View, type LayoutChangeEvent } from "react-native";
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
-import { typographyRect15, useColors } from "../../theme";
+import { layout, typographyRect15, useColors } from "../../theme";
 import { useBottomBarLayout } from "../BottomBarLayoutContext";
 import { HspScrollColumn } from "../HspScrollColumn";
 import { AiSearchPromptButton } from "./AiSearchPromptButton";
@@ -30,6 +30,9 @@ export function AiSearchColumnEmptyState() {
   const { t } = useAppStrings();
   const { setDraftText } = useBottomBarLayout();
   const [columnWidth, setColumnWidth] = useState(0);
+  const contentInset = layout.contentSideInsetPx;
+  /** Same as swap/smart: bleed past column padding so the thumb sits at {@link layout.scrollIndicatorRightInsetPx}. */
+  const scrollShellBleed = { marginHorizontal: -contentInset };
 
   const onColumnLayout = useCallback((event: LayoutChangeEvent) => {
     const next = Math.round(event.nativeEvent.layout.width);
@@ -54,7 +57,11 @@ export function AiSearchColumnEmptyState() {
       onLayout={onColumnLayout}
     >
       <HspScrollColumn
-        style={{ flex: 1 }}
+        style={{ flex: 1, ...scrollShellBleed }}
+        contentContainerStyle={{
+          paddingHorizontal: contentInset,
+          paddingBottom: contentInset,
+        }}
         indicatorColor={colors.accent}
       >
         <View style={{ height: TOP_GAP_PX }} />

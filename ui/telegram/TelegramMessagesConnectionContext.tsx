@@ -119,6 +119,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   const connectStartAbortRef = useRef<AbortController | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const warmupInFlightRef = useRef(false);
+  const reconnectInFlightRef = useRef(false);
   const wasTelegramConnectedRef = useRef(false);
 
   const bumpEmojiFetchEpoch = useCallback(() => {
@@ -173,6 +174,8 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     }
   }, [isAuthenticated, authReady]);
 
+  const attemptSilentMtprotoResumeRef = useRef<(() => Promise<boolean>) | null>(null);
+
   const silentWarmupSession = useCallback(async () => {
     if (warmupInFlightRef.current) return;
     warmupInFlightRef.current = true;
@@ -204,7 +207,24 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
           error: json.error ?? null,
           status: response.status,
         });
-        if (json.needsReconnect || json.connected === false) {
+        if (json.needsReconnect) {
+          logTelegramConnect("silent_warmup_needs_reconnect", { error: json.error ?? null });
+          await attemptSilentMtprotoResumeRef.current?.();
+          if (attempt + 1 < maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, 1_200));
+            continue;
+          }
+          return;
+        }
+        if (response.status === 403 && json.error === "not_connected") {
+          if (sessionTelegramMessagesConnected === true && attempt + 1 < maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            continue;
+          }
+          setConnected(false);
+          return;
+        }
+        if (json.connected === false) {
           setConnected(false);
           return;
         }
@@ -240,7 +260,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     } finally {
       warmupInFlightRef.current = false;
     }
-  }, []);
+  }, [sessionTelegramMessagesConnected]);
 
   const applyConnectSnapshot = useCallback(
     (json: {
@@ -329,6 +349,27 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
         error: json.error ?? null,
       });
       if (generation !== pollGenerationRef.current) return;
+      // Gateway lost the in-memory attempt (restart / race). Do not keep polling a dead id.
+      if (
+        response.status === 404 ||
+        json.error === "attempt_not_found" ||
+        json.error === "not_found"
+      ) {
+        logTelegramConnect("connect_poll_attempt_lost", {
+          attemptId,
+          status: response.status,
+          error: json.error ?? null,
+        });
+        attemptIdRef.current = null;
+        clearStoredMtprotoConnect();
+        applyConnectSnapshot({
+          ok: false,
+          authState: "failed",
+          error: "gateway_attempt_lost",
+          attemptId: null,
+        });
+        return;
+      }
       applyConnectSnapshot({ ...json, attemptId });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -342,6 +383,50 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       void pollConnectStatus();
     }, POLL_MS);
   }, [pollConnectStatus, stopPolling]);
+
+  const attemptSilentMtprotoResume = useCallback(async (): Promise<boolean> => {
+    if (reconnectInFlightRef.current || !isAuthenticated) return false;
+    reconnectInFlightRef.current = true;
+    logTelegramConnect("silent_resume_start");
+    try {
+      const response = await fetch(buildApiUrl("/api/telegram-mtproto-connect-start"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resume: true, authMethod: "qr" }),
+      });
+      const json = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        authState?: string;
+        error?: string | null;
+        attemptId?: string | null;
+        chatCount?: number | null;
+      };
+      logTelegramConnect("silent_resume_done", {
+        status: response.status,
+        authState: json.authState ?? null,
+        error: json.error ?? null,
+      });
+      if (json.authState === "ready") {
+        applyConnectSnapshot({ ...json, attemptId: json.attemptId ?? undefined });
+        return true;
+      }
+      if (json.attemptId && json.authState && isMidConnectAuth(json.authState as MtprotoAuthState)) {
+        attemptIdRef.current = json.attemptId;
+        connectAuthStateRef.current = json.authState as MtprotoAuthState;
+        startPolling();
+      }
+      return false;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logTelegramConnect("silent_resume_error", { message });
+      return false;
+    } finally {
+      reconnectInFlightRef.current = false;
+    }
+  }, [applyConnectSnapshot, isAuthenticated, startPolling]);
+
+  attemptSilentMtprotoResumeRef.current = attemptSilentMtprotoResume;
 
   const refreshStatus = useCallback(async (): Promise<void> => {
     await refreshStatusInner();
@@ -375,8 +460,9 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       return;
     }
     if (sessionTelegramMessagesConnected === true) {
-      setConnected(true);
       void silentWarmupSession();
+    } else if (sessionTelegramMessagesConnected === false) {
+      setConnected(false);
     }
   }, [isAuthenticated, sessionTelegramMessagesConnected, silentWarmupSession]);
 
@@ -384,11 +470,33 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     if (!authReady || !isAuthenticated) return;
     void (async () => {
       const connected = await refreshStatusInner();
-      if (connected) {
+      if (connected || sessionTelegramMessagesConnected === true) {
         void silentWarmupSession();
       }
     })();
-  }, [authReady, isAuthenticated, refreshStatusInner, silentWarmupSession]);
+  }, [
+    authReady,
+    isAuthenticated,
+    refreshStatusInner,
+    silentWarmupSession,
+    sessionTelegramMessagesConnected,
+  ]);
+
+  useEffect(() => {
+    if (!authReady || !isAuthenticated || sessionTelegramMessagesConnected !== true) return;
+    if (isTelegramMessagesConnected) return;
+    const timer = setInterval(() => {
+      if (warmupInFlightRef.current || reconnectInFlightRef.current) return;
+      void silentWarmupSession();
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, [
+    authReady,
+    isAuthenticated,
+    isTelegramMessagesConnected,
+    sessionTelegramMessagesConnected,
+    silentWarmupSession,
+  ]);
 
   useEffect(() => () => stopPolling(), [stopPolling]);
 

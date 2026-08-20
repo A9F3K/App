@@ -44,6 +44,15 @@ function hydrateFromStorageIfNeeded() {
   activeIndex = readStoredNavIndex();
 }
 
+/** Re-read localStorage after app account logout/login (module state may have reset). */
+export function rehydrateAuthenticatedHomeLeftNavFromStorage(): void {
+  const stored = readStoredNavIndex();
+  hydratedFromStorage = true;
+  if (activeIndex === stored) return;
+  activeIndex = stored;
+  emit();
+}
+
 function emit() {
   for (const l of listeners) {
     l();
