@@ -447,10 +447,10 @@ export function AuthenticatedHomeLeftNavStrip({
     return {
       width: thumbSnapW,
       height: lineT,
-      backgroundColor: colors.primary,
+      backgroundColor: colors.accent,
       ...(Platform.OS === "web" ? ({ willChange: "transform" } as ViewStyle) : null),
     };
-  }, [showScrollbar, thumbW, thumbSnapW, colors.primary, lineT]);
+  }, [showScrollbar, thumbW, thumbSnapW, colors.accent, lineT]);
 
   const labelStyle = (active: boolean) => ({
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,

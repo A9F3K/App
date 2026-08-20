@@ -99,7 +99,12 @@ export function AiSearchColumnEmptyState() {
 
   const onCloseTab = useCallback((id: string) => {
     setTabs((current) => {
-      if (current.length <= 1) return current;
+      if (current.length <= 1) {
+        // Keep one tab but remount its default empty body.
+        const fresh = createAgentTabId();
+        setActiveTabId(fresh);
+        return [{ id: fresh }];
+      }
       const index = current.findIndex((tab) => tab.id === id);
       if (index < 0) return current;
       const next = current.filter((tab) => tab.id !== id);

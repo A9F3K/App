@@ -76,8 +76,8 @@ export function FloatingShield() {
 
   const isAuthenticatedHome =
     isAuthenticated && (pathname === "/" || pathname === "" || pathname == null);
-  /** Wide authenticated home: Settings + Shield live in the messages column footer (right of search). */
-  const iconsInMessagesColumnFooter = isAuthenticatedHome && !shieldOnRight;
+  /** Authenticated home: Settings + Shield live in {@link MessagesColumnFooter}. */
+  const iconsInMessagesColumnFooter = isAuthenticatedHome;
   const { openSettingsSheet } = useSettingsSheet();
   const chatListSearchActive = useMessagesChatListSearchActiveOptional();
 

@@ -113,7 +113,6 @@ export function AiAgentsColumnHeader({
         >
           {tabs.map((tab, index) => {
             const active = tab.id === activeTabId;
-            const showClose = tabs.length > 1;
             return (
               <View key={tab.id} style={styles.tabCluster}>
                 <Pressable
@@ -138,23 +137,22 @@ export function AiAgentsColumnHeader({
                   >
                     {t("ai.agents.newAgent")}
                   </Text>
-                  {showClose ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={t("ai.agents.closeTab")}
-                      hitSlop={6}
-                      onPress={(event) => {
-                        // Avoid selecting the tab when closing.
-                        event?.stopPropagation?.();
-                        onCloseTab(tab.id);
-                      }}
-                      style={styles.closeHit}
-                    >
-                      <AgentCloseIcon color={colors.secondary} />
-                    </Pressable>
-                  ) : null}
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={t("ai.agents.closeTab")}
+                    hitSlop={6}
+                    onPress={(event) => {
+                      // Avoid selecting the tab when closing.
+                      event?.stopPropagation?.();
+                      onCloseTab(tab.id);
+                    }}
+                    style={styles.closeHit}
+                  >
+                    <AgentCloseIcon color={colors.secondary} />
+                  </Pressable>
                 </Pressable>
-                {active || index < tabs.length - 1 ? (
+                {/* Only between tabs — never after the last (reads like a text cursor). */}
+                {index < tabs.length - 1 ? (
                   <View style={[styles.tabRule, { backgroundColor: colors.highlight }]} />
                 ) : null}
               </View>

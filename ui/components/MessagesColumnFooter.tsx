@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import {
   Platform,
   Pressable,
@@ -10,6 +10,7 @@ import {
   type NativeSyntheticEvent,
   type TextLayoutEventData,
 } from "react-native";
+import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
 import { useSettingsSheet } from "../settings/SettingsContext";
@@ -50,13 +51,47 @@ type Props = {
   showSearch?: boolean;
 };
 
+/** Bottom-opaque → top-transparent background fade behind the narrow messages footer row. */
+function NarrowFooterGradientUndercover({ height }: { height: number }) {
+  const colors = useColors();
+  const [width, setWidth] = useState(0);
+  const rawId = useId();
+  const gradientId = `msg-footer-grad-${rawId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+
+  return (
+    <View
+      pointerEvents="none"
+      onLayout={(event) => {
+        const next = Math.ceil(event.nativeEvent.layout.width);
+        setWidth((current) => (current === next ? current : next));
+      }}
+      style={[StyleSheet.absoluteFillObject, { height }]}
+    >
+      {width > 0 ? (
+        <Svg width={width} height={height} style={StyleSheet.absoluteFill}>
+          <Defs>
+            <LinearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <Stop offset="0%" stopColor={colors.background} stopOpacity={0} />
+              <Stop offset="100%" stopColor={colors.background} stopOpacity={1} />
+            </LinearGradient>
+          </Defs>
+          <Rect x={0} y={0} width={width} height={height} fill={`url(#${gradientId})`} />
+        </Svg>
+      ) : null}
+    </View>
+  );
+}
+
 function ColumnFooterChrome({
   children,
   /** Transparent chrome so liquid-glass chips overlay the chat list (narrow home). */
   overlayContent = false,
+  /** Vertical fade underlay for narrow overlay footers (menu / search / shield row). */
+  gradientUndercover = false,
 }: {
   children: ReactNode;
   overlayContent?: boolean;
+  gradientUndercover?: boolean;
 }) {
   const colors = useColors();
   const { themeBgReady, isInTelegram, layoutStartup } = useTelegram();
@@ -84,9 +119,16 @@ function ColumnFooterChrome({
       ]}
       pointerEvents="box-none"
     >
+      {gradientUndercover ? <NarrowFooterGradientUndercover height={BAR_HEIGHT} /> : null}
       {/* Do not report height here — GlobalBottomBar owns screen-edge barHeight. */}
       <View
-        style={[styles.container, { height: BAR_HEIGHT, backgroundColor }]}
+        style={[
+          styles.container,
+          {
+            height: BAR_HEIGHT,
+            backgroundColor: overlayContent || gradientUndercover ? "transparent" : backgroundColor,
+          },
+        ]}
         pointerEvents="box-none"
       >
         {children}
@@ -140,7 +182,7 @@ function ConnectTelegramFooterButton({
 
   if (narrow) {
     return (
-      <ColumnFooterChrome overlayContent>
+      <ColumnFooterChrome overlayContent gradientUndercover>
         {Platform.OS !== "web" ? (
           <Text
             key={label}
@@ -154,7 +196,7 @@ function ConnectTelegramFooterButton({
         <View onLayout={onRowLayout} style={[styles.row, { height: BAR_HEIGHT, justifyContent: "center" }]}>
           {pillWidth > 0 ? (
             <Pressable accessibilityRole="button" onPress={onPress} style={styles.connectPillPressable}>
-                <LiquidGlassShaderUndercover
+              <LiquidGlassShaderUndercover
                 key={`${label}-${pillWidth}`}
                 shape="pill"
                 width={pillWidth}
@@ -201,9 +243,8 @@ function ConnectTelegramFooterButton({
 }
 
 /**
- * Left-column footer: menu + search; wide also places Settings + Shield after search.
- * Narrow uses FloatingShield for Settings/Shield so the search field keeps width.
- * When Telegram is disconnected, shows Connect Telegram instead.
+ * Left-column footer: Menu + Search (+ Settings + Shield).
+ * Narrow: liquid-glass chips with gradient underlay. Wide: undercover circles for settings/shield.
  */
 export function MessagesColumnFooter({ showSearch = true }: Props) {
   const colors = useColors();
@@ -272,37 +313,57 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
     </Pressable>
   );
 
+  const settingsButtonNarrow = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t("settings.sheetTitle")}
+      onPress={openSettingsSheet}
+      style={styles.liquidGlassChipPressable}
+    >
+      <LiquidGlassShaderUndercover
+        size={LIQUID_GLASS_CHIP_PX}
+        phaseOffset={0.08}
+        isLightTheme={isLightTheme}
+        capturePointerEvents={false}
+      >
+        <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
+      </LiquidGlassShaderUndercover>
+    </Pressable>
+  );
+
+  const shieldChipNarrow = (
+    <View style={styles.liquidGlassChipPressable} pointerEvents="none">
+      <LiquidGlassShaderUndercover
+        size={LIQUID_GLASS_CHIP_PX}
+        phaseOffset={0.41}
+        isLightTheme={isLightTheme}
+        capturePointerEvents={false}
+      >
+        <ShieldIcon
+          powerColor={powerColor}
+          width={SHIELD_ICON_WIDTH_PX}
+          height={SHIELD_ICON_HEIGHT_PX}
+        />
+      </LiquidGlassShaderUndercover>
+    </View>
+  );
+
   const settingsButtonWide = (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={t("settings.sheetTitle")}
       onPress={openSettingsSheet}
-      style={({ pressed }) => ({
-        width: MENU_BTN_PX,
-        height: MENU_BTN_PX,
-        backgroundColor: colors.undercover,
-        alignItems: "center",
-        justifyContent: "center",
-        opacity: pressed ? 0.75 : 1,
-        flexShrink: 0,
-      })}
+      style={({ pressed }) => [
+        styles.wideCircleChip,
+        { backgroundColor: colors.undercover, opacity: pressed ? 0.75 : 1 },
+      ]}
     >
       <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
     </Pressable>
   );
 
   const shieldChipWide = (
-    <View
-      style={{
-        width: MENU_BTN_PX,
-        height: MENU_BTN_PX,
-        backgroundColor: colors.undercover,
-        alignItems: "center",
-        justifyContent: "center",
-        flexShrink: 0,
-      }}
-      pointerEvents="none"
-    >
+    <View style={[styles.wideCircleChip, { backgroundColor: colors.undercover }]} pointerEvents="none">
       <ShieldIcon
         powerColor={powerColor}
         width={SHIELD_ICON_WIDTH_PX}
@@ -312,7 +373,7 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
   );
 
   const searchField = showSearch ? (
-    <View style={{ flex: 1, minWidth: isNarrow ? 96 : 0 }}>
+    <View style={{ flex: 1, minWidth: isNarrow ? 72 : 0 }}>
       <MessageChatListSearchField
         value={chatListSearchQuery}
         onChangeText={setChatListSearchQuery}
@@ -333,7 +394,7 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
 
   return (
     <>
-      <ColumnFooterChrome overlayContent={isNarrow}>
+      <ColumnFooterChrome overlayContent={isNarrow} gradientUndercover={isNarrow}>
         <View style={[styles.row, { height: BAR_HEIGHT, gap: MENU_SEARCH_GAP_PX }]}>
           {isNarrow ? (
             searchExpanded ? (
@@ -341,6 +402,8 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
             ) : (
               <>
                 {menuButton}
+                {settingsButtonNarrow}
+                {shieldChipNarrow}
                 {searchField}
               </>
             )
@@ -387,6 +450,15 @@ const styles = StyleSheet.create({
     width: LIQUID_GLASS_CHIP_PX,
     height: LIQUID_GLASS_CHIP_PX,
     flexShrink: 0,
+  },
+  wideCircleChip: {
+    width: MENU_BTN_PX,
+    height: MENU_BTN_PX,
+    borderRadius: MENU_BTN_PX / 2,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    overflow: "hidden",
   },
   connectPillPressable: {
     height: LIQUID_GLASS_PILL_HEIGHT_PX,
