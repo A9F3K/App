@@ -638,6 +638,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const { authReady, isAuthenticated, sessionTelegramMessagesConnected } = useAuth();
   const { isTelegramMessagesConnected, refreshStatus, recoverTelegramMessagesSession } =
     useTelegramMessagesConnection();
+  const recoverChatsInFlightRef = useRef(false);
   const [chats, setChats] = useState<MessageChatRowData[]>([]);
   const [chatListSync, setChatListSync] = useState<ChatListSyncStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -826,6 +827,17 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         status: response.status,
       });
       lastGatewayResyncRef.current = Date.now();
+      if (response.status >= 500) {
+        setGatewayWarming(false);
+        logPageDisplay("messages_gateway_resync_timeout", {
+          reason,
+          status: response.status,
+          elapsedMs: Date.now() - started,
+        });
+        const recovered = await recoverTelegramMessagesSession();
+        if (!recovered) await refreshStatus();
+        return false;
+      }
       if (json.warming) {
         return true;
       }
@@ -863,10 +875,15 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         setListBootstrapPending(false);
       } else {
         setListBootstrapPending(true);
-        if (sessionTelegramMessagesConnected === true) {
-          void recoverTelegramMessagesSession().then((ok) => {
-            if (ok) void loadChatsRef.current({ silent: false, forceFull: true });
-          });
+        if (sessionTelegramMessagesConnected === true && !recoverChatsInFlightRef.current) {
+          recoverChatsInFlightRef.current = true;
+          void recoverTelegramMessagesSession()
+            .then((ok) => {
+              if (ok) void loadChatsRef.current({ silent: false, forceFull: true });
+            })
+            .finally(() => {
+              recoverChatsInFlightRef.current = false;
+            });
         }
       }
       setError(null);

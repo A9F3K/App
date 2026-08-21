@@ -596,6 +596,12 @@ function HomeAuthenticatedScreenMain() {
   const homeNavIndex = useAuthenticatedHomeLeftNavIndex();
   const { listSearchActive } = useMessagesChatListSearch();
   const messagesSearchScrollMode = homeNavIndex === 1 && listSearchActive;
+  useEffect(() => {
+    // Footer search is shared across Feed/Messages/… — jump to Messages so results are visible.
+    if (listSearchActive && homeNavIndex !== 1) {
+      setAuthenticatedHomeLeftNavIndex(1);
+    }
+  }, [homeNavIndex, listSearchActive]);
   const chatListBottomLoaderActive = useSyncExternalStore(
     subscribeChatListBottomLoaderActive,
     isChatListBottomLoaderActive,
@@ -735,7 +741,7 @@ function HomeAuthenticatedScreenMain() {
   const embeddedAiBar = aiBarDock === "screenFooter" ? null : <GlobalBottomBar />;
   const aiSearchColumnContent =
     aiBarDock === "splitColumn3" ? <AiSearchColumnEmptyState /> : null;
-  const mainColumnFooter = <MessagesColumnFooter showSearch={homeNavIndex === 1} />;
+  const mainColumnFooter = <MessagesColumnFooter showSearch />;
   const swapColumnFooter = <SwapColumnFooter />;
   const sendColumnFooter = <SendColumnFooter />;
   const getColumnFooter = <GetColumnFooter />;

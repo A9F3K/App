@@ -85,6 +85,7 @@ function normalizeRestoredConnectSession(stored: StoredMtprotoConnect): StoredMt
 }
 
 const POLL_MS = 2000;
+const GATEWAY_WARMUP_FAIL_BACKOFF_MS = 45_000;
 
 function isPhoneAuthRegression(current: MtprotoAuthState, next: MtprotoAuthState): boolean {
   if (next === "failed" || next === "ready") return false;
@@ -126,6 +127,9 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   const warmupInFlightRef = useRef(false);
   const reconnectInFlightRef = useRef(false);
   const wasTelegramConnectedRef = useRef(false);
+  /** Mirrors `isTelegramMessagesConnected` for async recover/warmup without stale closures. */
+  const connectedRef = useRef(false);
+  const connectSheetVisibleRef = useRef(false);
   /** After status confirms DB link is gone, back off silent warmup (avoids 403 spam loops). */
   const notConnectedBackoffUntilRef = useRef(0);
 
@@ -135,11 +139,16 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   }, []);
 
   useEffect(() => {
+    connectedRef.current = isTelegramMessagesConnected;
     if (isTelegramMessagesConnected && !wasTelegramConnectedRef.current) {
       bumpEmojiFetchEpoch();
     }
     wasTelegramConnectedRef.current = isTelegramMessagesConnected;
   }, [bumpEmojiFetchEpoch, isTelegramMessagesConnected]);
+
+  useEffect(() => {
+    connectSheetVisibleRef.current = connectSheetVisible;
+  }, [connectSheetVisible]);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -198,14 +207,35 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
 
   const attemptSilentMtprotoResumeRef = useRef<(() => Promise<boolean>) | null>(null);
 
-  const silentWarmupSession = useCallback(async () => {
-    if (warmupInFlightRef.current) return;
-    if (Date.now() < notConnectedBackoffUntilRef.current) return;
+  const markGatewayWarmupFailed = useCallback((reason: string) => {
+    logTelegramConnect("silent_warmup_give_up", { reason });
+    notConnectedBackoffUntilRef.current = Date.now() + GATEWAY_WARMUP_FAIL_BACKOFF_MS;
+    setConnected(false);
+  }, []);
+
+  const silentWarmupSession = useCallback(async (): Promise<boolean> => {
+    if (warmupInFlightRef.current) return connectedRef.current;
+    if (Date.now() < notConnectedBackoffUntilRef.current) return connectedRef.current;
+    // Do not fight an open QR/password sheet — resume/warmup restarts hide Connect.
+    if (connectSheetVisibleRef.current || isMidConnectAuth(connectAuthStateRef.current)) {
+      logTelegramConnect("silent_warmup_skip_mid_connect", {
+        sheetVisible: connectSheetVisibleRef.current,
+        authState: connectAuthStateRef.current,
+      });
+      return connectedRef.current;
+    }
     warmupInFlightRef.current = true;
     logTelegramConnect("silent_warmup_start");
     try {
       const maxAttempts = 5;
       for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        if (connectSheetVisibleRef.current || isMidConnectAuth(connectAuthStateRef.current)) {
+          logTelegramConnect("silent_warmup_abort_mid_connect", {
+            attempt: attempt + 1,
+            authState: connectAuthStateRef.current,
+          });
+          return connectedRef.current;
+        }
         const response = await fetch(buildApiUrl("/api/telegram-messages-warmup"), {
           method: "POST",
           credentials: "include",
@@ -240,8 +270,8 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
             await new Promise((resolve) => setTimeout(resolve, 1_200));
             continue;
           }
-          setConnected(false);
-          return;
+          markGatewayWarmupFailed("http_5xx");
+          return false;
         }
         if (json.needsReconnect) {
           logTelegramConnect("silent_warmup_needs_reconnect", { error: json.error ?? null });
@@ -250,11 +280,8 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
             await new Promise((resolve) => setTimeout(resolve, 1_200));
             continue;
           }
-          if (attempt + 1 >= maxAttempts || !resumed) {
-            setConnected(false);
-            return;
-          }
-          return;
+          markGatewayWarmupFailed(json.error ?? "needs_reconnect");
+          return false;
         }
         if (response.status === 403 && json.error === "not_connected") {
           // Only silent-resume when the product session still says linked.
@@ -281,15 +308,16 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
           });
           notConnectedBackoffUntilRef.current = Date.now() + 60_000;
           setConnected(false);
-          return;
+          return false;
         }
         if (json.connected === false) {
           setConnected(false);
-          return;
+          return false;
         }
         if (json.gatewayReady) {
           notConnectedBackoffUntilRef.current = 0;
           setConnected(true);
+          connectedRef.current = true;
           logPageDisplay("telegram_messages_gateway_ready");
           void import("../authenticatedHomeSelectedChat").then(({ getAuthenticatedHomeSelectedChatSnapshot }) => {
             const chat = getAuthenticatedHomeSelectedChatSnapshot();
@@ -298,10 +326,13 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
               prefetchChatHistoryPriority(chat);
             });
           });
-          return;
+          return true;
         }
         if (
-          (json.warming || json.error === "session_restoring") &&
+          (json.warming ||
+            json.error === "session_restoring" ||
+            json.error === "warmup_timeout" ||
+            json.error === "session_not_ready") &&
           attempt + 1 < maxAttempts
         ) {
           await new Promise((resolve) =>
@@ -309,18 +340,40 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
           );
           continue;
         }
-        // Linked in DB but gateway never became ready — show Connect, do not fake connected.
-        setConnected(false);
-        return;
+        // Linked in DB but gateway never became ready — try one silent resume, then Connect.
+        logTelegramConnect("silent_warmup_try_resume_after_timeout", {
+          attempt: attempt + 1,
+          error: json.error ?? null,
+        });
+        const resumed = await attemptSilentMtprotoResumeRef.current?.();
+        if (resumed) {
+          notConnectedBackoffUntilRef.current = 0;
+          setConnected(true);
+          connectedRef.current = true;
+          return true;
+        }
+        markGatewayWarmupFailed(json.error ?? "session_not_ready");
+        return false;
       }
-      setConnected(false);
+      // Exhausted warming polls — last-chance silent resume before Connect CTA.
+      const resumed = await attemptSilentMtprotoResumeRef.current?.();
+      if (resumed) {
+        notConnectedBackoffUntilRef.current = 0;
+        setConnected(true);
+        connectedRef.current = true;
+        return true;
+      }
+      markGatewayWarmupFailed("warmup_exhausted");
+      return false;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       logTelegramConnect("silent_warmup_error", { message });
+      markGatewayWarmupFailed("warmup_exception");
+      return false;
     } finally {
       warmupInFlightRef.current = false;
     }
-  }, [refreshStatusInner, sessionTelegramMessagesConnected]);
+  }, [markGatewayWarmupFailed, refreshStatusInner, sessionTelegramMessagesConnected]);
 
   const applyConnectSnapshot = useCallback(
     (json: {
@@ -365,6 +418,8 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       setConnectError(json.error ?? (json.ok === false ? "connect_failed" : null));
 
       if (state === "ready") {
+        notConnectedBackoffUntilRef.current = 0;
+        connectedRef.current = true;
         setConnected(true);
         setConnectSheetVisible(false);
         stopPolling();
@@ -505,19 +560,32 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   attemptSilentMtprotoResumeRef.current = attemptSilentMtprotoResume;
 
   const recoverTelegramMessagesSession = useCallback(async (): Promise<boolean> => {
+    if (connectedRef.current) return true;
+    if (connectSheetVisibleRef.current || isMidConnectAuth(connectAuthStateRef.current)) {
+      logTelegramConnect("recover_session_skip_mid_connect", {
+        authState: connectAuthStateRef.current,
+      });
+      return false;
+    }
+    if (Date.now() < notConnectedBackoffUntilRef.current) {
+      logTelegramConnect("recover_session_backoff", {
+        remainingMs: notConnectedBackoffUntilRef.current - Date.now(),
+      });
+      return false;
+    }
     if (reconnectInFlightRef.current || warmupInFlightRef.current) {
-      // Another recovery is already running — wait briefly then re-check status.
+      // Another recovery is already running — wait briefly, then report real gateway state.
       await new Promise((resolve) => setTimeout(resolve, 400));
-      return refreshStatusInner();
+      return connectedRef.current;
     }
     logTelegramConnect("recover_session_start", {
       sessionLinked: sessionTelegramMessagesConnected === true,
     });
-    notConnectedBackoffUntilRef.current = 0;
     const linked = await refreshStatusInner();
     if (linked) {
-      void silentWarmupSession();
-      return true;
+      // Await warmup: returning true on DB-link alone caused loadChats→recover thrash
+      // while gateway stayed session_not_ready / warmup_timeout.
+      return silentWarmupSession();
     }
     // No product link — show Connect; do not start a silent QR attempt.
     if (sessionTelegramMessagesConnected !== true) {
@@ -527,12 +595,10 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     const resumed = await attemptSilentMtprotoResume();
     if (resumed) {
       notConnectedBackoffUntilRef.current = 0;
-      void silentWarmupSession();
-      return true;
+      return silentWarmupSession();
     }
     // Resume may have re-marked DB while authState wasn't "ready" yet.
-    await silentWarmupSession();
-    return refreshStatusInner();
+    return silentWarmupSession();
   }, [
     attemptSilentMtprotoResume,
     clearSilentMidConnect,
@@ -542,11 +608,18 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   ]);
 
   const refreshStatus = useCallback(async (): Promise<void> => {
-    const connected = await refreshStatusInner();
-    if (!connected && sessionTelegramMessagesConnected === true) {
+    const linked = await refreshStatusInner();
+    if (!linked && sessionTelegramMessagesConnected === true) {
       void recoverTelegramMessagesSession();
+    } else if (linked && !connectedRef.current) {
+      void silentWarmupSession();
     }
-  }, [recoverTelegramMessagesSession, refreshStatusInner, sessionTelegramMessagesConnected]);
+  }, [
+    recoverTelegramMessagesSession,
+    refreshStatusInner,
+    sessionTelegramMessagesConnected,
+    silentWarmupSession,
+  ]);
 
   useEffect(() => {
     logTelegramConnect("provider_mount", { apiBase: getApiBaseUrl(), isAuthenticated, authReady });
@@ -971,6 +1044,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
 
   const openConnectSheet = useCallback(() => {
     logTelegramConnect("open_connect_sheet");
+    notConnectedBackoffUntilRef.current = 0;
     setConnectSheetVisible(true);
     const current = connectAuthStateRef.current;
     if (!isMidConnectAuth(current)) {

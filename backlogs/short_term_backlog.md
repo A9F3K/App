@@ -1,3 +1,5 @@
+Coins in the coins section including those from TON Connect
+Tokens loading, should not load absolutely all until scroll
 Primary and secondary buttons color
 fix bots displayal, for users as well
 email of the user in db when sign in through google
