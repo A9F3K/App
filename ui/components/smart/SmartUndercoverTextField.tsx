@@ -17,7 +17,7 @@ type Props = {
   nativeID?: string;
 } & Pick<TextInputProps, "placeholder" | "placeholderTextColor" | "autoCapitalize" | "autoCorrect">;
 
-/** Single-row undercover field with accent border — same shell as welcome email input. */
+/** Single-row undercover field with divider-colored hairline — matches navigation search. */
 export function SmartUndercoverTextField({
   value,
   onChangeText,
@@ -39,7 +39,7 @@ export function SmartUndercoverTextField({
         styles.shell,
         {
           backgroundColor: colors.undercover,
-          ...undercoverHairlineRingStyle(colors.accent, borderWidth),
+          ...undercoverHairlineRingStyle(colors.highlight, borderWidth),
           ...(Platform.OS === "web"
             ? ({
                 "--smart-field-autofill-bg": colors.undercover,

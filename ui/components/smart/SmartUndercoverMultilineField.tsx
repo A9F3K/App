@@ -342,7 +342,8 @@ export function SmartUndercoverMultilineField({
         styles.shell,
         {
           backgroundColor: colors.undercover,
-          ...undercoverHairlineRingStyle(colors.accent, borderWidth),
+          // Divider chrome so the primary scroll thumb can sit on the right edge (music-bar).
+          ...undercoverHairlineRingStyle(colors.highlight, borderWidth),
           ...(Platform.OS === "web"
             ? ({
                 "--smart-field-autofill-bg": colors.undercover,
@@ -418,7 +419,8 @@ const styles = StyleSheet.create({
     width: "100%",
     alignSelf: "stretch",
     height: SMART_UNDERCOVER_MULTILINE_HEIGHT_PX,
-    overflow: "hidden",
+    // Visible so the right-edge scroll thumb is not clipped off the hairline ring.
+    overflow: "visible",
     position: "relative",
     zIndex: 0,
     ...Platform.select({

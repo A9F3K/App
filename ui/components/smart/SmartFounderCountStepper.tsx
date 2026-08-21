@@ -103,7 +103,7 @@ export function SmartFounderCountStepper({ value, onChange, accessibilityLabel }
           styles.pill,
           {
             backgroundColor: colors.undercover,
-            ...undercoverHairlineRingStyle(colors.accent, borderWidth),
+            ...undercoverHairlineRingStyle(colors.highlight, borderWidth),
           },
         ]}
       >

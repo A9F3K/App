@@ -280,7 +280,7 @@ textarea[data-ai-input="true"] {
 .smart-undercover-text-input:-webkit-autofill:hover,
 .smart-undercover-text-input:-webkit-autofill:focus,
 .smart-undercover-text-input:-webkit-autofill:active {
-  -webkit-box-shadow: 0 0 0 1000px var(--smart-field-autofill-bg, #272727) inset !important;
+  -webkit-box-shadow: 0 0 0 1000px var(--smart-field-autofill-bg, #323232) inset !important;
   -webkit-text-fill-color: var(--smart-field-autofill-fg, #fafafa) !important;
   caret-color: var(--smart-field-autofill-fg, #fafafa);
   transition: background-color 99999s ease-out;

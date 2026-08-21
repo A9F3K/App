@@ -19,7 +19,7 @@ import { useBottomBarLayout } from "./BottomBarLayoutContext";
 import { useTelegram } from "./Telegram";
 import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConnectionContext";
 import { MenuHamburgerIcon } from "./icons/MenuHamburgerIcon";
-import { SettingsIcon } from "./icons/SettingsIcon";
+import { SlowRotatingSettingsIcon } from "./icons/SlowRotatingSettingsIcon";
 import { ShieldIcon } from "./icons/ShieldIcon";
 import { TelegramLogoIcon } from "./icons/TelegramLogoIcon";
 import { LiquidGlassShaderUndercover } from "./LiquidGlassShaderUndercover";
@@ -227,7 +227,7 @@ function DisconnectedTelegramFooter({
         isLightTheme={isLightTheme}
         capturePointerEvents={false}
       >
-        <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
+        <SlowRotatingSettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
       </LiquidGlassShaderUndercover>
     </Pressable>
   ) : (
@@ -240,7 +240,7 @@ function DisconnectedTelegramFooter({
         { backgroundColor: colors.undercover, opacity: pressed ? 0.75 : 1 },
       ]}
     >
-      <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
+      <SlowRotatingSettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
     </Pressable>
   );
 
@@ -392,7 +392,7 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
         isLightTheme={isLightTheme}
         capturePointerEvents={false}
       >
-        <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
+        <SlowRotatingSettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
       </LiquidGlassShaderUndercover>
     </Pressable>
   );
@@ -424,7 +424,7 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
         { backgroundColor: colors.undercover, opacity: pressed ? 0.75 : 1 },
       ]}
     >
-      <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
+      <SlowRotatingSettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
     </Pressable>
   );
 

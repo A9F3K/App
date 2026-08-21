@@ -144,7 +144,7 @@ export function AuthenticatedHomeLeftNavStrip({
   selectedIndex?: number;
   onSelectIndex?: (index: number) => void;
 }) {
-  const { t } = useAppStrings();
+  const { t, locale } = useAppStrings();
   const { width: windowWidth } = useWindowDimensions();
   const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   /**
@@ -224,7 +224,7 @@ export function AuthenticatedHomeLeftNavStrip({
           x = Math.round(scrollEl.scrollLeft);
           const sw = Math.round(scrollEl.scrollWidth);
           if (sw > 0) {
-            setDomHScrollSpanPx((prev) => (sw > prev ? sw : prev));
+            setDomHScrollSpanPx((prev) => (prev === sw ? prev : sw));
           }
         }
       }
@@ -235,7 +235,7 @@ export function AuthenticatedHomeLeftNavStrip({
       const spanPx = scrollSpanFromContentSizeEvent(cs?.width ?? 0, cs?.height ?? 0);
       if (spanPx > 0) {
         const rounded = Math.round(spanPx);
-        setContentW((prev) => (rounded > prev ? rounded : prev));
+        setContentW((prev) => (prev === rounded ? prev : rounded));
       }
       setScrollX(x);
     },
@@ -255,7 +255,7 @@ export function AuthenticatedHomeLeftNavStrip({
         if (!node || typeof node.scrollLeft !== "number") return;
         const sw = Math.round(node.scrollWidth);
         if (sw > 0) {
-          setDomHScrollSpanPx((prev) => (sw > prev ? sw : prev));
+          setDomHScrollSpanPx((prev) => (prev === sw ? prev : sw));
         }
         const x = Math.round(node.scrollLeft);
         if (x > maxScrollXSeenRef.current) {
@@ -297,13 +297,34 @@ export function AuthenticatedHomeLeftNavStrip({
     const spanPx = scrollSpanFromContentSizeEvent(w, h);
     if (spanPx <= 0) return;
     const rounded = Math.round(spanPx);
-    setContentW((prev) => (rounded > prev ? rounded : prev));
+    // Allow shrink when locale/label width drops (monotonic max kept a stale English scrollWidth).
+    setContentW((prev) => (prev === rounded ? prev : rounded));
   }, []);
 
   const onIntrinsicRowLayout = useCallback((e: LayoutChangeEvent) => {
     const w = Math.round(e.nativeEvent.layout.width);
-    setIntrinsicRowW((prev) => (prev === w ? prev : w));
+    setIntrinsicRowW((prev) => {
+      if (prev === w) return prev;
+      // Labels got narrower (locale change) — drop inflated scroll spans so fits/center can recover.
+      if (prev > 0 && w < prev) {
+        setContentW(0);
+        setDomHScrollSpanPx(0);
+        maxScrollXSeenRef.current = 0;
+        navStripOverflowStickyRef.current = false;
+      }
+      return w;
+    });
   }, []);
+
+  /** Locale change remounts label strings; reset sticky overflow from the previous language. */
+  useEffect(() => {
+    setContentW(0);
+    setDomHScrollSpanPx(0);
+    maxScrollXSeenRef.current = 0;
+    navStripOverflowStickyRef.current = false;
+    setScrollX(0);
+    scrollRef.current?.scrollTo({ x: 0, animated: false });
+  }, [locale]);
 
   /**
    * Scroll viewport width: measured `ScrollView` width when available, else budget from split/window
@@ -318,13 +339,15 @@ export function AuthenticatedHomeLeftNavStrip({
       : ESTIMATED_NAV_STRIP_CONTENT_W_PX;
   if (scrollViewportW > 0) {
     const overBy = stripContentWidthPx - scrollViewportW;
-    if (
-      overBy > NAV_STRIP_OVERFLOW_LOCK_PX ||
-      maxScrollXSeenRef.current > SCROLL_EPS
-    ) {
-      navStripOverflowStickyRef.current = true;
-    } else if (stripContentWidthPx < scrollViewportW - NAV_STRIP_OVERFLOW_CLEAR_MARGIN_PX) {
+    // Prefer intrinsic fit: clear sticky when labels clearly fit. Do not keep sticky solely because
+    // the user once scrolled longer English/Russian labels (maxScrollXSeen never cleared).
+    if (stripContentWidthPx < scrollViewportW - NAV_STRIP_OVERFLOW_CLEAR_MARGIN_PX) {
       navStripOverflowStickyRef.current = false;
+      if (maxScrollXSeenRef.current > 0) {
+        maxScrollXSeenRef.current = 0;
+      }
+    } else if (overBy > NAV_STRIP_OVERFLOW_LOCK_PX) {
+      navStripOverflowStickyRef.current = true;
     }
   }
   const fits =
@@ -335,11 +358,22 @@ export function AuthenticatedHomeLeftNavStrip({
    * Scroll span for thumb/range: prefer **measured** widths only. Including `ESTIMATED_NAV_STRIP_CONTENT_W_PX`
    * or uncapped `maxScrollXSeen` inflates `scrollRange` (e.g. 158 vs real 9px), so the thumb tracks
    * rubber-band `scrollX` then snaps back when the real range is tiny.
+   * Cap inflated DOM/contentSize against the intrinsic label row once measured.
    */
+  const intrinsicScrollCapPx =
+    intrinsicRowW > 0 ? NAV_STRIP_HORIZONTAL_INSET_TOTAL_PX + intrinsicRowW : 0;
+  const cappedContentW =
+    contentW > 0 && intrinsicScrollCapPx > 0
+      ? Math.min(contentW, Math.max(intrinsicScrollCapPx, stripContentWidthPx))
+      : contentW;
+  const cappedDomHScrollSpanPx =
+    domHScrollSpanPx > 0 && intrinsicScrollCapPx > 0
+      ? Math.min(domHScrollSpanPx, Math.max(intrinsicScrollCapPx, stripContentWidthPx))
+      : domHScrollSpanPx;
   const rawMeasuredScrollSpanPx = Math.max(
-    contentW > 0 ? contentW : 0,
+    cappedContentW > 0 ? cappedContentW : 0,
     stripContentWidthPx,
-    domHScrollSpanPx > 0 ? domHScrollSpanPx : 0,
+    cappedDomHScrollSpanPx > 0 ? cappedDomHScrollSpanPx : 0,
     intrinsicRowW <= 0 && contentW <= 0 && domHScrollSpanPx <= 0 ? ESTIMATED_NAV_STRIP_CONTENT_W_PX : 0,
   );
   const theoryMaxScrollOffsetPx = Math.max(0, rawMeasuredScrollSpanPx - scrollViewportW);

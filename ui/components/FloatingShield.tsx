@@ -1,10 +1,9 @@
-import { useEffect, useRef } from "react";
-import { Animated, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { layout, useColors } from "../theme";
 import { useBottomBarLayout } from "./BottomBarLayoutContext";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { LiquidGlassShaderUndercover } from "./LiquidGlassShaderUndercover";
-import { SettingsIcon } from "./icons/SettingsIcon";
+import { SlowRotatingSettingsIcon } from "./icons/SlowRotatingSettingsIcon";
 import { ShieldIcon } from "./icons/ShieldIcon";
 import { useAuth } from "../../auth/AuthContext";
 import { useResolvedPathname } from "../useResolvedPathname";
@@ -16,51 +15,6 @@ const FS = layout.floatingShield;
 
 /** Space between the footer's top border and the bottom of this floating stack. */
 const FOOTER_TOP_GAP_PX = 15;
-
-/** One full turn of the settings cog inside the liquid-glass chip (linear). */
-const SETTINGS_ICON_SPIN_MS = 28000;
-
-function SlowRotatingSettingsIcon({ color, size }: { color: string; size: number }) {
-  const spin = useRef(new Animated.Value(0)).current;
-  /**
-   * Drive rotation from wall-clock time via rAF — no `Animated.loop` / completion callbacks, so it
-   * cannot stall after N iterations (RN-web and native driver edge cases).
-   */
-  useEffect(() => {
-    const startMs = Date.now();
-    let rafId = 0;
-    let cancelled = false;
-    const tick = () => {
-      if (cancelled) return;
-      const elapsed = Date.now() - startMs;
-      const t = (elapsed % SETTINGS_ICON_SPIN_MS) / SETTINGS_ICON_SPIN_MS;
-      spin.setValue(t);
-      rafId = requestAnimationFrame(tick);
-    };
-    rafId = requestAnimationFrame(tick);
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(rafId);
-    };
-  }, [spin]);
-  const rotate = spin.interpolate({
-    inputRange: [0, 1],
-    outputRange: ["0deg", "-360deg"],
-  });
-  return (
-    <Animated.View
-      style={{
-        width: size,
-        height: size,
-        alignItems: "center",
-        justifyContent: "center",
-        transform: [{ rotate }],
-      }}
-    >
-      <SettingsIcon color={color} size={size} />
-    </Animated.View>
-  );
-}
 
 export function FloatingShield() {
   const { t } = useAppStrings();

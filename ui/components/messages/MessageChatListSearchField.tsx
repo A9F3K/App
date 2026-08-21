@@ -2,6 +2,8 @@ import { useRef, useState, type LayoutChangeEvent } from "react";
 import { Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
 
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
+import { hairlineBorderWidthPx } from "../../scrollIndicatorPx";
+import { undercoverHairlineRingStyle } from "../../undercoverHairlineRing";
 import { typographyFixedRow30Label, useColors } from "../../theme";
 import { LiquidGlassShaderUndercover } from "../LiquidGlassShaderUndercover";
 import { MESSAGE_CHAT_LIST_SEARCH_FIELD_HEIGHT_PX } from "./messageListLayout";
@@ -147,6 +149,8 @@ export function MessageChatListSearchField({
     );
   }
 
+  const borderWidth = hairlineBorderWidthPx();
+
   return (
     <View
       style={[
@@ -155,6 +159,8 @@ export function MessageChatListSearchField({
           height: fieldHeightPx,
           marginBottom: marginBottomPx,
           backgroundColor: colors.undercover,
+          // Same divider hairline as Smart undercover fields.
+          ...undercoverHairlineRingStyle(colors.highlight, borderWidth),
         },
       ]}
     >
