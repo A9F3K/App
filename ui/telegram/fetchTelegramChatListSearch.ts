@@ -85,7 +85,9 @@ function parseSearchJson(json: {
   const directChats = parseSearchHitRows(json.directChats);
   const globalChats = parseSearchHitRows(json.globalChats);
   const messageChats = parseSearchHitRows(json.messageChats);
-  const messageCountRaw = Number(json.messageCount);
+  const messageCountRaw = Number(
+    json.messageCount ?? (json as { message_count?: unknown }).message_count,
+  );
   const messageCount =
     Number.isFinite(messageCountRaw) && messageCountRaw >= 0
       ? Math.trunc(messageCountRaw)

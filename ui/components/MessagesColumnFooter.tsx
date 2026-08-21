@@ -17,7 +17,6 @@ import { useSettingsSheet } from "../settings/SettingsContext";
 import { layout, typographyFixedRow40Label, useColors } from "../theme";
 import { useBottomBarLayout } from "./BottomBarLayoutContext";
 import { useTelegram } from "./Telegram";
-import { useAuth } from "../../auth/AuthContext";
 import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConnectionContext";
 import { MenuHamburgerIcon } from "./icons/MenuHamburgerIcon";
 import { SettingsIcon } from "./icons/SettingsIcon";
@@ -42,8 +41,8 @@ const MENU_BTN_PX = 30;
 const LIQUID_GLASS_CHIP_PX = 40;
 const LIQUID_GLASS_PILL_HEIGHT_PX = 40;
 const MENU_SEARCH_GAP_PX = 10;
-const SHIELD_ICON_WIDTH_PX = 20;
-const SHIELD_ICON_HEIGHT_PX = 22;
+const SHIELD_ICON_WIDTH_PX = 16;
+const SHIELD_ICON_HEIGHT_PX = 18;
 const SETTINGS_ICON_SIZE_PX = 20;
 
 type Props = {
@@ -140,19 +139,29 @@ function ColumnFooterChrome({
   );
 }
 
-function ConnectTelegramFooterButton({
+/**
+ * Disconnected Telegram footer: Shield | Connect | Settings (all Feed/Messages/… tabs).
+ * Narrow: liquid-glass chips + pill on gradient fade. Wide: undercover circles + pill.
+ */
+function DisconnectedTelegramFooter({
   label,
-  onPress,
+  onConnectPress,
+  onSettingsPress,
   narrow,
 }: {
   label: string;
-  onPress: () => void;
+  onConnectPress: () => void;
+  onSettingsPress: () => void;
   narrow: boolean;
 }) {
   const colors = useColors();
+  const { t } = useAppStrings();
   const isLightTheme = colors.primary === "#000000";
+  const powerColor = isLightTheme ? "#000000" : "#FFFFFF";
   const [rowWidth, setRowWidth] = useState(0);
   const [nativeLabelLineWidth, setNativeLabelLineWidth] = useState(0);
+
+  const chipPx = narrow ? LIQUID_GLASS_CHIP_PX : MENU_BTN_PX;
 
   const onRowLayout = useCallback((event: LayoutChangeEvent) => {
     const next = Math.ceil(event.nativeEvent.layout.width);
@@ -174,69 +183,125 @@ function ConnectTelegramFooterButton({
   );
 
   const labelLineWidth = Platform.OS === "web" ? webLabelLineWidth : nativeLabelLineWidth;
-  const maxPillWidthPx = Math.max(0, rowWidth);
+  const maxPillWidthPx = Math.max(0, rowWidth - chipPx * 2 - MENU_SEARCH_GAP_PX * 2);
   const pillWidth = useMemo(() => {
     if (!label || rowWidth <= 0 || labelLineWidth <= 0) return 0;
     return telegramConnectPillWidthFromLabelLinePx(labelLineWidth, maxPillWidthPx);
   }, [label, rowWidth, labelLineWidth, maxPillWidthPx]);
 
-  if (narrow) {
-    return (
-      <ColumnFooterChrome overlayContent gradientUndercover>
-        {Platform.OS !== "web" ? (
-          <Text
-            key={label}
-            style={[typographyFixedRow40Label, styles.pillLabelMeasure]}
-            numberOfLines={1}
-            onTextLayout={onNativeLabelTextLayout}
-          >
-            {label}
-          </Text>
-        ) : null}
-        <View onLayout={onRowLayout} style={[styles.row, { height: BAR_HEIGHT, justifyContent: "center" }]}>
-          {pillWidth > 0 ? (
-            <Pressable accessibilityRole="button" onPress={onPress} style={styles.connectPillPressable}>
-              <LiquidGlassShaderUndercover
-                key={`${label}-${pillWidth}`}
-                shape="pill"
-                width={pillWidth}
-                height={LIQUID_GLASS_PILL_HEIGHT_PX}
-                contentInsetPx={0}
-                phaseOffset={0.22}
-                isLightTheme={isLightTheme}
-                capturePointerEvents={false}
-              >
-                <View style={[styles.connectPillContent, { width: pillWidth }]}>
-                  <View style={styles.connectPillLogo}>
-                    <TelegramLogoIcon size={TELEGRAM_CONNECT_PILL_LOGO_SIZE_PX} />
-                  </View>
-                  <Text
-                    style={[typographyFixedRow40Label, styles.connectPillLabel, { color: colors.primary }]}
-                    numberOfLines={1}
-                  >
-                    {label}
-                  </Text>
-                </View>
-              </LiquidGlassShaderUndercover>
-            </Pressable>
-          ) : null}
-        </View>
-      </ColumnFooterChrome>
-    );
-  }
+  const shieldChip = narrow ? (
+    <View style={styles.liquidGlassChipPressable} pointerEvents="none">
+      <LiquidGlassShaderUndercover
+        size={LIQUID_GLASS_CHIP_PX}
+        phaseOffset={0.41}
+        isLightTheme={isLightTheme}
+        capturePointerEvents={false}
+      >
+        <ShieldIcon
+          powerColor={powerColor}
+          width={SHIELD_ICON_WIDTH_PX}
+          height={SHIELD_ICON_HEIGHT_PX}
+        />
+      </LiquidGlassShaderUndercover>
+    </View>
+  ) : (
+    <View style={[styles.wideCircleChip, { backgroundColor: colors.undercover }]} pointerEvents="none">
+      <ShieldIcon
+        powerColor={powerColor}
+        width={SHIELD_ICON_WIDTH_PX}
+        height={SHIELD_ICON_HEIGHT_PX}
+      />
+    </View>
+  );
+
+  const settingsButton = narrow ? (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t("settings.sheetTitle")}
+      onPress={onSettingsPress}
+      style={styles.liquidGlassChipPressable}
+    >
+      <LiquidGlassShaderUndercover
+        size={LIQUID_GLASS_CHIP_PX}
+        phaseOffset={0.08}
+        isLightTheme={isLightTheme}
+        capturePointerEvents={false}
+      >
+        <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
+      </LiquidGlassShaderUndercover>
+    </Pressable>
+  ) : (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t("settings.sheetTitle")}
+      onPress={onSettingsPress}
+      style={({ pressed }) => [
+        styles.wideCircleChip,
+        { backgroundColor: colors.undercover, opacity: pressed ? 0.75 : 1 },
+      ]}
+    >
+      <SettingsIcon color={colors.primary} size={SETTINGS_ICON_SIZE_PX} />
+    </Pressable>
+  );
+
+  const connectControl = narrow ? (
+    pillWidth > 0 ? (
+      <Pressable accessibilityRole="button" onPress={onConnectPress} style={styles.connectPillPressable}>
+        <LiquidGlassShaderUndercover
+          key={`${label}-${pillWidth}`}
+          shape="pill"
+          width={pillWidth}
+          height={LIQUID_GLASS_PILL_HEIGHT_PX}
+          contentInsetPx={0}
+          phaseOffset={0.22}
+          isLightTheme={isLightTheme}
+          capturePointerEvents={false}
+        >
+          <View style={[styles.connectPillContent, { width: pillWidth }]}>
+            <View style={styles.connectPillLogo}>
+              <TelegramLogoIcon size={TELEGRAM_CONNECT_PILL_LOGO_SIZE_PX} />
+            </View>
+            <Text
+              style={[typographyFixedRow40Label, styles.connectPillLabel, { color: colors.primary }]}
+              numberOfLines={1}
+            >
+              {label}
+            </Text>
+          </View>
+        </LiquidGlassShaderUndercover>
+      </Pressable>
+    ) : null
+  ) : (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onConnectPress}
+      style={[styles.wideConnectButton, { backgroundColor: colors.undercover }]}
+    >
+      <Text style={[typographyFixedRow40Label, { color: colors.primary }]} numberOfLines={1}>
+        {label}
+      </Text>
+    </Pressable>
+  );
 
   return (
-    <ColumnFooterChrome>
-      <View style={[styles.row, { height: BAR_HEIGHT, justifyContent: "center" }]}>
-        <Pressable
-          accessibilityRole="button"
-          onPress={onPress}
-          style={[styles.wideConnectButton, { backgroundColor: colors.undercover }]}
+    <ColumnFooterChrome overlayContent={narrow} gradientUndercover={narrow}>
+      {narrow && Platform.OS !== "web" ? (
+        <Text
+          key={label}
+          style={[typographyFixedRow40Label, styles.pillLabelMeasure]}
+          numberOfLines={1}
+          onTextLayout={onNativeLabelTextLayout}
         >
-          <Text style={[typographyFixedRow40Label, { color: colors.primary }]} numberOfLines={1}>
-            {label}
-          </Text>
-        </Pressable>
+          {label}
+        </Text>
+      ) : null}
+      <View
+        onLayout={onRowLayout}
+        style={[styles.row, { height: BAR_HEIGHT, gap: MENU_SEARCH_GAP_PX }]}
+      >
+        {shieldChip}
+        <View style={styles.disconnectedCenterSlot}>{connectControl}</View>
+        {settingsButton}
       </View>
     </ColumnFooterChrome>
   );
@@ -250,7 +315,6 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
   const colors = useColors();
   const { t } = useAppStrings();
   const { width: windowWidth } = useWindowDimensions();
-  const { sessionTelegramMessagesConnected } = useAuth();
   const { isTelegramMessagesConnected, openConnectSheet } = useTelegramMessagesConnection();
   const { openSettingsSheet } = useSettingsSheet();
   const {
@@ -268,12 +332,14 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
   const powerColor = isLightTheme ? "#000000" : "#FFFFFF";
   const searchExpanded = isNarrow && listSearchActive;
 
-  if (!isTelegramMessagesConnected && sessionTelegramMessagesConnected !== true) {
+  // Product DB may still say linked while the gateway is dead — footer follows live link.
+  if (!isTelegramMessagesConnected) {
     return (
-      <ConnectTelegramFooterButton
+      <DisconnectedTelegramFooter
         narrow={isNarrow}
         label={t("home.mainColumnFooter.telegramMessages")}
-        onPress={openConnectSheet}
+        onConnectPress={openConnectSheet}
+        onSettingsPress={openSettingsSheet}
       />
     );
   }
@@ -459,6 +525,12 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexShrink: 0,
     overflow: "hidden",
+  },
+  disconnectedCenterSlot: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: "center",
+    justifyContent: "center",
   },
   connectPillPressable: {
     height: LIQUID_GLASS_PILL_HEIGHT_PX,

@@ -183,7 +183,7 @@ const en = {
   "messages.search.recentsClear": "Clear",
   "messages.search.recentsRemove": "Remove from recents",
   "messages.search.globalResults": "Global search results",
-  "messages.search.messagesFound": "{count} messages found",
+  "messages.search.messagesFound": "{{count}} messages found",
   "messages.search.allChats": "All chats",
   "messages.sideMenu.openMenu": "Open menu",
   "messages.sideMenu.myProfile": "My Profile",
@@ -684,7 +684,7 @@ const ru = {
     "Telegram на телефоне → Настройки → Устройства → Подключить устройство → отсканируйте QR.",
   "messages.connectSheetTitle": "Подключить сообщения Telegram",
   "messages.empty": "Чатов пока нет.",
-  "messages.search.placeholder": "Перейти к чатам",
+  "messages.search.placeholder": "Навигация по чатам",
   "messages.search.clear": "Очистить поиск",
   "messages.search.noResults": "Ничего не найдено.",
   "messages.search.recentsEmpty": "Нет недавних чатов.",
@@ -692,7 +692,7 @@ const ru = {
   "messages.search.recentsClear": "Очистить",
   "messages.search.recentsRemove": "Удалить из недавних",
   "messages.search.globalResults": "Глобальный поиск",
-  "messages.search.messagesFound": "Найдено сообщений: {count}",
+  "messages.search.messagesFound": "Найдено сообщений: {{count}}",
   "messages.search.allChats": "Все чаты",
   "messages.sideMenu.openMenu": "Открыть меню",
   "messages.sideMenu.myProfile": "Мой профиль",
@@ -1168,7 +1168,7 @@ const zh = {
   "messages.search.recentsClear": "清除",
   "messages.search.recentsRemove": "从最近记录中移除",
   "messages.search.globalResults": "全局搜索结果",
-  "messages.search.messagesFound": "找到 {count} 条消息",
+  "messages.search.messagesFound": "找到 {{count}} 条消息",
   "messages.search.allChats": "所有聊天",
   "messages.sideMenu.openMenu": "打开菜单",
   "messages.sideMenu.myProfile": "我的资料",
@@ -1512,7 +1512,10 @@ export function formatAppString(
   let s = getAppString(locale, key);
   if (!vars) return s;
   for (const [k, v] of Object.entries(vars)) {
-    s = s.split(`{{${k}}}`).join(String(v));
+    const value = String(v);
+    // Prefer `{{name}}`; also accept `{name}` used in some message strings.
+    s = s.split(`{{${k}}}`).join(value);
+    s = s.split(`{${k}}`).join(value);
   }
   return s;
 }

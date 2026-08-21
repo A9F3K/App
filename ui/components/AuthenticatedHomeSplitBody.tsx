@@ -8,6 +8,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import { logPageDisplay } from "../pageDisplayLog";
+import { hairlineBorderWidthPx } from "../scrollIndicatorPx";
 import { layout, useColors } from "../theme";
 import {
   AuthenticatedHomeSplitLayoutMetricsProvider,
@@ -17,11 +18,12 @@ import {
 const AH = layout.authenticatedHome;
 const HIT = AH.splitPaneDividerHitWidthPx;
 
-/** Left offset of the 1px stroke inside a divider hit strip (strip is centered on the column seam). */
-const SPLIT_PANE_LINE_LEFT_IN_HIT = Math.max(0, Math.floor((HIT - AH.splitPaneDividerStrokePx) / 2));
-
-/** Center `HIT`-wide grab strip on the seam so flex columns abut; stroke stays {@link SPLIT_PANE_LINE_LEFT_IN_HIT} from strip left. */
+/** Center `HIT`-wide grab strip on the seam so flex columns abut. */
 const SPLIT_PANE_HIT_LEFT_OF_SEAM = Math.floor(HIT / 2);
+
+function splitPaneLineLeftInHit(strokePx: number): number {
+  return Math.max(0, Math.floor((HIT - strokePx) / 2));
+}
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
@@ -602,8 +604,9 @@ export function AuthenticatedHomeSplitBody({
   ).current;
 
   const bottomInset = AH.contentInsetBottom;
-  const stroke = AH.splitPaneDividerStrokePx;
-  const lineLeft = SPLIT_PANE_LINE_LEFT_IN_HIT;
+  /** Match scroll thumbs (one device pixel) so indicators overlay seams without a thicker band. */
+  const stroke = hairlineBorderWidthPx();
+  const lineLeft = splitPaneLineLeftInHit(stroke);
 
   function overlayDividerHitStyle(leftPx: number): ViewStyle[] {
     return [

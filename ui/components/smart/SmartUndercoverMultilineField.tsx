@@ -370,7 +370,7 @@ export function SmartUndercoverMultilineField({
                   height: indicator.thumbH,
                   width: 0,
                   borderLeftWidth: scrollIndicatorHairlineBorderWidthPx(),
-                  borderLeftColor: colors.accent,
+                  borderLeftColor: colors.primary,
                   borderStyle: "solid",
                 },
               ]}

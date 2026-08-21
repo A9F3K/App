@@ -47,9 +47,11 @@ export function ChooseCurrencyPanelContent({
   const isBrowse = pickerMode === "browse";
   const { rows, isLoading, isFetchingMore, error, loadMore } =
     useChooseCurrencyRows(walletAddress, pickerActive);
-  const contentInset = layout.contentSideInsetPx;
+  const contentInset = layout.bottomBar.horizontalPadding;
   const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   const scrollShellBleed = { marginHorizontal: -contentInset };
+  /** Full middle column width; table subtracts side insets so columns align with the deal footer. */
+  const columnShellWidthPx = splitMetrics?.middleColumnWidthPx ?? 0;
   const { showSubheaderBack, titleAlign } = useChooseCurrencyChrome();
   /** Inline deal row when the 3-column bottom bar is not showing (≤2 columns). */
   const showInlineDealAction =
@@ -96,7 +98,7 @@ export function ChooseCurrencyPanelContent({
           loadError={error}
           onLoadMore={loadMore}
           onSelectRow={handleSelectRow}
-          columnShellWidthPx={splitMetrics?.middleColumnWidthPx ?? 0}
+          columnShellWidthPx={columnShellWidthPx}
           prefetchCharts={pickerActive}
         />
       </View>

@@ -288,8 +288,38 @@ export async function telegramMessagesStatusHandler(
   }
 
   const connected = await isTelegramMessagesConnected(userOrRes);
-  const conn = connected ? await getConnection(userOrRes) : null;
-  const session = connected ? await getMtprotoSession(userOrRes) : null;
+  let effectivelyConnected = connected;
+  if (!effectivelyConnected) {
+    // DB link can briefly disagree with on-disk TDLib auth after gateway idle
+    // unload / race. Only heal when we already recorded an authorized Telegram
+    // user id — a fresh QR attempt also creates a `db` folder and must not look
+    // "connected" (that hides the Connect footer).
+    const existing = await getMtprotoSession(userOrRes);
+    const hadAuthorizedUser =
+      existing?.telegram_user_id != null &&
+      Number.isFinite(existing.telegram_user_id) &&
+      existing.telegram_user_id > 0;
+    if (hadAuthorizedUser) {
+      const persistedOnGateway = await gatewayUserHasPersistedSession(userOrRes);
+      if (persistedOnGateway) {
+        const { markTelegramMessagesConnected } = await import("../../database/telegramMessages.js");
+        const { upsertMtprotoSession } = await import("../../database/telegramMtproto.js");
+        await upsertMtprotoSession({
+          telegramUsername: userOrRes,
+          telegramUserId: existing?.telegram_user_id ?? null,
+          tdlibDbPath: existing?.tdlib_db_path?.trim() || `gateway:${userOrRes}`,
+          status: "active",
+        });
+        await markTelegramMessagesConnected(userOrRes);
+        effectivelyConnected = true;
+        logTelegramMessagesApi("messages_status_healed_from_persisted_session", {
+          telegramUsername: userOrRes,
+        });
+      }
+    }
+  }
+  const conn = effectivelyConnected ? await getConnection(userOrRes) : null;
+  const session = effectivelyConnected ? await getMtprotoSession(userOrRes) : null;
   const telegramUserId =
     session?.telegram_user_id != null &&
     Number.isFinite(session.telegram_user_id) &&
@@ -301,7 +331,7 @@ export async function telegramMessagesStatusHandler(
     res,
     {
       ok: true,
-      connected,
+      connected: effectivelyConnected,
       connected_at: conn?.connected_at ?? null,
       telegram_user_id: telegramUserId,
     },
@@ -3284,7 +3314,32 @@ export async function telegramMessagesWarmupHandler(
     return userOrRes;
   }
 
-  const connected = await isTelegramMessagesConnected(userOrRes);
+  let connected = await isTelegramMessagesConnected(userOrRes);
+  if (!connected) {
+    const existing = await getMtprotoSession(userOrRes);
+    const hadAuthorizedUser =
+      existing?.telegram_user_id != null &&
+      Number.isFinite(existing.telegram_user_id) &&
+      existing.telegram_user_id > 0;
+    if (hadAuthorizedUser) {
+      const persistedOnGateway = await gatewayUserHasPersistedSession(userOrRes);
+      if (persistedOnGateway) {
+        const { markTelegramMessagesConnected } = await import("../../database/telegramMessages.js");
+        const { upsertMtprotoSession } = await import("../../database/telegramMtproto.js");
+        await upsertMtprotoSession({
+          telegramUsername: userOrRes,
+          telegramUserId: existing?.telegram_user_id ?? null,
+          tdlibDbPath: existing?.tdlib_db_path?.trim() || `gateway:${userOrRes}`,
+          status: "active",
+        });
+        await markTelegramMessagesConnected(userOrRes);
+        connected = true;
+        logTelegramMessagesApi("messages_warmup_healed_from_persisted_session", {
+          telegramUsername: userOrRes,
+        });
+      }
+    }
+  }
   if (!connected) {
     return finishJson(request, res, { ok: false, connected: false, error: "not_connected" }, 403);
   }
@@ -3292,7 +3347,7 @@ export async function telegramMessagesWarmupHandler(
   const body = await parseRequestBody<{ chat_id?: number }>(request);
   const focusChatId = Number(body.chat_id);
 
-  const warm = await gatewayWarmupSession(userOrRes, { maxPollMs: 90_000 });
+  const warm = await gatewayWarmupSession(userOrRes, { maxPollMs: 25_000 });
   if (warm.error === "no_session") {
     const persistedOnGateway = await gatewayUserHasPersistedSession(userOrRes);
     if (persistedOnGateway) {

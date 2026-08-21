@@ -80,8 +80,8 @@ const MEDIA_ICON_GAP_PX = 12;
 const MEDIA_ROW_GAP_PX = 14;
 const BLOCK_COLOR = "#FF1111";
 const UNBLOCK_COLOR = HYPERLINKS_SPACE_LOGO_GREEN;
-/** Above voice dialog portal (zIndex 9000). */
-const PROFILE_OVERLAY_Z = 10050;
+/** Above side menu (zIndex 10060) and voice dialog portal (zIndex 9000). */
+const PROFILE_OVERLAY_Z = 10100;
 
 type Props = {
   visible: boolean;

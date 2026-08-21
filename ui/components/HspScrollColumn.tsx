@@ -157,7 +157,7 @@ export function HspScrollColumn({
   stickToBottomOnResize = true,
 }: Props) {
   const colors = useColors();
-  const thumbColor = indicatorColor ?? colors.accent;
+  const thumbColor = indicatorColor ?? colors.primary;
   const scrollRef = useRef<ComponentRef<typeof ScrollView>>(null);
   const didInitialTopResetRef = useRef(false);
   const didInitialBottomScrollRef = useRef(false);

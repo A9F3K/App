@@ -68,7 +68,8 @@ import {
   type ChooseCurrencyRow,
 } from "./chooseCurrencyTableTypes";
 
-const CONTENT_INSET_PX = layout.contentSideInsetPx;
+/** Match {@link SwapColumnFooter} / deal row: same side inset as `layout.bottomBar.horizontalPadding`. */
+const CONTENT_INSET_PX = layout.bottomBar.horizontalPadding;
 const SCROLLBAR_RIGHT_INSET_PX = layout.scrollIndicatorRightInsetPx;
 const HEADER_DIVIDER_HEIGHT_PX = scrollIndicatorHairlineBorderWidthPx();
 const HEADER_BLOCK_HEIGHT_PX = CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX + HEADER_DIVIDER_HEIGHT_PX;
@@ -228,24 +229,32 @@ function HeaderLabel({ columnKey, label }: { columnKey: ChooseCurrencyColumnKey;
   );
 }
 
-function columnVariantStyle(columnKey: ChooseCurrencyColumnKey) {
-  if (columnKey === "rank") return styles.rankColumn;
+function columnVariantStyle(
+  columnKey: ChooseCurrencyColumnKey,
+  edge: "first" | "last" | "middle",
+) {
+  if (columnKey === "rank" || edge === "first") {
+    return edge === "first" ? styles.firstColumn : styles.rankColumn;
+  }
+  if (edge === "last") return styles.lastColumn;
   if (columnKey === "currency") return styles.currencyColumn;
   return styles.centeredColumn;
 }
 
 function ColumnShell({
   column,
+  edge,
   children,
 }: {
   column: ChooseCurrencyVisibleColumn;
+  edge: "first" | "last" | "middle";
   children: ReactNode;
 }) {
   return (
     <View
       style={[
         styles.column,
-        columnVariantStyle(column.key),
+        columnVariantStyle(column.key, edge),
         {
           width: column.widthPx,
           maxWidth: column.widthPx,
@@ -279,11 +288,19 @@ function DataRow({
 
   const body = (
     <View style={styles.bodyRow}>
-      {visibleColumns.map((column) => (
-        <ColumnShell key={column.key} column={column}>
-          <CellContent columnKey={column.key} row={row} rank={rank} />
-        </ColumnShell>
-      ))}
+      {visibleColumns.map((column, columnIndex) => {
+        const edge =
+          columnIndex === 0
+            ? "first"
+            : columnIndex === visibleColumns.length - 1
+              ? "last"
+              : "middle";
+        return (
+          <ColumnShell key={column.key} column={column} edge={edge}>
+            <CellContent columnKey={column.key} row={row} rank={rank} />
+          </ColumnShell>
+        );
+      })}
     </View>
   );
 
@@ -587,11 +604,19 @@ export function ChooseCurrencyTable({
     () => (
       <View style={[styles.headerBlock, { backgroundColor: colors.background }]}>
         <View style={[styles.headerRow, { paddingHorizontal: CONTENT_INSET_PX }]}>
-          {visibleColumns.map((column) => (
-            <ColumnShell key={column.key} column={column}>
-              <HeaderLabel columnKey={column.key} label={headers[column.key]} />
-            </ColumnShell>
-          ))}
+          {visibleColumns.map((column, columnIndex) => {
+            const edge =
+              columnIndex === 0
+                ? "first"
+                : columnIndex === visibleColumns.length - 1
+                  ? "last"
+                  : "middle";
+            return (
+              <ColumnShell key={column.key} column={column} edge={edge}>
+                <HeaderLabel columnKey={column.key} label={headers[column.key]} />
+              </ColumnShell>
+            );
+          })}
         </View>
         <SmartGradientDivider />
       </View>
@@ -704,7 +729,7 @@ export function ChooseCurrencyTable({
                   height: indicator.thumbH,
                   width: 0,
                   borderLeftWidth: scrollIndicatorHairlineBorderWidthPx(),
-                  borderLeftColor: colors.accent,
+                  borderLeftColor: colors.primary,
                   borderStyle: "solid",
                 },
               ]}
@@ -769,6 +794,19 @@ const styles = StyleSheet.create({
   rankColumn: {
     alignItems: "flex-start",
     paddingRight: CHOOSE_CURRENCY_TABLE_RANK_CELL_PADDING_RIGHT_PX,
+  },
+  /** Outer edge flush to the page inset (matches deal-row left edge). */
+  firstColumn: {
+    alignItems: "flex-start",
+    paddingLeft: 0,
+    paddingRight: CHOOSE_CURRENCY_TABLE_RANK_CELL_PADDING_RIGHT_PX,
+  },
+  /** Outer edge flush to the page inset (matches deal-row / Swap button right edge). */
+  lastColumn: {
+    alignItems: "stretch",
+    justifyContent: "center",
+    paddingLeft: CHOOSE_CURRENCY_TABLE_CELL_PADDING_HORIZONTAL_PX,
+    paddingRight: 0,
   },
   currencyColumn: {
     alignItems: "flex-start",

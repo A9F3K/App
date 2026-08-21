@@ -28,6 +28,8 @@ import { VoiceWindowCrossIcon } from "./MessageChatVoiceControlIcons";
 import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { formatTelegramUsernameAt } from "./formatTelegramChatRowUsername";
+import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
+import { MESSAGE_LIST_INLINE_EMOJI_SIZE_PX } from "./messageListLayout";
 import {
   SideMenuAddAccountIcon,
   SideMenuCallsIcon,
@@ -97,7 +99,7 @@ function SideMenuRow({
     </>
   );
 
-  if (active && onPress) {
+  if (onPress) {
     return (
       <Pressable
         accessibilityRole="button"
@@ -147,7 +149,11 @@ function AccountLogoutCross({
       accessibilityRole="button"
       accessibilityLabel={label}
       hitSlop={8}
-      onPress={onPress}
+      onPress={(e) => {
+        // Nested inside the profile header Pressable — don't open profile.
+        (e as { stopPropagation?: () => void }).stopPropagation?.();
+        onPress?.();
+      }}
       style={({ pressed }) => ({
         width: 28,
         height: 28,
@@ -179,6 +185,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   /** Telegram first + last name (and username) from TDLib profile — not the app display_name. */
   const [telegramDisplayName, setTelegramDisplayName] = useState<string | null>(null);
   const [telegramProfileUsername, setTelegramProfileUsername] = useState<string | null>(null);
+  const [emojiStatusCustomEmojiId, setEmojiStatusCustomEmojiId] = useState<string | null>(null);
 
   useEffect(() => {
     if (visible) {
@@ -192,10 +199,11 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   }, [visible]);
 
   useEffect(() => {
-    if (!visible || !isTelegramMessagesConnected || connectedTelegramUserId == null) {
-      if (!isTelegramMessagesConnected) {
+    if (!visible || connectedTelegramUserId == null) {
+      if (!isTelegramMessagesConnected && connectedTelegramUserId == null) {
         setTelegramDisplayName(null);
         setTelegramProfileUsername(null);
+        setEmojiStatusCustomEmojiId(null);
       }
       return;
     }
@@ -209,6 +217,8 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       if (result.profile.username?.trim()) {
         setTelegramProfileUsername(result.profile.username.trim());
       }
+      const statusId = result.profile.emoji_status_custom_emoji_id?.trim() || null;
+      setEmojiStatusCustomEmojiId(statusId);
     });
     return () => controller.abort();
   }, [visible, isTelegramMessagesConnected, connectedTelegramUserId]);
@@ -233,18 +243,23 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   }, [disconnectTelegramMessages, onClose]);
 
   const openMyProfile = useCallback(() => {
-    if (!isTelegramMessagesConnected) return;
-    openProfileSheet({
-      telegram_chat_id: 0,
-      title: profileTitle,
-      peer_user_id: connectedTelegramUserId,
-      peer_username: resolvedUsername,
-      chat_kind: "private",
-      avatar_url: selfAvatarUrl,
-    });
+    if (connectedTelegramUserId == null && !isTelegramMessagesConnected) return;
     onClose();
+    // Close drawer first so profile sheet is not trapped under SIDE_MENU_Z.
+    requestAnimationFrame(() => {
+      openProfileSheet({
+        telegram_chat_id: 0,
+        title: profileTitle,
+        peer_user_id: connectedTelegramUserId,
+        peer_username: resolvedUsername,
+        chat_kind: "private",
+        avatar_url: selfAvatarUrl,
+        peer_emoji_status_custom_emoji_id: emojiStatusCustomEmojiId,
+      });
+    });
   }, [
     connectedTelegramUserId,
+    emojiStatusCustomEmojiId,
     isTelegramMessagesConnected,
     onClose,
     openProfileSheet,
@@ -382,63 +397,78 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
         >
           <View style={{ paddingHorizontal: PAD_X, paddingTop: 18, paddingBottom: 12 }}>
             <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}>
-              <MessageChatAvatarSlot
-                iconUrl={selfAvatarUrl}
-                initials={avatarInitials}
-                sizePx={AVATAR_PX}
-                colors={colors}
-                scheme={colorScheme}
-                loadEnabled={visible && isTelegramMessagesConnected}
-                fetchPriority="critical"
-              />
-              <View style={{ flex: 1, minWidth: 0, paddingTop: 2 }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Text
-                    style={[
-                      typographyFixedRow30Label,
-                      {
-                        color: colors.primary,
-                        fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-                        fontWeight: "600",
-                        flex: 1,
-                      },
-                    ]}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("messages.sideMenu.myProfile")}
+                onPress={openMyProfile}
+                style={({ pressed }) => ({
+                  flexDirection: "row",
+                  alignItems: "flex-start",
+                  gap: 12,
+                  flex: 1,
+                  minWidth: 0,
+                  opacity: pressed ? 0.75 : 1,
+                })}
+              >
+                <MessageChatAvatarSlot
+                  iconUrl={selfAvatarUrl}
+                  initials={avatarInitials}
+                  sizePx={AVATAR_PX}
+                  colors={colors}
+                  scheme={colorScheme}
+                  loadEnabled={visible && connectedTelegramUserId != null}
+                  fetchPriority="critical"
+                />
+                <View style={{ flex: 1, minWidth: 0, paddingTop: 2 }}>
+                  <SpecialTelegramUserName
+                    name={profileTitle}
+                    telegramUserId={connectedTelegramUserId}
+                    emojiStatusCustomEmojiId={emojiStatusCustomEmojiId}
+                    emojiStatusPriority
+                    inlineEmojiFetchEnabled={visible}
+                    inlineEmojiFetchPriority
+                    inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
+                    textAlign="left"
                     numberOfLines={1}
-                  >
-                    {profileTitle}
-                  </Text>
-                  {isTelegramMessagesConnected ? (
-                    <AccountLogoutCross
-                      colors={colors}
-                      label={t("messages.sideMenu.logoutAccount")}
-                      onPress={handleDisconnect}
-                    />
+                    textStyle={{
+                      ...typographyFixedRow30Label,
+                      color: colors.primary,
+                      fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                      fontWeight: "600",
+                    }}
+                  />
+                  {usernameAt ? (
+                    <Text
+                      style={{
+                        marginTop: 2,
+                        color: colors.secondary,
+                        fontSize: 13,
+                        lineHeight: 18,
+                      }}
+                      numberOfLines={1}
+                    >
+                      {usernameAt}
+                    </Text>
                   ) : null}
-                </View>
-                {usernameAt ? (
                   <Text
                     style={{
-                      marginTop: 2,
+                      marginTop: 4,
                       color: colors.secondary,
                       fontSize: 13,
                       lineHeight: 18,
                     }}
-                    numberOfLines={1}
                   >
-                    {usernameAt}
+                    {t("messages.sideMenu.changeEmojiStatus")}
                   </Text>
-                ) : null}
-                <Text
-                  style={{
-                    marginTop: 4,
-                    color: colors.secondary,
-                    fontSize: 13,
-                    lineHeight: 18,
-                  }}
-                >
-                  {t("messages.sideMenu.changeEmojiStatus")}
-                </Text>
-              </View>
+                </View>
+              </Pressable>
+              {isTelegramMessagesConnected ? (
+                <AccountLogoutCross
+                  colors={colors}
+                  label={t("messages.sideMenu.logoutAccount")}
+                  onPress={handleDisconnect}
+                />
+              ) : null}
             </View>
           </View>
 

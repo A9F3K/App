@@ -114,7 +114,12 @@ export function SmartPanelContent() {
       style={{ flex: 1, width: "100%", alignSelf: "stretch", minHeight: 0 }}
       onLayout={onPanelLayout}
     >
-      <HspScrollColumn style={{ flex: 1, ...scrollShellBleed }} contentContainerStyle={scrollContentPadding}>
+      <HspScrollColumn
+        style={{ flex: 1, ...scrollShellBleed }}
+        contentContainerStyle={scrollContentPadding}
+        scrollbarRightInsetPx={(splitMetrics?.columnCount ?? 1) >= 2 ? 0 : layout.scrollIndicatorRightInsetPx}
+        indicatorColor={colors.primary}
+      >
         <SmartLeadImage source={leadSource} layoutWidthPx={panelWidthPx} />
         <View style={{ height: LEAD_TO_TITLE_GAP_PX }} />
         <Text

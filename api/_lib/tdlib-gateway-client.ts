@@ -2241,7 +2241,9 @@ function parseChatSearchPayload(json: Record<string, unknown>): {
   const directChats = parseChatSearchHitRows(json.directChats);
   const globalChats = parseChatSearchHitRows(json.globalChats);
   const messageChats = parseChatSearchHitRows(json.messageChats);
-  const messageCountRaw = Number(json.messageCount);
+  const messageCountRaw = Number(
+    json.messageCount ?? (json as { message_count?: unknown }).message_count,
+  );
   const messageCount =
     Number.isFinite(messageCountRaw) && messageCountRaw >= 0
       ? Math.trunc(messageCountRaw)

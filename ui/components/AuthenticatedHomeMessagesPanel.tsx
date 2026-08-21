@@ -1,5 +1,14 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
+import {
+  ActivityIndicator,
+  Animated,
+  Pressable,
+  ScrollView,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
+import Svg, { Path } from "react-native-svg";
 import { buildApiUrl } from "../../api/_base";
 import { normalizeFormattedTextSegments, type FormattedTextSegment } from "../../shared/formattedTextSegments";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp";
@@ -144,8 +153,61 @@ function remoteSearchHitToRow(hit: TelegramChatListSearchHit): MessageChatRowDat
 
 type ChatListDisplayItem =
   | { kind: "chat"; key: string; row: MessageChatRowData }
-  | { kind: "sectionHeader"; key: string; title: string }
+  | { kind: "sectionHeader"; key: string; sectionId: string; title: string }
   | { kind: "messagesFooter"; key: string; count: number };
+
+/** Chevron: closed → right; open → up (column-reverse search scrolls upward). */
+function SearchSectionChevron({ open, color }: { open: boolean; color: string }) {
+  const progress = useRef(new Animated.Value(open ? 1 : 0)).current;
+  useEffect(() => {
+    Animated.timing(progress, {
+      toValue: open ? 1 : 0,
+      duration: 200,
+      useNativeDriver: true,
+    }).start();
+  }, [open, progress]);
+  // Right (0°) → up (−90°) when opening.
+  const rotate = progress.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["0deg", "-90deg"],
+  });
+  return (
+    <Animated.View
+      style={{
+        width: 14,
+        height: 14,
+        alignItems: "center",
+        justifyContent: "center",
+        transform: [{ rotate }],
+      }}
+    >
+      <Svg width={14} height={14} viewBox="0 0 14 14" fill="none">
+        <Path
+          d="M5 2.5L9.5 7L5 11.5"
+          stroke={color}
+          strokeWidth={1.5}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </Svg>
+    </Animated.View>
+  );
+}
+
+/** Affordance on the messages-found strip: results continue upward from the search field. */
+function SearchUpAffordanceChevron({ color }: { color: string }) {
+  return (
+    <Svg width={14} height={14} viewBox="0 0 14 14" fill="none">
+      <Path
+        d="M2.5 9L7 4.5L11.5 9"
+        stroke={color}
+        strokeWidth={1.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
 
 type Props = {
   colors: ThemeColors;
@@ -574,7 +636,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const { t, tf } = useAppStrings();
   const { openProfileSheet } = useProfileSheet();
   const { authReady, isAuthenticated, sessionTelegramMessagesConnected } = useAuth();
-  const { isTelegramMessagesConnected, refreshStatus } = useTelegramMessagesConnection();
+  const { isTelegramMessagesConnected, refreshStatus, recoverTelegramMessagesSession } =
+    useTelegramMessagesConnection();
   const [chats, setChats] = useState<MessageChatRowData[]>([]);
   const [chatListSync, setChatListSync] = useState<ChatListSyncStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -595,7 +658,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     setChatListSearchQuery,
     chatListSearchFocused,
     setChatListSearchFocused,
+    dismissChatListSearch,
   } = useMessagesChatListSearch();
+  /** Collapsed search sections (`true` = closed). Default open. */
+  const [collapsedSearchSections, setCollapsedSearchSections] = useState<Record<string, boolean>>(
+    {},
+  );
   const [remoteSearchPeerUserIds, setRemoteSearchPeerUserIds] = useState<number[]>([]);
   const [remoteDirectHits, setRemoteDirectHits] = useState<TelegramChatListSearchHit[]>([]);
   const [remoteGlobalHits, setRemoteGlobalHits] = useState<TelegramChatListSearchHit[]>([]);
@@ -761,9 +829,10 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       if (json.warming) {
         return true;
       }
-      if (json.needsReconnect || json.connected === false) {
+      if (json.needsReconnect || json.connected === false || response.status === 403) {
         setGatewayWarming(false);
-        await refreshStatus();
+        const recovered = await recoverTelegramMessagesSession();
+        if (!recovered) await refreshStatus();
         return false;
       }
       // Do not clear warming while the list is still empty — resync often
@@ -778,7 +847,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       logPageDisplay("messages_gateway_resync_error", { reason, message });
       return false;
     }
-  }, [refreshStatus]);
+  }, [recoverTelegramMessagesSession, refreshStatus]);
 
   const loadChats = useCallback(async (options?: {
     allowAvatarResync?: boolean;
@@ -794,6 +863,11 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         setListBootstrapPending(false);
       } else {
         setListBootstrapPending(true);
+        if (sessionTelegramMessagesConnected === true) {
+          void recoverTelegramMessagesSession().then((ok) => {
+            if (ok) void loadChatsRef.current({ silent: false, forceFull: true });
+          });
+        }
       }
       setError(null);
       setLoading(false);
@@ -1078,12 +1152,25 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      if (message === "not_connected" || message.startsWith("HTTP_403")) {
+        const recovered = await recoverTelegramMessagesSession();
+        if (recovered) {
+          void loadChatsRef.current({
+            silent: Boolean(options?.silent),
+            forceFull: true,
+            allowAvatarResync: options?.allowAvatarResync,
+          });
+          return;
+        }
+      }
       if (!options?.silent) {
         logPageDisplay("messages_chats_error", { message, elapsedMs: Date.now() - started });
         setError(message);
-        setChats([]);
-        // Let the error UI render — otherwise !emptyListConfirmed keeps spinner.
-        setEmptyListConfirmed(true);
+        // Keep existing rows when link dropped mid-session — empty flash is worse.
+        if (chatsCountRef.current === 0) {
+          setChats([]);
+          setEmptyListConfirmed(true);
+        }
       } else {
         logPageDisplay("messages_chats_poll_error", {
           message,
@@ -1101,7 +1188,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         void loadChatsRef.current(queued);
       }
     }
-  }, [applyChatListSync, isAuthenticated, isTelegramMessagesConnected]);
+  }, [
+    applyChatListSync,
+    isAuthenticated,
+    isTelegramMessagesConnected,
+    recoverTelegramMessagesSession,
+    sessionTelegramMessagesConnected,
+  ]);
 
   useEffect(() => {
     loadChatsRef.current = loadChats;
@@ -1458,6 +1551,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const recentsMode = chatListSearchFocused && !searchNeedle;
   const listSearchActive = Boolean(searchNeedle) || recentsMode;
   useEffect(() => {
+    if (!searchNeedle) {
+      setCollapsedSearchSections({});
+    }
+  }, [searchNeedle]);
+
+  useEffect(() => {
     if (!isTelegramMessagesConnected || !searchNeedle) {
       setRemoteSearchPeerUserIds([]);
       setRemoteDirectHits([]);
@@ -1621,31 +1720,43 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       .map((hit) => liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit));
 
     const items: ChatListDisplayItem[] = [];
+    // column-reverse: first item sits nearest the search field (visual bottom).
+    // Messages-found chrome belongs there so results read upward.
+    const foundCount = Math.max(
+      0,
+      Number.isFinite(remoteMessageCount) ? remoteMessageCount : 0,
+      messageRows.length,
+    );
+    if (foundCount > 0 || messageRows.length > 0 || globalRows.length > 0 || directRows.length > 0) {
+      items.push({
+        kind: "messagesFooter",
+        key: "search-messages-footer",
+        count: foundCount,
+      });
+    }
     for (const row of directRows) {
       items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
     }
     if (globalRows.length > 0) {
+      const globalOpen = collapsedSearchSections.global !== true;
       items.push({
         kind: "sectionHeader",
         key: "search-global-header",
+        sectionId: "global",
         title: t("messages.search.globalResults"),
       });
-      for (const row of globalRows) {
-        items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
+      if (globalOpen) {
+        for (const row of globalRows) {
+          items.push({ kind: "chat", key: `chat-${row.telegram_chat_id}`, row });
+        }
       }
     }
     for (const row of messageRows) {
       items.push({ kind: "chat", key: `chat-msg-${row.telegram_chat_id}`, row });
     }
-    if (remoteMessageCount > 0) {
-      items.push({
-        kind: "messagesFooter",
-        key: "search-messages-footer",
-        count: remoteMessageCount,
-      });
-    }
     return items;
   }, [
+    collapsedSearchSections,
     recentsMode,
     recentSearchHits,
     remoteDirectChatIdSet,
@@ -1927,24 +2038,53 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           ? absoluteIndex === 0
           : absoluteIndex === displayListItems.length - 1 && !showBottomLoader;
         if (item.kind === "sectionHeader") {
+          const sectionOpen = collapsedSearchSections[item.sectionId] !== true;
+          // 1px between closed section dividers; slightly more when open.
+          const gapPx = sectionOpen ? 2 : 1;
           return (
-            <View
+            <Pressable
               key={item.key}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: sectionOpen }}
+              onPress={() => {
+                setCollapsedSearchSections((prev) => ({
+                  ...prev,
+                  [item.sectionId]: sectionOpen,
+                }));
+              }}
               style={{
                 backgroundColor: colors.undercover,
                 paddingVertical: 8,
                 paddingHorizontal: layout.contentSideInsetPx,
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 8,
+                // column-reverse: marginTop separates toward the next section above.
                 marginBottom: listSearchActive ? 0 : 2,
-                marginTop: listSearchActive ? 2 : 0,
+                marginTop: listSearchActive ? gapPx : 0,
               }}
             >
-              <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
+              <SearchSectionChevron
+                open={sectionOpen}
+                color={sectionOpen ? colors.primary : colors.secondary}
+              />
+              <Text
+                style={{
+                  color: sectionOpen ? colors.primary : colors.secondary,
+                  fontSize: 13,
+                  lineHeight: 18,
+                  flex: 1,
+                }}
+              >
                 {item.title}
               </Text>
-            </View>
+            </Pressable>
           );
         }
         if (item.kind === "messagesFooter") {
+          const countLabel = tf("messages.search.messagesFound", {
+            count: String(Math.max(0, Math.trunc(Number(item.count) || 0))),
+          });
           return (
             <View
               key={item.key}
@@ -1952,22 +2092,38 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
                 flexDirection: "row",
                 alignItems: "center",
                 justifyContent: "space-between",
-                borderBottomWidth: listSearchActive ? 0 : 1,
+                gap: 12,
+                backgroundColor: colors.undercover,
                 borderTopWidth: listSearchActive ? 1 : 0,
-                borderBottomColor: colors.highlight,
+                borderBottomWidth: listSearchActive ? 0 : 1,
                 borderTopColor: colors.highlight,
+                borderBottomColor: colors.highlight,
                 paddingVertical: 10,
                 paddingHorizontal: layout.contentSideInsetPx,
-                marginTop: listSearchActive ? 2 : 0,
-                marginBottom: listSearchActive ? 0 : 2,
+                // Nearest the search field in column-reverse — content stacks upward from here.
+                marginTop: listSearchActive ? 0 : 2,
+                marginBottom: listSearchActive ? 2 : 0,
               }}
             >
-              <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
-                {tf("messages.search.messagesFound", { count: item.count })}
-              </Text>
-              <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
-                {t("messages.search.allChats")}
-              </Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
+                {listSearchActive ? <SearchUpAffordanceChevron color={colors.primary} /> : null}
+                <Text
+                  style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, flexShrink: 1 }}
+                  numberOfLines={1}
+                >
+                  {countLabel}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("messages.search.allChats")}
+                onPress={dismissChatListSearch}
+                hitSlop={8}
+              >
+                <Text style={{ color: colors.primary, fontSize: 13, lineHeight: 18 }}>
+                  {t("messages.search.allChats")}
+                </Text>
+              </Pressable>
             </View>
           );
         }
@@ -2038,13 +2194,6 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     ) : null;
 
   if (!isTelegramMessagesConnected) {
-    if (sessionTelegramMessagesConnected === true) {
-      return (
-        <View style={[listShellStyle, { paddingVertical: 24, alignItems: "center" }]}>
-          <ActivityIndicator size="small" color={colors.primary} />
-        </View>
-      );
-    }
     return (
       <View style={[listShellStyle, { paddingVertical: 24, alignItems: "center" }]}>
         <Text

@@ -151,7 +151,10 @@ function listUserDiskRows(root: string): UserDiskRow[] {
 /**
  * Free Railway volume space before TDLib session restore.
  * In slim mode, first drop SQLite chat mirrors (auth binlog kept).
- * When still critically full, drop non-kept session dirs.
+ * When still critically full *and free space is measurable*, drop non-kept session dirs.
+ *
+ * Important: never treat `df` failure (null free bytes) as "disk full" — that used to
+ * wipe every session except TDLIB_DISK_PRUNE_KEEP on each Railway restart.
  */
 export function pruneTdlibDiskBeforeRestore(): void {
   const slimFreed = purgeTdlibLocalMirrorsForSlimMode();
@@ -166,11 +169,13 @@ export function pruneTdlibDiskBeforeRestore(): void {
   const freeBefore = readDfFreeBytes(root) ?? readDfFreeBytes("/data");
   const rows = listUserDiskRows(root);
   const totalBefore = rows.reduce((sum, row) => sum + row.totalBytes, 0);
+  const freeUnknown = freeBefore === null;
 
   logGateway("disk_prune_start", {
     mode,
     root,
     freeBeforeBytes: freeBefore,
+    freeUnknown,
     userCount: rows.length,
     totalBeforeBytes: totalBefore,
     slimFreedBytes: slimFreed,
@@ -183,15 +188,17 @@ export function pruneTdlibDiskBeforeRestore(): void {
   });
 
   const force = mode === "always" || mode === "aggressive" || mode === "1" || mode === "true";
+  // Unknown free space must NOT force prune — Railway containers often fail `df`
+  // while the volume still has multi-GB free (sessions would be deleted wrongly).
   const needPrune =
     force ||
-    freeBefore === null ||
-    freeBefore < CRITICAL_FREE_BYTES ||
+    (!freeUnknown && freeBefore! < CRITICAL_FREE_BYTES) ||
     totalBefore > 4.2 * 1024 * 1024 * 1024;
 
   if (!needPrune) {
     logGateway("disk_prune_not_needed", {
       freeBeforeBytes: freeBefore,
+      freeUnknown,
       totalBeforeBytes: totalBefore,
       slimFreedBytes: slimFreed,
     });
@@ -207,12 +214,14 @@ export function pruneTdlibDiskBeforeRestore(): void {
   let freeAfterFiles = readDfFreeBytes(root) ?? readDfFreeBytes("/data");
   let freedSessionBytes = 0;
 
+  // Drop whole session dirs only when we can measure free space (or aggressive mode).
+  // Auth binlogs live under db/ — deleting userDir forces QR reconnect.
+  const freeAfterUnknown = freeAfterFiles === null;
   const stillCritical =
     mode === "aggressive" ||
-    freeAfterFiles === null ||
-    freeAfterFiles < AGGRESSIVE_FREE_BYTES;
+    (!freeAfterUnknown && freeAfterFiles! < AGGRESSIVE_FREE_BYTES);
 
-  if (stillCritical) {
+  if (stillCritical && !freeAfterUnknown) {
     const keepRaw = (process.env.TDLIB_DISK_PRUNE_KEEP || "").trim();
     const keepSet = new Set(
       keepRaw
@@ -238,6 +247,13 @@ export function pruneTdlibDiskBeforeRestore(): void {
     for (const row of dropCandidates) {
       const freeNow = readDfFreeBytes(root) ?? readDfFreeBytes("/data");
       if (freeNow !== null && freeNow >= CRITICAL_FREE_BYTES) break;
+      // If free space becomes unreadable mid-loop, stop deleting auth sessions.
+      if (freeNow === null) {
+        logGateway("disk_prune_stop_sessions_free_unknown", {
+          remainingCandidates: dropCandidates.length,
+        });
+        break;
+      }
       const size = row.totalBytes;
       try {
         fs.rmSync(row.userDir, { recursive: true, force: true });
@@ -255,6 +271,12 @@ export function pruneTdlibDiskBeforeRestore(): void {
         });
       }
     }
+  } else if (stillCritical && freeAfterUnknown) {
+    logGateway("disk_prune_skip_session_drop_free_unknown", {
+      mode,
+      note: "Refusing to delete TDLib auth dirs when df free bytes are unknown.",
+      userCount: listUserDiskRows(root).length,
+    });
   }
 
   const freeAfter = readDfFreeBytes(root) ?? readDfFreeBytes("/data");
@@ -265,5 +287,6 @@ export function pruneTdlibDiskBeforeRestore(): void {
     freeBeforeBytes: freeBefore,
     freeAfterFilesBytes: freeAfterFiles,
     freeAfterBytes: freeAfter,
+    freeUnknown,
   });
 }

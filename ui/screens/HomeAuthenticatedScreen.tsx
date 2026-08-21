@@ -1677,7 +1677,7 @@ function HomeAuthenticatedScreenMain() {
           scrollControllerRef={homeLeftScrollRef}
           // Wide: thumb sits on the column seam divider (music-bar style overlay).
           scrollbarRightInsetPx={isWideHome ? 0 : layout.scrollIndicatorRightInsetPx}
-          indicatorColor={colors.accent}
+          indicatorColor={colors.primary}
         >
           <View style={isWideHome ? undefined : homeMainColumnInsetStyle}>{homeMainColumnBlocks}</View>
         </HspScrollColumn>,

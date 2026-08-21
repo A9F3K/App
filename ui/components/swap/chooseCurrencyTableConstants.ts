@@ -7,7 +7,7 @@ export const CHOOSE_CURRENCY_TABLE_ROW_PADDING_VERTICAL_PX = 10;
 /** Horizontal padding inside centered columns (px). */
 export const CHOOSE_CURRENCY_TABLE_CELL_PADDING_HORIZONTAL_PX = 10;
 
-/** `#` column keeps page inset on the left; only right inner padding (px). */
+/** `#` / first column: page inset on the left; only right gap to the next column (px). */
 export const CHOOSE_CURRENCY_TABLE_RANK_CELL_PADDING_RIGHT_PX = 10;
 
 export const CHOOSE_CURRENCY_TABLE_CURRENCY_ICON_SIZE_PX = 20;

@@ -226,6 +226,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const { t } = useAppStrings();
   const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   const isTwoColumnWide = splitMetrics?.columnCount === 2;
+  /** Wide split: thumb overlays the column seam divider (same as left feed/messages column). */
+  const scrollbarRightInsetPx =
+    (splitMetrics?.columnCount ?? 1) >= 2 ? 0 : layout.scrollIndicatorRightInsetPx;
   const { isAuthenticated } = useAuth();
   const { isTelegramMessagesConnected } = useTelegramMessagesConnection();
   const historyLoad = useAuthenticatedHomeHistoryLoadTarget();
@@ -6638,8 +6641,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       <HspScrollColumn
         key={String(chat.telegram_chat_id)}
         style={{ flex: 1, minHeight: 0 }}
-        indicatorColor={colors.accent}
-        scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
+        indicatorColor={colors.primary}
+        scrollbarRightInsetPx={scrollbarRightInsetPx}
         indicatorThumbMinPx={CHAT_SCROLL_INDICATOR_THUMB_MIN_PX}
         indicatorContentSpanPx={chatScrollIndicatorContentSpanPx}
         initialScrollPosition={openScrollPlan.openAnchor}

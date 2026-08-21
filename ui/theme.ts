@@ -275,7 +275,10 @@ export const layout = {
      * `splitPaneDividerStrokePx` stroke is inset inside the strip — does not add flex width between columns.
      */
     splitPaneDividerHitWidthPx: 12,
-    /** Two-column body: vertical split line width (px). Kept separate from horizontal `headerDividerHeight` to avoid conflating axes. */
+    /**
+     * Two-column body: vertical split line width (px). Prefer {@link hairlineBorderWidthPx} at paint time
+     * so the stroke matches scroll thumbs on retina; this constant is the 1 CSS-px fallback only.
+     */
     splitPaneDividerStrokePx: 1,
     /** Divider hit overlay `zIndex`; below {@link scrollIndicatorOverlayZIndex} so scroll thumbs stay draggable at column seams. */
     splitPaneDividerOverlayZIndex: 1,

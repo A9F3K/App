@@ -413,44 +413,31 @@ export function AuthenticatedHomeLeftNavStrip({
     [layoutW, scrollRange],
   );
 
+  /** Nested primary thumb on highlight track (music seek bar) — same thickness as the divider it overlays. */
+  const thumbVisualH = lineT;
+
   const borderLineStyle = useMemo((): ViewStyle => {
     return {
       position: "absolute",
       left: 0,
       right: 0,
       bottom: 0,
-      height: lineT,
+      height: thumbVisualH,
       backgroundColor: colors.highlight,
       zIndex: 1,
-      overflow: "hidden",
-    };
-  }, [colors.highlight, lineT]);
-
-  const thumbTrackStyle = useMemo((): ViewStyle | null => {
-    if (!showScrollbar || thumbW <= 0) return null;
-    return {
-      position: "absolute",
-      left: 0,
-      right: 0,
-      bottom: thumbBottomSnapped,
-      height: lineT,
-      minHeight: lineT,
-      maxHeight: lineT,
-      zIndex: 3,
       overflow: "visible",
-      pointerEvents: "box-none",
     };
-  }, [showScrollbar, thumbW, thumbBottomSnapped, lineT]);
+  }, [colors.highlight, thumbVisualH]);
 
   const thumbFillStyle = useMemo((): ViewStyle | null => {
     if (!showScrollbar || thumbW <= 0) return null;
     return {
       width: thumbSnapW,
-      height: lineT,
-      backgroundColor: colors.accent,
+      height: thumbVisualH,
+      backgroundColor: colors.primary,
       ...(Platform.OS === "web" ? ({ willChange: "transform" } as ViewStyle) : null),
     };
-  }, [showScrollbar, thumbW, thumbSnapW, colors.accent, lineT]);
+  }, [showScrollbar, thumbW, thumbSnapW, colors.primary, thumbVisualH]);
 
   const labelStyle = (active: boolean) => ({
     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
@@ -780,8 +767,34 @@ export function AuthenticatedHomeLeftNavStrip({
         </>
       ) : null}
 
-      {thumbTrackStyle && thumbFillStyle ? (
-        <View pointerEvents="box-none" style={[thumbTrackStyle, lineAxisLock]}>
+      {showBottomMenuRule ? (
+        <View pointerEvents="box-none" collapsable={false} style={[borderLineStyle, lineAxisLock]}>
+          {thumbFillStyle ? (
+            <ScrollIndicatorDragHandle
+              axis="horizontal"
+              trackSpan={scrollTrackWidth}
+              thumbSpan={thumbSnapW}
+              thumbOffset={thumbSnapLeft}
+              scrollRange={scrollRange}
+              onScrollTo={scrollToX}
+              crossAxisVisualSpan={thumbVisualH}
+            >
+              <View pointerEvents="none" collapsable={false} style={[thumbFillStyle, lineAxisLock]} />
+            </ScrollIndicatorDragHandle>
+          ) : null}
+        </View>
+      ) : thumbFillStyle ? (
+        <View
+          pointerEvents="box-none"
+          style={{
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: thumbVisualH,
+            zIndex: 3,
+          }}
+        >
           <ScrollIndicatorDragHandle
             axis="horizontal"
             trackSpan={scrollTrackWidth}
@@ -789,15 +802,11 @@ export function AuthenticatedHomeLeftNavStrip({
             thumbOffset={thumbSnapLeft}
             scrollRange={scrollRange}
             onScrollTo={scrollToX}
-            crossAxisVisualSpan={lineT}
+            crossAxisVisualSpan={thumbVisualH}
           >
             <View pointerEvents="none" collapsable={false} style={[thumbFillStyle, lineAxisLock]} />
           </ScrollIndicatorDragHandle>
         </View>
-      ) : null}
-
-      {showBottomMenuRule ? (
-        <View pointerEvents="none" collapsable={false} style={[borderLineStyle, lineAxisLock]} />
       ) : null}
     </View>
   );

@@ -173,6 +173,6 @@ Fix:
 ### Other issues
 
 - **502 / health check fails:** Service not listening on `$PORT` — ensure latest code (uses `PORT` fallback).
-- **Connect works once then breaks after redeploy:** Volume missing or wrong mount path; data must live under `/data/tdlib`.
+- **Connect works once then breaks after redeploy:** Volume missing or wrong mount path; data must live under `/data/tdlib`. Also check gateway logs for `disk_prune_drop_session` — older prune logic treated unknown `df` free space as full and deleted auth dirs (fixed: unknown free space never deletes sessions).
 - **Vercel still uses localhost:** `TDLIB_GATEWAY_URL` not set on Vercel Production or not redeployed.
 - **OOM / restarts under load:** Increase Railway memory to 2 GB.
