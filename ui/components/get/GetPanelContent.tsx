@@ -34,6 +34,7 @@ import {
 } from "../../theme";
 import { appModalSheetStyles } from "../AppModalSheet";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
+import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
 import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
 import { VoiceWindowCrossIcon } from "../messages/MessageChatVoiceControlIcons";
 import { SwapSelectChevron } from "../swap/SwapFormIcons";
@@ -137,7 +138,6 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
   const [options, setOptions] = useState<GetCurrencyOption[]>([]);
   const [balancesLoading, setBalancesLoading] = useState(false);
   const [formWidthPx, setFormWidthPx] = useState(0);
-  const [viewportH, setViewportH] = useState(0);
   const [needsScroll, setNeedsScroll] = useState<boolean | null>(null);
   const scrollLayoutReady = needsScroll !== null;
   const [ctaHeightPx, setCtaHeightPx] = useState(0);
@@ -263,18 +263,16 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     setFormWidthPx((current) => (current === width ? current : width));
   }, []);
 
-  const onViewportLayout = useCallback((e: LayoutChangeEvent) => {
-    setViewportH(e.nativeEvent.layout.height);
+  const onScrollMetrics = useCallback((metrics: Omit<HspScrollMetrics, "scrollY">) => {
+    // Ignore zero-height frames so the first layout pass cannot lock flex-fill forever.
+    if (!(metrics.layoutH > 0)) return;
+    const overflow = metrics.contentH > metrics.layoutH + SCROLL_INDICATOR_SCROLL_EPS;
+    setNeedsScroll((prev) => {
+      if (overflow) return true;
+      if (prev === true) return true;
+      return false;
+    });
   }, []);
-
-  const onScrollMetrics = useCallback(
-    (metrics: Omit<HspScrollMetrics, "scrollY">) => {
-      if (needsScroll !== null) return;
-      const overflow = metrics.layoutH > 0 && metrics.contentH > metrics.layoutH + 0.5;
-      setNeedsScroll(overflow);
-    },
-    [needsScroll],
-  );
 
   const selectedSymbol = swapTokenDisplaySymbol(selected.token);
   const balanceLine = balancesLoading
@@ -440,7 +438,6 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
   return (
     <View
       style={{ flex: 1, width: "100%", alignSelf: "stretch", minHeight: 0 }}
-      onLayout={onViewportLayout}
     >
       <HspScrollColumn
         style={{ flex: 1, ...scrollShellBleed }}
@@ -451,7 +448,6 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
             ? {
                 ...scrollContentPadding,
                 flexGrow: 1,
-                ...(viewportH > 0 ? { minHeight: viewportH } : {}),
               }
             : scrollContentPadding
         }

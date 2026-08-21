@@ -23,8 +23,11 @@ export const light = {
   background: "#F1F1F1",
   primary: "#000000",
   secondary: "#717171",
-  /** Borders + divider strokes (chrome). */
-  highlight: "#5A5A5A",
+  /**
+   * Borders + divider strokes (chrome). Keep much lighter than dark-theme `#5A5A5A`
+   * so primary-colored scroll thumbs remain readable when they overlay column seams.
+   */
+  highlight: "#D0D0D0",
   undercover: "#dadada",
   /** Scroll thumbs, email field stroke, and other accent chrome. */
   accent: "#818181",

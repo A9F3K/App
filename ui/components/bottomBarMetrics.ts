@@ -74,7 +74,12 @@ export function getBottomBarMetrics({
     scrollRange,
     scrollRangeOverride != null && scrollRangeOverride > 0 ? scrollRangeOverride : 0,
   );
-  const showScrollbar = effectiveScrollRange > 0.5;
+  /**
+   * One-line bar is `minBarHeight` (59) while padded content is often ~60px — that 1px gap must not
+   * show a thumb. Only scroll when text exceeds the expandable line cap.
+   */
+  const showScrollbar =
+    rawLines > maxLinesBeforeScroll && effectiveScrollRange > 0.5;
 
   return {
     rawLines,

@@ -20,7 +20,7 @@ export function useGetActionSummary(): string {
     return t("get.action.connectHint");
   }
 
-  const symbol = swapTokenDisplaySymbol(form.token).toLowerCase();
+  const symbol = swapTokenDisplaySymbol(form.token);
   const amount = form.amount.trim();
   if (amount) {
     return tf("get.action.summaryWithAmount", { amount, symbol });

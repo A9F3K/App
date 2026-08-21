@@ -910,7 +910,8 @@ export function HspScrollColumn({
     const y = scroll.scrollY;
     const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
     const trackH = viewH + extendBottom;
-    if (viewH <= 0 || contentH <= 0 || contentH <= viewH + 0.5) {
+    // Subpixel / flexGrow fill often reports 1px phantom overflow; hide until real scroll range.
+    if (viewH <= 0 || contentH <= 0 || contentH <= viewH + SCROLL_INDICATOR_SCROLL_EPS) {
       return { show: false as const, thumbH: 0, thumbTop: 0, trackH: 0 };
     }
     const maxScroll = Math.max(1e-6, contentH - viewH);

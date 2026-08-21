@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Pressable, Text, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
 import { Image } from "expo-image";
+import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import {
   MessageChatVoiceMoreMenu,
@@ -136,7 +137,6 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
   const { width: windowWidth } = useWindowDimensions();
   const showTradeActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
   const contentInset = layout.contentSideInsetPx;
-  const [viewportH, setViewportH] = useState(0);
   const [collectionsRowWidth, setCollectionsRowWidth] = useState(0);
   const [needsScroll, setNeedsScroll] = useState<boolean | null>(null);
   const scrollLayoutReady = needsScroll !== null;
@@ -252,22 +252,19 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
     return TRADE_SAMPLE_COLLECTIONS.slice(baseIndex, baseIndex + collectionColumnCount);
   }, [activeSlideIndex, collectionColumnCount]);
 
-  const onViewportLayout = useCallback((e: LayoutChangeEvent) => {
-    setViewportH(e.nativeEvent.layout.height);
-  }, []);
-
   const onCollectionsRowLayout = useCallback((e: LayoutChangeEvent) => {
     setCollectionsRowWidth(e.nativeEvent.layout.width);
   }, []);
 
-  const onScrollMetrics = useCallback(
-    (metrics: Omit<HspScrollMetrics, "scrollY">) => {
-      if (needsScroll !== null) return;
-      const overflow = metrics.layoutH > 0 && metrics.contentH > metrics.layoutH + 0.5;
-      setNeedsScroll(overflow);
-    },
-    [needsScroll],
-  );
+  const onScrollMetrics = useCallback((metrics: Omit<HspScrollMetrics, "scrollY">) => {
+    if (!(metrics.layoutH > 0)) return;
+    const overflow = metrics.contentH > metrics.layoutH + SCROLL_INDICATOR_SCROLL_EPS;
+    setNeedsScroll((prev) => {
+      if (overflow) return true;
+      if (prev === true) return true;
+      return false;
+    });
+  }, []);
 
   const onCtaHeightChange = useCallback((heightPx: number) => {
     setCtaHeightPx((current) => (current === heightPx ? current : heightPx));
@@ -283,7 +280,6 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
   return (
     <View
       style={{ flex: 1, width: "100%", alignSelf: "stretch", minHeight: 0 }}
-      onLayout={onViewportLayout}
     >
       <HspScrollColumn
         style={{ flex: 1, ...scrollShellBleed }}
@@ -294,7 +290,6 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
             ? {
                 ...scrollContentPadding,
                 flexGrow: 1,
-                ...(viewportH > 0 ? { minHeight: viewportH } : {}),
               }
             : scrollContentPadding
         }

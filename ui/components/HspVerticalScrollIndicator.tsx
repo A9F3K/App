@@ -59,50 +59,76 @@ export function HspVerticalScrollIndicator({
 
   const [seamBox, setSeamBox] = useState<TrackBox | null>(null);
 
+  const applySeamBox = useCallback((x: number, y: number, w: number, h: number) => {
+    if (!(w > 0) || !(h > 0)) return;
+    const next: TrackBox = {
+      rightPx: snapScrollIndicatorCoordPx(x + w),
+      topPx: snapScrollIndicatorCoordPx(y),
+      heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, h + extendBottom)),
+    };
+    setSeamBox((prev) =>
+      prev &&
+      prev.rightPx === next.rightPx &&
+      prev.topPx === next.topPx &&
+      prev.heightPx === next.heightPx
+        ? prev
+        : next,
+    );
+  }, [trackH, extendBottom]);
+
   const syncSeamBox = useCallback(() => {
     if (!overlaySeam || !show) {
       setSeamBox(null);
       return;
     }
+    // Prefer getBoundingClientRect — measureInWindow can miss the first paint at mid breakpoints.
+    const dom = findDomNode(shellRef.current);
+    if (dom) {
+      const rect = dom.getBoundingClientRect();
+      applySeamBox(rect.left, rect.top, rect.width, rect.height);
+      return;
+    }
     shellRef.current?.measureInWindow((x, y, w, h) => {
-      if (!(w > 0) || !(h > 0)) return;
-      const next: TrackBox = {
-        rightPx: snapScrollIndicatorCoordPx(x + w),
-        topPx: snapScrollIndicatorCoordPx(y),
-        heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, h + extendBottom)),
-      };
-      setSeamBox((prev) =>
-        prev &&
-        prev.rightPx === next.rightPx &&
-        prev.topPx === next.topPx &&
-        prev.heightPx === next.heightPx
-          ? prev
-          : next,
-      );
+      applySeamBox(x, y, w, h);
     });
-  }, [overlaySeam, show, shellRef, trackH, extendBottom]);
+  }, [overlaySeam, show, shellRef, applySeamBox]);
 
   useLayoutEffect(() => {
     if (!overlaySeam || !show) {
       setSeamBox(null);
       return;
     }
-    syncSeamBox();
     const onWin = () => syncSeamBox();
+    let ro: ResizeObserver | null = null;
+    const observeShell = () => {
+      const dom = findDomNode(shellRef.current);
+      if (!dom || typeof ResizeObserver === "undefined") return;
+      if (ro) ro.disconnect();
+      ro = new ResizeObserver(onWin);
+      ro.observe(dom);
+    };
+
+    syncSeamBox();
+    observeShell();
+    // Extra frames after column flex settles (common when loading already at 2 columns).
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      syncSeamBox();
+      observeShell();
+      raf2 = requestAnimationFrame(() => {
+        syncSeamBox();
+        observeShell();
+      });
+    });
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
     const visualViewport = window.visualViewport;
     visualViewport?.addEventListener("resize", onWin);
     visualViewport?.addEventListener("scroll", onWin);
 
-    const dom = findDomNode(shellRef.current);
-    let ro: ResizeObserver | null = null;
-    if (typeof ResizeObserver !== "undefined" && dom) {
-      ro = new ResizeObserver(onWin);
-      ro.observe(dom);
-    }
-
     return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
       visualViewport?.removeEventListener("resize", onWin);
@@ -189,10 +215,12 @@ export function HspVerticalScrollIndicator({
 
 function findDomNode(ref: View | null): HTMLElement | null {
   if (!ref || Platform.OS !== "web") return null;
+  if (typeof HTMLElement !== "undefined" && ref instanceof HTMLElement) return ref;
   const anyRef = ref as unknown as {
     getNode?: () => unknown;
     _touchableNode?: HTMLElement;
+    _nativeNode?: HTMLElement;
   };
-  const node = anyRef.getNode?.() ?? anyRef._touchableNode ?? null;
+  const node = anyRef.getNode?.() ?? anyRef._touchableNode ?? anyRef._nativeNode ?? null;
   return node instanceof HTMLElement ? node : null;
 }

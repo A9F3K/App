@@ -8,10 +8,10 @@ import {
   TextInput,
   useWindowDimensions,
   View,
-  type LayoutChangeEvent,
 } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { setSendFormAddress, setSendFormComment, useSendFormState } from "../../send/sendFormStore";
+import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
 import { SendGetTitleRow } from "../transfer/SendGetTitleRow";
@@ -77,24 +77,20 @@ export function SendPanelContent() {
     paddingBottom: TOP_INSET_PX,
   };
 
-  const [viewportH, setViewportH] = useState(0);
   const [needsScroll, setNeedsScroll] = useState<boolean | null>(null);
   const scrollLayoutReady = needsScroll !== null;
   const { address, comment } = useSendFormState();
   const [ctaHeightPx, setCtaHeightPx] = useState(0);
 
-  const onViewportLayout = useCallback((e: LayoutChangeEvent) => {
-    setViewportH(e.nativeEvent.layout.height);
+  const onScrollMetrics = useCallback((metrics: Omit<HspScrollMetrics, "scrollY">) => {
+    if (!(metrics.layoutH > 0)) return;
+    const overflow = metrics.contentH > metrics.layoutH + SCROLL_INDICATOR_SCROLL_EPS;
+    setNeedsScroll((prev) => {
+      if (overflow) return true;
+      if (prev === true) return true;
+      return false;
+    });
   }, []);
-
-  const onScrollMetrics = useCallback(
-    (metrics: Omit<HspScrollMetrics, "scrollY">) => {
-      if (needsScroll !== null) return;
-      const overflow = metrics.layoutH > 0 && metrics.contentH > metrics.layoutH + 0.5;
-      setNeedsScroll(overflow);
-    },
-    [needsScroll],
-  );
 
   const pasteIntoAddress = useCallback(async () => {
     const text = await Clipboard.getStringAsync();
@@ -126,7 +122,6 @@ export function SendPanelContent() {
   return (
     <View
       style={{ flex: 1, width: "100%", alignSelf: "stretch", minHeight: 0 }}
-      onLayout={onViewportLayout}
     >
       <HspScrollColumn
         style={{ flex: 1, ...scrollShellBleed }}
@@ -137,7 +132,6 @@ export function SendPanelContent() {
             ? {
                 ...scrollContentPadding,
                 flexGrow: 1,
-                ...(viewportH > 0 ? { minHeight: viewportH } : {}),
               }
             : scrollContentPadding
         }
