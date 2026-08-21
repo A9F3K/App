@@ -76,6 +76,17 @@ function normalizeFeedRows(rows: unknown[]): FeedRow[] {
 }
 
 /**
+ * Stable demo clocks for welcome placeholders (today, staggered) so times stay
+ * visible while `/api/feed` is slow or hanging — matches chat-list HH:mm style.
+ */
+function placeholderSentAtIso(welcomeOrder: number): string {
+  const d = new Date();
+  d.setSeconds(0, 0);
+  d.setHours(14, Math.max(0, 32 - (welcomeOrder - 1) * 7), 0, 0);
+  return d.toISOString();
+}
+
+/**
  * Matches `sql/seed-welcome-messages.sql` (+ `database/feed.ts` welcome keys): placeholder rows until `/api/feed` hydrates.
  */
 function buildWelcomePlaceholderFeed(catalogLocale: AppLocale): FeedRow[] {
@@ -83,7 +94,7 @@ function buildWelcomePlaceholderFeed(catalogLocale: AppLocale): FeedRow[] {
   return [
     {
       id: -1,
-      sent_at: null,
+      sent_at: placeholderSentAtIso(1),
       card_type: "system_action",
       layout_variant: "action_hint",
       payload: {
@@ -95,7 +106,7 @@ function buildWelcomePlaceholderFeed(catalogLocale: AppLocale): FeedRow[] {
     },
     {
       id: -2,
-      sent_at: null,
+      sent_at: placeholderSentAtIso(2),
       card_type: "user_status",
       layout_variant: "compact",
       payload: {
@@ -107,7 +118,7 @@ function buildWelcomePlaceholderFeed(catalogLocale: AppLocale): FeedRow[] {
     },
     {
       id: -3,
-      sent_at: null,
+      sent_at: placeholderSentAtIso(3),
       card_type: "transaction_asset",
       layout_variant: "value_trailing",
       payload: {
@@ -120,7 +131,7 @@ function buildWelcomePlaceholderFeed(catalogLocale: AppLocale): FeedRow[] {
     },
     {
       id: -4,
-      sent_at: null,
+      sent_at: placeholderSentAtIso(4),
       card_type: "reward_token",
       layout_variant: "value_trailing",
       payload: {
@@ -133,7 +144,7 @@ function buildWelcomePlaceholderFeed(catalogLocale: AppLocale): FeedRow[] {
     },
     {
       id: -5,
-      sent_at: null,
+      sent_at: placeholderSentAtIso(5),
       card_type: "task_gig",
       layout_variant: "compact",
       payload: {
@@ -269,18 +280,22 @@ function FeedFeedRow({
             minHeight: MESSAGE_LINE_HEIGHT_PX,
           }}
         >
-          <Text
-            numberOfLines={1}
-            ellipsizeMode="tail"
-            style={{
-              ...textBase,
-              flex: 1,
-              minWidth: 0,
-              color: colors.primary,
-            }}
-          >
-            {title}
-          </Text>
+          {/*
+            Title must live in a flex:1 View (not flex on Text) so RN-web shrinks the
+            label and keeps the wall-clock visible — same pattern as MessageChatRow.
+          */}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              style={{
+                ...textBase,
+                color: colors.primary,
+              }}
+            >
+              {title}
+            </Text>
+          </View>
           {gapTitleTime ? <View style={{ width: MESSAGE_NAME_TIME_GAP_PX }} /> : null}
           {timeLabel ? (
             <Text
@@ -288,7 +303,7 @@ function FeedFeedRow({
               style={{
                 ...textBase,
                 flexShrink: 0,
-                color: timeIsProvisional ? colors.secondary : colors.primary,
+                color: timeIsProvisional ? colors.secondary : colors.accent,
               }}
             >
               {timeLabel}
