@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   PanResponder,
   Platform,
@@ -35,6 +35,25 @@ type Props = {
   children: ReactNode;
 };
 
+function clearBrowserTextSelection() {
+  if (Platform.OS !== "web" || typeof window === "undefined") return;
+  const sel = window.getSelection?.();
+  sel?.removeAllRanges?.();
+}
+
+function setDocumentDragSelectLock(locked: boolean) {
+  if (Platform.OS !== "web" || typeof document === "undefined") return;
+  const root = document.documentElement;
+  if (locked) {
+    root.style.setProperty("user-select", "none");
+    root.style.setProperty("-webkit-user-select", "none");
+    clearBrowserTextSelection();
+  } else {
+    root.style.removeProperty("user-select");
+    root.style.removeProperty("-webkit-user-select");
+  }
+}
+
 /**
  * Draggable overlay for 1px scroll thumbs. Expands the hit target ±3px on the cross axis
  * (left/right for vertical scroll, up/down for horizontal scroll).
@@ -53,6 +72,7 @@ export function ScrollIndicatorDragHandle({
   const trackOriginRef = useRef(0);
   const grabAlongTrackRef = useRef(0);
   const trackRef = useRef<View>(null);
+  const draggingRef = useRef(false);
 
   const thumbOffsetRef = useRef(thumbOffset);
   const thumbSpanRef = useRef(thumbSpan);
@@ -65,6 +85,14 @@ export function ScrollIndicatorDragHandle({
   trackSpanRef.current = trackSpan;
   scrollRangeRef.current = scrollRange;
   onScrollToRef.current = onScrollTo;
+
+  const endDragSelectLock = useCallback(() => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    setDocumentDragSelectLock(false);
+  }, []);
+
+  useEffect(() => () => endDragSelectLock(), [endDragSelectLock]);
 
   const measureTrackOrigin = useCallback(() => {
     trackRef.current?.measureInWindow((x, y) => {
@@ -86,11 +114,14 @@ export function ScrollIndicatorDragHandle({
         onMoveShouldSetPanResponder: () => scrollRangeRef.current > 0,
         onPanResponderTerminationRequest: () => false,
         onPanResponderGrant: (evt) => {
+          draggingRef.current = true;
+          setDocumentDragSelectLock(true);
           measureTrackOrigin();
           const page = axis === "vertical" ? evt.nativeEvent.pageY : evt.nativeEvent.pageX;
           grabAlongTrackRef.current = page - trackOriginRef.current - thumbOffsetRef.current;
         },
         onPanResponderMove: (evt) => {
+          if (Platform.OS === "web") clearBrowserTextSelection();
           const page = axis === "vertical" ? evt.nativeEvent.pageY : evt.nativeEvent.pageX;
           const thumbPos = page - trackOriginRef.current - grabAlongTrackRef.current;
           onScrollToRef.current(
@@ -102,8 +133,10 @@ export function ScrollIndicatorDragHandle({
             ),
           );
         },
+        onPanResponderRelease: () => endDragSelectLock(),
+        onPanResponderTerminate: () => endDragSelectLock(),
       }),
-    [axis, measureTrackOrigin],
+    [axis, measureTrackOrigin, endDragSelectLock],
   );
 
   if (scrollRange <= 0 || thumbSpan <= 0 || trackSpan <= 0) {
@@ -113,7 +146,12 @@ export function ScrollIndicatorDragHandle({
   const inset = crossAxisHitInsetPx;
   const webDragStyle =
     Platform.OS === "web"
-      ? ({ cursor: "grab", touchAction: "none" } as unknown as ViewStyle)
+      ? ({
+          cursor: "grab",
+          touchAction: "none",
+          userSelect: "none",
+          WebkitUserSelect: "none",
+        } as unknown as ViewStyle)
       : null;
 
   const handleStyle: ViewStyle =

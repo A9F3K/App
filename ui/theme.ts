@@ -183,9 +183,9 @@ export const layout = {
   contentSideInsetPx,
   /**
    * 1px vertical scroll thumb inset (px) from the viewport or column edge.
-   * Keep ≥1 so thumbs stay visible beside split-pane seam strokes (divider overlay paints above column content).
+   * `0` = flush to the column seam (portaled above the divider overlay on web).
    */
-  scrollIndicatorRightInsetPx: 3,
+  scrollIndicatorRightInsetPx: 0,
   /**
    * Authenticated home (`/` signed-in): padding inside the root scroll column (same outer scroll as welcome).
    * Central place to tune per breakpoint/platform later (e.g. `Platform.select` or responsive hook).
@@ -286,7 +286,7 @@ export const layout = {
     /**
      * Split-pane divider hit + painted seam `zIndex`.
      * Must stay above sticky column footers so vertical edges run through the bottom bars.
-     * Scroll thumbs sit just inside the column (`right: 0`) under this hairline at the seam.
+     * Vertical scroll thumbs use {@link scrollIndicatorOverlayZIndex} and portal above this on web when flush.
      */
     splitPaneDividerOverlayZIndex: 5,
     /**

@@ -1679,7 +1679,8 @@ function HomeAuthenticatedScreenMain() {
           onNearBottom={handleHomeLeftScrollNearBottom}
           onScrollPositionChange={handleHomeLeftScrollPositionChange}
           scrollControllerRef={homeLeftScrollRef}
-          scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
+          // Wide: thumb overlays the column seam divider (portaled above the stroke on web).
+          scrollbarRightInsetPx={isWideHome ? 0 : layout.scrollIndicatorRightInsetPx}
           indicatorColor={colors.primary}
         >
           <View style={isWideHome ? undefined : homeMainColumnInsetStyle}>{homeMainColumnBlocks}</View>

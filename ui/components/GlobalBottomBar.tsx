@@ -333,8 +333,12 @@ function WebBottomBar({
   const measureAndResize = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
-    el.style.height = "auto";
-    setContentHeight(el.scrollHeight);
+    // Keep the constrained bar height — do not set height:"auto" (that zeros
+    // scrollHeight-clientHeight and briefly hides the custom scrollbar).
+    const range = Math.max(0, el.scrollHeight - el.clientHeight);
+    setContentHeight(Math.max(el.scrollHeight, el.clientHeight));
+    setDomScrollRange(range);
+    setScrollY(el.scrollTop);
   }, []);
 
   // Width changes (screen resize, split-pane drag) change wrapping → scrollHeight. Re-measure immediately.
@@ -470,7 +474,7 @@ function WebBottomBar({
     if (typeof document === "undefined") return;
     const el = textareaRef.current;
     if (!el || !metrics.showScrollbar || !wasNearBottomBeforeInputRef.current) return;
-    const range = el.scrollHeight - el.clientHeight;
+    const range = Math.max(0, el.scrollHeight - el.clientHeight);
     if (range <= 0) return;
     const id = requestAnimationFrame(() => {
       el.scrollTop = range;
@@ -478,7 +482,7 @@ function WebBottomBar({
       setDomScrollRange(range);
     });
     return () => cancelAnimationFrame(id);
-  }, [value, metrics.showScrollbar]);
+  }, [value, metrics.showScrollbar, metrics.contentHeightWithGaps, metrics.viewportHeight]);
 
   const handleSend = useCallback(() => {
     let text = value.trim();
@@ -606,9 +610,10 @@ function WebBottomBar({
         topPosition={metrics.scrollbar.topPosition}
         color={scrollbarColor}
         scrollRange={
-          domScrollRange > 0
-            ? domScrollRange
-            : Math.max(0, metrics.contentHeightWithGaps - metrics.viewportHeight)
+          Math.max(
+            domScrollRange,
+            Math.max(0, metrics.contentHeightWithGaps - metrics.viewportHeight),
+          )
         }
         onScrollTo={(y) => {
           const el = textareaRef.current;

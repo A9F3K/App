@@ -29,7 +29,6 @@ import {
   SCROLL_INDICATOR_SCROLL_EPS,
   scrollIndicatorHairlineBorderWidthPx,
   scrollIndicatorThumbSpanAndOffset,
-  snapScrollIndicatorCoordPx,
 } from "../../scrollIndicatorPx";
 import {
   aiPromptButtonActiveBackground,
@@ -40,7 +39,7 @@ import {
   useColors,
 } from "../../theme";
 import { useTelegram } from "../Telegram";
-import { ScrollIndicatorDragHandle } from "../ScrollIndicatorDragHandle";
+import { HspVerticalScrollIndicator } from "../HspVerticalScrollIndicator";
 import { SmartGradientDivider } from "../smart/SmartGradientDivider";
 import {
   LIST_ROW_GAP_PX,
@@ -397,8 +396,17 @@ export function ChooseCurrencyTable({
   const colors = useColors();
   const { widthPx, onLayout, onRef } = useObservedWidth("choose_currency_table");
   const flatListRef = useRef<FlatList<ChooseCurrencyRow>>(null);
+  const shellRef = useRef<View>(null);
   const [scroll, setScroll] = useState({ layoutH: 0, contentH: 0, scrollY: 0 });
   const [shellLayoutH, setShellLayoutH] = useState(0);
+
+  const setShellNodeRef = useCallback(
+    (node: View | null) => {
+      shellRef.current = node;
+      onRef?.(node as never);
+    },
+    [onRef],
+  );
 
   const headers = useMemo(
     () =>
@@ -682,7 +690,7 @@ export function ChooseCurrencyTable({
   }, [colors.accent, colors.secondary, isFetchingMore, isLoading, loadError, rows.length, t]);
 
   return (
-    <View style={styles.shell} onLayout={onShellLayout} ref={onRef as never}>
+    <View style={styles.shell} onLayout={onShellLayout} ref={setShellNodeRef} collapsable={false}>
       <FlatList
         ref={flatListRef}
         data={rows as ChooseCurrencyRow[]}
@@ -714,45 +722,19 @@ export function ChooseCurrencyTable({
       <View style={styles.headerOverlay} pointerEvents="box-none">
         {listHeader}
       </View>
-      {indicator.show ? (
-        <View
-          style={[
-            styles.scrollIndicatorWrap,
-            {
-              top: indicator.trackTop,
-              bottom: -Math.max(0, scrollIndicatorExtendBottomPx),
-              right: snapScrollIndicatorCoordPx(SCROLLBAR_RIGHT_INSET_PX),
-            },
-          ]}
-        >
-          <ScrollIndicatorDragHandle
-            axis="vertical"
-            trackSpan={indicator.trackH}
-            thumbSpan={indicator.thumbH}
-            thumbOffset={indicator.thumbTop}
-            scrollRange={indicator.maxScroll}
-            onScrollTo={scrollToY}
-            crossAxisVisualSpan={scrollIndicatorHairlineBorderWidthPx()}
-          >
-            <View
-              {...(Platform.OS === "web"
-                ? ({ className: "hsp-scroll-indicator-thumb" } as Record<string, string>)
-                : {})}
-              style={[
-                styles.scrollIndicatorThumb,
-                {
-                  top: 0,
-                  height: indicator.thumbH,
-                  width: 0,
-                  borderLeftWidth: scrollIndicatorHairlineBorderWidthPx(),
-                  borderLeftColor: colors.primary,
-                  borderStyle: "solid",
-                },
-              ]}
-            />
-          </ScrollIndicatorDragHandle>
-        </View>
-      ) : null}
+      <HspVerticalScrollIndicator
+        show={indicator.show}
+        shellRef={shellRef}
+        trackH={indicator.trackH}
+        thumbH={indicator.thumbH}
+        thumbTop={indicator.thumbTop}
+        maxScroll={indicator.show ? indicator.maxScroll : 0}
+        thumbColor={colors.primary}
+        scrollbarRightInsetPx={SCROLLBAR_RIGHT_INSET_PX}
+        scrollIndicatorExtendBottomPx={scrollIndicatorExtendBottomPx}
+        onScrollTo={scrollToY}
+        style={indicator.show ? { top: indicator.trackTop } : undefined}
+      />
     </View>
   );
 }
@@ -787,6 +769,13 @@ const styles = StyleSheet.create({
     right: 0,
     /** Below the scroll thumb so the indicator can travel through the legend. */
     zIndex: 1,
+    ...Platform.select({
+      web: {
+        userSelect: "none",
+        WebkitUserSelect: "none",
+      } as Record<string, string>,
+      default: {},
+    }),
   },
   headerRow: {
     flexDirection: "row",
@@ -883,19 +872,5 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingVertical: 16,
     width: "100%",
-  },
-  scrollIndicatorWrap: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    width: 0,
-    overflow: "visible",
-    zIndex: layout.authenticatedHome.scrollIndicatorOverlayZIndex,
-    pointerEvents: "box-none",
-  },
-  scrollIndicatorThumb: {
-    position: "absolute",
-    right: 0,
-    top: 0,
   },
 });

@@ -113,11 +113,13 @@ export function SmartUndercoverMultilineField({
     const el = resolveMultilineScrollElement(inputRef, nativeID);
     if (!el) return;
     const layoutH = el.clientHeight;
+    if (layoutH <= 0) return;
+
+    // Prefer live scrollHeight so bottom padding is part of the scroll range (thumb can pin to max).
     let contentH = el.scrollHeight;
     if (
       Platform.OS === "web" &&
       typeof window !== "undefined" &&
-      contentH <= layoutH + 1 &&
       value.length > 0
     ) {
       let mirror = mirrorRef.current;
@@ -146,14 +148,22 @@ export function SmartUndercoverMultilineField({
         mirror.style.fontWeight = cs.fontWeight;
         mirror.style.lineHeight = cs.lineHeight;
         mirror.style.letterSpacing = cs.letterSpacing;
-        mirror.textContent = value;
-        const mirrored = mirror.getBoundingClientRect().height;
-        if (mirrored > layoutH + 1) contentH = mirrored;
+        // Trailing newline collapses in a div unless preserved — keep end padding in the measure.
+        mirror.textContent = value.endsWith("\n") ? `${value}\u200b` : value;
+        const mirrored = Math.ceil(mirror.getBoundingClientRect().height);
+        if (mirrored > contentH) contentH = mirrored;
       }
     }
+
+    const maxScroll = Math.max(0, contentH - layoutH);
     const scrollYRaw = el.scrollTop;
-    const scrollY = scrollYRaw <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : scrollYRaw;
-    if (layoutH <= 0) return;
+    const scrollY =
+      maxScroll > 0 && scrollYRaw >= maxScroll - SCROLL_INDICATOR_SCROLL_EPS
+        ? maxScroll
+        : scrollYRaw <= SCROLL_INDICATOR_SCROLL_EPS
+          ? 0
+          : scrollYRaw;
+
     setScroll((prev) => ({
       ...prev,
       layoutH,
@@ -161,6 +171,29 @@ export function SmartUndercoverMultilineField({
       scrollY,
     }));
   }, [nativeID, value]);
+
+  /** When overflow appears while editing at the end, reveal bottom inset and pin the thumb. */
+  const scrollToRevealBottomInsetIfNeeded = useCallback(() => {
+    const el = resolveMultilineScrollElement(inputRef, nativeID);
+    if (!el) return;
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (maxScroll <= 0.5) return;
+    const caretAtEnd =
+      typeof el === "object" &&
+      "selectionStart" in el &&
+      "value" in el &&
+      (el as HTMLTextAreaElement).selectionStart === (el as HTMLTextAreaElement).value.length &&
+      (el as HTMLTextAreaElement).selectionEnd === (el as HTMLTextAreaElement).value.length;
+    const nearBottom = el.scrollTop >= maxScroll - Math.max(30, PADDING_VERTICAL_PX);
+    if (!caretAtEnd && !nearBottom) return;
+    el.scrollTop = maxScroll;
+    setScroll((prev) => ({
+      ...prev,
+      layoutH: el.clientHeight,
+      contentH: Math.max(prev.contentH, el.scrollHeight),
+      scrollY: maxScroll,
+    }));
+  }, [nativeID]);
 
   const onContentSizeChange = useCallback(
     (_w: number, h: number) => {
@@ -204,10 +237,14 @@ export function SmartUndercoverMultilineField({
       onChangeText(next);
       requestAnimationFrame(() => {
         syncScrollMetricsFromDom();
-        requestAnimationFrame(syncScrollMetricsFromDom);
+        scrollToRevealBottomInsetIfNeeded();
+        requestAnimationFrame(() => {
+          syncScrollMetricsFromDom();
+          scrollToRevealBottomInsetIfNeeded();
+        });
       });
     },
-    [onChangeText, syncScrollMetricsFromDom],
+    [onChangeText, syncScrollMetricsFromDom, scrollToRevealBottomInsetIfNeeded],
   );
 
   useLayoutEffect(() => {
@@ -272,18 +309,12 @@ export function SmartUndercoverMultilineField({
 
   const indicator = useMemo(() => {
     const viewH = scroll.layoutH;
-    let contentH = scroll.contentH;
+    const contentH = scroll.contentH;
     const y = scroll.scrollY;
-    const maxScrollFromMetrics = Math.max(0, contentH - viewH);
-    const hasOverflow =
-      maxScrollFromMetrics > 0.5 || y > SCROLL_INDICATOR_SCROLL_EPS;
-    if (!hasOverflow || viewH <= 0) {
+    const maxScroll = Math.max(0, contentH - viewH);
+    if (viewH <= 0 || maxScroll <= 0.5) {
       return { show: false as const, thumbH: 0, thumbTop: 0, maxScroll: 0 };
     }
-    if (contentH <= viewH + 0.5 && y > 0) {
-      contentH = viewH + y + viewH * 0.25;
-    }
-    const maxScroll = Math.max(1e-6, contentH - viewH);
     const { thumbSpan, thumbOffset } = scrollIndicatorThumbSpanAndOffset(
       viewH,
       viewH,

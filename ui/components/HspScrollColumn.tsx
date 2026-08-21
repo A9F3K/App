@@ -23,13 +23,12 @@ import {
 import {
   scrollIndicatorHairlineBorderWidthPx,
   scrollIndicatorThumbSpanAndOffset,
-  snapScrollIndicatorCoordPx,
   SCROLL_INDICATOR_THUMB_MIN_PX,
 } from "../scrollIndicatorPx";
 import { isBrowserZoomWheelEvent } from "../browserZoom";
 import { layout, useColors } from "../theme";
 import { SCROLL_INDICATOR_SCROLL_EPS } from "../scrollIndicatorPx";
-import { ScrollIndicatorDragHandle } from "./ScrollIndicatorDragHandle";
+import { HspVerticalScrollIndicator } from "./HspVerticalScrollIndicator";
 
 const DEFAULT_SCROLLBAR_RIGHT_INSET = layout.scrollIndicatorRightInsetPx;
 
@@ -165,6 +164,7 @@ export function HspScrollColumn({
   const colors = useColors();
   const thumbColor = indicatorColor ?? colors.primary;
   const scrollRef = useRef<ComponentRef<typeof ScrollView>>(null);
+  const shellRef = useRef<View>(null);
   const didInitialTopResetRef = useRef(false);
   const didInitialBottomScrollRef = useRef(false);
   const prevInitialScrollPositionRef = useRef(initialScrollPosition);
@@ -939,7 +939,7 @@ export function HspScrollColumn({
   }, [scroll, indicatorContentSpanPx, indicatorThumbMinPx, scrollIndicatorExtendBottomPx]);
 
   return (
-    <View style={[styles.shell, style]}>
+    <View ref={shellRef} style={[styles.shell, style]} collapsable={false}>
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
@@ -955,47 +955,21 @@ export function HspScrollColumn({
       >
         {children}
       </ScrollView>
-      {indicator.show ? (
-        <View
-          style={[
-            styles.scrollIndicatorWrap,
-            {
-              right: snapScrollIndicatorCoordPx(scrollbarRightInsetPx),
-              bottom: -Math.max(0, scrollIndicatorExtendBottomPx),
-            },
-          ]}
-        >
-          <ScrollIndicatorDragHandle
-            axis="vertical"
-            trackSpan={indicator.trackH}
-            thumbSpan={indicator.thumbH}
-            thumbOffset={indicator.thumbTop}
-            scrollRange={indicator.maxScroll}
-            onScrollTo={(y) => {
-              onUserScrollIntent?.();
-              scrollToY(y);
-            }}
-            crossAxisVisualSpan={scrollIndicatorHairlineBorderWidthPx()}
-          >
-            <View
-              {...(Platform.OS === "web"
-                ? ({ className: "hsp-scroll-indicator-thumb" } as Record<string, string>)
-                : {})}
-              style={[
-                styles.scrollIndicatorThumb,
-                {
-                  top: 0,
-                  height: indicator.thumbH,
-                  width: 0,
-                  borderLeftWidth: scrollIndicatorHairlineBorderWidthPx(),
-                  borderLeftColor: thumbColor,
-                  borderStyle: "solid",
-                },
-              ]}
-            />
-          </ScrollIndicatorDragHandle>
-        </View>
-      ) : null}
+      <HspVerticalScrollIndicator
+        show={indicator.show}
+        shellRef={shellRef}
+        trackH={indicator.trackH}
+        thumbH={indicator.thumbH}
+        thumbTop={indicator.thumbTop}
+        maxScroll={indicator.show ? indicator.maxScroll : 0}
+        thumbColor={thumbColor}
+        scrollbarRightInsetPx={scrollbarRightInsetPx}
+        scrollIndicatorExtendBottomPx={scrollIndicatorExtendBottomPx}
+        onScrollTo={(y) => {
+          onUserScrollIntent?.();
+          scrollToY(y);
+        }}
+      />
     </View>
   );
 }
@@ -1013,19 +987,5 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 0,
-  },
-  scrollIndicatorWrap: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    width: 0,
-    overflow: "visible",
-    zIndex: layout.authenticatedHome.scrollIndicatorOverlayZIndex,
-    pointerEvents: "box-none",
-  },
-  scrollIndicatorThumb: {
-    position: "absolute",
-    right: 0,
-    top: 0,
   },
 });

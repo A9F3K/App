@@ -69,9 +69,12 @@ export function getBottomBarMetrics({
   const viewportHeight = barHeight;
   const contentHeightWithGaps = baseHeight;
   const scrollRange = Math.max(contentHeightWithGaps - viewportHeight, 0);
-  const effectiveScrollRange =
-    scrollRangeOverride != null && scrollRangeOverride > 0 ? scrollRangeOverride : scrollRange;
-  const showScrollbar = visibleLines > 1 && effectiveScrollRange > 0.5;
+  /** Prefer the larger of mirror-based and live DOM ranges so a transient 0 DOM range cannot hide the thumb. */
+  const effectiveScrollRange = Math.max(
+    scrollRange,
+    scrollRangeOverride != null && scrollRangeOverride > 0 ? scrollRangeOverride : 0,
+  );
+  const showScrollbar = effectiveScrollRange > 0.5;
 
   return {
     rawLines,
