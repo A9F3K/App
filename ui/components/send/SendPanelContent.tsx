@@ -4,7 +4,6 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Platform,
   Pressable,
-  StyleSheet,
   Text,
   TextInput,
   useWindowDimensions,
@@ -12,8 +11,9 @@ import {
   type LayoutChangeEvent,
 } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
+import { setSendFormAddress, setSendFormComment, useSendFormState } from "../../send/sendFormStore";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
-import { SmartGradientDivider } from "../smart/SmartGradientDivider";
+import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
 import { SendGetTitleRow } from "../transfer/SendGetTitleRow";
 import { SwapSelectChevron } from "../swap/SwapFormIcons";
 import { swapDllrTokenImage } from "../swap/swapFormAssets";
@@ -21,19 +21,15 @@ import {
   layout,
   typographyAeroport15,
   typographyAeroport20,
-  typographyFixedRow30Label,
   useColors,
 } from "../../theme";
+import { SendActionRow } from "./SendActionRow";
 
 const TOP_INSET_PX = 15;
 const TITLE_TO_SEND_GAP_PX = 20;
 const SECTION_GAP_PX = 15;
 const ADDRESS_SECTION_GAP_PX = 30;
 const SEND_MUTED = "#818181";
-const ACTION_BUTTON_HEIGHT_PX = 30;
-const ACTION_BUTTON_TEXT_INSET_PX = 30;
-const FIT_EPSILON_PX = 1;
-const { textToSendIconGapPx: TEXT_TO_BUTTON_GAP_PX } = layout.bottomBar;
 
 const amountTextStyle = [typographyAeroport20, { fontWeight: "500" as const }];
 const muted15 = [typographyAeroport15, { color: SEND_MUTED }];
@@ -67,115 +63,6 @@ function SendLabelActionRow({
   );
 }
 
-function SendActionRow({ address }: { address: string }) {
-  const colors = useColors();
-  const { t, tf } = useAppStrings();
-  const shortSummaryLabel = t("send.action.summary");
-  const fullSummaryLabel = address
-    ? tf("send.action.summaryWithAddress", { address })
-    : shortSummaryLabel;
-  const [labelSlotWidth, setLabelSlotWidth] = useState(0);
-  const [fullLabelWidth, setFullLabelWidth] = useState(0);
-
-  const labelMeasured = labelSlotWidth > 0 && fullLabelWidth > 0;
-  const canShowFullSummaryLabel =
-    labelMeasured && fullLabelWidth <= labelSlotWidth + FIT_EPSILON_PX;
-  const summaryLabel = canShowFullSummaryLabel ? fullSummaryLabel : shortSummaryLabel;
-
-  const onLabelSlotLayout = useCallback((width: number) => {
-    setLabelSlotWidth((current) => (current === width ? current : width));
-  }, []);
-
-  const onFullLabelMeasureLayout = useCallback((width: number) => {
-    setFullLabelWidth((current) => (current === width ? current : width));
-  }, []);
-
-  useEffect(() => {
-    setFullLabelWidth(0);
-  }, [fullSummaryLabel]);
-
-  return (
-    <View style={sendActionRowStyles.wrapper}>
-      <Text
-        style={[typographyFixedRow30Label, sendActionRowStyles.fullLabelMeasure, { color: colors.primary }]}
-        onLayout={(event) => onFullLabelMeasureLayout(Math.ceil(event.nativeEvent.layout.width))}
-      >
-        {fullSummaryLabel}
-      </Text>
-      <View style={[sendActionRowStyles.row, { height: ACTION_BUTTON_HEIGHT_PX }]}>
-        <View
-          style={sendActionRowStyles.summaryLabelSlot}
-          onLayout={(event) => onLabelSlotLayout(Math.round(event.nativeEvent.layout.width))}
-        >
-          <Text
-            style={[typographyFixedRow30Label, sendActionRowStyles.summaryLabel, { color: colors.primary }]}
-            numberOfLines={1}
-            accessibilityLabel={fullSummaryLabel}
-          >
-            {summaryLabel}
-          </Text>
-        </View>
-        <Pressable
-          accessibilityRole="button"
-          style={[sendActionRowStyles.actionButton, { backgroundColor: colors.undercover }]}
-        >
-          <Text style={[typographyFixedRow30Label, { color: colors.primary, textAlign: "center" }]} numberOfLines={1}>
-            {t("send.action.button")}
-          </Text>
-        </Pressable>
-      </View>
-    </View>
-  );
-}
-
-const sendActionRowStyles = StyleSheet.create({
-  wrapper: {
-    width: "100%",
-    position: "relative",
-  },
-  row: {
-    width: "100%",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: TEXT_TO_BUTTON_GAP_PX,
-  },
-  summaryLabelSlot: {
-    flex: 1,
-    minWidth: 0,
-    justifyContent: "center",
-  },
-  summaryLabel: {
-    minWidth: 0,
-  },
-  fullLabelMeasure: {
-    position: "absolute",
-    opacity: 0,
-    top: 0,
-    left: 0,
-    zIndex: -1,
-    flexShrink: 0,
-    ...Platform.select({
-      web: {
-        whiteSpace: "nowrap" as const,
-        width: "max-content" as const,
-        pointerEvents: "none" as const,
-      },
-      default: {},
-    }),
-  },
-  actionButton: {
-    flexShrink: 0,
-    height: ACTION_BUTTON_HEIGHT_PX,
-    paddingHorizontal: ACTION_BUTTON_TEXT_INSET_PX,
-    alignItems: "center",
-    justifyContent: "center",
-    ...Platform.select({
-      web: { boxSizing: "border-box" as const },
-      default: {},
-    }),
-  },
-});
-
 /** Send panel body (prev-main `SendPage`). */
 export function SendPanelContent() {
   const colors = useColors();
@@ -193,16 +80,15 @@ export function SendPanelContent() {
   const [viewportH, setViewportH] = useState(0);
   const [needsScroll, setNeedsScroll] = useState<boolean | null>(null);
   const scrollLayoutReady = needsScroll !== null;
-  const [address, setAddress] = useState("");
-  const [comment, setComment] = useState("");
-  const trimmedAddress = address.trim();
+  const { address, comment } = useSendFormState();
+  const [ctaHeightPx, setCtaHeightPx] = useState(0);
 
   const onViewportLayout = useCallback((e: LayoutChangeEvent) => {
     setViewportH(e.nativeEvent.layout.height);
   }, []);
 
   const onScrollMetrics = useCallback(
-    (metrics: HspScrollMetrics) => {
+    (metrics: Omit<HspScrollMetrics, "scrollY">) => {
       if (needsScroll !== null) return;
       const overflow = metrics.layoutH > 0 && metrics.contentH > metrics.layoutH + 0.5;
       setNeedsScroll(overflow);
@@ -212,12 +98,16 @@ export function SendPanelContent() {
 
   const pasteIntoAddress = useCallback(async () => {
     const text = await Clipboard.getStringAsync();
-    if (text) setAddress(text.trim());
+    if (text) setSendFormAddress(text.trim());
   }, []);
 
   const pasteIntoComment = useCallback(async () => {
     const text = await Clipboard.getStringAsync();
-    if (text) setComment(text.trim());
+    if (text) setSendFormComment(text.trim());
+  }, []);
+
+  const onCtaHeightChange = useCallback((heightPx: number) => {
+    setCtaHeightPx((current) => (current === heightPx ? current : heightPx));
   }, []);
 
   const inputStyle = [
@@ -241,6 +131,7 @@ export function SendPanelContent() {
       <HspScrollColumn
         style={{ flex: 1, ...scrollShellBleed }}
         onMetricsChange={onScrollMetrics}
+        scrollIndicatorExtendBottomPx={showSendActionBlock ? ctaHeightPx : 0}
         contentContainerStyle={
           scrollLayoutReady && !needsScroll
             ? {
@@ -307,7 +198,7 @@ export function SendPanelContent() {
         <View style={{ height: SECTION_GAP_PX }} />
         <TextInput
           value={address}
-          onChangeText={setAddress}
+          onChangeText={setSendFormAddress}
           placeholder="Enter address"
           placeholderTextColor={colors.secondary}
           style={inputStyle}
@@ -325,7 +216,7 @@ export function SendPanelContent() {
         <View style={{ height: SECTION_GAP_PX }} />
         <TextInput
           value={comment}
-          onChangeText={setComment}
+          onChangeText={setSendFormComment}
           placeholder="Enter comment / memo"
           placeholderTextColor={colors.secondary}
           style={inputStyle}
@@ -333,17 +224,13 @@ export function SendPanelContent() {
           autoCapitalize="none"
           autoCorrect={false}
         />
-
-        {showSendActionBlock ? (
-          <>
-            <View style={{ height: SECTION_GAP_PX }} />
-            <SmartGradientDivider />
-            <View style={{ height: SECTION_GAP_PX }} />
-            <SendActionRow address={trimmedAddress} />
-          </>
-        ) : null}
         <View style={{ height: TOP_INSET_PX }} />
       </HspScrollColumn>
+      {showSendActionBlock ? (
+        <PanelGradientCtaBlock onHeightChange={onCtaHeightChange}>
+          <SendActionRow density="compact" />
+        </PanelGradientCtaBlock>
+      ) : null}
     </View>
   );
 }

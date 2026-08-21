@@ -2,15 +2,15 @@ import { Platform } from "react-native";
 
 import { WEB_UI_SANS_STACK } from "../fonts";
 
-/** Matches {@link typographyFixedRow40Label} on the Connect Telegram pill label. */
+/** Matches {@link typographyFixedRow30Label} on the Connect Telegram pill label. */
 export const TELEGRAM_CONNECT_PILL_LABEL_FONT_SIZE_PX = 15;
-export const TELEGRAM_CONNECT_PILL_LABEL_LINE_HEIGHT_PX = 21;
+export const TELEGRAM_CONNECT_PILL_LABEL_LINE_HEIGHT_PX = 18;
 
-/** 15px | 20px logo | 10px | label | 20px */
-export const TELEGRAM_CONNECT_PILL_LOGO_LEFT_PX = 15;
+/** 10px | 20px logo | 10px | label | 10px — matches Get undercover button horizontal padding. */
+export const TELEGRAM_CONNECT_PILL_LOGO_LEFT_PX = 10;
 export const TELEGRAM_CONNECT_PILL_LOGO_SIZE_PX = 20;
 export const TELEGRAM_CONNECT_PILL_LOGO_TO_TEXT_GAP_PX = 10;
-export const TELEGRAM_CONNECT_PILL_TEXT_RIGHT_PX = 15;
+export const TELEGRAM_CONNECT_PILL_TEXT_RIGHT_PX = 10;
 
 export const TELEGRAM_CONNECT_PILL_CHROME_WIDTH_PX =
   TELEGRAM_CONNECT_PILL_LOGO_LEFT_PX +

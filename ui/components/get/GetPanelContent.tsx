@@ -9,10 +9,12 @@ import {
   Pressable,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
   type LayoutChangeEvent,
 } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
+import { setGetPanelFormState } from "../../get/getPanelFormStore";
 import { WEB_UI_MONO_STACK } from "../../fonts";
 import { fetchAccountSwapJettons } from "../../swap/fetchSwapJettons";
 import {
@@ -32,9 +34,11 @@ import {
 } from "../../theme";
 import { appModalSheetStyles } from "../AppModalSheet";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
+import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
 import { VoiceWindowCrossIcon } from "../messages/MessageChatVoiceControlIcons";
 import { SwapSelectChevron } from "../swap/SwapFormIcons";
 import { swapTonTokenImage } from "../swap/swapFormAssets";
+import { GetActionSummaryRow } from "./GetActionSummaryRow";
 import { GetConnectedWalletChip } from "./GetConnectedWalletChip";
 
 const TOP_INSET_PX = 15;
@@ -44,11 +48,13 @@ const TITLE_SIZE_PX = 40;
 const METHODS_SIZE_PX = 30;
 const LABEL_SIZE_PX = 20;
 const MULTI_LINE_HEIGHT_PX = 30;
-const CHIP_HEIGHT_PX = 30;
-const CHIP_PAD_H_PX = 10;
+const CHIP_HEIGHT_PX = layout.bottomBar.undercoverButtonHeightPx;
+const CHIP_PAD_H_PX = layout.bottomBar.undercoverButtonPaddingHorizontalPx;
 const CURRENCY_ICON_PX = 20;
 const COPIED_HIDE_MS = 1000;
 const ROW_GAP_PX = layout.bottomBar.textToSendIconGapPx;
+/** Indent between currency chooser and Top Up (Get action button). */
+const CURRENCY_TO_ACTION_GAP_PX = 10;
 /** Below this column width, amount+currency share a row; balance + Top Up stack full-width. */
 const TRIPLE_CONTROLS_MIN_WIDTH_PX = 420;
 /** Same red as muted / inactive mic chrome. */
@@ -116,6 +122,8 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
   const colors = useColors();
   const { t, tf } = useAppStrings();
   const ton = useTonConnectSession();
+  const { width: windowWidth } = useWindowDimensions();
+  const showGetActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
 
   const [showCopied, setShowCopied] = useState(false);
   const hideCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -132,6 +140,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
   const [viewportH, setViewportH] = useState(0);
   const [needsScroll, setNeedsScroll] = useState<boolean | null>(null);
   const scrollLayoutReady = needsScroll !== null;
+  const [ctaHeightPx, setCtaHeightPx] = useState(0);
   const balanceShakeX = useRef(new Animated.Value(0)).current;
 
   const contentInset = layout.contentSideInsetPx;
@@ -156,6 +165,18 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     return () => {
       if (hideCopiedTimerRef.current) clearTimeout(hideCopiedTimerRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    setGetPanelFormState({
+      tonConnected: ton.connected,
+      amount,
+      token: selected.token,
+    });
+  }, [amount, selected.token, ton.connected]);
+
+  const onCtaHeightChange = useCallback((heightPx: number) => {
+    setCtaHeightPx((current) => (current === heightPx ? current : heightPx));
   }, []);
 
   const refreshBalances = useCallback(async (connectedAddress: string) => {
@@ -247,7 +268,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
   }, []);
 
   const onScrollMetrics = useCallback(
-    (metrics: HspScrollMetrics) => {
+    (metrics: Omit<HspScrollMetrics, "scrollY">) => {
       if (needsScroll !== null) return;
       const overflow = metrics.layoutH > 0 && metrics.contentH > metrics.layoutH + 0.5;
       setNeedsScroll(overflow);
@@ -424,6 +445,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
       <HspScrollColumn
         style={{ flex: 1, ...scrollShellBleed }}
         onMetricsChange={onScrollMetrics}
+        scrollIndicatorExtendBottomPx={showGetActionBlock ? ctaHeightPx : 0}
         contentContainerStyle={
           scrollLayoutReady && !needsScroll
             ? {
@@ -435,12 +457,16 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         }
       >
       <Text
-        style={{
-          fontSize: TITLE_SIZE_PX,
-          lineHeight: TITLE_SIZE_PX,
-          fontWeight: "400",
-          color: colors.primary,
-        }}
+        style={[
+          typographyAeroport20,
+          {
+            fontSize: TITLE_SIZE_PX,
+            lineHeight: TITLE_SIZE_PX,
+            fontWeight: "400",
+            letterSpacing: -0.5,
+            color: colors.primary,
+          },
+        ]}
       >
         {t("get.title")}
       </Text>
@@ -453,12 +479,16 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
       <View style={{ height: SECTION_GAP_PX }} />
 
       <Text
-        style={{
-          fontSize: METHODS_SIZE_PX,
-          lineHeight: METHODS_SIZE_PX,
-          fontWeight: "400",
-          color: colors.primary,
-        }}
+        style={[
+          typographyAeroport20,
+          {
+            fontSize: METHODS_SIZE_PX,
+            lineHeight: METHODS_SIZE_PX,
+            fontWeight: "400",
+            letterSpacing: -0.25,
+            color: colors.primary,
+          },
+        ]}
       >
         {t("get.methodsTitle")}
       </Text>
@@ -477,14 +507,17 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         }}
       >
         <Text
-          style={{
-            fontSize: LABEL_SIZE_PX,
-            lineHeight: LABEL_SIZE_PX,
-            fontWeight: "400",
-            color: colors.primary,
-            letterSpacing: 1,
-            textTransform: "uppercase",
-          }}
+          style={[
+            typographyAeroport20,
+            {
+              fontSize: LABEL_SIZE_PX,
+              lineHeight: LABEL_SIZE_PX,
+              fontWeight: "400",
+              color: colors.primary,
+              letterSpacing: 1.2,
+              textTransform: "uppercase",
+            },
+          ]}
         >
           {t("get.connectLabel")}
         </Text>
@@ -505,8 +538,8 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
       </View>
 
       {ton.connected ? (
-        <View style={{ marginTop: BLOCK_GAP_PX, gap: 10 }} onLayout={onFormLayout}>
-          <Text style={[...multiLineBody, { color: colors.primary }]}>
+        <View style={{ marginTop: BLOCK_GAP_PX }} onLayout={onFormLayout}>
+          <Text style={[...multiLineBody, { color: colors.primary, marginBottom: 10 }]}>
             {t("get.amountLabel")}
           </Text>
 
@@ -516,7 +549,6 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  gap: ROW_GAP_PX,
                   width: "100%",
                 }}
               >
@@ -529,10 +561,12 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
                   cursorColor={colors.primary}
                   style={amountInputStyle}
                 />
+                <View style={{ width: ROW_GAP_PX }} />
                 {currencyChip}
+                <View style={{ width: CURRENCY_TO_ACTION_GAP_PX }} />
                 {topUpButton(false)}
               </View>
-              {balanceRow}
+              <View style={{ marginTop: 10 }}>{balanceRow}</View>
             </>
           ) : (
             <>
@@ -555,8 +589,10 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
                 />
                 {currencyChip}
               </View>
-              {balanceRow}
-              {topUpButton(true)}
+              <View style={{ marginTop: 10 }}>{balanceRow}</View>
+              <View style={{ marginTop: CURRENCY_TO_ACTION_GAP_PX }}>
+                {topUpButton(true)}
+              </View>
             </>
           )}
         </View>
@@ -577,14 +613,17 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         }}
       >
         <Text
-          style={{
-            fontSize: LABEL_SIZE_PX,
-            lineHeight: LABEL_SIZE_PX,
-            fontWeight: "400",
-            color: colors.primary,
-            letterSpacing: 1,
-            textTransform: "uppercase",
-          }}
+          style={[
+            typographyAeroport20,
+            {
+              fontSize: LABEL_SIZE_PX,
+              lineHeight: LABEL_SIZE_PX,
+              fontWeight: "400",
+              color: colors.primary,
+              letterSpacing: 1.2,
+              textTransform: "uppercase",
+            },
+          ]}
         >
           {t("get.transferLabel")}
         </Text>
@@ -614,6 +653,11 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         {depositDisplay}
       </Text>
       </HspScrollColumn>
+      {showGetActionBlock ? (
+        <PanelGradientCtaBlock onHeightChange={onCtaHeightChange}>
+          <GetActionSummaryRow density="compact" />
+        </PanelGradientCtaBlock>
+      ) : null}
 
       <Modal
         visible={pickerOpen}

@@ -226,9 +226,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const { t } = useAppStrings();
   const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   const isTwoColumnWide = splitMetrics?.columnCount === 2;
-  /** Wide split: thumb overlays the column seam divider (same as left feed/messages column). */
-  const scrollbarRightInsetPx =
-    (splitMetrics?.columnCount ?? 1) >= 2 ? 0 : layout.scrollIndicatorRightInsetPx;
+  /** Wide split: keep a small inset so the thumb is not covered by the seam stroke overlay. */
+  const scrollbarRightInsetPx = layout.scrollIndicatorRightInsetPx;
   const { isAuthenticated } = useAuth();
   const { isTelegramMessagesConnected } = useTelegramMessagesConnection();
   const historyLoad = useAuthenticatedHomeHistoryLoadTarget();

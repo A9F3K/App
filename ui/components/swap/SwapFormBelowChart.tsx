@@ -27,6 +27,8 @@ type Props = {
   effectivePriceUsd: number | null;
   /** @deprecated Use {@link effectivePriceUsd}. */
   effectiveTonPriceUsd?: number | null;
+  /** When false, parent pins SwapActionRow under a bottom divider (Currencies-style). */
+  showActionBlock?: boolean;
 };
 
 function tokenIconSource(token: {
@@ -48,6 +50,7 @@ function tokenIconSource(token: {
 export function SwapFormBelowChart({
   effectivePriceUsd,
   effectiveTonPriceUsd,
+  showActionBlock,
 }: Props) {
   const priceUsd = effectivePriceUsd ?? effectiveTonPriceUsd ?? null;
   const colors = useColors();
@@ -55,7 +58,8 @@ export function SwapFormBelowChart({
   const pathname = useResolvedPathname();
   const { width: windowWidth } = useWindowDimensions();
   const { sellToken, buyToken } = useSwapPairState();
-  const showSwapActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
+  const showSwapActionBlock =
+    showActionBlock ?? windowWidth <= layout.authenticatedHome.secondBreakpoint;
   // whatswap-style: keep "1" on the chart asset side; priced DLLR amount on the other.
   const unitSide = swapUnitAmountSide(sellToken, buyToken);
   const pricedAmount =

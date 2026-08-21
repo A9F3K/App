@@ -86,6 +86,11 @@ type Props = {
   onScrollPositionChange?: (metrics: HspScrollMetrics) => void;
   /** Inset (px) of the thumb from the right edge of the scroll shell; default {@link layout.scrollIndicatorRightInsetPx}. */
   scrollbarRightInsetPx?: number;
+  /**
+   * Extend the scroll-thumb track below the scroll viewport (px) so the indicator can travel
+   * through a pinned gradient CTA row that sits under the scroller.
+   */
+  scrollIndicatorExtendBottomPx?: number;
   /** Min thumb height (px). Chat panes pass ~20 to match tdesktop. */
   indicatorThumbMinPx?: number;
   /**
@@ -141,6 +146,7 @@ export function HspScrollColumn({
   onMetricsChange,
   onScrollPositionChange,
   scrollbarRightInsetPx = DEFAULT_SCROLLBAR_RIGHT_INSET,
+  scrollIndicatorExtendBottomPx = 0,
   indicatorThumbMinPx = SCROLL_INDICATOR_THUMB_MIN_PX,
   indicatorContentSpanPx = null,
   containOverscroll = true,
@@ -902,8 +908,10 @@ export function HspScrollColumn({
     const viewH = scroll.layoutH;
     const contentH = scroll.contentH;
     const y = scroll.scrollY;
+    const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
+    const trackH = viewH + extendBottom;
     if (viewH <= 0 || contentH <= 0 || contentH <= viewH + 0.5) {
-      return { show: false as const, thumbH: 0, thumbTop: 0 };
+      return { show: false as const, thumbH: 0, thumbTop: 0, trackH: 0 };
     }
     const maxScroll = Math.max(1e-6, contentH - viewH);
     const thumbContentSpan =
@@ -911,7 +919,7 @@ export function HspScrollColumn({
         ? indicatorContentSpanPx
         : contentH;
     const { thumbSpan, thumbOffset } = scrollIndicatorThumbSpanAndOffset(
-      viewH,
+      trackH,
       viewH,
       thumbContentSpan,
       y,
@@ -920,10 +928,15 @@ export function HspScrollColumn({
     );
     const hairline = scrollIndicatorHairlineBorderWidthPx();
     const thumbH = Math.max(hairline, thumbSpan);
-    const thumbTop =
-      scroll.scrollY <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : thumbOffset;
-    return { show: true as const, thumbH, thumbTop, maxScroll };
-  }, [scroll, indicatorContentSpanPx, indicatorThumbMinPx]);
+    const maxTravel = Math.max(0, trackH - thumbH);
+    const scrollClamped = Math.max(0, Math.min(y, maxScroll));
+    let thumbTop =
+      scroll.scrollY <= SCROLL_INDICATOR_SCROLL_EPS
+        ? 0
+        : Math.min(maxTravel, thumbOffset);
+    if (scrollClamped >= maxScroll - SCROLL_INDICATOR_SCROLL_EPS) thumbTop = maxTravel;
+    return { show: true as const, thumbH, thumbTop, maxScroll, trackH };
+  }, [scroll, indicatorContentSpanPx, indicatorThumbMinPx, scrollIndicatorExtendBottomPx]);
 
   return (
     <View style={[styles.shell, style]}>
@@ -946,12 +959,15 @@ export function HspScrollColumn({
         <View
           style={[
             styles.scrollIndicatorWrap,
-            { right: snapScrollIndicatorCoordPx(scrollbarRightInsetPx) },
+            {
+              right: snapScrollIndicatorCoordPx(scrollbarRightInsetPx),
+              bottom: -Math.max(0, scrollIndicatorExtendBottomPx),
+            },
           ]}
         >
           <ScrollIndicatorDragHandle
             axis="vertical"
-            trackSpan={scroll.layoutH}
+            trackSpan={indicator.trackH}
             thumbSpan={indicator.thumbH}
             thumbOffset={indicator.thumbTop}
             scrollRange={indicator.maxScroll}
@@ -990,6 +1006,7 @@ const styles = StyleSheet.create({
     minHeight: 0,
     position: "relative",
     alignSelf: "stretch",
+    overflow: "visible",
   },
   scroll: {
     flex: 1,

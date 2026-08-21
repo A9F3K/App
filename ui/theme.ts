@@ -181,7 +181,10 @@ const contentSideInsetPx = 15;
 export const layout = {
   maxContentWidth: 600,
   contentSideInsetPx,
-  /** 1px vertical scroll thumb inset (px) from the viewport or column edge (welcome `/`, swap panel, etc.). */
+  /**
+   * 1px vertical scroll thumb inset (px) from the viewport or column edge.
+   * Keep ≥1 so thumbs stay visible beside split-pane seam strokes (divider overlay paints above column content).
+   */
   scrollIndicatorRightInsetPx: 3,
   /**
    * Authenticated home (`/` signed-in): padding inside the root scroll column (same outer scroll as welcome).
@@ -280,8 +283,12 @@ export const layout = {
      * so the stroke matches scroll thumbs on retina; this constant is the 1 CSS-px fallback only.
      */
     splitPaneDividerStrokePx: 1,
-    /** Divider hit overlay `zIndex`; below {@link scrollIndicatorOverlayZIndex} so scroll thumbs stay draggable at column seams. */
-    splitPaneDividerOverlayZIndex: 1,
+    /**
+     * Split-pane divider hit + painted seam `zIndex`.
+     * Must stay above sticky column footers so vertical edges run through the bottom bars.
+     * Scroll thumbs sit just inside the column (`right: 0`) under this hairline at the seam.
+     */
+    splitPaneDividerOverlayZIndex: 5,
     /**
      * Two-column body: first column cannot be dragged wider than this (px). Matches {@link firstBreakpoint}
      * so the layout stays consistent with the compact single-column regime.
@@ -327,8 +334,18 @@ export const layout = {
     horizontalPadding: contentSideInsetPx,
     /** Horizontal gap (px) between the text field and the send icon on all platforms. */
     textToSendIconGapPx: 15,
-    /** Custom 1px scroll-thumb in the AI bar; main column uses {@link layout.scrollIndicatorRightInsetPx}. */
-    scrollbarRightInsetPx: 5,
+    /**
+     * Undercover action chip height (px) — Get TonConnect / Top Up, Swap, Send, Connect Telegram,
+     * Smart deploy, and all column-footer action buttons share this (Get-page density).
+     */
+    undercoverButtonHeightPx: 30,
+    /**
+     * Horizontal padding inside undercover action chips.
+     * Keep one value so footer/action buttons share the Get-page density.
+     */
+    undercoverButtonPaddingHorizontalPx: 10,
+    /** Custom 1px scroll-thumb in the AI bar — flush to the field edge so it overlays the hairline border. */
+    scrollbarRightInsetPx: 0,
     /** 1px highlight rule above the bar (`GlobalBottomBar` / column footers). */
     topRuleHeightPx: 1,
     /** 1px highlight rule at the screen edge when the footer is full-bleed. */
@@ -473,8 +490,8 @@ export const typographyFixedRow30Label: TextStyle = {
   }),
 };
 
-/** @deprecated Use {@link typographyFixedRow40Label}. */
-export const typographyTelegramConnectPillLabel: TextStyle = typographyFixedRow40Label;
+/** @deprecated Use {@link typographyFixedRow30Label}. */
+export const typographyTelegramConnectPillLabel: TextStyle = typographyFixedRow30Label;
 
 /** Wide home menu labels under SVG icons (15 / 15 — tight line box). */
 export const homeWideMenuItemLabel: TextStyle = {

@@ -4,13 +4,13 @@ import { Platform, StyleSheet, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { BottomBarHeightReporter, useBottomBarLayout } from "../BottomBarLayoutContext";
 import { useTelegram } from "../Telegram";
-import { layout, typographyFixedRow40Label, useColors } from "../../theme";
+import { layout, typographyFixedRow30Label, useColors } from "../../theme";
 
 const { barMinHeight: BAR_HEIGHT, horizontalPadding: HORIZONTAL_PADDING, textToSendIconGapPx: TEXT_TO_BUTTON_GAP_PX } =
   layout.bottomBar;
 
-const FOOTER_BUTTON_HEIGHT_PX = 40;
-const FOOTER_BUTTON_TEXT_INSET_PX = 30;
+const FOOTER_BUTTON_HEIGHT_PX = layout.bottomBar.undercoverButtonHeightPx;
+const FOOTER_BUTTON_TEXT_INSET_PX = layout.bottomBar.undercoverButtonPaddingHorizontalPx;
 const FIT_EPSILON_PX = 1;
 
 /** Smart panel footer: deploy cost on the left, deploy action on the right. */
@@ -60,7 +60,7 @@ export function SmartColumnFooter() {
       ]}
     >
       <Text
-        style={[typographyFixedRow40Label, styles.fullLabelMeasure, { color: colors.primary }]}
+        style={[typographyFixedRow30Label, styles.fullLabelMeasure, { color: colors.primary }]}
         onLayout={(event) => onFullLabelMeasureLayout(Math.ceil(event.nativeEvent.layout.width))}
       >
         {fullDeployCostLabel}
@@ -73,7 +73,7 @@ export function SmartColumnFooter() {
             onLayout={(event) => onLabelSlotLayout(Math.round(event.nativeEvent.layout.width))}
           >
             <Text
-              style={[typographyFixedRow40Label, styles.costLabel, { color: colors.primary }]}
+              style={[typographyFixedRow30Label, styles.costLabel, { color: colors.primary }]}
               numberOfLines={1}
               accessibilityLabel={fullDeployCostLabel}
             >
@@ -84,7 +84,7 @@ export function SmartColumnFooter() {
             accessibilityRole="button"
             style={[styles.footerButton, { backgroundColor: colors.undercover }]}
           >
-            <Text style={[typographyFixedRow40Label, { color: colors.primary, textAlign: "center" }]} numberOfLines={1}>
+            <Text style={[typographyFixedRow30Label, { color: colors.primary, textAlign: "center" }]} numberOfLines={1}>
               {t("smart.footer.deployButton")}
             </Text>
           </View>

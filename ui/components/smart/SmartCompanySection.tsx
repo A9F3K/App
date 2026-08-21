@@ -2,7 +2,7 @@ import { useCallback, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
-import { typographyFixedRow40Label, typographyRect15, useColors } from "../../theme";
+import { layout, typographyFixedRow30Label, typographyRect15, useColors } from "../../theme";
 import { SmartFormBottomTextLane } from "./SmartFormBottomTextLane";
 import { SmartFounderBlock } from "./SmartFounderBlock";
 import { SmartFounderCountStepper } from "./SmartFounderCountStepper";
@@ -21,8 +21,8 @@ const FOUNDER_BLOCK_GAP_PX = 40;
 const DEFAULT_FOUNDER_COUNT = 1;
 
 /** Matches {@link SmartColumnFooter} deploy control. */
-const PANEL_ACTION_BUTTON_HEIGHT_PX = 40;
-const PANEL_ACTION_BUTTON_TEXT_INSET_PX = 30;
+const PANEL_ACTION_BUTTON_HEIGHT_PX = layout.bottomBar.undercoverButtonHeightPx;
+const PANEL_ACTION_BUTTON_TEXT_INSET_PX = layout.bottomBar.undercoverButtonPaddingHorizontalPx;
 
 const SECTION_LABEL_FONT_SIZE_PX = 25;
 const SECTION_LABEL_LINE_HEIGHT_PX = 40;
@@ -88,7 +88,7 @@ export function SmartCompanySection() {
           /* wired when image upload lands */
         }}
       >
-        <Text style={[typographyFixedRow40Label, { color: colors.primary, textAlign: "center" }]} numberOfLines={1}>
+        <Text style={[typographyFixedRow30Label, { color: colors.primary, textAlign: "center" }]} numberOfLines={1}>
           {t("smart.company.addImageButton")}
         </Text>
       </Pressable>

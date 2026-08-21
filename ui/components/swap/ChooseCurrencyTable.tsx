@@ -374,6 +374,10 @@ type Props = {
   columnShellWidthPx?: number;
   /** When false, skip DYOR sparkline prefetch (panel hidden via display:none). */
   prefetchCharts?: boolean;
+  /**
+   * Height of a pinned gradient CTA under this table; scroll thumb travels through it.
+   */
+  scrollIndicatorExtendBottomPx?: number;
 };
 
 export function ChooseCurrencyTable({
@@ -385,6 +389,7 @@ export function ChooseCurrencyTable({
   onSelectRow,
   columnShellWidthPx = 0,
   prefetchCharts = true,
+  scrollIndicatorExtendBottomPx = 0,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
   const defaultRows = useMemo(() => [buildChooseCurrencyDllrRow(locale)] as const, [locale]);
@@ -570,12 +575,16 @@ export function ChooseCurrencyTable({
   }, []);
 
   const indicator = useMemo(() => {
-    const trackH = shellLayoutH > 0 ? shellLayoutH : scroll.layoutH;
+    const shellH = shellLayoutH > 0 ? shellLayoutH : scroll.layoutH;
+    /** Track includes the sticky legend header — thumb travels through it. */
+    const trackTop = 0;
+    const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
+    const trackH = Math.max(0, shellH + extendBottom);
     const viewH = scroll.layoutH;
     const contentH = scroll.contentH;
     const y = scroll.scrollY;
     if (trackH <= 0 || viewH <= 0 || contentH <= 0 || contentH <= viewH + 0.5) {
-      return { show: false as const, thumbH: 0, thumbTop: 0, trackH: 0 };
+      return { show: false as const, thumbH: 0, thumbTop: 0, trackH: 0, trackTop };
     }
     const maxScroll = Math.max(1e-6, contentH - viewH);
     const { thumbSpan } = scrollIndicatorThumbSpanAndOffset(
@@ -597,8 +606,8 @@ export function ChooseCurrencyTable({
     if (scrollClamped <= SCROLL_INDICATOR_SCROLL_EPS) thumbTop = 0;
     if (scrollClamped >= maxScroll - SCROLL_INDICATOR_SCROLL_EPS) thumbTop = maxTravel;
     thumbTop = Math.max(0, Math.min(thumbTop, maxTravel));
-    return { show: true as const, thumbH, thumbTop, maxScroll, trackH };
-  }, [scroll, shellLayoutH]);
+    return { show: true as const, thumbH, thumbTop, maxScroll, trackH, trackTop };
+  }, [scroll, shellLayoutH, scrollIndicatorExtendBottomPx]);
 
   const listHeader = useMemo(
     () => (
@@ -618,7 +627,10 @@ export function ChooseCurrencyTable({
             );
           })}
         </View>
-        <SmartGradientDivider />
+        <SmartGradientDivider
+          bleedPastContentInset={false}
+          horizontalPaddingPx={CONTENT_INSET_PX}
+        />
       </View>
     ),
     [colors.background, headers, visibleColumns],
@@ -706,7 +718,11 @@ export function ChooseCurrencyTable({
         <View
           style={[
             styles.scrollIndicatorWrap,
-            { right: snapScrollIndicatorCoordPx(SCROLLBAR_RIGHT_INSET_PX) },
+            {
+              top: indicator.trackTop,
+              bottom: -Math.max(0, scrollIndicatorExtendBottomPx),
+              right: snapScrollIndicatorCoordPx(SCROLLBAR_RIGHT_INSET_PX),
+            },
           ]}
         >
           <ScrollIndicatorDragHandle
@@ -747,6 +763,7 @@ const styles = StyleSheet.create({
     minHeight: 0,
     position: "relative",
     alignSelf: "stretch",
+    overflow: "visible",
   },
   list: {
     flex: 1,
@@ -768,6 +785,7 @@ const styles = StyleSheet.create({
     top: 0,
     left: 0,
     right: 0,
+    /** Below the scroll thumb so the indicator can travel through the legend. */
     zIndex: 1,
   },
   headerRow: {

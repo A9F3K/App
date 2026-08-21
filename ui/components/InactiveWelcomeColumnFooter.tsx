@@ -2,15 +2,15 @@ import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { BottomBarHeightReporter, useBottomBarLayout } from "./BottomBarLayoutContext";
 import { useTelegram } from "./Telegram";
-import { layout, typographyFixedRow40Label, useColors } from "../theme";
+import { layout, typographyFixedRow30Label, useColors } from "../theme";
 import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConnectionContext";
 
 const { barMinHeight: BAR_HEIGHT, horizontalPadding: HORIZONTAL_PADDING } = layout.bottomBar;
 const { maxContentWidth } = layout;
 
-const FOOTER_BUTTON_HEIGHT_PX = 40;
+const FOOTER_BUTTON_HEIGHT_PX = layout.bottomBar.undercoverButtonHeightPx;
 /** Horizontal inset from label to button edge (both sides). */
-const FOOTER_BUTTON_TEXT_INSET_PX = 30;
+const FOOTER_BUTTON_TEXT_INSET_PX = layout.bottomBar.undercoverButtonPaddingHorizontalPx;
 
 type Props = {
   label: string;
@@ -34,7 +34,7 @@ export function InactiveWelcomeColumnFooter({ label, active = false, onPress }: 
     (isInTelegram && !layoutStartup.isTelegramMiniAppDesktop) || !footerDockedToScreenEdge;
 
   const buttonInner = (
-    <Text style={[typographyFixedRow40Label, { color: labelColor, textAlign: "center" }]} numberOfLines={1}>
+    <Text style={[typographyFixedRow30Label, { color: labelColor, textAlign: "center" }]} numberOfLines={1}>
       {label}
     </Text>
   );

@@ -12,12 +12,12 @@ import {
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { WEB_UI_MONO_STACK } from "../../fonts";
 import { useTonConnectSession } from "../../ton/TonConnectProvider";
-import { typographyAeroport15, typographyFixedRow30Label, useColors } from "../../theme";
+import { typographyAeroport15, typographyFixedRow30Label, layout, useColors } from "../../theme";
 import { HeaderIconCopy, HeaderIconExit } from "../icons/HeaderActionIcons";
 import { SwapSelectChevron } from "../swap/SwapFormIcons";
 
-const CHIP_HEIGHT_PX = 30;
-const CHIP_PAD_H_PX = 10;
+const CHIP_HEIGHT_PX = layout.bottomBar.undercoverButtonHeightPx;
+const CHIP_PAD_H_PX = layout.bottomBar.undercoverButtonPaddingHorizontalPx;
 const WALLET_ICON_PX = 18;
 const MENU_ICON_PX = 18;
 const COPIED_HIDE_MS = 1200;

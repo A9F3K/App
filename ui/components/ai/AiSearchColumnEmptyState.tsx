@@ -79,12 +79,15 @@ function AiAgentTabEmptyBody({
 export function AiSearchColumnEmptyState() {
   const colors = useColors();
   const { draftText, setDraftText } = useBottomBarLayout();
-  const showEmptyBody = draftText.trim().length === 0;
+  const chatStarted = draftText.trim().length > 0;
+  const showEmptyBody = !chatStarted;
   const [columnWidth, setColumnWidth] = useState(0);
   const [tabs, setTabs] = useState<AiAgentTab[]>(() => [{ id: "agent-1" }]);
   const [activeTabId, setActiveTabId] = useState("agent-1");
   const contentInset = layout.contentSideInsetPx;
   const scrollShellBleed = { marginHorizontal: -contentInset };
+  /** Hide close on a lone idle tab; show when there are several tabs or the sole chat has started. */
+  const showCloseButtons = tabs.length > 1 || chatStarted;
 
   const onColumnLayout = useCallback((event: LayoutChangeEvent) => {
     const next = Math.round(event.nativeEvent.layout.width);
@@ -97,25 +100,29 @@ export function AiSearchColumnEmptyState() {
     setActiveTabId(id);
   }, []);
 
-  const onCloseTab = useCallback((id: string) => {
-    setTabs((current) => {
-      if (current.length <= 1) {
-        // Keep one tab but remount its default empty body.
-        const fresh = createAgentTabId();
-        setActiveTabId(fresh);
-        return [{ id: fresh }];
-      }
-      const index = current.findIndex((tab) => tab.id === id);
-      if (index < 0) return current;
-      const next = current.filter((tab) => tab.id !== id);
-      setActiveTabId((active) => {
-        if (active !== id) return active;
-        const fallback = next[Math.min(index, next.length - 1)];
-        return fallback?.id ?? active;
+  const onCloseTab = useCallback(
+    (id: string) => {
+      setTabs((current) => {
+        if (current.length <= 1) {
+          // Sole started chat → reset to default empty state (close control hides again).
+          setDraftText("");
+          const fresh = createAgentTabId();
+          setActiveTabId(fresh);
+          return [{ id: fresh }];
+        }
+        const index = current.findIndex((tab) => tab.id === id);
+        if (index < 0) return current;
+        const next = current.filter((tab) => tab.id !== id);
+        setActiveTabId((active) => {
+          if (active !== id) return active;
+          const fallback = next[Math.min(index, next.length - 1)];
+          return fallback?.id ?? active;
+        });
+        return next;
       });
-      return next;
-    });
-  }, []);
+    },
+    [setDraftText],
+  );
 
   return (
     <View
@@ -129,6 +136,7 @@ export function AiSearchColumnEmptyState() {
           onSelectTab={setActiveTabId}
           onCloseTab={onCloseTab}
           onAddTab={onAddTab}
+          showCloseButtons={showCloseButtons}
         />
       </View>
       {showEmptyBody ? (

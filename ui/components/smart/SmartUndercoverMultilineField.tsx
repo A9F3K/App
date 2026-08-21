@@ -35,7 +35,7 @@ const PADDING_VERTICAL_PX = 10;
 const PADDING_HORIZONTAL_PX = 15;
 const TEXT_FONT_SIZE_PX = 15;
 const TEXT_LINE_HEIGHT_PX = 30;
-const SCROLLBAR_RIGHT_INSET_PX = 3;
+const SCROLLBAR_RIGHT_INSET_PX = 0;
 const THUMB_MIN_HEIGHT_PX = 20;
 const THUMB_MAX_HEIGHT_PX = 60;
 
@@ -389,6 +389,7 @@ const styles = StyleSheet.create({
     height: SMART_UNDERCOVER_MULTILINE_HEIGHT_PX,
     overflow: "hidden",
     position: "relative",
+    zIndex: 0,
     ...Platform.select({
       web: {
         boxSizing: "border-box",

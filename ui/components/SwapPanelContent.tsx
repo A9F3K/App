@@ -15,9 +15,11 @@ import {
   swapTokenDisplaySymbol,
 } from "../swap/swapPairTypes";
 import { HspScrollColumn, type HspScrollMetrics } from "./HspScrollColumn";
+import { PanelGradientCtaBlock } from "./PanelGradientCtaBlock";
 import { SwapChartView } from "./swap/SwapChartView";
 import { SwapFormBelowChart } from "./swap/SwapFormBelowChart";
 import { SwapPanelHeader } from "./swap/SwapPanelHeader";
+import { SwapActionRow } from "./swap/SwapActionRow";
 import { SwapRateRow } from "./SwapRateRow";
 import { SwapStatsRow } from "./SwapStatsRow";
 import { layout } from "../theme";
@@ -78,8 +80,9 @@ export function SwapPanelContent() {
   const [scrollViewportH, setScrollViewportH] = useState(0);
   /** `null` = one-time intrinsic measure; `false` = flex-fill chart; `true` = panel scroll. */
   const [needsScroll, setNeedsScroll] = useState<boolean | null>(null);
+  const [ctaHeightPx, setCtaHeightPx] = useState(0);
   const fixedMinContentHRef = useRef(0);
-  const measureMetricsRef = useRef<HspScrollMetrics>({ layoutH: 0, contentH: 0 });
+  const measureMetricsRef = useRef<Omit<HspScrollMetrics, "scrollY">>({ layoutH: 0, contentH: 0 });
   const flexFillMode = needsScroll === false;
 
   useEffect(() => {
@@ -116,6 +119,10 @@ export function SwapPanelContent() {
     setViewportH(e.nativeEvent.layout.height);
   }, []);
 
+  const onCtaHeightChange = useCallback((heightPx: number) => {
+    setCtaHeightPx((current) => (current === heightPx ? current : heightPx));
+  }, []);
+
   const commitScrollMode = useCallback(
     (next: boolean, reason: string) => {
       setNeedsScroll(next);
@@ -130,7 +137,7 @@ export function SwapPanelContent() {
     [viewportH],
   );
 
-  const onScrollMetrics = useCallback((metrics: HspScrollMetrics) => {
+  const onScrollMetrics = useCallback((metrics: Omit<HspScrollMetrics, "scrollY">) => {
     measureMetricsRef.current = metrics;
     if (metrics.layoutH > 0) {
       setScrollViewportH((h) => (h === metrics.layoutH ? h : metrics.layoutH));
@@ -239,6 +246,7 @@ export function SwapPanelContent() {
         style={{ flex: 1, ...scrollShellBleed }}
         scrollEnabled={needsScroll === true}
         onMetricsChange={onScrollMetrics}
+        scrollIndicatorExtendBottomPx={showSwapActionBlock ? ctaHeightPx : 0}
         contentContainerStyle={
           flexFillMode
             ? {
@@ -282,8 +290,16 @@ export function SwapPanelContent() {
             />
           ) : null}
         </View>
-        <SwapFormBelowChart effectivePriceUsd={displayPriceUsd} />
+        <SwapFormBelowChart
+          effectivePriceUsd={displayPriceUsd}
+          showActionBlock={false}
+        />
       </HspScrollColumn>
+      {showSwapActionBlock ? (
+        <PanelGradientCtaBlock onHeightChange={onCtaHeightChange}>
+          <SwapActionRow />
+        </PanelGradientCtaBlock>
+      ) : null}
     </View>
   );
 }

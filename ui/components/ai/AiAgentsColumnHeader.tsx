@@ -35,6 +35,11 @@ type Props = {
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onAddTab: () => void;
+  /**
+   * When false, tabs omit the close control (single idle agent tab).
+   * When true, every tab shows close (multiple tabs, or the sole tab has started).
+   */
+  showCloseButtons?: boolean;
 };
 
 function menuStripRuleThickness(): number {
@@ -85,6 +90,7 @@ export function AiAgentsColumnHeader({
   onSelectTab,
   onCloseTab,
   onAddTab,
+  showCloseButtons = true,
 }: Props) {
   const { t } = useAppStrings();
   const colors = useColors();
@@ -124,6 +130,7 @@ export function AiAgentsColumnHeader({
                     styles.tab,
                     {
                       backgroundColor: active ? colors.undercover : "transparent",
+                      paddingRight: showCloseButtons ? 6 : TAB_PAD_X_PX,
                     },
                   ]}
                 >
@@ -137,19 +144,21 @@ export function AiAgentsColumnHeader({
                   >
                     {t("ai.agents.newAgent")}
                   </Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={t("ai.agents.closeTab")}
-                    hitSlop={6}
-                    onPress={(event) => {
-                      // Avoid selecting the tab when closing.
-                      event?.stopPropagation?.();
-                      onCloseTab(tab.id);
-                    }}
-                    style={styles.closeHit}
-                  >
-                    <AgentCloseIcon color={colors.secondary} />
-                  </Pressable>
+                  {showCloseButtons ? (
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={t("ai.agents.closeTab")}
+                      hitSlop={6}
+                      onPress={(event) => {
+                        // Avoid selecting the tab when closing.
+                        event?.stopPropagation?.();
+                        onCloseTab(tab.id);
+                      }}
+                      style={styles.closeHit}
+                    >
+                      <AgentCloseIcon color={colors.secondary} />
+                    </Pressable>
+                  ) : null}
                 </Pressable>
                 {/* Only between tabs — never after the last (reads like a text cursor). */}
                 {index < tabs.length - 1 ? (

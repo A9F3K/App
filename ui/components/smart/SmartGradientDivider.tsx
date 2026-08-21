@@ -14,14 +14,21 @@ function ruleThicknessPx(): number {
   return PixelRatio.roundToNearestPixel(1 / PixelRatio.get());
 }
 
-/** Full-bleed horizontal rule: gradient (default) or solid `colors.highlight`. */
+/** Full-bleed or content-padded horizontal rule: gradient (default) or solid `colors.highlight`. */
 export function SmartGradientDivider({
   variant = "gradient",
-  /** Inset the visible rule from the full-bleed shell (overflow / scroll mode). */
+  /** Inset the visible rule from the shell edge (content-aligned “semi-divider”). */
   horizontalPaddingPx = 0,
+  /**
+   * When true (default), pull past {@link layout.contentSideInsetPx} so a padded column
+   * can still draw edge-to-edge. Set false when the parent is already column-edge aligned
+   * (e.g. Choose Currency bleed shell) so the rule does not exceed the column.
+   */
+  bleedPastContentInset = true,
 }: {
   variant?: "gradient" | "solid";
   horizontalPaddingPx?: number;
+  bleedPastContentInset?: boolean;
 }) {
   const colors = useColors();
   const gradientId = useId();
@@ -39,7 +46,7 @@ export function SmartGradientDivider({
     <View
       style={{
         alignSelf: "stretch",
-        marginHorizontal: -contentInset,
+        marginHorizontal: bleedPastContentInset ? -contentInset : 0,
         paddingHorizontal: padded ? horizontalPaddingPx : 0,
         height: lineT,
       }}

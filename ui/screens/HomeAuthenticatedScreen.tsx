@@ -14,8 +14,10 @@ import { AiSearchColumnEmptyState } from "../components/ai/AiSearchColumnEmptySt
 import { useBottomBarLayout } from "../components/BottomBarLayoutContext";
 import { MessagesColumnFooter } from "../components/MessagesColumnFooter";
 import { useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
-import { SendColumnInactiveFooter } from "../components/InactiveWelcomeColumnFooter";
 import { SwapColumnFooter } from "../components/swap/SwapColumnFooter";
+import { SendColumnFooter } from "../components/send/SendColumnFooter";
+import { GetColumnFooter } from "../components/get/GetColumnFooter";
+import { TradeColumnFooter } from "../components/trade/TradeColumnFooter";
 import { HomeAuthenticatedHeaderRow } from "../components/HomeAuthenticatedHeaderRow";
 import { AuthenticatedHomeLeftNavStrip } from "../components/AuthenticatedHomeLeftNavStrip";
 import { AuthenticatedHomeFeedPanel } from "../components/AuthenticatedHomeFeedPanel";
@@ -735,7 +737,9 @@ function HomeAuthenticatedScreenMain() {
     aiBarDock === "splitColumn3" ? <AiSearchColumnEmptyState /> : null;
   const mainColumnFooter = <MessagesColumnFooter showSearch={homeNavIndex === 1} />;
   const swapColumnFooter = <SwapColumnFooter />;
-  const sendColumnFooter = <SendColumnInactiveFooter />;
+  const sendColumnFooter = <SendColumnFooter />;
+  const getColumnFooter = <GetColumnFooter />;
+  const tradeColumnFooter = <TradeColumnFooter />;
   const smartColumnFooter = <SmartColumnFooter />;
   const [step, setStep] = useState<CreateStep>("idle");
   const [flowError, setFlowError] = useState<string | null>(null);
@@ -1675,8 +1679,7 @@ function HomeAuthenticatedScreenMain() {
           onNearBottom={handleHomeLeftScrollNearBottom}
           onScrollPositionChange={handleHomeLeftScrollPositionChange}
           scrollControllerRef={homeLeftScrollRef}
-          // Wide: thumb sits on the column seam divider (music-bar style overlay).
-          scrollbarRightInsetPx={isWideHome ? 0 : layout.scrollIndicatorRightInsetPx}
+          scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
           indicatorColor={colors.primary}
         >
           <View style={isWideHome ? undefined : homeMainColumnInsetStyle}>{homeMainColumnBlocks}</View>
@@ -1795,9 +1798,13 @@ function HomeAuthenticatedScreenMain() {
               ? isTripleColumn
                 ? sendColumnFooter
                 : embeddedAiBar
+              : headerPanelVisibleOnWide && getActiveOnWide
+                ? isTripleColumn
+                  ? getColumnFooter
+                  : embeddedAiBar
               : headerPanelVisibleOnWide && tradeActiveOnWide
                 ? isTripleColumn
-                  ? null
+                  ? tradeColumnFooter
                   : embeddedAiBar
               : headerPanelVisibleOnWide && swapActiveOnWide
                 ? isTripleColumn

@@ -1,26 +1,39 @@
 import { useCallback, useEffect, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
-import { layout, typographyFixedRow30Label, useColors } from "../../theme";
+import {
+  layout,
+  typographyFixedRow30Label,
+  useColors,
+} from "../../theme";
 
-const ACTION_BUTTON_HEIGHT_PX = layout.bottomBar.undercoverButtonHeightPx;
-const ACTION_BUTTON_TEXT_INSET_PX = layout.bottomBar.undercoverButtonPaddingHorizontalPx;
 const FIT_EPSILON_PX = 1;
 const { textToSendIconGapPx: TEXT_TO_BUTTON_GAP_PX } = layout.bottomBar;
+const ACTION_BUTTON_TEXT_INSET_PX = layout.bottomBar.undercoverButtonPaddingHorizontalPx;
 
-/** In-panel deploy row (swap/send action style): cost label left, deploy button right. */
-export function SmartActionRow() {
+type Density = "compact" | "bar";
+
+type Props = {
+  density?: Density;
+};
+
+/** Trade CTA: summary left, Trade button right. */
+export function TradeActionRow({ density = "compact" }: Props) {
   const colors = useColors();
   const { t } = useAppStrings();
-  const fullDeployCostLabel = t("smart.footer.deployCost");
-  const shortDeployCostLabel = t("smart.footer.deployCostShort");
+  const isBar = density === "bar";
+  const labelStyle = typographyFixedRow30Label;
+  const buttonHeight = layout.bottomBar.undercoverButtonHeightPx;
+
+  const fullSummaryLabel = t("trade.action.summary");
+  const shortSummaryLabel = t("trade.action.summaryShort");
   const [labelSlotWidth, setLabelSlotWidth] = useState(0);
   const [fullLabelWidth, setFullLabelWidth] = useState(0);
 
   const labelMeasured = labelSlotWidth > 0 && fullLabelWidth > 0;
-  const canShowFullDeployCostLabel =
+  const canShowFull =
     labelMeasured && fullLabelWidth <= labelSlotWidth + FIT_EPSILON_PX;
-  const deployCostLabel = canShowFullDeployCostLabel ? fullDeployCostLabel : shortDeployCostLabel;
+  const summaryLabel = canShowFull ? fullSummaryLabel : shortSummaryLabel;
 
   const onLabelSlotLayout = useCallback((width: number) => {
     setLabelSlotWidth((current) => (current === width ? current : width));
@@ -32,35 +45,42 @@ export function SmartActionRow() {
 
   useEffect(() => {
     setFullLabelWidth(0);
-  }, [fullDeployCostLabel]);
+  }, [fullSummaryLabel]);
 
   return (
     <View style={styles.wrapper}>
       <Text
-        style={[typographyFixedRow30Label, styles.fullLabelMeasure, { color: colors.primary }]}
+        style={[labelStyle, styles.fullLabelMeasure, { color: colors.primary }]}
         onLayout={(event) => onFullLabelMeasureLayout(Math.ceil(event.nativeEvent.layout.width))}
       >
-        {fullDeployCostLabel}
+        {fullSummaryLabel}
       </Text>
-      <View style={[styles.row, { height: ACTION_BUTTON_HEIGHT_PX }]}>
+      <View style={[styles.row, { height: buttonHeight }]}>
         <View
-          style={styles.costLabelSlot}
+          style={styles.summaryLabelSlot}
           onLayout={(event) => onLabelSlotLayout(Math.round(event.nativeEvent.layout.width))}
         >
           <Text
-            style={[typographyFixedRow30Label, styles.costLabel, { color: colors.primary }]}
+            style={[labelStyle, styles.summaryLabel, { color: colors.primary }]}
             numberOfLines={1}
-            accessibilityLabel={fullDeployCostLabel}
+            accessibilityLabel={fullSummaryLabel}
           >
-            {deployCostLabel}
+            {summaryLabel}
           </Text>
         </View>
         <Pressable
           accessibilityRole="button"
-          style={[styles.actionButton, { backgroundColor: colors.undercover }]}
+          style={[
+            styles.actionButton,
+            {
+              height: buttonHeight,
+              paddingHorizontal: ACTION_BUTTON_TEXT_INSET_PX,
+              backgroundColor: colors.undercover,
+            },
+          ]}
         >
-          <Text style={[typographyFixedRow30Label, { color: colors.primary, textAlign: "center" }]} numberOfLines={1}>
-            {t("smart.footer.deployButton")}
+          <Text style={[labelStyle, { color: colors.primary, textAlign: "center" }]} numberOfLines={1}>
+            {t("trade.action.button")}
           </Text>
         </Pressable>
       </View>
@@ -79,12 +99,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: TEXT_TO_BUTTON_GAP_PX,
   },
-  costLabelSlot: {
+  summaryLabelSlot: {
     flex: 1,
     minWidth: 0,
     justifyContent: "center",
   },
-  costLabel: {
+  summaryLabel: {
     minWidth: 0,
   },
   fullLabelMeasure: {
@@ -105,8 +125,6 @@ const styles = StyleSheet.create({
   },
   actionButton: {
     flexShrink: 0,
-    height: ACTION_BUTTON_HEIGHT_PX,
-    paddingHorizontal: ACTION_BUTTON_TEXT_INSET_PX,
     alignItems: "center",
     justifyContent: "center",
     ...Platform.select({

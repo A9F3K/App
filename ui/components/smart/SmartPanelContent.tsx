@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Text, useWindowDimensions, View } from "react-native";
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
@@ -14,8 +14,8 @@ import {
 } from "../../smart/smartAssets";
 import { layout, typographyAeroport20, typographyRect15, useColors } from "../../theme";
 import { HspScrollColumn } from "../HspScrollColumn";
+import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
 import { SmartActionRow } from "./SmartActionRow";
-import { SmartGradientDivider } from "./SmartGradientDivider";
 import { SmartLeadImage } from "./SmartLeadImage";
 import { SmartPurposeSection } from "./SmartPurposeSection";
 
@@ -36,6 +36,10 @@ export function SmartPanelContent() {
   const { t, locale } = useAppStrings();
   const { width: windowWidth } = useWindowDimensions();
   const showSmartActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
+  const [ctaHeightPx, setCtaHeightPx] = useState(0);
+  const onCtaHeightChange = useCallback((heightPx: number) => {
+    setCtaHeightPx((current) => (current === heightPx ? current : heightPx));
+  }, []);
   const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   const leadSource = locale === "ru" ? smartLeadRuImage : smartLeadEnImage;
   const contentInset = layout.contentSideInsetPx;
@@ -117,7 +121,7 @@ export function SmartPanelContent() {
       <HspScrollColumn
         style={{ flex: 1, ...scrollShellBleed }}
         contentContainerStyle={scrollContentPadding}
-        scrollbarRightInsetPx={(splitMetrics?.columnCount ?? 1) >= 2 ? 0 : layout.scrollIndicatorRightInsetPx}
+        scrollIndicatorExtendBottomPx={showSmartActionBlock ? ctaHeightPx : 0}
         indicatorColor={colors.primary}
       >
         <SmartLeadImage source={leadSource} layoutWidthPx={panelWidthPx} />
@@ -151,16 +155,12 @@ export function SmartPanelContent() {
 
         <View style={{ height: INTRO_TO_PURPOSE_GAP_PX }} />
         <SmartPurposeSection purposeSubtitle={t("smart.purposeSubtitle")} />
-
-        {showSmartActionBlock ? (
-          <>
-            <View style={{ height: SECTION_GAP_PX }} />
-            <SmartGradientDivider />
-            <View style={{ height: SECTION_GAP_PX }} />
-            <SmartActionRow />
-          </>
-        ) : null}
       </HspScrollColumn>
+      {showSmartActionBlock ? (
+        <PanelGradientCtaBlock onHeightChange={onCtaHeightChange}>
+          <SmartActionRow />
+        </PanelGradientCtaBlock>
+      ) : null}
     </View>
   );
 }

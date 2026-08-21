@@ -14,7 +14,7 @@ import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
 import { useSettingsSheet } from "../settings/SettingsContext";
-import { layout, typographyFixedRow40Label, useColors } from "../theme";
+import { layout, typographyFixedRow30Label, useColors } from "../theme";
 import { useBottomBarLayout } from "./BottomBarLayoutContext";
 import { useTelegram } from "./Telegram";
 import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConnectionContext";
@@ -39,7 +39,7 @@ const { barMinHeight: BAR_HEIGHT, horizontalPadding: HORIZONTAL_PADDING } = layo
 const { maxContentWidth } = layout;
 const MENU_BTN_PX = 30;
 const LIQUID_GLASS_CHIP_PX = 40;
-const LIQUID_GLASS_PILL_HEIGHT_PX = 40;
+const LIQUID_GLASS_PILL_HEIGHT_PX = layout.bottomBar.undercoverButtonHeightPx;
 const MENU_SEARCH_GAP_PX = 10;
 const SHIELD_ICON_WIDTH_PX = 16;
 const SHIELD_ICON_HEIGHT_PX = 18;
@@ -262,7 +262,7 @@ function DisconnectedTelegramFooter({
               <TelegramLogoIcon size={TELEGRAM_CONNECT_PILL_LOGO_SIZE_PX} />
             </View>
             <Text
-              style={[typographyFixedRow40Label, styles.connectPillLabel, { color: colors.primary }]}
+              style={[typographyFixedRow30Label, styles.connectPillLabel, { color: colors.primary }]}
               numberOfLines={1}
             >
               {label}
@@ -277,7 +277,7 @@ function DisconnectedTelegramFooter({
       onPress={onConnectPress}
       style={[styles.wideConnectButton, { backgroundColor: colors.undercover }]}
     >
-      <Text style={[typographyFixedRow40Label, { color: colors.primary }]} numberOfLines={1}>
+      <Text style={[typographyFixedRow30Label, { color: colors.primary }]} numberOfLines={1}>
         {label}
       </Text>
     </Pressable>
@@ -288,7 +288,7 @@ function DisconnectedTelegramFooter({
       {narrow && Platform.OS !== "web" ? (
         <Text
           key={label}
-          style={[typographyFixedRow40Label, styles.pillLabelMeasure]}
+          style={[typographyFixedRow30Label, styles.pillLabelMeasure]}
           numberOfLines={1}
           onTextLayout={onNativeLabelTextLayout}
         >
@@ -566,7 +566,7 @@ const styles = StyleSheet.create({
   wideConnectButton: {
     alignSelf: "center",
     height: LIQUID_GLASS_PILL_HEIGHT_PX,
-    paddingHorizontal: 30,
+    paddingHorizontal: layout.bottomBar.undercoverButtonPaddingHorizontalPx,
     alignItems: "center",
     justifyContent: "center",
     ...Platform.select({

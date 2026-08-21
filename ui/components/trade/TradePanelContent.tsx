@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Pressable, Text, View, type LayoutChangeEvent } from "react-native";
+import { Pressable, Text, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
 import { Image } from "expo-image";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import {
@@ -7,6 +7,8 @@ import {
   type VoiceMoreMenuAnchor,
   type VoiceMoreMenuItem,
 } from "../messages/MessageChatVoiceMoreMenu";
+import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
+import { TradeActionRow } from "./TradeActionRow";
 import { TradeCollectionColumn } from "./TradeCollectionColumn";
 import { TradeFeedRow } from "./TradeFeedRow";
 import { tradeApIcon, tradeFeedItemImages } from "../../trade/tradeAssets";
@@ -131,11 +133,14 @@ function TradeFilterChip({
 /** Trade panel body (prev-main `TradePage`): collections, tabs, filters, and sample feed rows. */
 export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
   const colors = useColors();
+  const { width: windowWidth } = useWindowDimensions();
+  const showTradeActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
   const contentInset = layout.contentSideInsetPx;
   const [viewportH, setViewportH] = useState(0);
   const [collectionsRowWidth, setCollectionsRowWidth] = useState(0);
   const [needsScroll, setNeedsScroll] = useState<boolean | null>(null);
   const scrollLayoutReady = needsScroll !== null;
+  const [ctaHeightPx, setCtaHeightPx] = useState(0);
 
   const collectionColumnCount = useMemo(
     () => resolveTradeCollectionColumnCount(collectionsRowWidth, contentInset),
@@ -264,6 +269,10 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
     [needsScroll],
   );
 
+  const onCtaHeightChange = useCallback((heightPx: number) => {
+    setCtaHeightPx((current) => (current === heightPx ? current : heightPx));
+  }, []);
+
   const scrollShellBleed = { marginHorizontal: -contentInset };
   const scrollContentPadding = {
     paddingTop: TOP_INSET_PX,
@@ -279,6 +288,7 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
       <HspScrollColumn
         style={{ flex: 1, ...scrollShellBleed }}
         onMetricsChange={onScrollMetrics}
+        scrollIndicatorExtendBottomPx={showTradeActionBlock ? ctaHeightPx : 0}
         contentContainerStyle={
           scrollLayoutReady && !needsScroll
             ? {
@@ -376,6 +386,11 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
         ))}
         <View style={{ height: SECTION_GAP_PX }} />
       </HspScrollColumn>
+      {showTradeActionBlock ? (
+        <PanelGradientCtaBlock onHeightChange={onCtaHeightChange}>
+          <TradeActionRow density="compact" />
+        </PanelGradientCtaBlock>
+      ) : null}
 
       <MessageChatVoiceMoreMenu
         visible={openMenu != null}

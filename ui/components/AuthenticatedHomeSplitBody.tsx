@@ -608,6 +608,10 @@ export function AuthenticatedHomeSplitBody({
   const stroke = hairlineBorderWidthPx();
   const lineLeft = splitPaneLineLeftInHit(stroke);
 
+  /**
+   * Transparent drag strip + painted seam stroke (full column height, including footers).
+   * Stroke lives here (not behind columns) so opaque bottom bars do not hide the column edges.
+   */
   function overlayDividerHitStyle(leftPx: number): ViewStyle[] {
     return [
       {

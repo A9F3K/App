@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useWindowDimensions, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import {
@@ -16,10 +16,10 @@ import {
 import { useChooseCurrencyRows } from "../../swap/useChooseCurrencyRows";
 import { layout } from "../../theme";
 import { useAuthenticatedHomeSplitLayoutMetrics } from "../AuthenticatedHomeSplitLayoutMetricsContext";
+import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
 import { ChooseCurrencySubheader } from "./ChooseCurrencySubheader";
 import { ChooseCurrencyTable } from "./ChooseCurrencyTable";
 import { SwapDealActionRow } from "./SwapDealActionRow";
-import { SmartGradientDivider } from "../smart/SmartGradientDivider";
 import type { ChooseCurrencyRow } from "./chooseCurrencyTableTypes";
 
 type Props = {
@@ -56,6 +56,7 @@ export function ChooseCurrencyPanelContent({
   /** Inline deal row when the 3-column bottom bar is not showing (≤2 columns). */
   const showInlineDealAction =
     windowWidth <= layout.authenticatedHome.secondBreakpoint;
+  const [ctaHeightPx, setCtaHeightPx] = useState(0);
 
   const handleBack = useCallback(() => {
     closeSwapCurrencyPicker();
@@ -77,6 +78,10 @@ export function ChooseCurrencyPanelContent({
     },
     [isBrowse, onAfterSelect, pickerMode],
   );
+
+  const onCtaHeightChange = useCallback((heightPx: number) => {
+    setCtaHeightPx((current) => (current === heightPx ? current : heightPx));
+  }, []);
 
   return (
     <View style={{ flex: 1, width: "100%", alignSelf: "stretch", minHeight: 0 }}>
@@ -100,21 +105,13 @@ export function ChooseCurrencyPanelContent({
           onSelectRow={handleSelectRow}
           columnShellWidthPx={columnShellWidthPx}
           prefetchCharts={pickerActive}
+          scrollIndicatorExtendBottomPx={showInlineDealAction ? ctaHeightPx : 0}
         />
       </View>
       {showInlineDealAction ? (
-        <View style={{ width: "100%", alignSelf: "stretch" }}>
-          {/* Same rule as under the currencies table column legend. */}
-          <SmartGradientDivider />
-          <View
-            style={{
-              width: "100%",
-              paddingVertical: 15,
-            }}
-          >
-            <SwapDealActionRow density="compact" />
-          </View>
-        </View>
+        <PanelGradientCtaBlock onHeightChange={onCtaHeightChange}>
+          <SwapDealActionRow density="compact" />
+        </PanelGradientCtaBlock>
       ) : null}
     </View>
   );
