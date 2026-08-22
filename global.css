@@ -50,7 +50,8 @@
 }
 
 /* Horizontal menu: prefer horizontal pan so nested vertical scroll does not steal the gesture. */
-.smart-purpose-menu-hscroll {
+.smart-purpose-menu-hscroll,
+.ai-agents-tabs-hscroll {
   touch-action: pan-x;
 }
 

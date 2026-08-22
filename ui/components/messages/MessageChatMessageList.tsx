@@ -3289,6 +3289,47 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     refreshScrollUnreadFabRef.current = refreshScrollUnreadFab;
   }, [refreshScrollUnreadFab]);
 
+  /** After send: widen display to tail and scroll so the outgoing row is visible (not FAB "1 unread"). */
+  const followTailAfterOutgoingMessage = useCallback((tailMessageId: number) => {
+    dismissUnreadDivider();
+    displaySliceBoundsOverrideRef.current = null;
+    scrollAnchorMessageIdRef.current = tailMessageId;
+    followingBottomRef.current = true;
+    setIsFollowingBottom(true);
+    setAuthenticatedHomeOpenChatFollowingBottom(true);
+    openingUnreadCountRef.current = 0;
+    unreadMarkingArmedRef.current = false;
+    unreadMarkingArmPendingRef.current = false;
+    unreadViewportBaselineMessageIdRef.current = 0;
+    patchAuthenticatedHomeSelectedChatUnread(0);
+    bumpViewportSliceTick();
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollControllerRef.current?.scrollToEnd();
+        const metrics = scrollControllerRef.current?.getMetrics();
+        if (metrics && metrics.contentH > 0) {
+          pinnedScrollYRef.current = metrics.scrollY;
+          lastScrollYRef.current = metrics.scrollY;
+        }
+        refreshScrollUnreadFabRef.current();
+        const loadedTail =
+          loadedMessagesRef.current.length > 0
+            ? loadedMessagesRef.current[loadedMessagesRef.current.length - 1]!
+                .telegram_message_id
+            : 0;
+        const chatTail =
+          chatTailMessageIdRef.current ?? chat.last_message_telegram_id;
+        if (!isAtLoadedChatTail(loadedTail, chatTail)) {
+          void loadNewerMessagesRef.current();
+        }
+      });
+    });
+  }, [
+    bumpViewportSliceTick,
+    chat.last_message_telegram_id,
+    dismissUnreadDivider,
+  ]);
+
   useEffect(() => {
     if (!chatScrollPaintReady) return;
     if (openingUnreadCountRef.current <= 0) return;
@@ -4190,25 +4231,18 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     const onOutgoing = ({ chatId, message }: { chatId: number; message: MessageChatHistoryItem }) => {
       if (chatId !== chat.telegram_chat_id) return;
       const optimistic = isOptimisticOutgoingMessageId(message.telegram_message_id);
-      if (optimistic || followingBottomRef.current) {
-        followingBottomRef.current = true;
-        setIsFollowingBottom(true);
-        setAuthenticatedHomeOpenChatFollowingBottom(true);
-        if (optimistic) {
-          requestAnimationFrame(() => {
-            scrollControllerRef.current?.scrollToEnd();
-          });
-        }
-      } else {
-        const anchor = scrollControllerRef.current?.captureScrollAnchor();
-        if (anchor) assignPendingScrollAnchor(anchor);
-      }
       setMessages((prev) => {
         const base = optimistic
           ? prev
           : stripMatchingPendingOutgoingMessages(prev, message);
         return mergeHistoryWithWindow(base, [message], true);
       });
+      if (optimistic || followingBottomRef.current) {
+        followTailAfterOutgoingMessage(message.telegram_message_id);
+      } else {
+        const anchor = scrollControllerRef.current?.captureScrollAnchor();
+        if (anchor) assignPendingScrollAnchor(anchor);
+      }
     };
 
     const onRemove = ({ chatId, messageId }: { chatId: number; messageId: number }) => {
@@ -4222,7 +4256,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       unsubscribeOutgoing();
       unsubscribeRemove();
     };
-  }, [chat.telegram_chat_id, assignPendingScrollAnchor, mergeHistoryWithWindow]);
+  }, [
+    chat.telegram_chat_id,
+    assignPendingScrollAnchor,
+    followTailAfterOutgoingMessage,
+    mergeHistoryWithWindow,
+  ]);
 
   // Remote / gateway-noted deletes arriving via chat-list payload.
   useEffect(() => {
