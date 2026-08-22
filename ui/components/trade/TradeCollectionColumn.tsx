@@ -23,7 +23,7 @@ export function TradeCollectionColumn({
   return (
     <View style={{ flex: 1, minWidth: 0, alignSelf: "stretch" }}>
       <View style={{ width: "100%", aspectRatio: 1 }}>
-        <Image source={image} style={{ width: "100%", height: "100%" }} contentFit="contain" />
+        <Image source={image} pointerEvents="none" style={{ width: "100%", height: "100%" }} contentFit="contain" />
       </View>
       <View style={{ height: 15 }} />
       <Text style={{ ...textBase, color: colors.primary, fontWeight: "500" }}>{title}</Text>

@@ -243,6 +243,8 @@ const styles = StyleSheet.create({
     flex: 1,
     position: "relative",
     justifyContent: "flex-start",
+    overflow: "visible",
+    zIndex: 1,
   },
   input: {
     flex: 1,
@@ -279,6 +281,7 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     justifyContent: "flex-start",
     pointerEvents: "box-none",
+    zIndex: 10,
   },
 });
 
@@ -587,10 +590,29 @@ function WebBottomBar({
                 fontFamily: WEB_UI_SANS_STACK,
                 fontWeight: 400,
                 transform: `translateY(${uiTextVerticalCompensationY}px)`,
-                overflow:
-                  metrics.contentHeightWithGaps > metrics.viewportHeight ? "auto" : "hidden",
+                overflow: metrics.showScrollbar ? "auto" : "hidden",
               }}
               placeholder={isFocused ? "" : placeholderText}
+            />
+            <Scrollbar
+              show={metrics.showScrollbar}
+              height={metrics.barHeight}
+              indicatorHeight={metrics.scrollbar.indicatorHeight}
+              topPosition={metrics.scrollbar.topPosition}
+              color={scrollbarColor}
+              scrollRange={
+                Math.max(
+                  domScrollRange,
+                  Math.max(0, metrics.contentHeightWithGaps - metrics.viewportHeight),
+                )
+              }
+              onScrollTo={(y) => {
+                const el = textareaRef.current;
+                if (!el) return;
+                el.scrollTop = y;
+                setScrollY(y);
+                setDomScrollRange(Math.max(0, el.scrollHeight - el.clientHeight));
+              }}
             />
           </View>
           <BottomBarSendCircleButton
@@ -603,26 +625,6 @@ function WebBottomBar({
           />
         </View>
       </View>
-      <Scrollbar
-        show={metrics.showScrollbar}
-        height={metrics.barHeight}
-        indicatorHeight={metrics.scrollbar.indicatorHeight}
-        topPosition={metrics.scrollbar.topPosition}
-        color={scrollbarColor}
-        scrollRange={
-          Math.max(
-            domScrollRange,
-            Math.max(0, metrics.contentHeightWithGaps - metrics.viewportHeight),
-          )
-        }
-        onScrollTo={(y) => {
-          const el = textareaRef.current;
-          if (!el) return;
-          el.scrollTop = y;
-          setScrollY(y);
-          setDomScrollRange(Math.max(0, el.scrollHeight - el.clientHeight));
-        }}
-      />
       {!hideBottomBorder ? (
         <View style={[styles.bottomDivider, { backgroundColor: topBorderColor }]} />
       ) : null}
@@ -778,7 +780,7 @@ function NativeBottomBar({
         ]}
       >
         <View style={styles.row}>
-          <View style={{ flex: 1 }}>
+          <View style={styles.inputWrap}>
             <View style={{ height: metrics.viewportHeight, justifyContent: "flex-start" }}>
               <ScrollView
                 ref={scrollRef}
@@ -838,6 +840,19 @@ function NativeBottomBar({
                 </View>
               </ScrollView>
             </View>
+            <Scrollbar
+              show={metrics.showScrollbar}
+              height={metrics.barHeight}
+              indicatorHeight={metrics.scrollbar.indicatorHeight}
+              topPosition={metrics.scrollbar.topPosition}
+              color={scrollbarColor}
+              scrollRange={Math.max(0, metrics.contentHeightWithGaps - metrics.viewportHeight)}
+              onScrollTo={(y) => {
+                scrollRef.current?.scrollTo({ y, animated: false });
+                scrollYRef.current = y;
+                setScrollY(y);
+              }}
+            />
           </View>
           <BottomBarSendCircleButton
             iconColor={inputColor}
@@ -849,19 +864,6 @@ function NativeBottomBar({
           />
         </View>
       </View>
-      <Scrollbar
-        show={metrics.showScrollbar}
-        height={metrics.barHeight}
-        indicatorHeight={metrics.scrollbar.indicatorHeight}
-        topPosition={metrics.scrollbar.topPosition}
-        color={scrollbarColor}
-        scrollRange={Math.max(0, metrics.contentHeightWithGaps - metrics.viewportHeight)}
-        onScrollTo={(y) => {
-          scrollRef.current?.scrollTo({ y, animated: false });
-          scrollYRef.current = y;
-          setScrollY(y);
-        }}
-      />
       {!hideBottomBorder ? (
         <View style={[styles.bottomDivider, { backgroundColor: topBorderColor }]} />
       ) : null}

@@ -60,6 +60,7 @@ import {
 import {
   clearChooseCurrencyYearChartVisibleWindow,
   prefetchChooseCurrencyYearCharts,
+  syncChooseCurrencyYearChartListOrder,
   syncChooseCurrencyYearChartVisibleWindow,
 } from "../../swap/chooseCurrencyYearChartCache";
 import { resolveChooseCurrencyColumnLayout } from "./chooseCurrencyTableLayout";
@@ -467,14 +468,19 @@ export function ChooseCurrencyTable({
       clearChooseCurrencyYearChartVisibleWindow();
       return;
     }
+    const allSparkline: string[] = [];
+    for (const row of rows) {
+      if (row.lastYearKind === "sparkline") allSparkline.push(row.rowKey);
+    }
     const end = Math.min(rows.length, sparklinePrefetchStart + sparklinePrefetchCount);
-    const addresses: string[] = [];
+    const visible: string[] = [];
     for (let i = sparklinePrefetchStart; i < end; i++) {
       const row = rows[i];
-      if (row?.lastYearKind === "sparkline") addresses.push(row.rowKey);
+      if (row?.lastYearKind === "sparkline") visible.push(row.rowKey);
     }
-    syncChooseCurrencyYearChartVisibleWindow(addresses);
-    if (addresses.length > 0) prefetchChooseCurrencyYearCharts(addresses);
+    syncChooseCurrencyYearChartListOrder(allSparkline);
+    syncChooseCurrencyYearChartVisibleWindow(visible);
+    if (allSparkline.length > 0) prefetchChooseCurrencyYearCharts(allSparkline);
   }, [prefetchCharts, rows, sparklinePrefetchCount, sparklinePrefetchStart]);
 
   useEffect(() => {

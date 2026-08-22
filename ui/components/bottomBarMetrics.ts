@@ -75,11 +75,16 @@ export function getBottomBarMetrics({
     scrollRangeOverride != null && scrollRangeOverride > 0 ? scrollRangeOverride : 0,
   );
   /**
-   * One-line bar is `minBarHeight` (59) while padded content is often ~60px — that 1px gap must not
-   * show a thumb. Only scroll when text exceeds the expandable line cap.
+   * Bar stops growing at the line cap (`maxLinesBeforeScroll` × line + padding, also
+   * `maxBarHeight`). Mirror line counts can stay at the cap while the live field already
+   * overflows by a few px — still show the thumb. Ignore the 1px one-line min-height gap.
    */
-  const showScrollbar =
-    rawLines > maxLinesBeforeScroll && effectiveScrollRange > 0.5;
+  const scrollCapHeight = Math.min(
+    maxBarHeight,
+    innerPadding * 2 + maxLinesBeforeScroll * lineHeight,
+  );
+  const barAtScrollCap = barHeight + 0.5 >= scrollCapHeight;
+  const showScrollbar = barAtScrollCap && effectiveScrollRange > 1;
 
   return {
     rawLines,

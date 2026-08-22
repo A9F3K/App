@@ -18,12 +18,11 @@ const LOADING_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "loading" };
 const EMPTY_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "empty" };
 
 /**
- * Visible-row sparklines used to look lazy because the pump started one
- * request, then waited 1.1s (and the shared DYOR limiter waited another 1s).
- * A small parallel pool fills the on-screen column quickly; 429s back off.
+ * Fill last-year plots top-to-bottom in table order. Concurrent DYOR calls
+ * 429 and complete out of order, which looks like lazy/random loading.
  */
-const MAX_CONCURRENT = 2;
-const REQUEST_GAP_MS = 120;
+const MAX_CONCURRENT = 1;
+const REQUEST_GAP_MS = 220;
 const RATE_LIMIT_GAP_MS = 1500;
 const RETRY_BASE_DELAY_MS = 4000;
 const RETRY_MAX_DELAY_MS = 24000;
@@ -49,6 +48,8 @@ const listeners = new Map<string, Set<() => void>>();
 const visibleWindow = new Set<string>();
 /** IntersectionObserver near-view rows (refcounted per address). */
 const nearViewRefcount = new Map<string, number>();
+/** Top-to-bottom sparkline order of the current currency table. */
+const listOrder = new Map<string, number>();
 const queued: string[] = [];
 const queuedSet = new Set<string>();
 let activeCount = 0;
@@ -116,19 +117,20 @@ function scheduleRetry(address: string, attempt: number): void {
 async function runFetch(address: string): Promise<void> {
   if (isVoiceDialogUiOpen()) {
     // Defer mid-dialog — parsing chart JSON on the main thread freezes Close.
-    enqueueFront(address);
+    enqueue(address);
     return;
   }
   if (trySeedFromSeriesCache(address)) return;
 
   setSnapshot(address, LOADING_SNAPSHOT);
   const result = await fetchJettonChartSeries(address, "day1", {
-    respectGlobalRateLimit: true,
+    // Pump is already serial; the 1s global limiter made the column look lazy.
+    respectGlobalRateLimit: false,
   });
 
   if (isVoiceDialogUiOpen()) {
     // Dialog opened while the fetch was in flight — don't parse/apply yet.
-    enqueueFront(address);
+    enqueue(address);
     cache.delete(address);
     return;
   }
@@ -224,6 +226,19 @@ export function clearQueuedChooseCurrencyYearCharts(): void {
   queuedSet.clear();
 }
 
+/** Full table sparkline order (top → bottom). Queue drain follows this after visible rows. */
+export function syncChooseCurrencyYearChartListOrder(addresses: readonly string[]): void {
+  listOrder.clear();
+  let index = 0;
+  for (const address of addresses) {
+    const key = normalizeAddress(address);
+    if (!key || key.startsWith("jetton:")) continue;
+    if (listOrder.has(key)) continue;
+    listOrder.set(key, index);
+    index += 1;
+  }
+}
+
 /** Scroll-visible window from ChooseCurrencyTable — on-screen rows win the queue. */
 export function syncChooseCurrencyYearChartVisibleWindow(addresses: readonly string[]): void {
   visibleWindow.clear();
@@ -245,7 +260,6 @@ export function registerChooseCurrencyYearChartNearView(address: string): void {
   const key = normalizeAddress(address);
   if (!key) return;
   nearViewRefcount.set(key, (nearViewRefcount.get(key) ?? 0) + 1);
-  if (queuedSet.has(key)) promoteInQueue(key);
   rebalanceQueue();
   pumpQueue();
 }
@@ -256,7 +270,6 @@ export function unregisterChooseCurrencyYearChartNearView(address: string): void
   const next = (nearViewRefcount.get(key) ?? 0) - 1;
   if (next <= 0) nearViewRefcount.delete(key);
   else nearViewRefcount.set(key, next);
-  if (next <= 0 && queuedSet.has(key)) demoteInQueue(key);
   rebalanceQueue();
 }
 
@@ -289,57 +302,45 @@ function isPriorityAddress(address: string): boolean {
   return visibleWindow.has(address) || (nearViewRefcount.get(address) ?? 0) > 0;
 }
 
+function compareQueueOrder(a: string, b: string): number {
+  const pa = isPriorityAddress(a) ? 0 : 1;
+  const pb = isPriorityAddress(b) ? 0 : 1;
+  if (pa !== pb) return pa - pb;
+  const ia = listOrder.get(a) ?? Number.MAX_SAFE_INTEGER;
+  const ib = listOrder.get(b) ?? Number.MAX_SAFE_INTEGER;
+  return ia - ib;
+}
+
 function rebalanceQueue(): void {
   if (queued.length < 2) return;
-  const priority: string[] = [];
-  const background: string[] = [];
-  for (const addr of queued) {
-    if (isPriorityAddress(addr)) priority.push(addr);
-    else background.push(addr);
-  }
-  if (priority.length === 0 || background.length === 0) return;
-  queued.length = 0;
-  queued.push(...priority, ...background);
+  queued.sort(compareQueueOrder);
 }
 
-function demoteInQueue(address: string): void {
-  const idx = queued.indexOf(address);
-  if (idx < 0) return;
-  queued.splice(idx, 1);
-  queued.push(address);
-}
-
-function promoteInQueue(address: string): void {
-  const idx = queued.indexOf(address);
-  if (idx <= 0) return;
-  queued.splice(idx, 1);
-  queued.unshift(address);
-}
-
-function enqueueFront(address: string): void {
-  // Prefer visible (newly ensured) rows over older off-screen backlog.
+function enqueue(address: string): void {
   while (queued.length >= MAX_QUEUED) {
     let dropIdx = -1;
-    for (let i = queued.length - 1; i >= 0; i--) {
+    let dropOrder = -1;
+    for (let i = 0; i < queued.length; i++) {
       const candidate = queued[i]!;
-      if (!isPriorityAddress(candidate)) {
+      if (isPriorityAddress(candidate)) continue;
+      const order = listOrder.get(candidate) ?? Number.MAX_SAFE_INTEGER;
+      if (order >= dropOrder) {
         dropIdx = i;
-        break;
+        dropOrder = order;
       }
     }
-    if (dropIdx < 0) break; // all pending are still on-screen — allow overflow
+    if (dropIdx < 0) break;
     const dropped = queued.splice(dropIdx, 1)[0];
     if (dropped) queuedSet.delete(dropped);
   }
 
   if (queuedSet.has(address)) {
-    if (isPriorityAddress(address)) promoteInQueue(address);
-    else demoteInQueue(address);
+    rebalanceQueue();
     return;
   }
   queuedSet.add(address);
-  if (isPriorityAddress(address)) queued.unshift(address);
-  else queued.push(address);
+  queued.push(address);
+  rebalanceQueue();
 }
 
 /** Ensure a year sparkline is loading / cached for this jetton address. */
@@ -358,14 +359,13 @@ export function ensureChooseCurrencyYearChart(address: string): void {
     emptyAtMs.delete(key);
   }
 
-  enqueueFront(key);
+  enqueue(key);
   pumpQueue();
 }
 
-/** Queue on-screen (and nearby) rows so the first visible plot is fetched first. */
+/** Queue sparkline addresses in the given order (top → bottom of the table). */
 export function prefetchChooseCurrencyYearCharts(addresses: readonly string[]): void {
-  for (let i = addresses.length - 1; i >= 0; i--) {
-    const address = addresses[i];
+  for (const address of addresses) {
     if (address) ensureChooseCurrencyYearChart(address);
   }
 }

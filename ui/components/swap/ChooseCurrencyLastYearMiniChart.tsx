@@ -140,17 +140,19 @@ function SparklineMiniChart({ address }: { address: string }) {
   const colors = useColors();
   const [width, setWidth] = useState(0);
   const hostRef = useRef<View>(null);
-  // Prefetch a few rows past the fold; skip the rest of FlatList's window so
-  // off-screen cells don't jump the queue ahead of plots the user can see.
+  // On-screen rows bump queue priority; fetch itself is table-order top → bottom.
   const nearView = useElementVisible(hostRef as RefObject<Element | null>, {
     rootMargin: "280px",
     threshold: 0.01,
   });
 
   useEffect(() => {
+    ensureChooseCurrencyYearChart(address);
+  }, [address]);
+
+  useEffect(() => {
     if (!nearView) return;
     registerChooseCurrencyYearChartNearView(address);
-    ensureChooseCurrencyYearChart(address);
     return () => unregisterChooseCurrencyYearChartNearView(address);
   }, [address, nearView]);
 

@@ -1,7 +1,7 @@
 import * as Clipboard from "expo-clipboard";
 import { usePathname, useRouter } from "expo-router";
 import { useAuth } from "../../auth/AuthContext";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View, Platform } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import {
@@ -75,6 +75,57 @@ const HEADER_ICONS_BEFORE_LANG: readonly {
 ];
 
 const HEADER_ICON_EXIT_LABEL_KEY = "home.header.iconExit" as const;
+
+/** Brief primary flash after pointer-up so a tap is visible on web. */
+const HEADER_ICON_PRESS_FLASH_MS = 180;
+
+function HeaderActionIconButton({
+  accessibilityLabel,
+  onPress,
+  children,
+}: {
+  accessibilityLabel: string;
+  onPress: () => void;
+  children: (color: string) => ReactNode;
+}) {
+  const colors = useColors();
+  const [flash, setFlash] = useState(false);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    },
+    [],
+  );
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      hitSlop={AH.headerPressableHitSlop}
+      onPressIn={() => {
+        if (flashTimerRef.current) {
+          clearTimeout(flashTimerRef.current);
+          flashTimerRef.current = null;
+        }
+        setFlash(true);
+      }}
+      onPressOut={() => {
+        if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+        flashTimerRef.current = setTimeout(() => {
+          setFlash(false);
+          flashTimerRef.current = null;
+        }, HEADER_ICON_PRESS_FLASH_MS);
+      }}
+      onPress={onPress}
+    >
+      {({ pressed }) =>
+        children(menuIconStrokeColor(colors, pressed || flash ? "primary" : "highlight"))
+      }
+    </Pressable>
+  );
+}
 
 const WIDE_MENU_ITEM_KEYS = [
   { key: "get", labelKey: "home.menu.get" as const, Icon: MenuGetIcon },
@@ -451,11 +502,9 @@ export function HomeAuthenticatedHeaderRow({
           {HEADER_ICONS_BEFORE_LANG.map(({ id, Icon, labelKey }) => {
             const accessibilityLabel = t(labelKey);
             return (
-              <Pressable
+              <HeaderActionIconButton
                 key={id}
-                accessibilityRole="button"
                 accessibilityLabel={accessibilityLabel}
-                hitSlop={AH.headerPressableHitSlop}
                 onPress={() => {
                   if (id === "copy") {
                     void copyFullWalletAddress();
@@ -468,15 +517,11 @@ export function HomeAuthenticatedHeaderRow({
                   /* Wired when flows land */
                 }}
               >
-                <Icon
-                  color={menuIconStrokeColor(colors, "highlight")}
-                  size={AH.headerIconDisplaySize}
-                />
-              </Pressable>
+                {(color) => <Icon color={color} size={AH.headerIconDisplaySize} />}
+              </HeaderActionIconButton>
             );
           })}
-          <Pressable
-            accessibilityRole="button"
+          <HeaderActionIconButton
             accessibilityLabel={
               headerLanguageToggleShows === "en"
                 ? t("home.header.languageIconSwitchToEn")
@@ -484,7 +529,6 @@ export function HomeAuthenticatedHeaderRow({
                   ? t("home.header.languageIconSwitchToRu")
                   : t("home.header.languageIconSwitchToZh")
             }
-            hitSlop={AH.headerPressableHitSlop}
             onPress={() => {
               if (Platform.OS !== "web") {
                 triggerHaptic("light");
@@ -492,35 +536,24 @@ export function HomeAuthenticatedHeaderRow({
               toggleUiLanguage();
             }}
           >
-            {headerLanguageToggleShows === "en" ? (
-              <HeaderIconEn
-                color={menuIconStrokeColor(colors, "highlight")}
-                size={AH.headerIconDisplaySize}
-              />
-            ) : headerLanguageToggleShows === "ru" ? (
-              <HeaderIconRu
-                color={menuIconStrokeColor(colors, "highlight")}
-                size={AH.headerIconDisplaySize}
-              />
-            ) : (
-              <HeaderIconZh
-                color={menuIconStrokeColor(colors, "highlight")}
-                size={AH.headerIconDisplaySize}
-              />
-            )}
-          </Pressable>
-          <Pressable
-            key="exit"
-            accessibilityRole="button"
+            {(color) =>
+              headerLanguageToggleShows === "en" ? (
+                <HeaderIconEn color={color} size={AH.headerIconDisplaySize} />
+              ) : headerLanguageToggleShows === "ru" ? (
+                <HeaderIconRu color={color} size={AH.headerIconDisplaySize} />
+              ) : (
+                <HeaderIconZh color={color} size={AH.headerIconDisplaySize} />
+              )
+            }
+          </HeaderActionIconButton>
+          <HeaderActionIconButton
             accessibilityLabel={t(HEADER_ICON_EXIT_LABEL_KEY)}
-            hitSlop={AH.headerPressableHitSlop}
             onPress={handleSignOut}
           >
-            <HeaderIconExit
-              color={menuIconStrokeColor(colors, "highlight")}
-              size={AH.headerIconDisplaySize}
-            />
-          </Pressable>
+            {(color) => (
+              <HeaderIconExit color={color} size={AH.headerIconDisplaySize} />
+            )}
+          </HeaderActionIconButton>
         </View>
         <View
           style={{

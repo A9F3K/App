@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Pressable, Text, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
+import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { Image } from "expo-image";
 import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
@@ -10,7 +10,7 @@ import {
 } from "../messages/MessageChatVoiceMoreMenu";
 import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
 import { TradeActionRow } from "./TradeActionRow";
-import { TradeCollectionColumn } from "./TradeCollectionColumn";
+import { TradeCollectionCarousel } from "./TradeCollectionCarousel";
 import { TradeFeedRow } from "./TradeFeedRow";
 import { tradeApIcon, tradeFeedItemImages } from "../../trade/tradeAssets";
 import { resolveTradeCollectionColumnCount } from "../../trade/tradeCollectionLayout";
@@ -27,6 +27,7 @@ const PAGINATION_DOT_GAP_PX = 11;
 const TABS_AFTER_DOTS_GAP_PX = 33;
 const TABS_TO_FILTERS_GAP_PX = 19;
 const COLLECTION_AUTO_SLIDE_MS = 5000;
+const COLLECTION_ITEMS_PER_SLIDE = 4;
 const MENU_BELOW_CHIP_GAP_PX = 6;
 
 type TradeFeedTab = "trending" | "cap" | "reach";
@@ -147,7 +148,10 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
     [collectionsRowWidth, contentInset],
   );
 
-  const slidesCount = 2;
+  const slidesCount = Math.max(
+    1,
+    Math.ceil(TRADE_SAMPLE_COLLECTIONS.length / COLLECTION_ITEMS_PER_SLIDE),
+  );
   const [activeSlideIndex, setActiveSlideIndex] = useState(0);
   const [autoSlidePausedByUser, setAutoSlidePausedByUser] = useState(false);
   const [activeFeedTab, setActiveFeedTab] = useState<TradeFeedTab>("trending");
@@ -220,6 +224,10 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
     setActiveSlideIndex(index);
   }, []);
 
+  const pauseAutoSlide = useCallback(() => {
+    setAutoSlidePausedByUser(true);
+  }, []);
+
   // Leaving trade clears a manual dot selection so auto-slide resumes on return.
   useEffect(() => {
     if (isActive) return;
@@ -246,15 +254,6 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
       if (intervalId != null) clearInterval(intervalId);
     };
   }, [collectionAutoSlideRunning, slidesCount]);
-
-  const visibleCollections = useMemo(() => {
-    const baseIndex = activeSlideIndex * 4; // per slide uses 4 items
-    return TRADE_SAMPLE_COLLECTIONS.slice(baseIndex, baseIndex + collectionColumnCount);
-  }, [activeSlideIndex, collectionColumnCount]);
-
-  const onCollectionsRowLayout = useCallback((e: LayoutChangeEvent) => {
-    setCollectionsRowWidth(e.nativeEvent.layout.width);
-  }, []);
 
   const onScrollMetrics = useCallback((metrics: Omit<HspScrollMetrics, "scrollY">) => {
     if (!(metrics.layoutH > 0)) return;
@@ -294,24 +293,17 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
             : scrollContentPadding
         }
       >
-        <View
-          style={{ flexDirection: "row", alignItems: "flex-start", width: "100%" }}
-          onLayout={onCollectionsRowLayout}
-        >
-          {visibleCollections.map((collection, index) => (
-            <Fragment key={`${collection.title}-${index}`}>
-              {index > 0 ? <View style={{ width: contentInset }} /> : null}
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <TradeCollectionColumn
-                  image={collection.image}
-                  title={collection.title}
-                  subtitle={collection.subtitle}
-                  colors={colors}
-                />
-              </View>
-            </Fragment>
-          ))}
-        </View>
+        <TradeCollectionCarousel
+          collections={TRADE_SAMPLE_COLLECTIONS}
+          itemsPerSlide={COLLECTION_ITEMS_PER_SLIDE}
+          columnCount={collectionColumnCount}
+          gapPx={contentInset}
+          activeIndex={activeSlideIndex}
+          colors={colors}
+          onActiveIndexChange={onSelectSlide}
+          onUserInteract={pauseAutoSlide}
+          onWidthChange={setCollectionsRowWidth}
+        />
 
         <View style={{ height: SECTION_GAP_PX }} />
         <TradePaginationDots
