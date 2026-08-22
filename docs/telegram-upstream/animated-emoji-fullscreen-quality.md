@@ -25,13 +25,15 @@ Observed on Telegram Desktop (Windows): media viewer titled like a photo (“Pho
 
 ## Platforms
 
-| Platform | Upstream venue | Notes |
+| Platform | Upstream issue | Notes |
 |----------|----------------|-------|
-| Desktop (Windows / Linux / macOS) | [telegramdesktop/tdesktop](https://github.com/telegramdesktop/tdesktop) | Primary repro in screenshot |
-| iOS | [TelegramMessenger/Telegram-iOS](https://github.com/TelegramMessenger/Telegram-iOS) | Related: large emoji Retina blur ([#2292](https://github.com/TelegramMessenger/Telegram-iOS/issues/2292)) |
-| Android | [DrKLO/Telegram](https://github.com/DrKLO/Telegram) | **GitHub Issues disabled** — report via in-app / Telegram support |
-| Telegram Web K | [Ajaxy/telegram-tt](https://github.com/Ajaxy/telegram-tt) | Confirm same media-viewer thumbnail path |
-| Telegram Web A | [morethanwords/tweb](https://github.com/morethanwords/tweb) | Confirm same media-viewer thumbnail path |
+| Desktop (Windows / Linux / macOS) | [tdesktop#31158](https://github.com/telegramdesktop/tdesktop/issues/31158) | Primary repro in screenshot |
+| iOS | [Telegram-iOS#2296](https://github.com/TelegramMessenger/Telegram-iOS/issues/2296) | Related: large emoji Retina blur ([#2292](https://github.com/TelegramMessenger/Telegram-iOS/issues/2292)) |
+| Android | — | [DrKLO/Telegram](https://github.com/DrKLO/Telegram) has **GitHub Issues disabled** — report via in-app / Telegram support |
+| Telegram Web K | [telegram-tt#538](https://github.com/Ajaxy/telegram-tt/issues/538) | Same media-viewer thumbnail-upscale report |
+| Telegram Web A | [tweb#701](https://github.com/morethanwords/tweb/issues/701) | Same media-viewer thumbnail-upscale report |
+
+Hyperlinks Space tracking: [#92](https://github.com/HyperlinksSpace/HyperlinksSpaceProgram/issues/92)
 
 ## Suggested fix (for client engineers)
 
@@ -44,3 +46,5 @@ When the user opens an animated/custom emoji in the media viewer:
 ## Hyperlinks Space
 
 Filed from [HyperlinksSpace](https://github.com/HyperlinksSpace) / [HyperlinksSpaceProgram](https://github.com/HyperlinksSpace/HyperlinksSpaceProgram) so our Telegram messaging UX work can link official client bugs.
+
+Client forks (for future fix PRs): [`tdesktop`](https://github.com/HyperlinksSpace/tdesktop), [`Telegram-iOS-1`](https://github.com/HyperlinksSpace/Telegram-iOS-1), [`telegram-tt`](https://github.com/HyperlinksSpace/telegram-tt), [`tweb`](https://github.com/HyperlinksSpace/tweb).
