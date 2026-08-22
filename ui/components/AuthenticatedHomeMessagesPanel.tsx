@@ -154,7 +154,8 @@ function remoteSearchHitToRow(hit: TelegramChatListSearchHit): MessageChatRowDat
 type ChatListDisplayItem =
   | { kind: "chat"; key: string; row: MessageChatRowData }
   | { kind: "sectionHeader"; key: string; sectionId: string; title: string }
-  | { kind: "messagesFooter"; key: string; count: number };
+  | { kind: "messagesFooter"; key: string; count: number }
+  | { kind: "recentsFooter"; key: string };
 
 /** Chevron: closed → right; open → up (column-reverse search scrolls upward). */
 function SearchSectionChevron({ open, color }: { open: boolean; color: string }) {
@@ -191,21 +192,6 @@ function SearchSectionChevron({ open, color }: { open: boolean; color: string })
         />
       </Svg>
     </Animated.View>
-  );
-}
-
-/** Affordance on the messages-found strip: results continue upward from the search field. */
-function SearchUpAffordanceChevron({ color }: { color: string }) {
-  return (
-    <Svg width={14} height={14} viewBox="0 0 14 14" fill="none">
-      <Path
-        d="M2.5 9L7 4.5L11.5 9"
-        stroke={color}
-        strokeWidth={1.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </Svg>
   );
 }
 
@@ -1665,11 +1651,19 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     // Search/recents use column-reverse: first array item sits nearest the search field (bottom).
     if (recentsMode) {
       const liveById = new Map(sortedChats.map((row) => [row.telegram_chat_id, row]));
-      return recentSearchHits.map((hit) => ({
-        kind: "chat" as const,
-        key: `chat-${hit.chatId}`,
-        row: liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit),
-      }));
+      const items: ChatListDisplayItem[] = [];
+      // column-reverse: footer first in array → nearest the search field (visual bottom).
+      if (recentSearchLoaded && recentSearchHits.length > 0) {
+        items.push({ kind: "recentsFooter", key: "recents-footer" });
+      }
+      for (const hit of recentSearchHits) {
+        items.push({
+          kind: "chat",
+          key: `chat-${hit.chatId}`,
+          row: liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit),
+        });
+      }
+      return items;
     }
     if (!searchNeedle) {
       return sortedChats.map((row) => ({
@@ -1776,6 +1770,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     collapsedSearchSections,
     recentsMode,
     recentSearchHits,
+    recentSearchLoaded,
     remoteDirectChatIdSet,
     remoteDirectHits,
     remoteGlobalHits,
@@ -2037,11 +2032,23 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
 
   useEffect(() => {
     if (!listSearchActive) return;
-    const frame = requestAnimationFrame(() => {
-      invokeChatListSearchScrollToEnd();
+    let innerFrame = 0;
+    const outerFrame = requestAnimationFrame(() => {
+      innerFrame = requestAnimationFrame(() => {
+        invokeChatListSearchScrollToEnd();
+      });
     });
-    return () => cancelAnimationFrame(frame);
-  }, [listSearchActive, displayListItems.length, chatListSearchQuery, remoteMessageCount]);
+    return () => {
+      cancelAnimationFrame(outerFrame);
+      if (innerFrame) cancelAnimationFrame(innerFrame);
+    };
+  }, [
+    listSearchActive,
+    displayListItems.length,
+    chatListSearchQuery,
+    remoteMessageCount,
+    recentSearchLoaded,
+  ]);
 
   const renderListItems = (items: ChatListDisplayItem[], startIndex: number) => (
     <>
@@ -2098,6 +2105,46 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
             </Pressable>
           );
         }
+        if (item.kind === "recentsFooter") {
+          return (
+            <View
+              key={item.key}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                backgroundColor: colors.undercover,
+                borderTopWidth: 1,
+                borderTopColor: colors.highlight,
+                paddingVertical: 8,
+                paddingHorizontal: layout.contentSideInsetPx,
+                // Nearest the search field in column-reverse — chats stack upward from here.
+                marginTop: 0,
+                marginBottom: 2,
+                minHeight: 24,
+              }}
+            >
+              <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
+                {t("messages.search.recentsTitle")}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("messages.search.recentsClear")}
+                onPress={handleClearRecentSearch}
+                style={({ pressed }) => ({
+                  opacity: pressed ? 0.65 : 1,
+                  paddingVertical: 4,
+                  paddingLeft: 8,
+                })}
+              >
+                <Text style={{ color: colors.accent, fontSize: 13, lineHeight: 18 }}>
+                  {t("messages.search.recentsClear")}
+                </Text>
+              </Pressable>
+            </View>
+          );
+        }
         if (item.kind === "messagesFooter") {
           const countLabel = tf("messages.search.messagesFound", {
             count: String(Math.max(0, Math.trunc(Number(item.count) || 0))),
@@ -2122,15 +2169,12 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
                 marginBottom: listSearchActive ? 2 : 0,
               }}
             >
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
-                {listSearchActive ? <SearchUpAffordanceChevron color={colors.primary} /> : null}
-                <Text
-                  style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, flexShrink: 1 }}
-                  numberOfLines={1}
-                >
-                  {countLabel}
-                </Text>
-              </View>
+              <Text
+                style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, flex: 1, flexShrink: 1, minWidth: 0 }}
+                numberOfLines={1}
+              >
+                {countLabel}
+              </Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t("messages.search.allChats")}
@@ -2181,34 +2225,6 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   );
 
   const listShellStyle = homeListShellStyle(wideListChrome);
-
-  const recentsHeader =
-    recentsMode && recentSearchLoaded && displayChats.length > 0 ? (
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginTop: 6,
-          marginBottom: 0,
-          minHeight: 24,
-        }}
-      >
-        <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18 }}>
-          {t("messages.search.recentsTitle")}
-        </Text>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={t("messages.search.recentsClear")}
-          onPress={handleClearRecentSearch}
-          style={({ pressed }) => ({ opacity: pressed ? 0.65 : 1, paddingVertical: 4, paddingLeft: 8 })}
-        >
-          <Text style={{ color: colors.accent, fontSize: 13, lineHeight: 18 }}>
-            {t("messages.search.recentsClear")}
-          </Text>
-        </Pressable>
-      </View>
-    ) : null;
 
   if (!isTelegramMessagesConnected) {
     return (
@@ -2303,9 +2319,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         ]}
         pointerEvents="box-none"
       >
-        {renderListItems(visibleListItems, visibleChatStartIndex)}
         {searchEmpty}
-        {recentsHeader}
+        {renderListItems(visibleListItems, visibleChatStartIndex)}
       </View>
     </View>
   );
@@ -2321,7 +2336,6 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       onScrollBeginDrag={handleClearSelection}
     >
       {searchField}
-      {recentsHeader}
       {searchEmpty}
       {renderChatRows(visibleChats, visibleChatStartIndex)}
       <Pressable style={{ flexGrow: 1, minHeight: 1 }} onPress={handleClearSelection} />

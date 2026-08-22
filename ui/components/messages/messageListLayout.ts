@@ -21,6 +21,84 @@ export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX = 7;
 /** 1px background seam between stacked faces (covers speaking rings in the overlap). */
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_DIVIDER_PX = 1;
 export const MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS = 5;
+/** Min inner width for the video column in the wide voice dialog (content, not padding). */
+export const MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_VIDEO_MIN_PX = 320;
+/** Horizontal padding inside the docked video pane (12 + 8). */
+export const MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_VIDEO_PANE_PADDING_X_PX = 20;
+/** Minimum roster column width before side-by-side layout is allowed. */
+export const MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_ROSTER_MIN_PX = 300;
+
+/** Total sheet width required to dock video beside the roster. */
+export function messageChatVoiceSideBySideBreakpointPx(
+  rosterMinPx = MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_ROSTER_MIN_PX,
+  videoMinPx = MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_VIDEO_MIN_PX,
+  videoPanePaddingXPx = MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_VIDEO_PANE_PADDING_X_PX,
+): number {
+  return rosterMinPx + videoPanePaddingXPx + videoMinPx;
+}
+
+/** Gap between avatar stack / "+N" and the participant-count label in the strip. */
+export const MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX = 6;
+
+/** Pixel width of {@code stackedCount} overlapping voice-strip avatars. */
+export function voiceBarAvatarStackWidthPx(
+  stackedCount: number,
+  avatarPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+  overlapPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
+): number {
+  const count = Math.max(0, Math.trunc(stackedCount));
+  if (count === 0) return 0;
+  const step = Math.max(1, avatarPx - overlapPx);
+  return avatarPx + (count - 1) * step;
+}
+
+/** Approximate "+N" overflow label width at 13px UI sans. */
+export function voiceBarOverflowLabelWidthPx(overflowCount: number): number {
+  const count = Math.max(0, Math.trunc(overflowCount));
+  if (count === 0) return 0;
+  const digits = String(count).length;
+  return 10 + digits * 7;
+}
+
+export function resolveVoiceBarAvatarStackFit(input: {
+  availablePx: number;
+  othersListed: number;
+  othersBudget: number;
+  maxAvatars: number;
+  stackOverflowGapPx?: number;
+  avatarPx?: number;
+  overlapPx?: number;
+}): { stackedLimit: number; overflowCount: number } {
+  const availablePx = Math.max(0, Math.trunc(input.availablePx));
+  const others = Math.max(0, Math.trunc(input.othersListed));
+  const othersBudget = Math.max(0, Math.trunc(input.othersBudget));
+  const maxAvatars = Math.max(1, Math.trunc(input.maxAvatars));
+  const gapPx = Math.max(0, Math.trunc(input.stackOverflowGapPx ?? 6));
+  const avatarPx = input.avatarPx ?? MESSAGE_CHAT_VOICE_BAR_AVATAR_PX;
+  const overlapPx = input.overlapPx ?? MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX;
+
+  const maxStack = Math.min(others, maxAvatars, othersBudget);
+  if (availablePx <= 0) {
+    return {
+      stackedLimit: maxStack,
+      overflowCount: Math.max(0, othersBudget - maxStack),
+    };
+  }
+
+  for (let stackedLimit = maxStack; stackedLimit >= 0; stackedLimit -= 1) {
+    const overflowCount = Math.max(0, othersBudget - stackedLimit);
+    const needPx =
+      voiceBarAvatarStackWidthPx(stackedLimit, avatarPx, overlapPx) +
+      (overflowCount > 0
+        ? gapPx + voiceBarOverflowLabelWidthPx(overflowCount)
+        : 0);
+    if (needPx <= availablePx) {
+      return { stackedLimit, overflowCount };
+    }
+  }
+
+  return { stackedLimit: 0, overflowCount: othersBudget };
+}
 
 /**
  * Standard voice-bar preview headcount for every chat.
@@ -37,6 +115,9 @@ export function resolveVoiceBarParticipantPreview(input: {
   tdlibHint: number;
   maxAvatars: number;
   joined: boolean;
+  /** When set, clamp stacked avatars so the 1px seams and "+N" fit without clipping. */
+  avatarStackAvailablePx?: number;
+  avatarStackOverflowGapPx?: number;
 }): { displayTotal: number; overflowCount: number; stackedLimit: number } {
   const listed = Math.max(0, Math.trunc(input.listedTotal));
   const others = Math.max(0, Math.trunc(input.othersListed));
@@ -50,11 +131,28 @@ export function resolveVoiceBarParticipantPreview(input: {
   const selfListed = Math.max(0, listed - others);
   const selfInTotal = selfListed > 0 && displayTotal > others ? 1 : 0;
   const othersBudget = Math.max(0, displayTotal - selfInTotal);
-  const stackedLimit = Math.min(others, maxAvatars, othersBudget);
+  let stackedLimit = Math.min(others, maxAvatars, othersBudget);
+  let overflowCount = Math.max(0, othersBudget - stackedLimit);
+
+  if (
+    input.avatarStackAvailablePx != null &&
+    Number.isFinite(input.avatarStackAvailablePx) &&
+    input.avatarStackAvailablePx > 0
+  ) {
+    const fit = resolveVoiceBarAvatarStackFit({
+      availablePx: input.avatarStackAvailablePx,
+      othersListed: others,
+      othersBudget,
+      maxAvatars,
+      stackOverflowGapPx: input.avatarStackOverflowGapPx,
+    });
+    stackedLimit = fit.stackedLimit;
+    overflowCount = fit.overflowCount;
+  }
 
   return {
     displayTotal,
-    overflowCount: Math.max(0, othersBudget - stackedLimit),
+    overflowCount,
     stackedLimit,
   };
 }

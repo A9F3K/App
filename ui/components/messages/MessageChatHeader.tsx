@@ -18,7 +18,7 @@ import {
   MESSAGE_LIST_INLINE_EMOJI_SIZE_PX,
 } from "./messageListLayout";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
-import { resolveTelegramUserAccentColor } from "./resolveTelegramUserAccentColor";
+import { resolveTelegramUserAccentColorForDisplay } from "./resolveTelegramUserAccentColor";
 import { MessageChatStartVoiceIcon } from "./MessageChatVoiceIcons";
 
 const START_VOICE_ICON_HIT_PX = 36;
@@ -61,10 +61,11 @@ export function MessageChatHeader({
   const stripPaddingX = layout.contentSideInsetPx;
   const title = chat.title.trim();
   const titleColor =
-    resolveTelegramUserAccentColor(
+    resolveTelegramUserAccentColorForDisplay(
       chat.peer_accent_color_light,
       chat.peer_accent_color_dark,
       colorScheme,
+      colors.background,
     ) ?? colors.primary;
   const subheaderLabel = formatMessageChatSubheaderLabel(chat, locale);
   const subheaderIsLiveAction = isMessageChatActionLive(chat);

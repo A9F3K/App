@@ -40,10 +40,14 @@ import { useProfileSheet } from "../../profile/ProfileContext";
 import {
   MESSAGE_AVATAR_PX,
   MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
+  MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_ROSTER_MIN_PX,
+  MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_VIDEO_MIN_PX,
+  MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_VIDEO_PANE_PADDING_X_PX,
   MESSAGE_FONT_SIZE_PX,
   MESSAGE_ICON_TEXT_GAP_PX,
   MESSAGE_LINE_HEIGHT_PX,
   MESSAGE_LIST_INLINE_EMOJI_SIZE_PX,
+  messageChatVoiceSideBySideBreakpointPx,
 } from "./messageListLayout";
 import {
   VoiceCameraIcon,
@@ -248,13 +252,15 @@ const DEFAULT_SHEET_HEIGHT_PX = 560;
 const MIN_SHEET_WIDTH_PX = 300;
 const MIN_SHEET_HEIGHT_PX = 280;
 /** Min width reserved for the share stage when docking left of the roster. */
-const SIDE_BY_SIDE_VIDEO_MIN_PX = 320;
+const SIDE_BY_SIDE_VIDEO_MIN_PX = MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_VIDEO_MIN_PX;
+const SIDE_BY_SIDE_VIDEO_PANE_PADDING_X_PX =
+  MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_VIDEO_PANE_PADDING_X_PX;
+const SIDE_BY_SIDE_ROSTER_MIN_PX = MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_ROSTER_MIN_PX;
 /**
- * Smart breakpoint: roster column (min width) + gap + a usable video column.
+ * Smart breakpoint: roster min + video pane padding + usable video column.
  * Crossing this while video is live docks share to the left of participants.
  */
-const SIDE_BY_SIDE_BREAKPOINT_PX =
-  MIN_SHEET_WIDTH_PX + 24 + SIDE_BY_SIDE_VIDEO_MIN_PX;
+const SIDE_BY_SIDE_BREAKPOINT_PX = messageChatVoiceSideBySideBreakpointPx();
 const VOICE_SIZE_STORAGE_KEY = "hsp.voiceChatDialog.size.v1";
 const VOICE_OFFSET_STORAGE_KEY = "hsp.voiceChatDialog.offset.v1";
 const VOICE_SPEAKING_MIC_COLOR = "#34C759";
@@ -1838,8 +1844,10 @@ export function MessageChatVoicePopover({
     ? Math.min(
         DEFAULT_SHEET_WIDTH_PX,
         Math.max(
-          MIN_SHEET_WIDTH_PX,
-          sheetSize.width - SIDE_BY_SIDE_VIDEO_MIN_PX - 24,
+          SIDE_BY_SIDE_ROSTER_MIN_PX,
+          sheetSize.width -
+            SIDE_BY_SIDE_VIDEO_MIN_PX -
+            SIDE_BY_SIDE_VIDEO_PANE_PADDING_X_PX,
         ),
       )
     : sheetSize.width;

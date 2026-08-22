@@ -1,8 +1,10 @@
 import { isElectronDesktopShell } from "../appShell";
 import { logPageDisplay } from "../pageDisplayLog";
 
-const DEFAULT_TIMEOUT_MS = 45_000;
-const MAX_RETRIES = 3;
+const DESKTOP_TIMEOUT_MS = 45_000;
+const RENDERER_TIMEOUT_MS = 12_000;
+const DESKTOP_MAX_RETRIES = 3;
+const RENDERER_MAX_RETRIES = 2;
 const RETRY_BASE_MS = 500;
 
 function isSwapCoffeeUrl(url: string): boolean {
@@ -14,10 +16,18 @@ function isSwapCoffeeUrl(url: string): boolean {
   }
 }
 
-function mergeSwapCoffeeHeaders(init?: RequestInit): Record<string, string> {
+function nativeFetch(): typeof fetch {
+  if (typeof window !== "undefined" && typeof window.fetch === "function") {
+    return window.fetch.bind(window);
+  }
+  return globalThis.fetch.bind(globalThis);
+}
+
+function mergeSwapCoffeeHeaders(init?: RequestInit, includeApiKey = false): Record<string, string> {
   const headers: Record<string, string> = { Accept: "application/json" };
   const apiKey = process.env.EXPO_PUBLIC_COFFEE?.trim();
-  if (apiKey) headers["X-Api-Key"] = apiKey;
+  // Browser: skip X-Api-Key so CORS stays a simple GET. DDoS-Guard often stalls OPTIONS.
+  if (includeApiKey && apiKey) headers["X-Api-Key"] = apiKey;
   const fromInit = init?.headers;
   if (fromInit instanceof Headers) {
     fromInit.forEach((value, key) => {
@@ -33,6 +43,24 @@ async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 async function desktopSwapCoffeeFetch(
   url: string,
   init: RequestInit | undefined,
@@ -44,11 +72,11 @@ async function desktopSwapCoffeeFetch(
   }
 
   let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
+  for (let attempt = 1; attempt <= DESKTOP_MAX_RETRIES; attempt += 1) {
     const started = Date.now();
     const result = await bridge.fetchSwapCoffee(url, {
       method: init?.method ?? "GET",
-      headers: mergeSwapCoffeeHeaders(init),
+      headers: mergeSwapCoffeeHeaders(init, true),
       body: typeof init?.body === "string" ? init.body : undefined,
       timeoutMs,
     });
@@ -70,7 +98,7 @@ async function desktopSwapCoffeeFetch(
       elapsedMs: Date.now() - started,
       message: lastError.message,
     });
-    if (attempt < MAX_RETRIES) {
+    if (attempt < DESKTOP_MAX_RETRIES) {
       await delay(RETRY_BASE_MS * attempt);
     }
   }
@@ -83,19 +111,37 @@ async function rendererSwapCoffeeFetch(
   init: RequestInit | undefined,
   timeoutMs: number,
 ): Promise<Response> {
+  const fetchImpl = nativeFetch();
   let lastError: Error | null = null;
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt += 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+  for (let attempt = 1; attempt <= RENDERER_MAX_RETRIES; attempt += 1) {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const started = Date.now();
     try {
-      const response = await fetch(url, {
-        ...init,
-        credentials: "omit",
-        signal: controller.signal,
-        headers: mergeSwapCoffeeHeaders(init),
+      const response = await withTimeout(
+        fetchImpl(url, {
+          ...init,
+          credentials: "omit",
+          signal: controller?.signal,
+          headers: mergeSwapCoffeeHeaders(init, false),
+        }),
+        timeoutMs,
+        "Swap.Coffee request",
+      );
+      const text = await withTimeout(response.text(), timeoutMs, "Swap.Coffee body");
+      logPageDisplay("swap_coffee_renderer_fetch_ok", {
+        url,
+        attempt,
+        status: response.status,
+        bytes: text.length,
+        elapsedMs: Date.now() - started,
       });
-      return response;
+      return new Response(text, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
     } catch (err) {
+      controller?.abort();
       if (err instanceof Error && err.name === "AbortError") {
         lastError = new Error(`Swap.Coffee request timed out after ${timeoutMs}ms`);
       } else {
@@ -104,13 +150,12 @@ async function rendererSwapCoffeeFetch(
       logPageDisplay("swap_coffee_renderer_fetch_error", {
         url,
         attempt,
+        elapsedMs: Date.now() - started,
         message: lastError.message,
       });
-      if (attempt < MAX_RETRIES) {
+      if (attempt < RENDERER_MAX_RETRIES) {
         await delay(RETRY_BASE_MS * attempt);
       }
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -122,9 +167,8 @@ export async function swapCoffeeFetch(
   url: string,
   init?: RequestInit & { timeoutMs?: number },
 ): Promise<Response> {
-  const timeoutMs = init?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   if (isElectronDesktopShell() && isSwapCoffeeUrl(url)) {
-    return desktopSwapCoffeeFetch(url, init, timeoutMs);
+    return desktopSwapCoffeeFetch(url, init, init?.timeoutMs ?? DESKTOP_TIMEOUT_MS);
   }
-  return rendererSwapCoffeeFetch(url, init, timeoutMs);
+  return rendererSwapCoffeeFetch(url, init, init?.timeoutMs ?? RENDERER_TIMEOUT_MS);
 }

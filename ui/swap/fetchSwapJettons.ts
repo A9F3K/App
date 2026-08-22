@@ -51,6 +51,13 @@ export async function fetchSwapJettonsPage(
     page,
     desktopShell: isDesktopAppShell(),
     via: "direct",
+    host: (() => {
+      try {
+        return new URL(url).host;
+      } catch {
+        return "";
+      }
+    })(),
   });
   try {
     const res = await swapCoffeeFetch(url);

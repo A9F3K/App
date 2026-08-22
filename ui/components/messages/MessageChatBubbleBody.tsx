@@ -377,6 +377,7 @@ function MessageChatReplyBlock({
     colorScheme,
     reply.sender_accent_color_light,
     reply.sender_accent_color_dark,
+    colors.undercover,
   );
   const replyBackground = replyQuoteAccentBackground(barColor, colors.undercover);
 
@@ -547,6 +548,7 @@ export function MessageChatBubbleBody({
     colorScheme,
     item.sender_accent_color_light,
     item.sender_accent_color_dark,
+    colors.undercover,
   );
 
   const textStyle = useMemo(

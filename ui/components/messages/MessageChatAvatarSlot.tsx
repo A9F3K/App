@@ -102,6 +102,8 @@ type Props = {
   joinedVoiceRing?: boolean;
   onLoad?: () => void;
   onError?: (error?: unknown) => void;
+  /** Default `cover`; use `contain` for decorative preset / SVG feed icons. */
+  imageContentFit?: "cover" | "contain";
 };
 
 /** Letter fallback always visible; proxy / data URL image overlays when loaded. */
@@ -118,6 +120,7 @@ export function MessageChatAvatarSlot({
   joinedVoiceRing = false,
   onLoad,
   onError,
+  imageContentFit = "cover",
 }: Props) {
   const [loadFailed, setLoadFailed] = useState(false);
   const [imageReady, setImageReady] = useState(
@@ -143,7 +146,7 @@ export function MessageChatAvatarSlot({
     ? sizePx
     : Math.max(1, sizePx - AVATAR_BORDER_WIDTH_PX * 2);
 
-  // Unmount letter fallback once the photo is ready — 3D CSS transforms on
+  // Unmount letter fallback once the photo is ready — Reanimated transforms on
   // the fallback can otherwise paint above the image (stacking / translateZ).
   const showFallback = !imageReady || !tryImage;
 
@@ -198,6 +201,7 @@ export function MessageChatAvatarSlot({
               setLoadFailed(true);
               onError?.(error);
             }}
+            contentFit={imageContentFit}
           />
         </View>
       ) : null}

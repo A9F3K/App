@@ -49,7 +49,8 @@ const SHEET_MAX_WIDTH_PX = 380;
 const PAD_X_PX = 20;
 const PAD_TOP_PX = 20;
 const SCROLL_PAD_BOTTOM_PX = 24;
-const PROFILE_OVERLAY_Z = 10070;
+/** Above profile sheet (10100) so playlist opens on top when launched from profile. */
+const PROFILE_OVERLAY_Z = 10150;
 const COVER_PX = 40;
 const PLAY_BTN_PX = 28;
 const ROW_GAP_PX = 10;

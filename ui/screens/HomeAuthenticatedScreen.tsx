@@ -620,10 +620,16 @@ function HomeAuthenticatedScreenMain() {
       homeLeftScrollRef.current?.scrollToY(0);
       return;
     }
-    const frame = requestAnimationFrame(() => {
-      homeLeftScrollRef.current?.scrollToEnd();
+    let innerFrame = 0;
+    const outerFrame = requestAnimationFrame(() => {
+      innerFrame = requestAnimationFrame(() => {
+        homeLeftScrollRef.current?.scrollToEnd();
+      });
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(outerFrame);
+      if (innerFrame) cancelAnimationFrame(innerFrame);
+    };
   }, [messagesSearchScrollMode]);
   const handleHomeLeftScrollNearBottom = useCallback(() => {
     if (homeNavIndex !== 1) return;
@@ -1547,14 +1553,20 @@ function HomeAuthenticatedScreenMain() {
         ? // Messages footer + AI bar overlay the scroll; keep last rows clear of both.
           layout.bottomBar.barMinHeight * 2
         : 0),
-    // Do not flexGrow during search — that stretched the list and left a large gap
-    // between results and the search field.
   } as const;
+  /** Pin short search/recents lists to the footer search field without stretching row gaps. */
+  const homeSearchScrollAnchorStyle = messagesSearchScrollMode
+    ? ({ flexGrow: 1, justifyContent: "flex-end" as const })
+    : null;
   const homeLeftScrollContentStyle = isWideHome
     ? {
         ...homeWideScrollContentStyle,
+        ...homeSearchScrollAnchorStyle,
       }
-    : homeCompactScrollContentStyle;
+    : {
+        ...homeCompactScrollContentStyle,
+        ...homeSearchScrollAnchorStyle,
+      };
 
   const homeMainColumnBlocks = (
     <>

@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Platform, StyleSheet, Text, View } from "react-native";
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
+import {
+  bottomBarLabelFitsSlot,
+  bottomBarSummarySlotWidthPx,
+} from "../bottomBarRowFit";
 import { BottomBarHeightReporter, useBottomBarLayout } from "../BottomBarLayoutContext";
 import { useTelegram } from "../Telegram";
 import { layout, typographyFixedRow30Label, useColors } from "../../theme";
@@ -11,7 +15,6 @@ const { barMinHeight: BAR_HEIGHT, horizontalPadding: HORIZONTAL_PADDING, textToS
 
 const FOOTER_BUTTON_HEIGHT_PX = layout.bottomBar.undercoverButtonHeightPx;
 const FOOTER_BUTTON_TEXT_INSET_PX = layout.bottomBar.undercoverButtonPaddingHorizontalPx;
-const FIT_EPSILON_PX = 1;
 
 /** Smart panel footer: deploy cost on the left, deploy action on the right. */
 export function SmartColumnFooter() {
@@ -26,16 +29,28 @@ export function SmartColumnFooter() {
 
   const fullDeployCostLabel = t("smart.footer.deployCost");
   const shortDeployCostLabel = t("smart.footer.deployCostShort");
-  const [labelSlotWidth, setLabelSlotWidth] = useState(0);
+  const [rowWidth, setRowWidth] = useState(0);
+  const [buttonWidth, setButtonWidth] = useState(0);
   const [fullLabelWidth, setFullLabelWidth] = useState(0);
 
-  const labelMeasured = labelSlotWidth > 0 && fullLabelWidth > 0;
-  const canShowFullDeployCostLabel =
-    labelMeasured && fullLabelWidth <= labelSlotWidth + FIT_EPSILON_PX;
+  const labelSlotWidth = useMemo(
+    () =>
+      bottomBarSummarySlotWidthPx({
+        rowWidthPx: rowWidth,
+        buttonWidthPx: buttonWidth,
+        summaryTrailingGapPx: TEXT_TO_BUTTON_GAP_PX,
+      }),
+    [buttonWidth, rowWidth],
+  );
+  const canShowFullDeployCostLabel = bottomBarLabelFitsSlot(fullLabelWidth, labelSlotWidth);
   const deployCostLabel = canShowFullDeployCostLabel ? fullDeployCostLabel : shortDeployCostLabel;
 
-  const onLabelSlotLayout = useCallback((width: number) => {
-    setLabelSlotWidth((current) => (current === width ? current : width));
+  const onRowLayout = useCallback((width: number) => {
+    setRowWidth((current) => (current === width ? current : width));
+  }, []);
+
+  const onButtonLayout = useCallback((width: number) => {
+    setButtonWidth((current) => (current === width ? current : width));
   }, []);
 
   const onFullLabelMeasureLayout = useCallback((width: number) => {
@@ -67,11 +82,11 @@ export function SmartColumnFooter() {
       </Text>
       <BottomBarHeightReporter height={BAR_HEIGHT} />
       <View style={[styles.container, { height: BAR_HEIGHT, backgroundColor }]}>
-        <View style={[styles.row, { height: BAR_HEIGHT }]}>
-          <View
-            style={styles.costLabelSlot}
-            onLayout={(event) => onLabelSlotLayout(Math.round(event.nativeEvent.layout.width))}
-          >
+        <View
+          style={[styles.row, { height: BAR_HEIGHT }]}
+          onLayout={(event) => onRowLayout(Math.round(event.nativeEvent.layout.width))}
+        >
+          <View style={styles.costLabelSlot}>
             <Text
               style={[typographyFixedRow30Label, styles.costLabel, { color: colors.primary }]}
               numberOfLines={1}
@@ -83,6 +98,7 @@ export function SmartColumnFooter() {
           <View
             accessibilityRole="button"
             style={[styles.footerButton, { backgroundColor: colors.undercover }]}
+            onLayout={(event) => onButtonLayout(Math.round(event.nativeEvent.layout.width))}
           >
             <Text style={[typographyFixedRow30Label, { color: colors.primary, textAlign: "center" }]} numberOfLines={1}>
               {t("smart.footer.deployButton")}

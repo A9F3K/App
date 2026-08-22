@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { appLocaleToBcp47 } from "../../../locales/appStrings";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
@@ -57,6 +57,7 @@ import type { TelegramVoiceCallMessage } from "../../telegram/sendTelegramChatVo
 import { useVoiceDialogFreezeDetector } from "./useVoiceDialogFreezeDetector";
 import {
   MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+  MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX,
   MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_DIVIDER_PX,
   MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
   MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX,
@@ -70,6 +71,31 @@ import { normalizeTelegramGroupCallId } from "../../../shared/telegramGroupCallS
 
 const JOIN_BUTTON_HEIGHT_PX = 30;
 const JOIN_BUTTON_TEXT_INSET_PX = 30;
+const STRIP_MIC_BLOCK_PX = 28;
+const STRIP_MIC_TO_AVATARS_GAP_PX = 10;
+const STRIP_AVATAR_STACK_OVERFLOW_GAP_PX = MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX;
+const STRIP_JOIN_MARGIN_LEFT_PX = 12;
+const STRIP_LEAVE_BUTTON_PX = 36;
+
+const voiceStripMeasureStyles = StyleSheet.create({
+  participantLabelMeasure: {
+    position: "absolute",
+    opacity: 0,
+    top: 0,
+    left: 0,
+    zIndex: -1,
+    fontSize: 13,
+    lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+    ...Platform.select({
+      web: {
+        whiteSpace: "nowrap" as const,
+        width: "max-content" as const,
+        pointerEvents: "none" as const,
+      },
+      default: {},
+    }),
+  },
+});
 
 /** TDLib / Telegram FLOOD_WAIT — "Too Many Requests: retry after 32". */
 function parseTelegramFloodWaitMs(
@@ -346,10 +372,54 @@ export function MessageChatVoiceBar({
     });
   }, []);
   const stripPaddingX = layout.contentSideInsetPx;
+  const [stripInnerWidthPx, setStripInnerWidthPx] = useState(0);
+  const [stripTrailingWidthPx, setStripTrailingWidthPx] = useState(0);
+  const [participantLabelWidthPx, setParticipantLabelWidthPx] = useState(0);
   const speakingByKeyRef = useRef(speakingByKey);
   speakingByKeyRef.current = speakingByKey;
   // Preview faces = other people only (never lead with self).
   const previewParticipants = participants.filter((row) => !row.is_self);
+  const previewDisplayTotal = useMemo(() => {
+    const listed = Math.max(0, participants.length);
+    const hint = Math.max(0, rosterCountHint);
+    return hint >= 2 ? hint : Math.max(listed, hint);
+  }, [participants.length, rosterCountHint]);
+  const participantsA11yLabel =
+    previewDisplayTotal > 0
+      ? tf("messages.chatMemberCount.participants", {
+          count: previewDisplayTotal.toLocaleString(appLocaleToBcp47(locale)),
+        })
+      : t("messages.voiceChat.participants");
+  const avatarStackAvailablePx = useMemo(() => {
+    if (stripInnerWidthPx <= 0) return undefined;
+    const contentWidth = Math.max(0, stripInnerWidthPx - stripPaddingX * 2);
+    const trailingWidth =
+      stripTrailingWidthPx > 0
+        ? stripTrailingWidthPx
+        : joined
+          ? STRIP_LEAVE_BUTTON_PX
+          : STRIP_JOIN_MARGIN_LEFT_PX + JOIN_BUTTON_TEXT_INSET_PX * 2 + 36;
+    const trailingGap = joined ? 0 : STRIP_JOIN_MARGIN_LEFT_PX;
+    const pressableWidth = Math.max(0, contentWidth - trailingWidth - trailingGap);
+    const participantLabelReserve =
+      previewParticipants.length > 0 && participantLabelWidthPx > 0
+        ? participantLabelWidthPx + MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX
+        : 0;
+    return Math.max(
+      0,
+      pressableWidth -
+        STRIP_MIC_BLOCK_PX -
+        STRIP_MIC_TO_AVATARS_GAP_PX -
+        participantLabelReserve,
+    );
+  }, [
+    joined,
+    participantLabelWidthPx,
+    previewParticipants.length,
+    stripInnerWidthPx,
+    stripPaddingX,
+    stripTrailingWidthPx,
+  ]);
   const { displayTotal: totalParticipantCount, overflowCount, stackedLimit } =
     resolveVoiceBarParticipantPreview({
       listedTotal: participants.length,
@@ -357,14 +427,14 @@ export function MessageChatVoiceBar({
       tdlibHint: rosterCountHint,
       maxAvatars: MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
       joined,
+      avatarStackAvailablePx,
+      avatarStackOverflowGapPx: STRIP_AVATAR_STACK_OVERFLOW_GAP_PX,
     });
   const stackedParticipants = previewParticipants.slice(0, stackedLimit);
-  const participantsA11yLabel =
-    totalParticipantCount > 0
-      ? tf("messages.chatMemberCount.participants", {
-          count: totalParticipantCount.toLocaleString(appLocaleToBcp47(locale)),
-        })
-      : t("messages.voiceChat.participants");
+
+  useEffect(() => {
+    setParticipantLabelWidthPx(0);
+  }, [participantsA11yLabel]);
 
   const voiceJoinedRef = useRef(false);
   voiceJoinedRef.current = Boolean(joined);
@@ -5100,6 +5170,10 @@ export function MessageChatVoiceBar({
     <>
       {showStrip ? (
       <View
+        onLayout={(event) => {
+          const next = Math.ceil(event.nativeEvent.layout.width);
+          setStripInnerWidthPx((current) => (current === next ? current : next));
+        }}
         style={{
           alignSelf: "stretch",
           height: MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX,
@@ -5111,8 +5185,26 @@ export function MessageChatVoiceBar({
           borderBottomColor: colors.highlight,
           backgroundColor: colors.background,
           overflow: "visible",
+          position: "relative",
         }}
       >
+        {previewParticipants.length > 0 ? (
+          <Text
+            numberOfLines={1}
+            style={[
+              voiceStripMeasureStyles.participantLabelMeasure,
+              {
+                fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+              },
+            ]}
+            onLayout={(event) => {
+              const next = Math.ceil(event.nativeEvent.layout.width);
+              setParticipantLabelWidthPx((current) => (current === next ? current : next));
+            }}
+          >
+            {participantsA11yLabel}
+          </Text>
+        ) : null}
         <Pressable
           onPress={handleStripPress}
           accessibilityRole="button"
@@ -5154,7 +5246,7 @@ export function MessageChatVoiceBar({
                 flexDirection: "row",
                 alignItems: "center",
                 height: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
-                gap: 6,
+                gap: MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX,
                 minWidth: 0,
                 flexShrink: 1,
                 overflow: "visible",
@@ -5286,6 +5378,10 @@ export function MessageChatVoiceBar({
             accessibilityRole="button"
             accessibilityLabel={t("messages.voiceChat.leave")}
             hitSlop={8}
+            onLayout={(event) => {
+              const next = Math.ceil(event.nativeEvent.layout.width);
+              setStripTrailingWidthPx((current) => (current === next ? current : next));
+            }}
             style={({ pressed }) => ({
               width: 36,
               height: 36,
@@ -5302,6 +5398,10 @@ export function MessageChatVoiceBar({
             accessibilityLabel={t("messages.voiceChat.join")}
             onPress={unlockThenJoin}
             testID="voice-strip-join-button"
+            onLayout={(event) => {
+              const next = Math.ceil(event.nativeEvent.layout.width);
+              setStripTrailingWidthPx((current) => (current === next ? current : next));
+            }}
             style={({ pressed }) => ({
               marginLeft: 12,
               flexShrink: 0,

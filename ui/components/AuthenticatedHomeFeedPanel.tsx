@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
-import { Image } from "expo-image";
 import { buildApiUrl } from "../../api/_base";
 import {
   AUTHENTICATED_FEED_FETCH_TIMEOUT_MS,
@@ -20,6 +19,8 @@ import {
   MESSAGE_NAME_TIME_GAP_PX,
   MESSAGE_ROW_HEIGHT_PX,
 } from "./messages/messageListLayout";
+import { extractChatAvatarInitials } from "./messages/chatAvatarInitials";
+import { MessageChatAvatarSlot } from "./messages/MessageChatAvatarSlot";
 import type { AppLocale, AppStringKey } from "../../locales/appStrings";
 import { getAppString } from "../../locales/appStrings";
 import { useAppStrings } from "../../locales/AppStringsContext";
@@ -188,14 +189,47 @@ function coercePayload(p: unknown): Record<string, unknown> {
 
 function resolveIconUrl(icon: unknown): string | null {
   if (!icon || typeof icon !== "object") return null;
-  const o = icon as { type?: string; url?: string; key?: string };
-  if (o.type === "svg_url" || o.type === "preset") {
+  const o = icon as {
+    type?: string;
+    url?: string;
+    key?: string;
+    chat_id?: number | string;
+    user_id?: number | string;
+  };
+  if (
+    o.type === "svg_url" ||
+    o.type === "preset" ||
+    o.type === "url" ||
+    o.type === "image_url"
+  ) {
     const u = typeof o.url === "string" ? o.url : null;
     if (!u) return null;
     if (u.startsWith("http://") || u.startsWith("https://")) return u;
     return buildApiUrl(u.startsWith("/") ? u : `/${u}`);
   }
+  if (
+    o.type === "telegram_avatar" ||
+    o.type === "telegram_user" ||
+    o.type === "telegram_chat"
+  ) {
+    const query = new URLSearchParams();
+    if (o.user_id != null && String(o.user_id).trim() !== "") {
+      query.set("user_id", String(o.user_id));
+    }
+    if (o.chat_id != null && String(o.chat_id).trim() !== "") {
+      query.set("chat_id", String(o.chat_id));
+    }
+    if (query.toString()) {
+      return buildApiUrl(`/api/telegram-messages-avatar?${query.toString()}`);
+    }
+  }
   return null;
+}
+
+function feedIconUsesContainFit(icon: unknown): boolean {
+  if (!icon || typeof icon !== "object") return false;
+  const type = (icon as { type?: string }).type;
+  return type === "svg_url" || type === "preset";
 }
 
 function FeedFeedRow({
@@ -213,6 +247,7 @@ function FeedFeedRow({
   timePendingLabel: string;
   onPress?: () => void;
 }) {
+  const { colorScheme } = useTelegram();
   const p = coercePayload(item.payload);
   const title = typeof p.title === "string" ? p.title : "";
   const subtitle = typeof p.subtitle === "string" ? p.subtitle : "";
@@ -220,6 +255,9 @@ function FeedFeedRow({
     typeof p.trailing_label === "string" ? p.trailing_label : "";
 
   const iconUrl = resolveIconUrl(p.icon);
+  const avatarInitials = useMemo(() => extractChatAvatarInitials(title), [title]);
+  const iconContentFit = feedIconUsesContainFit(p.icon) ? "contain" : "cover";
+  const isProxyAvatar = Boolean(iconUrl?.includes("/api/telegram-messages-avatar"));
   const parsedClock = formatWallClock(item.sent_at);
   const timeLabel = parsedClock || timePendingLabel;
   const timeIsProvisional = !parsedClock;
@@ -256,20 +294,19 @@ function FeedFeedRow({
           height: MESSAGE_AVATAR_PX,
           alignItems: "center",
           justifyContent: "center",
+          overflow: "visible",
         }}
       >
-        {iconUrl ? (
-          <Image
-            source={{ uri: iconUrl }}
-            recyclingKey={`feed-${item.id}`}
-            cachePolicy="memory-disk"
-            accessibilityIgnoresInvertColors
-            style={{ width: MESSAGE_AVATAR_PX, height: MESSAGE_AVATAR_PX }}
-            contentFit="contain"
-          />
-        ) : (
-          <View style={{ width: MESSAGE_AVATAR_PX, height: MESSAGE_AVATAR_PX, backgroundColor: colors.secondary }} />
-        )}
+        <MessageChatAvatarSlot
+          iconUrl={iconUrl}
+          initials={avatarInitials}
+          sizePx={MESSAGE_AVATAR_PX}
+          colors={colors}
+          scheme={colorScheme}
+          loadEnabled={!isProxyAvatar || Boolean(isActive)}
+          fetchPriority={isActive ? "high" : "normal"}
+          imageContentFit={iconContentFit}
+        />
       </View>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />
       <View style={{ flex: 1, minWidth: 0, justifyContent: "center" }}>

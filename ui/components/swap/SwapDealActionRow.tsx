@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { formatSwapTokenAmount } from "../../swap/swapChartFormat";
@@ -7,12 +7,15 @@ import {
   type SwapDealButtonNotice,
 } from "../../swap/useSwapDealActionState";
 import {
+  bottomBarLabelFitsSlot,
+  bottomBarSummarySlotWidthPx,
+} from "../bottomBarRowFit";
+import {
   layout,
   typographyFixedRow30Label,
   useColors,
 } from "../../theme";
 
-const FIT_EPSILON_PX = 1;
 const { textToSendIconGapPx: TEXT_TO_BUTTON_GAP_PX } = layout.bottomBar;
 /** Small indent between the button notice and the Swap button. */
 const NOTICE_TO_BUTTON_GAP_PX = 8;
@@ -97,12 +100,10 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
   const [rowWidth, setRowWidth] = useState(0);
   const [buttonWidth, setButtonWidth] = useState(0);
   const [shortDealWidth, setShortDealWidth] = useState(0);
-  const [labelSlotWidth, setLabelSlotWidth] = useState(0);
   const [fullLabelWidth, setFullLabelWidth] = useState(0);
   const [fullNoticeWidth, setFullNoticeWidth] = useState(0);
+  const [shortNoticeWidth, setShortNoticeWidth] = useState(0);
 
-  // Prefer full notice when short deal + notice + button fit; do not size the notice
-  // slot from the short label (that chicken-egg always forced “Заморожен”).
   const noticeFitReady =
     hasNotice &&
     rowWidth > 0 &&
@@ -112,17 +113,33 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
   const canShowFullNotice =
     !hasNotice ||
     !noticeFitReady ||
-    shortDealWidth + fullNoticeWidth + NOTICE_TO_BUTTON_GAP_PX + buttonWidth <=
-      rowWidth + FIT_EPSILON_PX;
+    shortDealWidth + fullNoticeWidth + NOTICE_TO_BUTTON_GAP_PX + buttonWidth <= rowWidth + 1;
   const noticeLabel = hasNotice
     ? canShowFullNotice
       ? noticeFull
       : noticeShort
     : null;
+  const noticeWidth =
+    hasNotice && noticeLabel
+      ? canShowFullNotice
+        ? fullNoticeWidth
+        : shortNoticeWidth > 0
+          ? shortNoticeWidth
+          : fullNoticeWidth
+      : 0;
 
-  const labelMeasured = labelSlotWidth > 0 && fullLabelWidth > 0;
-  const canShowFullDealLabel =
-    labelMeasured && fullLabelWidth <= labelSlotWidth + FIT_EPSILON_PX;
+  const labelSlotWidth = useMemo(
+    () =>
+      bottomBarSummarySlotWidthPx({
+        rowWidthPx: rowWidth,
+        buttonWidthPx: buttonWidth,
+        middleWidthPx: noticeWidth,
+        middleTrailingGapPx: NOTICE_TO_BUTTON_GAP_PX,
+        summaryTrailingGapPx: TEXT_TO_BUTTON_GAP_PX,
+      }),
+    [buttonWidth, noticeWidth, rowWidth],
+  );
+  const canShowFullDealLabel = bottomBarLabelFitsSlot(fullLabelWidth, labelSlotWidth);
   const dealLabel = canShowFullDealLabel ? dealFull : dealShort;
 
   const onRowLayout = useCallback((width: number) => {
@@ -137,16 +154,16 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
     setShortDealWidth((current) => (current === width ? current : width));
   }, []);
 
-  const onLabelSlotLayout = useCallback((width: number) => {
-    setLabelSlotWidth((current) => (current === width ? current : width));
-  }, []);
-
   const onFullLabelMeasureLayout = useCallback((width: number) => {
     setFullLabelWidth((current) => (current === width ? current : width));
   }, []);
 
   const onFullNoticeMeasureLayout = useCallback((width: number) => {
     setFullNoticeWidth((current) => (current === width ? current : width));
+  }, []);
+
+  const onShortNoticeMeasureLayout = useCallback((width: number) => {
+    setShortNoticeWidth((current) => (current === width ? current : width));
   }, []);
 
   useEffect(() => {
@@ -159,7 +176,8 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
 
   useEffect(() => {
     setFullNoticeWidth(0);
-  }, [noticeFull]);
+    setShortNoticeWidth(0);
+  }, [noticeFull, noticeShort]);
 
   const buttonLabelColor = buttonActive ? colors.primary : colors.secondary;
 
@@ -193,21 +211,28 @@ export function SwapDealActionRow({ density = "compact", ...props }: Props) {
         {dealShort}
       </Text>
       {noticeFull ? (
-        <Text
-          style={[labelStyle, styles.fullLabelMeasure, { color: colors.secondary, top: 48 }]}
-          onLayout={(event) => onFullNoticeMeasureLayout(Math.ceil(event.nativeEvent.layout.width))}
-        >
-          {noticeFull}
-        </Text>
+        <>
+          <Text
+            style={[labelStyle, styles.fullLabelMeasure, { color: colors.secondary, top: 48 }]}
+            onLayout={(event) => onFullNoticeMeasureLayout(Math.ceil(event.nativeEvent.layout.width))}
+          >
+            {noticeFull}
+          </Text>
+          {noticeShort !== noticeFull ? (
+            <Text
+              style={[labelStyle, styles.fullLabelMeasure, { color: colors.secondary, top: 72 }]}
+              onLayout={(event) => onShortNoticeMeasureLayout(Math.ceil(event.nativeEvent.layout.width))}
+            >
+              {noticeShort}
+            </Text>
+          ) : null}
+        </>
       ) : null}
       <View
         style={[styles.row, { height: buttonHeight }]}
         onLayout={(event) => onRowLayout(Math.round(event.nativeEvent.layout.width))}
       >
-        <View
-          style={styles.summaryLabelSlot}
-          onLayout={(event) => onLabelSlotLayout(Math.round(event.nativeEvent.layout.width))}
-        >
+        <View style={styles.summaryLabelSlot}>
           <Text
             style={[labelStyle, styles.summaryLabel, { color: colors.primary }]}
             numberOfLines={1}

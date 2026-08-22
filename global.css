@@ -550,8 +550,8 @@ textarea[data-ai-input="true"] {
   color: var(--hsp-af-letter);
   transform-origin: 50% 55%;
   /* Perspective + small wobble only — never full Y orbit (backface flash + cost). */
-  transform: perspective(90px) rotateY(-10deg) rotateX(6deg);
-  animation: hsp-avatar-fallback-letter-wobble 4.2s ease-in-out infinite;
+  transform: perspective(90px) rotateY(-14deg) rotateX(8deg);
+  animation: hsp-avatar-fallback-letter-wobble 3.6s ease-in-out infinite;
   text-shadow:
     0.5px 0.5px 0 var(--hsp-af-depth1),
     1px 1px 0 var(--hsp-af-depth2),
@@ -571,10 +571,10 @@ textarea[data-ai-input="true"] {
 @keyframes hsp-avatar-fallback-letter-wobble {
   0%,
   100% {
-    transform: perspective(90px) rotateY(-10deg) rotateX(6deg);
+    transform: perspective(90px) rotateY(-14deg) rotateX(8deg);
   }
   50% {
-    transform: perspective(90px) rotateY(10deg) rotateX(-4deg);
+    transform: perspective(90px) rotateY(14deg) rotateX(-6deg);
   }
 }
 

@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { Platform, StyleSheet, Text, View, useSyncExternalStore } from "react-native";
+import { useEffect, useSyncExternalStore } from "react";
+import { Platform, StyleSheet, Text, View } from "react-native";
 import Animated, {
   Easing,
   cancelAnimation,
@@ -29,7 +29,9 @@ type Props = {
   fill?: boolean;
 };
 
-/** Native: static extruded letters + tiny opacity pulse (paused in voice dialog). */
+const WOBBLE_MS = 3200;
+
+/** Extruded letter chip + looping glow / wobble (Reanimated — same path on web + native). */
 export function ChatAvatarFallback({
   initials,
   sizePx,
@@ -61,7 +63,7 @@ export function ChatAvatarFallback({
       return;
     }
     pulse.value = withRepeat(
-      withTiming(1, { duration: 4200, easing: Easing.inOut(Easing.sin) }),
+      withTiming(1, { duration: WOBBLE_MS, easing: Easing.inOut(Easing.sin) }),
       -1,
       true,
     );
@@ -71,7 +73,15 @@ export function ChatAvatarFallback({
   }, [pulse, voiceDialogOpen]);
 
   const glowStyle = useAnimatedStyle(() => ({
-    opacity: 0.22 + pulse.value * 0.18,
+    opacity: 0.18 + pulse.value * 0.28,
+  }));
+
+  const letterWobbleStyle = useAnimatedStyle(() => ({
+    transform: [
+      { perspective: 140 },
+      { rotateY: `${-14 + pulse.value * 28}deg` },
+      { rotateX: `${8 - pulse.value * 14}deg` },
+    ],
   }));
 
   const fontSize = initials.length > 1 ? Math.round(sizePx * 0.36) : Math.round(sizePx * 0.44);
@@ -84,13 +94,16 @@ export function ChatAvatarFallback({
         style={[StyleSheet.absoluteFillObject, { backgroundColor: bgHot }, glowStyle]}
       />
       {initials.length > 0 ? (
-        <View
-          style={{
-            ...StyleSheet.absoluteFillObject,
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "center",
-          }}
+        <Animated.View
+          style={[
+            letterWobbleStyle,
+            {
+              ...StyleSheet.absoluteFillObject,
+              flexDirection: "row",
+              alignItems: "center",
+              justifyContent: "center",
+            },
+          ]}
         >
           {initials.map((letter, index) => (
             <Text
@@ -105,13 +118,12 @@ export function ChatAvatarFallback({
                 textShadowColor: depth,
                 textShadowOffset: { width: 1, height: 1 },
                 textShadowRadius: 0,
-                transform: [{ perspective: 120 }, { rotateY: "-10deg" }, { rotateX: "6deg" }],
               }}
             >
               {letter}
             </Text>
           ))}
-        </View>
+        </Animated.View>
       ) : null}
     </View>
   );

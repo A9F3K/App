@@ -131,6 +131,8 @@ type Props = {
   fetchPriority?: NetworkFetchPriority;
   onLoad?: () => void;
   onError?: (error?: unknown) => void;
+  /** Default `cover`; use `contain` for decorative preset / SVG feed icons. */
+  contentFit?: "cover" | "contain";
 };
 
 /** Renders chat avatars; API proxy URLs are fetched with session cookies (required on web). */
@@ -143,6 +145,7 @@ export function MessageChatAvatarImage({
   fetchPriority = "normal",
   onLoad,
   onError,
+  contentFit = "cover",
 }: Props) {
   const cacheRevision = useSyncExternalStore(
     subscribeAvatarCache,
@@ -216,11 +219,11 @@ export function MessageChatAvatarImage({
           ? [StyleSheet.absoluteFillObject, { borderRadius: 0 }]
           : { width: sizePx, height: sizePx, borderRadius: 0 },
         Platform.OS === "web"
-          ? ({ display: "block", objectFit: "cover" } as const)
+          ? ({ display: "block", objectFit: contentFit } as ImageStyle)
           : null,
         style,
       ]}
-      contentFit="cover"
+      contentFit={contentFit}
     />
   );
 }

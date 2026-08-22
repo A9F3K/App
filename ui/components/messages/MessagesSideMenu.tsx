@@ -21,6 +21,11 @@ import { useProfileSheet } from "../../profile/ProfileContext";
 import { layout, typographyFixedRow30Label, useColors } from "../../theme";
 import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesConnectionContext";
 import { fetchTelegramUserProfile } from "../../telegram/fetchTelegramUserProfile";
+import {
+  clearSelfTelegramProfileCache,
+  getCachedSelfTelegramProfile,
+  rememberSelfTelegramProfile,
+} from "../../telegram/selfTelegramProfileCache";
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
 import { VoiceWindowCrossIcon } from "./MessageChatVoiceControlIcons";
@@ -188,47 +193,60 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   const [emojiStatusCustomEmojiId, setEmojiStatusCustomEmojiId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (visible) {
-      setMounted(true);
-      const frame = requestAnimationFrame(() => setDrawerOpen(true));
-      return () => cancelAnimationFrame(frame);
+    if (!visible) {
+      setDrawerOpen(false);
+      const timer = setTimeout(() => setMounted(false), 220);
+      return () => clearTimeout(timer);
     }
-    setDrawerOpen(false);
-    const timer = setTimeout(() => setMounted(false), 220);
-    return () => clearTimeout(timer);
+    setMounted(true);
+    const frame = requestAnimationFrame(() => setDrawerOpen(true));
+    return () => cancelAnimationFrame(frame);
   }, [visible]);
 
   useEffect(() => {
-    if (!visible || connectedTelegramUserId == null) {
-      if (!isTelegramMessagesConnected && connectedTelegramUserId == null) {
-        setTelegramDisplayName(null);
-        setTelegramProfileUsername(null);
-        setEmojiStatusCustomEmojiId(null);
+    if (!isTelegramMessagesConnected || connectedTelegramUserId == null) {
+      setTelegramDisplayName(null);
+      setTelegramProfileUsername(null);
+      setEmojiStatusCustomEmojiId(null);
+      if (!isTelegramMessagesConnected) {
+        clearSelfTelegramProfileCache();
       }
       return;
     }
+
+    const cached = getCachedSelfTelegramProfile(connectedTelegramUserId);
+    if (cached) {
+      setTelegramDisplayName(cached.title);
+      setTelegramProfileUsername(cached.username);
+      setEmojiStatusCustomEmojiId(cached.emojiStatusCustomEmojiId);
+    }
+
     const controller = new AbortController();
     void fetchTelegramUserProfile(0, connectedTelegramUserId, controller.signal, {
       priority: "critical",
     }).then((result) => {
       if (controller.signal.aborted || !result.ok) return;
       const title = result.profile.title?.trim() || null;
-      if (title) setTelegramDisplayName(title);
-      if (result.profile.username?.trim()) {
-        setTelegramProfileUsername(result.profile.username.trim());
-      }
+      const username = result.profile.username?.trim() || null;
       const statusId = result.profile.emoji_status_custom_emoji_id?.trim() || null;
+      if (title) setTelegramDisplayName(title);
+      if (username) setTelegramProfileUsername(username);
       setEmojiStatusCustomEmojiId(statusId);
+      if (title) {
+        rememberSelfTelegramProfile(connectedTelegramUserId, {
+          title,
+          username,
+          emojiStatusCustomEmojiId: statusId,
+        });
+      }
     });
     return () => controller.abort();
-  }, [visible, isTelegramMessagesConnected, connectedTelegramUserId]);
+  }, [connectedTelegramUserId, isTelegramMessagesConnected]);
 
   const resolvedUsername = telegramProfileUsername ?? telegramUsername;
   const usernameAt = formatTelegramUsernameAt(resolvedUsername);
-  const profileTitle =
-    telegramDisplayName?.trim() ||
-    usernameAt?.replace(/^@+/, "") ||
-    t("messages.sideMenu.myProfile");
+  /** Telegram first + last name only — username stays on the subtitle line. */
+  const profileTitle = telegramDisplayName?.trim() || t("messages.sideMenu.myProfile");
   const avatarInitials = useMemo(() => extractChatAvatarInitials(profileTitle), [profileTitle]);
   const selfAvatarUrl = useMemo(() => {
     if (connectedTelegramUserId == null) return null;
