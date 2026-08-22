@@ -729,7 +729,7 @@ export function ChooseCurrencyTable({
         thumbH={indicator.thumbH}
         thumbTop={indicator.thumbTop}
         maxScroll={indicator.show ? indicator.maxScroll : 0}
-        thumbColor={colors.primary}
+        thumbColor={colors.scrollIndicator}
         scrollbarRightInsetPx={SCROLLBAR_RIGHT_INSET_PX}
         scrollIndicatorExtendBottomPx={scrollIndicatorExtendBottomPx}
         onScrollTo={scrollToY}

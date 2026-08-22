@@ -23,7 +23,6 @@ import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesCo
 import { fetchTelegramUserProfile } from "../../telegram/fetchTelegramUserProfile";
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
-import { SettingsIcon } from "../icons/SettingsIcon";
 import { VoiceWindowCrossIcon } from "./MessageChatVoiceControlIcons";
 import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
@@ -36,6 +35,7 @@ import {
   SideMenuChannelIcon,
   SideMenuContactsIcon,
   SideMenuGroupIcon,
+  SideMenuMessengerSettingsIcon,
   SideMenuProfileIcon,
   SideMenuSavedIcon,
   SideMenuWalletIcon,
@@ -76,7 +76,7 @@ function SideMenuRow({
   active?: boolean;
   onPress?: () => void;
 }) {
-  const iconColor = colors.primary;
+  const iconColor = active ? colors.primary : colors.secondary;
   const labelColor = active ? colors.primary : colors.secondary;
   const body = (
     <>
@@ -159,10 +159,10 @@ function AccountLogoutCross({
         height: 28,
         alignItems: "center",
         justifyContent: "center",
-        opacity: pressed ? 0.65 : onPress ? 0.75 : 0.45,
+        opacity: pressed ? 0.7 : 1,
       })}
     >
-      <VoiceWindowCrossIcon color={colors.secondary} size={12} />
+      <VoiceWindowCrossIcon color={colors.primary} size={15} />
     </Pressable>
   );
 }
@@ -331,7 +331,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       {
         key: "settings",
         labelKey: "messages.sideMenu.messengerSettings",
-        Icon: SettingsIcon,
+        Icon: SideMenuMessengerSettingsIcon,
       },
     ],
     [openMyProfile],

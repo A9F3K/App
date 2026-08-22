@@ -436,7 +436,7 @@ export function SmartPurposeMenuWithDivider({
                     style={{
                       width: thumbSnapW,
                       height: lineT,
-                      backgroundColor: colors.primary,
+                      backgroundColor: colors.scrollIndicator,
                       ...(Platform.OS === "web" ? ({ willChange: "transform" } as ViewStyle) : null),
                     }}
                   />

@@ -122,7 +122,7 @@ export function SmartPanelContent() {
         style={{ flex: 1, ...scrollShellBleed }}
         contentContainerStyle={scrollContentPadding}
         scrollIndicatorExtendBottomPx={showSmartActionBlock ? ctaHeightPx : 0}
-        indicatorColor={colors.primary}
+        indicatorColor={colors.scrollIndicator}
       >
         <SmartLeadImage source={leadSource} layoutWidthPx={panelWidthPx} />
         <View style={{ height: LEAD_TO_TITLE_GAP_PX }} />

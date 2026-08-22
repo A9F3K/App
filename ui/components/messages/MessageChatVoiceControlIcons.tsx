@@ -5,26 +5,16 @@ type IconProps = {
   size?: number;
 };
 
-/** Window control from `assets/window_controls/cross.svg` (15×15). */
+/** Close / dismiss X — solid strokes so it stays readable at 12–15px (was a sparse 1×1 pixel lattice). */
 export function VoiceWindowCrossIcon({ color, size = 15 }: IconProps) {
   return (
     <Svg width={size} height={size} viewBox="0 0 15 15" fill="none">
-      <Rect x={14} width={1} height={1} fill={color} />
-      <Rect x={12} y={2} width={1} height={1} fill={color} />
-      <Rect x={10} y={4} width={1} height={1} fill={color} />
-      <Rect x={8} y={6} width={1} height={1} fill={color} />
-      <Rect x={6} y={8} width={1} height={1} fill={color} />
-      <Rect x={4} y={10} width={1} height={1} fill={color} />
-      <Rect x={2} y={12} width={1} height={1} fill={color} />
-      <Rect y={14} width={1} height={1} fill={color} />
-      <Rect width={1} height={1} fill={color} />
-      <Rect x={2} y={2} width={1} height={1} fill={color} />
-      <Rect x={4} y={4} width={1} height={1} fill={color} />
-      <Rect x={6} y={6} width={1} height={1} fill={color} />
-      <Rect x={8} y={8} width={1} height={1} fill={color} />
-      <Rect x={10} y={10} width={1} height={1} fill={color} />
-      <Rect x={12} y={12} width={1} height={1} fill={color} />
-      <Rect x={14} y={14} width={1} height={1} fill={color} />
+      <Path
+        d="M3 3l9 9M12 3L3 12"
+        stroke={color}
+        strokeWidth={2}
+        strokeLinecap="round"
+      />
     </Svg>
   );
 }

@@ -2,103 +2,150 @@ import Svg, { Circle, Path, Rect } from "react-native-svg";
 
 type IconProps = { color: string; size?: number };
 
+const SW = 1.75;
+
+/** Profile — person in a circle (standard account glyph). */
 export function SideMenuProfileIcon({ color, size = 22 }: IconProps) {
   return (
-    <Svg width={size} height={size} viewBox="0 0 22 22" fill="none">
-      <Circle cx="11" cy="11" r="9.25" stroke={color} strokeWidth={1.5} />
-      <Circle cx="11" cy="9" r="3.25" stroke={color} strokeWidth={1.5} />
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Circle cx="12" cy="12" r="9" stroke={color} strokeWidth={SW} />
+      <Circle cx="12" cy="10" r="3" stroke={color} strokeWidth={SW} />
       <Path
-        d="M5.5 17.5C6.6 14.8 8.6 13.5 11 13.5C13.4 13.5 15.4 14.8 16.5 17.5"
+        d="M6.8 18.2c1.2-2.2 3.1-3.2 5.2-3.2s4 1 5.2 3.2"
         stroke={color}
-        strokeWidth={1.5}
+        strokeWidth={SW}
         strokeLinecap="round"
       />
     </Svg>
   );
 }
 
+/** Wallet — rounded card with a clasp. */
 export function SideMenuWalletIcon({ color, size = 22 }: IconProps) {
   return (
-    <Svg width={size} height={size} viewBox="0 0 22 22" fill="none">
-      <Rect x="3" y="6" width="16" height="11" rx="2" stroke={color} strokeWidth={1.5} />
-      <Path d="M3 9H19" stroke={color} strokeWidth={1.5} />
-      <Circle cx="15.5" cy="12.5" r="1.25" fill={color} />
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Rect x="3.5" y="6.5" width="17" height="12" rx="2.5" stroke={color} strokeWidth={SW} />
+      <Path d="M3.5 10h17" stroke={color} strokeWidth={SW} strokeLinecap="round" />
+      <Circle cx="16.5" cy="14" r="1.25" fill={color} />
     </Svg>
   );
 }
 
+/** New group — two people (simple, non-overlapping). */
 export function SideMenuGroupIcon({ color, size = 22 }: IconProps) {
   return (
-    <Svg width={size} height={size} viewBox="0 0 22 22" fill="none">
-      <Circle cx="8" cy="9.5" r="2.75" stroke={color} strokeWidth={1.5} />
-      <Circle cx="14" cy="9.5" r="2.75" stroke={color} strokeWidth={1.5} />
-      <Path d="M4 17C4.8 14.8 6.4 13.5 8 13.5" stroke={color} strokeWidth={1.5} strokeLinecap="round" />
-      <Path d="M14 13.5C15.6 13.5 17.2 14.8 18 17" stroke={color} strokeWidth={1.5} strokeLinecap="round" />
-      <Circle cx="11" cy="8" r="2.25" stroke={color} strokeWidth={1.5} />
-      <Path d="M6.5 16.5C7.4 14.3 9 13 11 13" stroke={color} strokeWidth={1.5} strokeLinecap="round" />
-    </Svg>
-  );
-}
-
-export function SideMenuChannelIcon({ color, size = 22 }: IconProps) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 22 22" fill="none">
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Circle cx="9" cy="9" r="2.75" stroke={color} strokeWidth={SW} />
+      <Circle cx="16" cy="9.5" r="2.25" stroke={color} strokeWidth={SW} />
       <Path
-        d="M4 8.5L18 4V14L4 17.5V8.5Z"
+        d="M4.5 18c.9-2.4 2.7-3.5 4.5-3.5s3.6 1.1 4.5 3.5"
         stroke={color}
-        strokeWidth={1.5}
-        strokeLinejoin="round"
+        strokeWidth={SW}
+        strokeLinecap="round"
       />
-      <Path d="M9 10.5V15.5L13 13.8V8.8L9 10.5Z" fill={color} />
-    </Svg>
-  );
-}
-
-export function SideMenuContactsIcon({ color, size = 22 }: IconProps) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 22 22" fill="none">
-      <Circle cx="11" cy="8.5" r="3.25" stroke={color} strokeWidth={1.5} />
       <Path
-        d="M5 17.5C6.2 14.5 8.3 13 11 13C13.7 13 15.8 14.5 17 17.5"
+        d="M13.2 17.6c.7-1.7 2-2.6 3.5-2.6 1.4 0 2.6.8 3.3 2.3"
         stroke={color}
-        strokeWidth={1.5}
+        strokeWidth={SW}
         strokeLinecap="round"
       />
     </Svg>
   );
 }
 
+/** New channel — classic megaphone. */
+export function SideMenuChannelIcon({ color, size = 22 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M5 10h2.2l4.3-3.8c.5-.4 1.2-.1 1.2.5v11.6c0 .6-.7.9-1.2.5L7.2 15H5a1.5 1.5 0 0 1-1.5-1.5v-2A1.5 1.5 0 0 1 5 10Z"
+        stroke={color}
+        strokeWidth={SW}
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M15.5 9c1.1.9 1.8 2.1 1.8 3s-.7 2.1-1.8 3"
+        stroke={color}
+        strokeWidth={SW}
+        strokeLinecap="round"
+      />
+      <Path
+        d="M17.8 6.8c2 1.5 3.2 3.5 3.2 5.2s-1.2 3.7-3.2 5.2"
+        stroke={color}
+        strokeWidth={SW}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+/** Contacts — single person. */
+export function SideMenuContactsIcon({ color, size = 22 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Circle cx="12" cy="9" r="3.25" stroke={color} strokeWidth={SW} />
+      <Path
+        d="M5.5 19c1.3-3 3.5-4.5 6.5-4.5s5.2 1.5 6.5 4.5"
+        stroke={color}
+        strokeWidth={SW}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+/** Calls — standard handset (Lucide-style). */
 export function SideMenuCallsIcon({ color, size = 22 }: IconProps) {
   return (
-    <Svg width={size} height={size} viewBox="0 0 22 22" fill="none">
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Path
-        d="M6.5 8.5C7.8 11.2 10.8 14.2 13.5 15.5L15.5 13.5C15.8 13.2 16.3 13.1 16.7 13.3C17.8 13.8 19.1 14.1 20.3 14.1C20.7 14.1 21 14.4 21 14.8V17.8C21 18.2 20.7 18.5 20.3 18.5C11.2 18.5 3.5 10.8 3.5 1.7C3.5 1.3 3.8 1 4.2 1H7.2C7.6 1 7.9 1.3 7.9 1.7C7.9 2.9 8.2 4.2 8.7 5.3C8.9 5.7 8.8 6.2 8.5 6.5L6.5 8.5Z"
+        d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.81.36 1.6.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c1.2.34 2 .57 2.81.7A2 2 0 0 1 22 16.92z"
         stroke={color}
-        strokeWidth={1.5}
+        strokeWidth={SW}
+        strokeLinecap="round"
         strokeLinejoin="round"
       />
     </Svg>
   );
 }
 
+/** Saved messages — bookmark. */
 export function SideMenuSavedIcon({ color, size = 22 }: IconProps) {
   return (
-    <Svg width={size} height={size} viewBox="0 0 22 22" fill="none">
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Path
-        d="M6 4H16V18L11 15L6 18V4Z"
+        d="M7 4.5h10v15l-5-3.2-5 3.2v-15Z"
         stroke={color}
-        strokeWidth={1.5}
+        strokeWidth={SW}
         strokeLinejoin="round"
       />
     </Svg>
   );
 }
 
+/**
+ * Messenger settings — horizontal sliders (not the app settings cog).
+ * Reads clearly at 22px and stays distinct from the rotating Settings gear elsewhere.
+ */
+export function SideMenuMessengerSettingsIcon({ color, size = 22 }: IconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path d="M4 7h16" stroke={color} strokeWidth={SW} strokeLinecap="round" />
+      <Path d="M4 12h16" stroke={color} strokeWidth={SW} strokeLinecap="round" />
+      <Path d="M4 17h16" stroke={color} strokeWidth={SW} strokeLinecap="round" />
+      <Circle cx="9" cy="7" r="2.25" fill={color} />
+      <Circle cx="15" cy="12" r="2.25" fill={color} />
+      <Circle cx="11" cy="17" r="2.25" fill={color} />
+    </Svg>
+  );
+}
+
+/** Add account — plus in a circle. */
 export function SideMenuAddAccountIcon({ color, size = 22 }: IconProps) {
   return (
-    <Svg width={size} height={size} viewBox="0 0 22 22" fill="none">
-      <Circle cx="11" cy="11" r="8.25" stroke={color} strokeWidth={1.5} />
-      <Path d="M11 7V15M7 11H15" stroke={color} strokeWidth={1.5} strokeLinecap="round" />
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Circle cx="12" cy="12" r="9" stroke={color} strokeWidth={SW} />
+      <Path d="M12 8v8M8 12h8" stroke={color} strokeWidth={SW} strokeLinecap="round" />
     </Svg>
   );
 }

@@ -112,7 +112,7 @@ export function MessageChatListSearchField({
         { height: fieldHeightPx, opacity: pressed ? 0.65 : 1 },
       ]}
     >
-      <VoiceWindowCrossIcon color={colors.secondary} size={13} />
+      <VoiceWindowCrossIcon color={colors.primary} size={15} />
     </Pressable>
   ) : null;
 

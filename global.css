@@ -93,6 +93,23 @@
   backface-visibility: hidden;
 }
 
+/* Light theme: 3px fill when the portaled thumb sits on the viewport edge (black letterboxing). */
+.hsp-scroll-indicator-thumb-viewport-edge {
+  box-sizing: border-box !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  background-image: none !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  width: 3px !important;
+  min-width: 3px !important;
+  max-width: 3px !important;
+  transform: translateZ(0);
+  -webkit-backface-visibility: hidden;
+  backface-visibility: hidden;
+}
+
 @keyframes hsp-chat-older-history-load-line-grow {
   from {
     transform: scaleX(0);

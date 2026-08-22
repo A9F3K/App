@@ -17,6 +17,8 @@ export const dark = {
   undercover: "#323232",
   /** Scroll thumbs, email field stroke, and other accent chrome. */
   accent: "#818181",
+  /** Scroll thumbs on divider seams — white on dark chrome. */
+  scrollIndicator: "#FFFFFF",
 } as const;
 
 export const light = {
@@ -25,12 +27,14 @@ export const light = {
   secondary: "#717171",
   /**
    * Borders + divider strokes (chrome). Keep much lighter than dark-theme `#5A5A5A`
-   * so primary-colored scroll thumbs remain readable when they overlay column seams.
+   * so scroll thumbs remain readable when they overlay column seams.
    */
   highlight: "#D0D0D0",
   undercover: "#dadada",
   /** Scroll thumbs, email field stroke, and other accent chrome. */
   accent: "#818181",
+  /** Scroll thumbs on divider seams — green for high contrast vs light grey chrome (not black). */
+  scrollIndicator: "#00B33C",
 } as const;
 
 export type ThemeName = "dark" | "light";
@@ -41,8 +45,10 @@ export type ThemeColors = {
   highlight: string;
   /** Filled surfaces / buttons (theme `undercover` in Dart palette). */
   undercover: string;
-  /** Scrollbars / scroll thumbs, welcome email field border, and similar accent chrome. */
+  /** Welcome email field border and similar accent chrome. */
   accent: string;
+  /** Custom scroll thumbs (column seams, fields, nav strip). */
+  scrollIndicator: string;
 };
 
 /** Home wide strip / stroke-driven glyphs: `primary` vs `highlight` / `inactive` theme colors. */

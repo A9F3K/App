@@ -76,7 +76,7 @@ function AgentPlusIcon({ color, size = 14 }: { color: string; size?: number }) {
 function AgentCloseIcon({ color, size = 10 }: { color: string; size?: number }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 10 10" fill="none">
-      <Path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke={color} strokeWidth={1.25} strokeLinecap="round" />
+      <Path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke={color} strokeWidth={1.75} strokeLinecap="round" />
     </Svg>
   );
 }

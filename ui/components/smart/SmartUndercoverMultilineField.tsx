@@ -73,17 +73,20 @@ function resolveMultilineScrollElement(
   }
   if (!start || Platform.OS !== "web" || typeof window === "undefined") return start;
 
+  // Never walk up to ancestor column ScrollViews — only in-field overflow gets a thumb.
+  const fieldRoot = start.closest(".smart-undercover-multiline-field");
+  if (start instanceof HTMLTextAreaElement) return start;
+
   let cur: HTMLElement | null = start;
-  let best = start;
-  while (cur) {
+  while (cur && cur !== fieldRoot?.parentElement) {
     if (cur.scrollHeight > cur.clientHeight + 1) {
-      best = cur;
       const oy = window.getComputedStyle(cur).overflowY;
       if (oy === "auto" || oy === "scroll" || oy === "overlay") return cur;
     }
+    if (cur === fieldRoot) break;
     cur = cur.parentElement;
   }
-  return best;
+  return start;
 }
 
 /** Multiline undercover field (110px) with in-field vertical scroll thumb when content overflows. */
@@ -402,7 +405,7 @@ export function SmartUndercoverMultilineField({
                   height: indicator.thumbH,
                   width: 0,
                   borderLeftWidth: scrollIndicatorHairlineBorderWidthPx(),
-                  borderLeftColor: colors.primary,
+                  borderLeftColor: colors.scrollIndicator,
                   borderStyle: "solid",
                 },
               ]}

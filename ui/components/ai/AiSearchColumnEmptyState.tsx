@@ -146,7 +146,7 @@ export function AiSearchColumnEmptyState() {
             paddingHorizontal: contentInset,
             paddingBottom: contentInset,
           }}
-          indicatorColor={colors.primary}
+          indicatorColor={colors.scrollIndicator}
         >
           {/* Remount body when switching tabs so each tab starts from the default empty state. */}
           <AiAgentTabEmptyBody

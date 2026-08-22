@@ -155,7 +155,7 @@ export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
     Platform.OS === "web" && typeof window !== "undefined" ? getPrimaryTextColorFromLaunch() : null;
   const inputColor = themeBgReady ? colors.primary : launchPrimary ?? colors.primary;
   const topBorderColor = colors.highlight;
-  const scrollbarThumbColor = colors.primary;
+  const scrollbarThumbColor = colors.scrollIndicator;
   /** TMA phone: omit bottom hairline. Wide authenticated home: bar sits in a split column past `firstBreakpoint`, not the screen footer — no bottom rule. */
   const hideBottomBorder =
     (isInTelegram && !layoutStartup.isTelegramMiniAppDesktop) || !footerDockedToScreenEdge;

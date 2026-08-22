@@ -52,13 +52,7 @@ import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import { MessageChatProfileMediaSheet } from "./MessageChatProfileMediaSheet";
 import type { ProfileMediaKind } from "../../telegram/fetchTelegramUserProfile";
 import { useProfileSheet } from "../../profile/ProfileContext";
-import {
-  getMusicPlayer,
-  setMusicTracks,
-  startMusicPlaylist,
-  subscribeMusicPlayer,
-} from "../../music/musicPlayerStore";
-import { unlockMusicAutoplay } from "../../music/musicAudioElement";
+import { getMusicPlayer, subscribeMusicPlayer } from "../../music/musicPlayerStore";
 
 /** Layout matches the profile design sheet (≈380×740 content frame). */
 const SHEET_MAX_WIDTH_PX = 380;
@@ -402,18 +396,7 @@ export function MessageChatProfileSheet({
 
   const handleOpenPlaylist = () => {
     if (playlist.length === 0) return;
-    unlockMusicAutoplay();
-    const uid = playlist[0]?.user_id;
-    const playingThisUser =
-      musicPlayer.visible &&
-      uid != null &&
-      musicPlayer.tracks.some((row) => row.user_id === uid);
-    if (!playingThisUser) {
-      startMusicPlaylist(playlist, 0);
-    } else {
-      setMusicTracks(playlist, musicPlayer.tracks[musicPlayer.index]?.file_id);
-    }
-    openMusicPlaylistSheet();
+    openMusicPlaylistSheet(playlist);
   };
 
   if (!chat || !visible) return null;

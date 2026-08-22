@@ -3,11 +3,14 @@ import { Platform, View, type StyleProp, type ViewStyle } from "react-native";
 import { createPortal } from "react-dom";
 
 import {
+  isScrollIndicatorAtViewportRightEdge,
   scrollIndicatorHairlineBorderWidthPx,
+  SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX,
   snapScrollIndicatorCoordPx,
 } from "../scrollIndicatorPx";
 import { layout } from "../theme";
 import { ScrollIndicatorDragHandle } from "./ScrollIndicatorDragHandle";
+import { useTelegram } from "./Telegram";
 
 const SEAM_OVERLAY_Z = layout.authenticatedHome.scrollIndicatorOverlayZIndex;
 
@@ -53,6 +56,7 @@ export function HspVerticalScrollIndicator({
   onScrollTo,
   style,
 }: Props) {
+  const { colorScheme } = useTelegram();
   const hairline = scrollIndicatorHairlineBorderWidthPx();
   const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
   const overlaySeam = Platform.OS === "web" && scrollbarRightInsetPx <= 0;
@@ -143,6 +147,14 @@ export function HspVerticalScrollIndicator({
 
   if (!show || trackH <= 0 || thumbH <= 0) return null;
 
+  const atViewportRightEdge =
+    overlaySeam && seamBox != null && isScrollIndicatorAtViewportRightEdge(seamBox.rightPx);
+  const useViewportEdgeWideThumb =
+    overlaySeam && colorScheme === "light" && atViewportRightEdge;
+  const crossAxisVisualSpan = useViewportEdgeWideThumb
+    ? SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX
+    : hairline;
+
   const thumb = (
     <ScrollIndicatorDragHandle
       axis="vertical"
@@ -151,20 +163,25 @@ export function HspVerticalScrollIndicator({
       thumbOffset={thumbTop}
       scrollRange={maxScroll}
       onScrollTo={onScrollTo}
-      crossAxisVisualSpan={hairline}
+      crossAxisVisualSpan={crossAxisVisualSpan}
     >
       <View
         {...(Platform.OS === "web"
-          ? ({ className: "hsp-scroll-indicator-thumb" } as Record<string, string>)
+          ? ({
+              className: useViewportEdgeWideThumb
+                ? "hsp-scroll-indicator-thumb-viewport-edge"
+                : "hsp-scroll-indicator-thumb",
+            } as Record<string, string>)
           : {})}
         style={{
           position: "absolute",
           right: 0,
           top: 0,
           height: thumbH,
-          width: 0,
-          borderLeftWidth: hairline,
-          borderLeftColor: thumbColor,
+          width: useViewportEdgeWideThumb ? SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX : 0,
+          backgroundColor: useViewportEdgeWideThumb ? thumbColor : "transparent",
+          borderLeftWidth: useViewportEdgeWideThumb ? 0 : hairline,
+          borderLeftColor: useViewportEdgeWideThumb ? "transparent" : thumbColor,
           borderStyle: "solid",
         }}
       />

@@ -1,3 +1,5 @@
+Main screen scrolling on mobile
+Swiping down stick "Feed..." header
 Coins in the coins section including those from TON Connect
 Tokens loading, should not load absolutely all until scroll
 Primary and secondary buttons color

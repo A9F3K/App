@@ -6,7 +6,6 @@ import {
   useContext,
   useMemo,
   useState,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { View } from "react-native";
@@ -15,7 +14,8 @@ import { MessageChatProfileSheet } from "../components/messages/MessageChatProfi
 import { MessageChatProfilePlaylistSheet } from "../components/messages/MessageChatProfilePlaylistSheet";
 import { ActiveVoiceCallDock } from "../components/messages/ActiveVoiceCallDock";
 import { GlobalMusicControlBar } from "../components/music/GlobalMusicControlBar";
-import { getMusicPlayer, subscribeMusicPlayer } from "../music/musicPlayerStore";
+import { getMusicPlayer } from "../music/musicPlayerStore";
+import type { TelegramProfileAudioTrack } from "../telegram/fetchTelegramUserProfile";
 import { MusicPlayerEngine } from "../music/MusicPlayerEngine";
 import { PrivateCallLoadingShell } from "../components/messages/PrivateCallLoadingShell";
 import { useColors } from "../theme";
@@ -85,7 +85,7 @@ type ProfileContextValue = {
   profileChat: MessageChatRowData | null;
   openProfileSheet: (target: ProfileSheetTarget | MessageChatRowData) => void;
   closeProfileSheet: () => void;
-  openMusicPlaylistSheet: () => void;
+  openMusicPlaylistSheet: (tracks?: TelegramProfileAudioTrack[]) => void;
   closeMusicPlaylistSheet: () => void;
   startPrivateCall: (target: ProfileSheetTarget | MessageChatRowData) => void;
   endPrivateCall: () => void;
@@ -101,7 +101,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const [privateCallOpenSeq, setPrivateCallOpenSeq] = useState(0);
   const [privateCallAlive, setPrivateCallAlive] = useState(false);
   const [musicPlaylistSheetVisible, setMusicPlaylistSheetVisible] = useState(false);
-  const musicSnap = useSyncExternalStore(subscribeMusicPlayer, getMusicPlayer, getMusicPlayer);
+  const [playlistSheetTracks, setPlaylistSheetTracks] = useState<TelegramProfileAudioTrack[]>([]);
 
   const openProfileSheet = useCallback((target: ProfileSheetTarget | MessageChatRowData) => {
     const chat = toProfileChat(target);
@@ -126,8 +126,10 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     setProfileSheetVisible(false);
   }, []);
 
-  const openMusicPlaylistSheet = useCallback(() => {
-    if (getMusicPlayer().tracks.length === 0) return;
+  const openMusicPlaylistSheet = useCallback((tracks?: TelegramProfileAudioTrack[]) => {
+    const rows = tracks ?? getMusicPlayer().tracks;
+    if (rows.length === 0) return;
+    setPlaylistSheetTracks(rows);
     setMusicPlaylistSheetVisible(true);
   }, []);
 
@@ -214,8 +216,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         }}
       />
       <MessageChatProfilePlaylistSheet
-        visible={musicPlaylistSheetVisible && musicSnap.tracks.length > 0}
-        tracks={musicSnap.tracks}
+        visible={musicPlaylistSheetVisible && playlistSheetTracks.length > 0}
+        tracks={playlistSheetTracks}
         onBack={closeMusicPlaylistSheet}
         onClose={closeMusicPlaylistSheet}
       />

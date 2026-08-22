@@ -364,7 +364,7 @@ const en = {
   "trade.action.button": "Trade",
 
   "get.title": "Get tokens",
-  "get.walletOnTon": "{{name}} wallet on TON",
+  "get.walletOnTon": "For {{name}} wallet on TON",
   "get.methodsTitle": "Methods",
   "get.methodsBody": "Use different methods to load coins on the wallet.",
   "get.connectLabel": "CONNECT",
@@ -880,7 +880,7 @@ const ru = {
   "trade.action.button": "Торговать",
 
   "get.title": "Получить токены",
-  "get.walletOnTon": "Кошелёк {{name}} в TON",
+  "get.walletOnTon": "Для кошелька {{name}} в TON",
   "get.methodsTitle": "Методы",
   "get.methodsBody": "Используйте разные способы, чтобы пополнить кошелёк.",
   "get.connectLabel": "CONNECT",
@@ -1360,7 +1360,7 @@ const zh = {
   "trade.action.button": "交易",
 
   "get.title": "获取代币",
-  "get.walletOnTon": "{{name}} 的 TON 钱包",
+  "get.walletOnTon": "为 {{name}} 的 TON 钱包",
   "get.methodsTitle": "方式",
   "get.methodsBody": "使用不同方式为钱包充值。",
   "get.connectLabel": "CONNECT",

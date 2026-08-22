@@ -36,6 +36,20 @@ export const SCROLL_INDICATOR_SCROLL_EPS = 2;
 /** Extra hit area (px) perpendicular to the scroll axis for dragging hairline thumbs. */
 export const SCROLL_INDICATOR_DRAG_HIT_INSET_PX = 3;
 
+/**
+ * Light-theme portaled thumb width (px) when flush with the viewport right edge.
+ * Hairline thumbs clip against black letterboxing outside the app frame.
+ */
+export const SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX = 3;
+
+/** True when a portaled vertical thumb anchor sits on the viewport's right edge. */
+export function isScrollIndicatorAtViewportRightEdge(rightPx: number): boolean {
+  if (typeof window === "undefined") return false;
+  const viewportW = window.visualViewport?.width ?? window.innerWidth;
+  if (!(viewportW > 0)) return false;
+  return Math.abs(rightPx - viewportW) <= 1.5;
+}
+
 /** Map thumb position on track (px) to scroll offset (px). Inverse of thumb offset math. */
 export function scrollOffsetFromThumbPosition(
   thumbPos: number,

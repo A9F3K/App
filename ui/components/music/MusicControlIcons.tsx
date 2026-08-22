@@ -118,7 +118,7 @@ export function MusicLoopIcon({
 export function MusicCloseIcon({ color, size }: IconProps) {
   return (
     <Root size={size}>
-      <Path d="M4 4l8 8M12 4l-8 8" stroke={color} strokeWidth={1.3} strokeLinecap="round" />
+      <Path d="M4 4l8 8M12 4l-8 8" stroke={color} strokeWidth={1.8} strokeLinecap="round" />
     </Root>
   );
 }

@@ -6641,7 +6641,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       <HspScrollColumn
         key={String(chat.telegram_chat_id)}
         style={{ flex: 1, minHeight: 0 }}
-        indicatorColor={colors.primary}
+        indicatorColor={colors.scrollIndicator}
         scrollbarRightInsetPx={scrollbarRightInsetPx}
         indicatorThumbMinPx={CHAT_SCROLL_INDICATOR_THUMB_MIN_PX}
         indicatorContentSpanPx={chatScrollIndicatorContentSpanPx}
