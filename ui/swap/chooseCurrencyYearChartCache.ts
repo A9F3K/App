@@ -45,6 +45,10 @@ const cache = new Map<string, ChooseCurrencyYearChartSnapshot>();
 const emptyAtMs = new Map<string, number>();
 const attemptCount = new Map<string, number>();
 const listeners = new Map<string, Set<() => void>>();
+/** Scroll-window rows from ChooseCurrencyTable — highest fetch priority. */
+const visibleWindow = new Set<string>();
+/** IntersectionObserver near-view rows (refcounted per address). */
+const nearViewRefcount = new Map<string, number>();
 const queued: string[] = [];
 const queuedSet = new Set<string>();
 let activeCount = 0;
@@ -168,6 +172,7 @@ function pumpQueue(): void {
 
   const tick = () => {
     pumpTimer = null;
+    rebalanceQueue();
     // Year sparklines parse 200–300 points each and freeze the voice dialog
     // (logs: swap_chart_parse_done overlapping voice_dialog_longtask / raf_stall).
     if (isVoiceDialogUiOpen()) {
@@ -219,6 +224,42 @@ export function clearQueuedChooseCurrencyYearCharts(): void {
   queuedSet.clear();
 }
 
+/** Scroll-visible window from ChooseCurrencyTable — on-screen rows win the queue. */
+export function syncChooseCurrencyYearChartVisibleWindow(addresses: readonly string[]): void {
+  visibleWindow.clear();
+  for (const address of addresses) {
+    const key = normalizeAddress(address);
+    if (key && !key.startsWith("jetton:")) visibleWindow.add(key);
+  }
+  rebalanceQueue();
+  pumpQueue();
+}
+
+export function clearChooseCurrencyYearChartVisibleWindow(): void {
+  if (visibleWindow.size === 0) return;
+  visibleWindow.clear();
+  rebalanceQueue();
+}
+
+export function registerChooseCurrencyYearChartNearView(address: string): void {
+  const key = normalizeAddress(address);
+  if (!key) return;
+  nearViewRefcount.set(key, (nearViewRefcount.get(key) ?? 0) + 1);
+  if (queuedSet.has(key)) promoteInQueue(key);
+  rebalanceQueue();
+  pumpQueue();
+}
+
+export function unregisterChooseCurrencyYearChartNearView(address: string): void {
+  const key = normalizeAddress(address);
+  if (!key) return;
+  const next = (nearViewRefcount.get(key) ?? 0) - 1;
+  if (next <= 0) nearViewRefcount.delete(key);
+  else nearViewRefcount.set(key, next);
+  if (next <= 0 && queuedSet.has(key)) demoteInQueue(key);
+  rebalanceQueue();
+}
+
 setOnMainChartFetchIdle(() => {
   pumpQueue();
 });
@@ -244,9 +285,28 @@ export function subscribeChooseCurrencyYearChart(
   };
 }
 
-function hasActiveListeners(address: string): boolean {
-  const set = listeners.get(address);
-  return !!set && set.size > 0;
+function isPriorityAddress(address: string): boolean {
+  return visibleWindow.has(address) || (nearViewRefcount.get(address) ?? 0) > 0;
+}
+
+function rebalanceQueue(): void {
+  if (queued.length < 2) return;
+  const priority: string[] = [];
+  const background: string[] = [];
+  for (const addr of queued) {
+    if (isPriorityAddress(addr)) priority.push(addr);
+    else background.push(addr);
+  }
+  if (priority.length === 0 || background.length === 0) return;
+  queued.length = 0;
+  queued.push(...priority, ...background);
+}
+
+function demoteInQueue(address: string): void {
+  const idx = queued.indexOf(address);
+  if (idx < 0) return;
+  queued.splice(idx, 1);
+  queued.push(address);
 }
 
 function promoteInQueue(address: string): void {
@@ -262,7 +322,7 @@ function enqueueFront(address: string): void {
     let dropIdx = -1;
     for (let i = queued.length - 1; i >= 0; i--) {
       const candidate = queued[i]!;
-      if (!hasActiveListeners(candidate)) {
+      if (!isPriorityAddress(candidate)) {
         dropIdx = i;
         break;
       }
@@ -273,11 +333,13 @@ function enqueueFront(address: string): void {
   }
 
   if (queuedSet.has(address)) {
-    promoteInQueue(address);
+    if (isPriorityAddress(address)) promoteInQueue(address);
+    else demoteInQueue(address);
     return;
   }
   queuedSet.add(address);
-  queued.unshift(address);
+  if (isPriorityAddress(address)) queued.unshift(address);
+  else queued.push(address);
 }
 
 /** Ensure a year sparkline is loading / cached for this jetton address. */

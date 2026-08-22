@@ -70,6 +70,7 @@ export function useSwapDealActionState(): SwapDealActionState {
   const { effectivePriceUsd } = useSwapChart("d", {
     deferInitialLoad: true,
     jettonAddress: chartJettonAddress,
+    enabled: !onCurrencyScreen,
   });
 
   const dllrAmount = useMemo(() => {

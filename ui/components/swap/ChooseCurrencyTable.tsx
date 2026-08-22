@@ -57,7 +57,11 @@ import {
   CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX,
   CHOOSE_CURRENCY_TABLE_SCROLL_INDICATOR_THUMB_MIN_PX,
 } from "./chooseCurrencyTableConstants";
-import { prefetchChooseCurrencyYearCharts } from "../../swap/chooseCurrencyYearChartCache";
+import {
+  clearChooseCurrencyYearChartVisibleWindow,
+  prefetchChooseCurrencyYearCharts,
+  syncChooseCurrencyYearChartVisibleWindow,
+} from "../../swap/chooseCurrencyYearChartCache";
 import { resolveChooseCurrencyColumnLayout } from "./chooseCurrencyTableLayout";
 import type { ChooseCurrencyVisibleColumn } from "./chooseCurrencyTableLayout";
 import { buildChooseCurrencyColumnMetrics } from "./chooseCurrencyTableMeasure";
@@ -459,15 +463,24 @@ export function ChooseCurrencyTable({
   );
 
   useEffect(() => {
-    if (!prefetchCharts) return;
+    if (!prefetchCharts) {
+      clearChooseCurrencyYearChartVisibleWindow();
+      return;
+    }
     const end = Math.min(rows.length, sparklinePrefetchStart + sparklinePrefetchCount);
     const addresses: string[] = [];
     for (let i = sparklinePrefetchStart; i < end; i++) {
       const row = rows[i];
       if (row?.lastYearKind === "sparkline") addresses.push(row.rowKey);
     }
+    syncChooseCurrencyYearChartVisibleWindow(addresses);
     if (addresses.length > 0) prefetchChooseCurrencyYearCharts(addresses);
   }, [prefetchCharts, rows, sparklinePrefetchCount, sparklinePrefetchStart]);
+
+  useEffect(() => {
+    if (prefetchCharts) return;
+    clearChooseCurrencyYearChartVisibleWindow();
+  }, [prefetchCharts]);
 
   const syncScrollMetricsFromDom = useCallback(() => {
     if (Platform.OS !== "web") return;

@@ -55,6 +55,7 @@ export function SwapPanelContent() {
     effectivePriceUsd,
   } = useSwapChart("d", {
     jettonAddress: chartJettonAddress,
+    enabled: swapFormVisible,
   });
 
   useEffect(() => {

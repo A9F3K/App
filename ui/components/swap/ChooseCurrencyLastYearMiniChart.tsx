@@ -5,7 +5,9 @@ import { useElementVisible } from "../messages/useElementVisible";
 import {
   ensureChooseCurrencyYearChart,
   getChooseCurrencyYearChartSnapshot,
+  registerChooseCurrencyYearChartNearView,
   subscribeChooseCurrencyYearChart,
+  unregisterChooseCurrencyYearChartNearView,
 } from "../../swap/chooseCurrencyYearChartCache";
 import { useColors } from "../../theme";
 import { CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX } from "./chooseCurrencyTableConstants";
@@ -147,13 +149,9 @@ function SparklineMiniChart({ address }: { address: string }) {
 
   useEffect(() => {
     if (!nearView) return;
+    registerChooseCurrencyYearChartNearView(address);
     ensureChooseCurrencyYearChart(address);
-    // Re-queue if this row stayed idle after a queue drop while still mounted.
-    const timer = setInterval(() => {
-      const snap = getChooseCurrencyYearChartSnapshot(address);
-      if (snap.status === "idle") ensureChooseCurrencyYearChart(address);
-    }, 2500);
-    return () => clearInterval(timer);
+    return () => unregisterChooseCurrencyYearChartNearView(address);
   }, [address, nearView]);
 
   const snapshot = useSyncExternalStore(
