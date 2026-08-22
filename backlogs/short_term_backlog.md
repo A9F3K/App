@@ -1,3 +1,4 @@
+Fullsize avatar and gradient positions...
 Main screen scrolling on mobile
 Swiping down stick "Feed..." header
 Coins in the coins section including those from TON Connect
@@ -188,6 +189,7 @@ Selection and pointing text detalization<br>
     on word tapping places at the end of the word<br>
     zoom-in cursor placing on long tap<br>
 Instructions.ts in AI<br>
+Upstream Telegram: fullscreen animated/custom emoji opens blurry (low-res thumbnail upscaled) — track in docs/telegram-upstream/ + GitHub issues on Desktop/iOS/Web; Android GitHub issues disabled<br>
 
 Abandoned:<br>
 Placeholder refactor<br>
