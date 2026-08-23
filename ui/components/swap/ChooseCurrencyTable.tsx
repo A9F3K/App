@@ -59,7 +59,7 @@ import {
 } from "./chooseCurrencyTableConstants";
 import {
   clearChooseCurrencyYearChartVisibleWindow,
-  prefetchChooseCurrencyYearCharts,
+  prefetchChooseCurrencyYearChartsForRowWindow,
   syncChooseCurrencyYearChartListOrder,
   syncChooseCurrencyYearChartVisibleWindow,
 } from "../../swap/chooseCurrencyYearChartCache";
@@ -480,7 +480,7 @@ export function ChooseCurrencyTable({
     }
     syncChooseCurrencyYearChartListOrder(allSparkline);
     syncChooseCurrencyYearChartVisibleWindow(visible);
-    if (allSparkline.length > 0) prefetchChooseCurrencyYearCharts(allSparkline);
+    prefetchChooseCurrencyYearChartsForRowWindow(rows, sparklineViewStart, sparklineViewCount);
   }, [prefetchCharts, rows, sparklineViewCount, sparklineViewStart]);
 
   useEffect(() => {

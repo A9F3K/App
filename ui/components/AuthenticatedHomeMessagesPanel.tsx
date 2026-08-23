@@ -637,6 +637,14 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
    */
   const [listBootstrapPending, setListBootstrapPending] = useState(true);
   /**
+   * False until the gateway finishes the first positioned chat-list sync.
+   * While false, partial cache snapshots stay behind the spinner so the list
+   * appears all at once instead of growing 7 → 15 → 287 on cold open.
+   */
+  const [initialChatListRevealed, setInitialChatListRevealed] = useState(false);
+  const initialChatListRevealedRef = useRef(false);
+  initialChatListRevealedRef.current = initialChatListRevealed;
+  /**
    * True after a successful chat-list fetch returned 0 rows while connected.
    * Avoids flashing `messages.empty` when chats wipe during reconnect races.
    */
@@ -1101,7 +1109,15 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           const changed = chatsChanged(prev, next);
           queueMicrotask(() => syncAuthenticatedHomeSelectedChat(next));
           if (rows.length > 0) {
-            setGatewayWarming(false);
+            const syncReady =
+              json.chatListSync?.positionedComplete === true &&
+              json.chatListSync?.inProgress !== true;
+            if (syncReady) {
+              setInitialChatListRevealed(true);
+              setGatewayWarming(false);
+            } else if (initialChatListRevealedRef.current) {
+              setGatewayWarming(false);
+            }
             setEmptyListConfirmed(false);
           } else if (prev.length === 0) {
             setEmptyListConfirmed(true);
@@ -1392,15 +1408,48 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   });
 
   useEffect(() => {
+    if (!isTelegramMessagesConnected) {
+      setInitialChatListRevealed(false);
+    }
+  }, [isTelegramMessagesConnected]);
+
+  useEffect(() => {
+    if (initialChatListRevealed) return;
+    if (
+      chatListSync?.positionedComplete === true &&
+      chatListSync.inProgress !== true
+    ) {
+      setInitialChatListRevealed(true);
+      setGatewayWarming(false);
+    }
+  }, [chatListSync, initialChatListRevealed]);
+
+  useEffect(() => {
+    if (!authReady || !isTelegramMessagesConnected || initialChatListRevealed) return;
+    const id = setTimeout(() => {
+      if (chatsCountRef.current > 0) {
+        setInitialChatListRevealed(true);
+        setGatewayWarming(false);
+        logPageDisplay("messages_chats_initial_reveal_timeout", {
+          count: chatsCountRef.current,
+        });
+      }
+    }, 20_000);
+    return () => clearTimeout(id);
+  }, [authReady, initialChatListRevealed, isTelegramMessagesConnected]);
+
+  useEffect(() => {
     if (!authReady) return;
     lastGatewayResyncRef.current = 0;
     pollCountRef.current = 0;
     if (isTelegramMessagesConnected) {
       setGatewayWarming(true);
       setListBootstrapPending(true);
+      setInitialChatListRevealed(false);
     } else {
       setListBootstrapPending(false);
       setGatewayWarming(false);
+      setInitialChatListRevealed(false);
     }
     void (async () => {
       // Paint the first chat list ASAP — do not await gateway resync first.
@@ -1425,6 +1474,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           sync?.inProgress === true ||
           sync?.tier3InProgress === true;
         if (!incomplete) {
+          setInitialChatListRevealed(true);
           setGatewayWarming(false);
           return;
         }
@@ -1993,6 +2043,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const visibleChatIdsKey = visibleChats
     .map((row) => row.telegram_chat_id)
     .join(",");
+  /** Column-reverse list: higher indices are visual top — boost avatar fetch there first. */
+  const prioritizeAvatarChatIds = useMemo(() => {
+    const topVisibleCount = Math.min(8, visibleChats.length);
+    return new Set(
+      visibleChats.slice(-topVisibleCount).map((row) => row.telegram_chat_id),
+    );
+  }, [visibleChatIdsKey]);
 
   // tdesktop: keep neighbors warm so the next switch paints from cache.
   useEffect(() => {
@@ -2264,6 +2321,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
                 middleColumnFocus === "chat" &&
                 selectedChatId === item.row.telegram_chat_id
               }
+              prioritizeAvatar={prioritizeAvatarChatIds.has(item.row.telegram_chat_id)}
               colors={colors}
               timePendingLabel={t("feed.timePending")}
               onPress={chatSelectionEnabled ? () => handleChatPress(item.row) : undefined}
@@ -2316,10 +2374,17 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     );
   }
 
-  if (
-    chats.length === 0 &&
-    (loading || gatewayWarming || listBootstrapPending || !emptyListConfirmed)
-  ) {
+  const awaitingInitialChatListSync =
+    !initialChatListRevealed &&
+    (chatListSync == null ||
+      chatListSync.inProgress === true ||
+      chatListSync.positionedComplete !== true);
+  const showChatListSpinner =
+    chats.length === 0
+      ? loading || gatewayWarming || listBootstrapPending || !emptyListConfirmed
+      : awaitingInitialChatListSync;
+
+  if (showChatListSpinner) {
     return (
       <View style={[listShellStyle, { paddingVertical: 24, alignItems: "center" }]}>
         <ActivityIndicator size="small" color={colors.primary} />

@@ -120,6 +120,7 @@ export function MessageChatRow({
   item,
   isLast,
   isActive,
+  prioritizeAvatar,
   colors,
   timePendingLabel,
   onPress,
@@ -131,6 +132,8 @@ export function MessageChatRow({
   item: MessageChatRowData;
   isLast: boolean;
   isActive?: boolean;
+  /** Boost avatar fetch priority for rows in the visible viewport (column-reverse top). */
+  prioritizeAvatar?: boolean;
   colors: ThemeColors;
   timePendingLabel: string;
   onPress?: () => void;
@@ -287,7 +290,7 @@ export function MessageChatRow({
               colors={colors}
               scheme={colorScheme}
               loadEnabled={avatarFetchEnabled}
-              fetchPriority={isActive ? "high" : "normal"}
+              fetchPriority={isActive || prioritizeAvatar ? "high" : "normal"}
               borderColor={voiceRingColor}
               activeVoiceRing={hasActiveVoice}
               joinedVoiceRing={isJoinedVoice}
@@ -320,7 +323,7 @@ export function MessageChatRow({
             colors={colors}
             scheme={colorScheme}
             loadEnabled={avatarFetchEnabled}
-            fetchPriority={isActive ? "high" : "normal"}
+            fetchPriority={isActive || prioritizeAvatar ? "high" : "normal"}
             borderColor={voiceRingColor}
             activeVoiceRing={hasActiveVoice}
             joinedVoiceRing={isJoinedVoice}

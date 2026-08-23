@@ -142,7 +142,6 @@ function currentStartGapMs(): number {
 }
 
 function noteRateLimit(): void {
-  consecutiveSuccesses = 0;
   consecutiveRateLimits += 1;
   const wait = Math.min(
     RATE_LIMIT_BACKOFF_CAP_MS,
@@ -362,5 +361,23 @@ export function ensureChooseCurrencyYearChart(address: string): void {
 export function prefetchChooseCurrencyYearCharts(addresses: readonly string[]): void {
   for (const address of addresses) {
     if (address) ensureChooseCurrencyYearChart(address);
+  }
+}
+
+type SparklineRowRef = { rowKey: string; lastYearKind: string };
+
+/** Enqueue only the scroll-visible window plus lookahead — avoids catalog-wide 429 storms. */
+export function prefetchChooseCurrencyYearChartsForRowWindow(
+  rows: readonly SparklineRowRef[],
+  viewStart: number,
+  viewCount: number,
+): void {
+  const start = Math.max(0, Math.trunc(viewStart));
+  const end = Math.min(rows.length, start + Math.max(1, Math.trunc(viewCount)) + LOOKAHEAD_ROWS);
+  for (let i = start; i < end; i++) {
+    const row = rows[i];
+    if (row?.lastYearKind === "sparkline" && row.rowKey) {
+      ensureChooseCurrencyYearChart(row.rowKey);
+    }
   }
 }
