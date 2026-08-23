@@ -166,10 +166,12 @@ function CellContent({
   columnKey,
   row,
   rank,
+  prefetchCharts,
 }: {
   columnKey: ChooseCurrencyColumnKey;
   row: ChooseCurrencyRow;
   rank: string;
+  prefetchCharts: boolean;
 }) {
   const colors = useColors();
 
@@ -201,7 +203,7 @@ function CellContent({
         </Text>
       );
     case "lastYear":
-      return <ChooseCurrencyLastYearMiniChart row={row} />;
+      return <ChooseCurrencyLastYearMiniChart row={row} chartsEnabled={prefetchCharts} />;
     default:
       return null;
   }
@@ -278,12 +280,14 @@ function DataRow({
   visibleColumns,
   isLast,
   onPress,
+  prefetchCharts,
 }: {
   row: ChooseCurrencyRow;
   rank: string;
   visibleColumns: readonly ChooseCurrencyVisibleColumn[];
   isLast: boolean;
   onPress?: (row: ChooseCurrencyRow) => void;
+  prefetchCharts: boolean;
 }) {
   const colors = useColors();
   const { colorScheme } = useTelegram();
@@ -301,7 +305,12 @@ function DataRow({
               : "middle";
         return (
           <ColumnShell key={column.key} column={column} edge={edge}>
-            <CellContent columnKey={column.key} row={row} rank={rank} />
+            <CellContent
+              columnKey={column.key}
+              row={row}
+              rank={rank}
+              prefetchCharts={prefetchCharts}
+            />
           </ColumnShell>
         );
       })}
@@ -364,6 +373,7 @@ const MemoDataRow = memo(
     prev.rank === next.rank &&
     prev.isLast === next.isLast &&
     prev.onPress === next.onPress &&
+    prev.prefetchCharts === next.prefetchCharts &&
     prev.visibleColumns === next.visibleColumns,
 );
 
@@ -459,7 +469,7 @@ export function ChooseCurrencyTable({
     Math.floor(scroll.scrollY / SPARKLINE_ROW_STRIDE_PX),
   );
   const sparklineViewCount = Math.max(
-    8,
+    5,
     Math.ceil((scroll.layoutH || shellLayoutH || 480) / SPARKLINE_ROW_STRIDE_PX) + 1,
   );
 
@@ -671,9 +681,10 @@ export function ChooseCurrencyTable({
         visibleColumns={visibleColumns}
         isLast={index >= rows.length - 1}
         onPress={onSelectRow}
+        prefetchCharts={prefetchCharts}
       />
     ),
-    [onSelectRow, rows.length, visibleColumns],
+    [onSelectRow, prefetchCharts, rows.length, visibleColumns],
   );
 
   const keyExtractor = useCallback((item: ChooseCurrencyRow) => item.rowKey, []);

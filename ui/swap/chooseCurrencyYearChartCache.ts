@@ -24,13 +24,13 @@ const EMPTY_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "empty" };
  * leaves the first rows last. Balance: two in-flight, short start spacing,
  * visible/lookahead before the rest, and a 429 retries that same row next.
  */
-const MAX_CONCURRENT_HEALTHY = 2;
-const START_GAP_HEALTHY_MS = 90;
-const START_GAP_COOLDOWN_MS = 650;
+const MAX_CONCURRENT_HEALTHY = 1;
+const START_GAP_HEALTHY_MS = 1_100;
+const START_GAP_COOLDOWN_MS = 1_800;
 const RATE_LIMIT_BACKOFF_MS = 700;
 const RATE_LIMIT_BACKOFF_CAP_MS = 2400;
 /** Rows below the visible window that still outrank the rest of the catalog. */
-const LOOKAHEAD_ROWS = 24;
+const LOOKAHEAD_ROWS = 8;
 const MAX_QUEUED = 240;
 const EMPTY_RETRY_COOLDOWN_MS = 60_000;
 const MINI_CHART_MAX_POINTS = 48;
@@ -193,7 +193,7 @@ async function runFetch(address: string): Promise<void> {
 
   setSnapshot(address, LOADING_SNAPSHOT);
   const result = await fetchJettonChartSeries(address, "day1", {
-    respectGlobalRateLimit: false,
+    respectGlobalRateLimit: true,
   });
 
   if (isVoiceDialogUiOpen()) {

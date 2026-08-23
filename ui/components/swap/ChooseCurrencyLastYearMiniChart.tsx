@@ -133,13 +133,20 @@ function FlatMiniChartLine() {
   );
 }
 
-function SparklineMiniChart({ address }: { address: string }) {
+function SparklineMiniChart({
+  address,
+  chartsEnabled = true,
+}: {
+  address: string;
+  chartsEnabled?: boolean;
+}) {
   const colors = useColors();
   const [width, setWidth] = useState(0);
 
   useEffect(() => {
+    if (!chartsEnabled) return;
     ensureChooseCurrencyYearChart(address);
-  }, [address]);
+  }, [address, chartsEnabled]);
 
   const snapshot = useSyncExternalStore(
     (onStoreChange) => subscribeChooseCurrencyYearChart(address, onStoreChange),
@@ -189,9 +196,16 @@ function SparklineMiniChart({ address }: { address: string }) {
 }
 
 /** Last-year cell: flat line for DLLR; trade-style sparkline (no legend) for other tokens. */
-export function ChooseCurrencyLastYearMiniChart({ row }: { row: ChooseCurrencyRow }) {
+export function ChooseCurrencyLastYearMiniChart({
+  row,
+  chartsEnabled = true,
+}: {
+  row: ChooseCurrencyRow;
+  /** When false, skip DYOR fetch (hidden picker / display:none panel). */
+  chartsEnabled?: boolean;
+}) {
   if (row.lastYearKind === "stable") {
     return <FlatMiniChartLine />;
   }
-  return <SparklineMiniChart address={row.rowKey} />;
+  return <SparklineMiniChart address={row.rowKey} chartsEnabled={chartsEnabled} />;
 }

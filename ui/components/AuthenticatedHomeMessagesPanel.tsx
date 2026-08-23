@@ -1109,11 +1109,15 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           const changed = chatsChanged(prev, next);
           queueMicrotask(() => syncAuthenticatedHomeSelectedChat(next));
           if (rows.length > 0) {
+            // Text-first: show titles/previews immediately; avatars fill in later.
+            if (!initialChatListRevealedRef.current) {
+              setInitialChatListRevealed(true);
+              setGatewayWarming(false);
+            }
             const syncReady =
               json.chatListSync?.positionedComplete === true &&
               json.chatListSync?.inProgress !== true;
             if (syncReady) {
-              setInitialChatListRevealed(true);
               setGatewayWarming(false);
             } else if (initialChatListRevealedRef.current) {
               setGatewayWarming(false);
@@ -1153,7 +1157,10 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       // Large silent refreshes stay interruptible once the list already has rows.
       if (chatsCountRef.current === 0) {
         applyChats();
-      } else if (rows.length >= 24 || Boolean(options?.silent)) {
+      } else if (
+        initialChatListRevealedRef.current &&
+        (rows.length >= 24 || Boolean(options?.silent))
+      ) {
         startTransition(applyChats);
       } else {
         applyChats();
@@ -1434,7 +1441,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           count: chatsCountRef.current,
         });
       }
-    }, 20_000);
+    }, 1_500);
     return () => clearTimeout(id);
   }, [authReady, initialChatListRevealed, isTelegramMessagesConnected]);
 
@@ -2374,15 +2381,9 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     );
   }
 
-  const awaitingInitialChatListSync =
-    !initialChatListRevealed &&
-    (chatListSync == null ||
-      chatListSync.inProgress === true ||
-      chatListSync.positionedComplete !== true);
   const showChatListSpinner =
-    chats.length === 0
-      ? loading || gatewayWarming || listBootstrapPending || !emptyListConfirmed
-      : awaitingInitialChatListSync;
+    chats.length === 0 &&
+    (loading || gatewayWarming || listBootstrapPending || !emptyListConfirmed);
 
   if (showChatListSpinner) {
     return (

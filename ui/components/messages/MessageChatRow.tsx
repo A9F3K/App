@@ -177,7 +177,8 @@ export function MessageChatRow({
   const rowInView = useElementVisible(rowRef as RefObject<Element | null>, {
     rootMargin: "120px",
   });
-  const avatarLoadEnabled = rowInView || Boolean(isActive);
+  // Initials paint instantly; only priority rows fetch proxy avatars (avoids TDLib storms).
+  const avatarLoadEnabled = Boolean(isActive) || Boolean(prioritizeAvatar);
   const prefetchOnceRef = useRef(false);
   useEffect(() => {
     if (!rowInView || prefetchOnceRef.current) return;

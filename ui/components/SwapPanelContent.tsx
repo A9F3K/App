@@ -56,6 +56,7 @@ export function SwapPanelContent() {
   } = useSwapChart("d", {
     jettonAddress: chartJettonAddress,
     enabled: swapFormVisible,
+    deferInitialLoad: true,
   });
 
   useEffect(() => {
