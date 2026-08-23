@@ -56,12 +56,12 @@ import { sendTelegramChatVoiceCallMessage } from "../../telegram/sendTelegramCha
 import type { TelegramVoiceCallMessage } from "../../telegram/sendTelegramChatVoiceCallMessage";
 import { useVoiceDialogFreezeDetector } from "./useVoiceDialogFreezeDetector";
 import {
+  MESSAGE_CHAT_VOICE_BAR_AVATAR_GAP_PX,
   MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
   MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX,
-  MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_DIVIDER_PX,
-  MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
   MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX,
   MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
+  voiceBarOverflowLabelWidthPx,
   resolveVoiceBarParticipantPreview,
 } from "./messageListLayout";
 import { clearQueuedNetworkFetches } from "./networkFetchQueue";
@@ -73,7 +73,7 @@ const JOIN_BUTTON_HEIGHT_PX = 30;
 const JOIN_BUTTON_TEXT_INSET_PX = 30;
 const STRIP_MIC_BLOCK_PX = 28;
 const STRIP_MIC_TO_AVATARS_GAP_PX = 10;
-const STRIP_AVATAR_STACK_OVERFLOW_GAP_PX = MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX;
+const STRIP_AVATAR_OVERFLOW_GAP_PX = MESSAGE_CHAT_VOICE_BAR_AVATAR_GAP_PX;
 const STRIP_JOIN_MARGIN_LEFT_PX = 12;
 const STRIP_LEAVE_BUTTON_PX = 36;
 
@@ -420,6 +420,16 @@ export function MessageChatVoiceBar({
     stripPaddingX,
     stripTrailingWidthPx,
   ]);
+  const overflowLabelWidthForCount = useCallback(
+    (count: number) => {
+      if (count <= 0) return 0;
+      const label = tf("messages.voiceChat.participantsMore", {
+        count: count.toLocaleString(appLocaleToBcp47(locale)),
+      });
+      return voiceBarOverflowLabelWidthPx(count, label);
+    },
+    [locale, tf],
+  );
   const { displayTotal: totalParticipantCount, overflowCount, stackedLimit } =
     resolveVoiceBarParticipantPreview({
       listedTotal: participants.length,
@@ -428,7 +438,8 @@ export function MessageChatVoiceBar({
       maxAvatars: MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
       joined,
       avatarStackAvailablePx,
-      avatarStackOverflowGapPx: STRIP_AVATAR_STACK_OVERFLOW_GAP_PX,
+      avatarStackOverflowGapPx: STRIP_AVATAR_OVERFLOW_GAP_PX,
+      overflowLabelWidthPx: overflowLabelWidthForCount,
     });
   const stackedParticipants = previewParticipants.slice(0, stackedLimit);
 
@@ -5245,32 +5256,29 @@ export function MessageChatVoiceBar({
               style={{
                 flexDirection: "row",
                 alignItems: "center",
-                height: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
-                gap: MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX,
                 minWidth: 0,
                 flexShrink: 1,
                 overflow: "visible",
+                gap: MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX,
               }}
             >
               <View
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
-                  height: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+                  height: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX + MESSAGE_CHAT_VOICE_RING_OUTSET_PX * 2,
                   flexShrink: 0,
                   overflow: "visible",
+                  gap: MESSAGE_CHAT_VOICE_BAR_AVATAR_GAP_PX,
                 }}
               >
-                {stackedParticipants.map((participant, index) => {
+                {stackedParticipants.map((participant) => {
                   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
                   const participantTitle = formatVoiceParticipantTitle(participant);
                   const speaking = Boolean(
                     rowSpeakKeys(participant).some((k) => speakingByKey[k]),
                   );
                   const avatarPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_PX;
-                  const dividerPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_DIVIDER_PX;
-                  const ringOutsetPx = MESSAGE_CHAT_VOICE_RING_OUTSET_PX;
-                  const isLast = index >= stackedParticipants.length - 1;
                   return (
                     <View
                       key={
@@ -5279,18 +5287,10 @@ export function MessageChatVoiceBar({
                           : `c:${participant.chat_id}`
                       }
                       style={{
-                        marginLeft:
-                          index === 0
-                            ? 0
-                            : -MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
-                        // Leftmost stays on top (chat-list style); right-edge
-                        // seam divider masks this face's speaking ring.
-                        zIndex: stackedParticipants.length - index,
                         width: avatarPx,
                         height: avatarPx,
                         alignItems: "center",
                         justifyContent: "center",
-                        // Speaking ring sits outside the face (chat-list style).
                         overflow: "visible",
                       }}
                     >
@@ -5307,40 +5307,27 @@ export function MessageChatVoiceBar({
                         activeVoiceRing={speaking}
                         joinedVoiceRing={speaking}
                       />
-                      {!isLast ? (
-                        <View
-                          pointerEvents="none"
-                          style={{
-                            position: "absolute",
-                            // 1px seam into the face + full right speaking ring
-                            // so the green stroke never overlays the next avatar.
-                            left: avatarPx - dividerPx,
-                            top: -ringOutsetPx,
-                            width: dividerPx + ringOutsetPx,
-                            height: avatarPx + ringOutsetPx * 2,
-                            backgroundColor: colors.background,
-                            zIndex: 40,
-                          }}
-                        />
-                      ) : null}
                     </View>
                   );
                 })}
+                {overflowCount > 0 ? (
+                  <Text
+                    numberOfLines={1}
+                    style={{
+                      color: colors.secondary,
+                      fontSize: 13,
+                      lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
+                      fontFamily:
+                        Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {tf("messages.voiceChat.participantsMore", {
+                      count: overflowCount.toLocaleString(appLocaleToBcp47(locale)),
+                    })}
+                  </Text>
+                ) : null}
               </View>
-              {overflowCount > 0 ? (
-                <Text
-                  numberOfLines={1}
-                  style={{
-                    color: colors.secondary,
-                    fontSize: 13,
-                    lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
-                    fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-                    flexShrink: 1,
-                  }}
-                >
-                  {`+${overflowCount}`}
-                </Text>
-              ) : null}
               <Text
                 numberOfLines={1}
                 style={{

@@ -30,6 +30,7 @@ import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
 import { VoiceWindowCrossIcon } from "./MessageChatVoiceControlIcons";
 import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
+import { MessageChatDownIcon } from "./MessageChatDownIcon";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { formatTelegramUsernameAt } from "./formatTelegramChatRowUsername";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
@@ -155,7 +156,6 @@ function AccountLogoutCross({
       accessibilityLabel={label}
       hitSlop={8}
       onPress={(e) => {
-        // Nested inside the profile header Pressable — don't open profile.
         (e as { stopPropagation?: () => void }).stopPropagation?.();
         onPress?.();
       }}
@@ -172,6 +172,55 @@ function AccountLogoutCross({
   );
 }
 
+function AccountsExpandChevron({
+  colors,
+  expanded,
+  expandLabel,
+  collapseLabel,
+  onPress,
+}: {
+  colors: ReturnType<typeof useColors>;
+  expanded: boolean;
+  expandLabel: string;
+  collapseLabel: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={expanded ? collapseLabel : expandLabel}
+      accessibilityState={{ expanded }}
+      hitSlop={8}
+      onPress={(e) => {
+        (e as { stopPropagation?: () => void }).stopPropagation?.();
+        onPress();
+      }}
+      style={({ pressed }) => ({
+        width: 28,
+        height: 28,
+        alignItems: "center",
+        justifyContent: "center",
+        opacity: pressed ? 0.7 : 1,
+        transform: [{ rotate: expanded ? "180deg" : "0deg" }],
+      })}
+    >
+      <MessageChatDownIcon color={colors.secondary} />
+    </Pressable>
+  );
+}
+
+function SideMenuSectionDivider({ color }: { color: string }) {
+  return (
+    <View
+      style={{
+        height: 1,
+        backgroundColor: color,
+        alignSelf: "stretch",
+      }}
+    />
+  );
+}
+
 export function MessagesSideMenu({ visible, onClose }: Props) {
   const colors = useColors();
   const { t } = useAppStrings();
@@ -180,6 +229,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     isTelegramMessagesConnected,
     connectedTelegramUserId,
     disconnectTelegramMessages,
+    openConnectSheet,
   } = useTelegramMessagesConnection();
   const { openProfileSheet } = useProfileSheet();
   const { height: windowHeight } = useWindowDimensions();
@@ -187,6 +237,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   const musicTopInset = musicSnap.visible ? MUSIC_CONTROL_BAR_HEIGHT_PX : 0;
   const [mounted, setMounted] = useState(visible);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [accountsExpanded, setAccountsExpanded] = useState(false);
   /** Telegram first + last name (and username) from TDLib profile — not the app display_name. */
   const [telegramDisplayName, setTelegramDisplayName] = useState<string | null>(null);
   const [telegramProfileUsername, setTelegramProfileUsername] = useState<string | null>(null);
@@ -195,6 +246,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   useEffect(() => {
     if (!visible) {
       setDrawerOpen(false);
+      setAccountsExpanded(false);
       const timer = setTimeout(() => setMounted(false), 220);
       return () => clearTimeout(timer);
     }
@@ -256,9 +308,17 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   }, [connectedTelegramUserId]);
 
   const handleDisconnect = useCallback(() => {
-    onClose();
+    // Logout only — never close the side menu from this control.
     void disconnectTelegramMessages();
-  }, [disconnectTelegramMessages, onClose]);
+  }, [disconnectTelegramMessages]);
+
+  const toggleAccountsExpanded = useCallback(() => {
+    setAccountsExpanded((prev) => !prev);
+  }, []);
+
+  const handleAddAccount = useCallback(() => {
+    openConnectSheet();
+  }, [openConnectSheet]);
 
   const openMyProfile = useCallback(() => {
     if (connectedTelegramUserId == null && !isTelegramMessagesConnected) return;
@@ -286,7 +346,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     selfAvatarUrl,
   ]);
 
-  /** Multi-account switcher appears only when two or more sessions are connected. */
+  /** Connected Telegram sessions listed in the expandable switcher (one is fine). */
   const connectedAccounts: Array<{
     key: string;
     title: string;
@@ -305,7 +365,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       },
     ];
   }, [avatarInitials, isTelegramMessagesConnected, profileTitle, selfAvatarUrl, usernameAt]);
-  const showAccountSwitcher = connectedAccounts.length >= 2;
+  const showAccountsSection = accountsExpanded;
 
   const navRows: MenuRow[] = useMemo(
     () => [
@@ -414,7 +474,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
           containOverscroll
         >
           <View style={{ paddingHorizontal: PAD_X, paddingTop: 18, paddingBottom: 12 }}>
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t("messages.sideMenu.myProfile")}
@@ -480,99 +540,90 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                   </Text>
                 </View>
               </Pressable>
-              {isTelegramMessagesConnected ? (
-                <AccountLogoutCross
-                  colors={colors}
-                  label={t("messages.sideMenu.logoutAccount")}
-                  onPress={handleDisconnect}
-                />
-              ) : null}
+              <AccountsExpandChevron
+                colors={colors}
+                expanded={accountsExpanded}
+                expandLabel={t("messages.sideMenu.expandAccounts")}
+                collapseLabel={t("messages.sideMenu.collapseAccounts")}
+                onPress={toggleAccountsExpanded}
+              />
             </View>
           </View>
 
-          <View
-            style={{
-              height: 1,
-              backgroundColor: colors.accent,
-              alignSelf: "stretch",
-              marginBottom: 8,
-            }}
-          />
-
-          {showAccountSwitcher ? (
-            <View style={{ paddingBottom: 8 }}>
-              {connectedAccounts.map((account) => (
-                <View
-                  key={account.key}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    minHeight: ROW_MIN_H,
-                    paddingHorizontal: PAD_X,
-                    gap: 12,
-                  }}
-                >
-                  <MessageChatAvatarSlot
-                    iconUrl={account.avatarUrl}
-                    initials={account.initials}
-                    sizePx={ACCOUNT_AVATAR_PX}
-                    colors={colors}
-                    scheme={colorScheme}
-                    loadEnabled={visible}
-                    fetchPriority="high"
-                  />
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <Text
-                      style={[typographyFixedRow30Label, { color: colors.primary }]}
-                      numberOfLines={1}
-                    >
-                      {account.title}
-                    </Text>
-                    {account.usernameAt ? (
+          {showAccountsSection ? (
+            <>
+              <SideMenuSectionDivider color={colors.accent} />
+              <View style={{ paddingTop: 8, paddingBottom: 8 }}>
+                {connectedAccounts.map((account) => (
+                  <View
+                    key={account.key}
+                    style={{
+                      flexDirection: "row",
+                      alignItems: "center",
+                      minHeight: ROW_MIN_H,
+                      paddingHorizontal: PAD_X,
+                      gap: 12,
+                    }}
+                  >
+                    <MessageChatAvatarSlot
+                      iconUrl={account.avatarUrl}
+                      initials={account.initials}
+                      sizePx={ACCOUNT_AVATAR_PX}
+                      colors={colors}
+                      scheme={colorScheme}
+                      loadEnabled={visible}
+                      fetchPriority="high"
+                    />
+                    <View style={{ flex: 1, minWidth: 0 }}>
                       <Text
-                        style={{ color: colors.secondary, fontSize: 12, lineHeight: 16 }}
+                        style={[typographyFixedRow30Label, { color: colors.primary }]}
                         numberOfLines={1}
                       >
-                        {account.usernameAt}
+                        {account.title}
                       </Text>
+                      {account.usernameAt ? (
+                        <Text
+                          style={{ color: colors.secondary, fontSize: 12, lineHeight: 16 }}
+                          numberOfLines={1}
+                        >
+                          {account.usernameAt}
+                        </Text>
+                      ) : null}
+                    </View>
+                    {isTelegramMessagesConnected ? (
+                      <AccountLogoutCross
+                        colors={colors}
+                        label={t("messages.sideMenu.logoutAccount")}
+                        onPress={handleDisconnect}
+                      />
                     ) : null}
                   </View>
-                  <AccountLogoutCross
-                    colors={colors}
-                    label={t("messages.sideMenu.logoutAccount")}
-                    onPress={handleDisconnect}
-                  />
-                </View>
-              ))}
+                ))}
+                <SideMenuRow
+                  label={t("messages.sideMenu.addAccount")}
+                  Icon={SideMenuAddAccountIcon}
+                  colors={colors}
+                  onPress={handleAddAccount}
+                />
+              </View>
+              <SideMenuSectionDivider color={colors.accent} />
+            </>
+          ) : (
+            <SideMenuSectionDivider color={colors.accent} />
+          )}
+
+          <View style={{ paddingTop: showAccountsSection ? 4 : 8 }}>
+            {navRows.map((row) => (
               <SideMenuRow
-                label={t("messages.sideMenu.addAccount")}
-                Icon={SideMenuAddAccountIcon}
+                key={row.key}
+                label={t(row.labelKey)}
+                Icon={row.Icon}
                 colors={colors}
+                active={row.active}
+                onPress={row.onPress}
               />
-            </View>
-          ) : null}
-
-          {showAccountSwitcher ? (
-            <View
-              style={{
-                height: 1,
-                backgroundColor: colors.accent,
-                alignSelf: "stretch",
-                marginBottom: 4,
-              }}
-            />
-          ) : null}
-
-          {navRows.map((row) => (
-            <SideMenuRow
-              key={row.key}
-              label={t(row.labelKey)}
-              Icon={row.Icon}
-              colors={colors}
-              active={row.active}
-              onPress={row.onPress}
-            />
-          ))}
+            ))}
+          </View>
         </HspScrollColumn>
       </View>
     </View>

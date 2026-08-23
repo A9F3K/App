@@ -10,17 +10,14 @@ export const MESSAGE_CHAT_LIST_SEARCH_STRIP_HEIGHT_PX = MESSAGE_CHAT_LIST_SEARCH
 export const MESSAGE_CHAT_LIST_SEARCH_VERTICAL_INSET_PX = 10;
 /** Gap below search (to first chat hover top). */
 export const MESSAGE_CHAT_LIST_SEARCH_MARGIN_BELOW_PX = 5;
-/** Overlapping participant avatars in the voice strip. */
+/** Participant avatars in the voice-strip preview row. */
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_PX = 28;
-/**
- * Negative margin between stacked faces. Keep ~3/4 of each avatar visible
- * (overlap ≈ 1/4 of {@link MESSAGE_CHAT_VOICE_BAR_AVATAR_PX}); larger values
- * clipped faces to roughly half in the strip preview.
- */
-export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX = 7;
-/** 1px background seam between stacked faces (covers speaking rings in the overlap). */
-export const MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_DIVIDER_PX = 1;
-export const MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS = 5;
+/** Horizontal gap between adjacent preview avatars and before "+N more". */
+export const MESSAGE_CHAT_VOICE_BAR_AVATAR_GAP_PX = 5;
+/** Speaking ring extends past the face (gap + stroke) — reserve in width fit. */
+export const MESSAGE_CHAT_VOICE_BAR_AVATAR_RING_OUTSET_PX = 3;
+/** Soft cap; {@link resolveVoiceBarAvatarStackFit} clamps by available width. */
+export const MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS = 32;
 /** Min inner width for the video column in the wide voice dialog (content, not padding). */
 export const MESSAGE_CHAT_VOICE_SIDE_BY_SIDE_VIDEO_MIN_PX = 320;
 /** Horizontal padding inside the docked video pane (12 + 8). */
@@ -40,24 +37,34 @@ export function messageChatVoiceSideBySideBreakpointPx(
 /** Gap between avatar stack / "+N" and the participant-count label in the strip. */
 export const MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX = 6;
 
-/** Pixel width of {@code stackedCount} overlapping voice-strip avatars. */
-export function voiceBarAvatarStackWidthPx(
-  stackedCount: number,
+/** Pixel width of {@code avatarCount} side-by-side voice-strip avatars (incl. rings). */
+export function voiceBarAvatarRowWidthPx(
+  avatarCount: number,
   avatarPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
-  overlapPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX,
+  gapPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_GAP_PX,
+  ringOutsetPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_RING_OUTSET_PX,
 ): number {
-  const count = Math.max(0, Math.trunc(stackedCount));
+  const count = Math.max(0, Math.trunc(avatarCount));
   if (count === 0) return 0;
-  const step = Math.max(1, avatarPx - overlapPx);
-  return avatarPx + (count - 1) * step;
+  return (
+    count * avatarPx +
+    Math.max(0, count - 1) * gapPx +
+    ringOutsetPx * 2
+  );
 }
 
-/** Approximate "+N" overflow label width at 13px UI sans. */
-export function voiceBarOverflowLabelWidthPx(overflowCount: number): number {
+/** Approximate localized "+N more" label width at 13px UI sans. */
+export function voiceBarOverflowLabelWidthPx(
+  overflowCount: number,
+  labelText?: string,
+): number {
   const count = Math.max(0, Math.trunc(overflowCount));
   if (count === 0) return 0;
+  if (labelText) {
+    return Math.ceil(labelText.length * 8.2) + 4;
+  }
   const digits = String(count).length;
-  return 10 + digits * 7;
+  return 18 + digits * 8;
 }
 
 export function resolveVoiceBarAvatarStackFit(input: {
@@ -67,15 +74,24 @@ export function resolveVoiceBarAvatarStackFit(input: {
   maxAvatars: number;
   stackOverflowGapPx?: number;
   avatarPx?: number;
-  overlapPx?: number;
+  avatarGapPx?: number;
+  ringOutsetPx?: number;
+  overflowLabelWidthPx?: (overflowCount: number) => number;
 }): { stackedLimit: number; overflowCount: number } {
   const availablePx = Math.max(0, Math.trunc(input.availablePx));
   const others = Math.max(0, Math.trunc(input.othersListed));
   const othersBudget = Math.max(0, Math.trunc(input.othersBudget));
   const maxAvatars = Math.max(1, Math.trunc(input.maxAvatars));
-  const gapPx = Math.max(0, Math.trunc(input.stackOverflowGapPx ?? 6));
+  const overflowGapPx = Math.max(
+    0,
+    Math.trunc(input.stackOverflowGapPx ?? MESSAGE_CHAT_VOICE_BAR_AVATAR_GAP_PX),
+  );
   const avatarPx = input.avatarPx ?? MESSAGE_CHAT_VOICE_BAR_AVATAR_PX;
-  const overlapPx = input.overlapPx ?? MESSAGE_CHAT_VOICE_BAR_AVATAR_STACK_OVERLAP_PX;
+  const avatarGapPx = input.avatarGapPx ?? MESSAGE_CHAT_VOICE_BAR_AVATAR_GAP_PX;
+  const ringOutsetPx = input.ringOutsetPx ?? MESSAGE_CHAT_VOICE_BAR_AVATAR_RING_OUTSET_PX;
+  const labelWidth =
+    input.overflowLabelWidthPx ??
+    ((overflowCount: number) => voiceBarOverflowLabelWidthPx(overflowCount));
 
   const maxStack = Math.min(others, maxAvatars, othersBudget);
   if (availablePx <= 0) {
@@ -88,10 +104,8 @@ export function resolveVoiceBarAvatarStackFit(input: {
   for (let stackedLimit = maxStack; stackedLimit >= 0; stackedLimit -= 1) {
     const overflowCount = Math.max(0, othersBudget - stackedLimit);
     const needPx =
-      voiceBarAvatarStackWidthPx(stackedLimit, avatarPx, overlapPx) +
-      (overflowCount > 0
-        ? gapPx + voiceBarOverflowLabelWidthPx(overflowCount)
-        : 0);
+      voiceBarAvatarRowWidthPx(stackedLimit, avatarPx, avatarGapPx, ringOutsetPx) +
+      (overflowCount > 0 ? overflowGapPx + labelWidth(overflowCount) : 0);
     if (needPx <= availablePx) {
       return { stackedLimit, overflowCount };
     }
@@ -115,9 +129,10 @@ export function resolveVoiceBarParticipantPreview(input: {
   tdlibHint: number;
   maxAvatars: number;
   joined: boolean;
-  /** When set, clamp stacked avatars so the 1px seams and "+N" fit without clipping. */
+  /** When set, clamp visible avatars so "+N more" fits beside the trailing control. */
   avatarStackAvailablePx?: number;
   avatarStackOverflowGapPx?: number;
+  overflowLabelWidthPx?: (overflowCount: number) => number;
 }): { displayTotal: number; overflowCount: number; stackedLimit: number } {
   const listed = Math.max(0, Math.trunc(input.listedTotal));
   const others = Math.max(0, Math.trunc(input.othersListed));
@@ -145,6 +160,7 @@ export function resolveVoiceBarParticipantPreview(input: {
       othersBudget,
       maxAvatars,
       stackOverflowGapPx: input.avatarStackOverflowGapPx,
+      overflowLabelWidthPx: input.overflowLabelWidthPx,
     });
     stackedLimit = fit.stackedLimit;
     overflowCount = fit.overflowCount;
