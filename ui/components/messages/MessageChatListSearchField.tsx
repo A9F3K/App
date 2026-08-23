@@ -1,5 +1,5 @@
-import { useRef, useState, type LayoutChangeEvent } from "react";
-import { Platform, Pressable, StyleSheet, TextInput, View } from "react-native";
+import { useRef, useState } from "react";
+import { Platform, Pressable, StyleSheet, TextInput, View, type LayoutChangeEvent } from "react-native";
 
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { hairlineBorderWidthPx } from "../../scrollIndicatorPx";

@@ -533,6 +533,25 @@ export const homeWalletAddressHeaderText: TextStyle = {
   textAlignVertical: "center",
 };
 
+/**
+ * Static copy that must not look like a field (no I-beam / caret on web).
+ * Pair with {@link displayAmountTextProps} on the `Text`.
+ */
+export const webNonEditableTextStyle: TextStyle =
+  Platform.OS === "web"
+    ? ({
+        userSelect: "none",
+        cursor: "default",
+        caretColor: "transparent",
+      } as TextStyle)
+    : {};
+
+/** Placeholder amounts (header “1$”, send/swap figures) — display only, never an input. */
+export const displayAmountTextProps = {
+  selectable: false as const,
+  ...(Platform.OS === "web" ? ({ dataSet: { hspDisplayAmount: "true" } } as object) : {}),
+};
+
 /** Balance line under wallet address on authenticated home header (placeholder “1$”). */
 export const homeWalletBalanceHeaderText: TextStyle = {
   fontSize: 30,
@@ -541,6 +560,7 @@ export const homeWalletBalanceHeaderText: TextStyle = {
   includeFontPadding: false,
   paddingVertical: 0,
   textAlignVertical: "center",
+  ...webNonEditableTextStyle,
 };
 
 /** Profile / display name under header icons on authenticated home. */

@@ -21,7 +21,14 @@ export function TradeCollectionColumn({
   colors: ThemeColors;
 }) {
   return (
-    <View style={{ flex: 1, minWidth: 0, alignSelf: "stretch" }}>
+    <View
+      style={{
+        flex: 1,
+        minWidth: 0,
+        alignSelf: "stretch",
+        ...(Platform.OS === "web" ? ({ cursor: "pointer" } as const) : null),
+      }}
+    >
       <View style={{ width: "100%", aspectRatio: 1 }}>
         <Image source={image} pointerEvents="none" style={{ width: "100%", height: "100%" }} contentFit="contain" />
       </View>

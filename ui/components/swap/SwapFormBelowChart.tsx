@@ -9,7 +9,14 @@ import {
   swapTokenDisplaySymbol,
   swapUnitAmountSide,
 } from "../../swap/swapPairTypes";
-import { layout, typographyAeroport15, typographyAeroport20, useColors } from "../../theme";
+import {
+  displayAmountTextProps,
+  layout,
+  typographyAeroport15,
+  typographyAeroport20,
+  useColors,
+  webNonEditableTextStyle,
+} from "../../theme";
 import { useResolvedPathname } from "../../useResolvedPathname";
 import { SmartGradientDivider } from "../smart/SmartGradientDivider";
 import { SwapActionRow } from "./SwapActionRow";
@@ -108,7 +115,12 @@ export function SwapFormBelowChart({
             justifyContent: "space-between",
           }}
         >
-          <Text style={[amountTextStyle, { color: colors.primary }]}>{sellAmountText}</Text>
+          <Text
+            {...displayAmountTextProps}
+            style={[amountTextStyle, webNonEditableTextStyle, { color: colors.primary }]}
+          >
+            {sellAmountText}
+          </Text>
           <Pressable
             accessibilityRole="button"
             onPress={openSellCurrency}
@@ -133,7 +145,9 @@ export function SwapFormBelowChart({
             justifyContent: "space-between",
           }}
         >
-          <Text style={muted15}>{sellPriceText}</Text>
+          <Text {...displayAmountTextProps} style={[muted15, webNonEditableTextStyle]}>
+            {sellPriceText}
+          </Text>
           <Text style={muted15}>{buyNetworkLabel}</Text>
         </View>
       </View>
@@ -164,7 +178,9 @@ export function SwapFormBelowChart({
           >
             <Text style={muted15}>Sendal Rodriges</Text>
             <View style={{ width: 5 }} />
-            <Text style={muted15}>1$</Text>
+            <Text {...displayAmountTextProps} style={[muted15, webNonEditableTextStyle]}>
+              1$
+            </Text>
             <View style={{ width: 5 }} />
             <SwapSelectChevron />
           </Pressable>
@@ -190,7 +206,12 @@ export function SwapFormBelowChart({
             justifyContent: "space-between",
           }}
         >
-          <Text style={[amountTextStyle, { color: colors.primary }]}>{buyAmountText}</Text>
+          <Text
+            {...displayAmountTextProps}
+            style={[amountTextStyle, webNonEditableTextStyle, { color: colors.primary }]}
+          >
+            {buyAmountText}
+          </Text>
           <Pressable
             accessibilityRole="button"
             onPress={openBuyCurrency}
@@ -215,7 +236,9 @@ export function SwapFormBelowChart({
             justifyContent: "space-between",
           }}
         >
-          <Text style={muted15}>{buyPriceText}</Text>
+          <Text {...displayAmountTextProps} style={[muted15, webNonEditableTextStyle]}>
+            {buyPriceText}
+          </Text>
           <Text style={muted15}>{buyNetworkLabel}</Text>
         </View>
       </View>

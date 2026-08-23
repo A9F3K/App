@@ -12,6 +12,7 @@ import {
   type NativeSyntheticEvent,
   type TextInputContentSizeChangeEventData,
   type TextInputSubmitEditingEventData,
+  type ViewStyle,
 } from "react-native";
 import { useRouter, usePathname } from "expo-router";
 import { WEB_UI_SANS_STACK } from "../fonts";
@@ -245,6 +246,10 @@ const styles = StyleSheet.create({
     justifyContent: "flex-start",
     overflow: "visible",
     zIndex: 1,
+    ...Platform.select({
+      web: { isolation: "isolate" } as ViewStyle,
+      default: {},
+    }),
   },
   input: {
     flex: 1,
@@ -281,7 +286,7 @@ const styles = StyleSheet.create({
     alignItems: "flex-start",
     justifyContent: "flex-start",
     pointerEvents: "box-none",
-    zIndex: 10,
+    zIndex: 20,
   },
 });
 
@@ -590,7 +595,10 @@ function WebBottomBar({
                 fontFamily: WEB_UI_SANS_STACK,
                 fontWeight: 400,
                 transform: `translateY(${uiTextVerticalCompensationY}px)`,
-                overflow: metrics.showScrollbar ? "auto" : "hidden",
+                position: "relative",
+                zIndex: 0,
+                /* Always scrollable so overflow is measurable; native bar is hidden in CSS. */
+                overflow: "auto",
               }}
               placeholder={isFocused ? "" : placeholderText}
             />

@@ -82,8 +82,10 @@ export function SpecialTelegramUserName({
   const displayName = specialUserDisplayName(telegramUserId, name, telegramChatId);
   const badgeKind = specialUserBadgeKind(telegramUserId, name, telegramChatId);
   const telegramEmojiStatusId = emojiStatusCustomEmojiId?.trim() || null;
-  const showSpecialBadge = badgeKind != null;
-  const showTelegramEmojiStatus = !showSpecialBadge && Boolean(telegramEmojiStatusId);
+  // Telegram shows the premium emoji-status animation instead of the static
+  // special badge whenever a custom-emoji status is set.
+  const showTelegramEmojiStatus = Boolean(telegramEmojiStatusId);
+  const showSpecialBadge = badgeKind != null && !showTelegramEmojiStatus;
   const showBadge = showSpecialBadge || showTelegramEmojiStatus;
   const showShine = specialUserShowsShineName(telegramUserId, name, telegramChatId);
   const shineColor = typeof textStyle.color === "string" ? textStyle.color : undefined;
@@ -205,7 +207,7 @@ export function SpecialTelegramUserName({
             customEmojiId={telegramEmojiStatusId}
             sizePx={SPECIAL_USER_BADGE_SIZE_PX}
             priority={emojiStatusPriority}
-            fetchEnabled
+            fetchEnabled={inlineEmojiFetchEnabled}
           />
         ) : null}
       </View>

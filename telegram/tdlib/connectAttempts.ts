@@ -2302,6 +2302,56 @@ export async function viewChatInboxMessagesForUser(
   }
 }
 
+export async function toggleChatPinnedForUser(
+  telegramUsername: string,
+  chatId: number,
+  isPinned: boolean,
+): Promise<{ ok: boolean; is_pinned: boolean; error?: string }> {
+  if (!Number.isFinite(chatId) || chatId === 0) {
+    return { ok: false, is_pinned: false, error: "invalid_chat_id" };
+  }
+
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, is_pinned: false, error: "session_not_ready" };
+  }
+
+  const nextPinned = Boolean(isPinned);
+  try {
+    const chatPreview = await import("./chatPreview.js");
+    const chat = (await record.client.invoke({
+      _: "getChat",
+      chat_id: chatId,
+    })) as TdChat;
+    const archiveOnly =
+      chatPreview.isChatInArchiveList(chat) && !chatPreview.isChatInMainList(chat);
+    const chatList = archiveOnly
+      ? ({ _: "chatListArchive" } as const)
+      : ({ _: "chatListMain" } as const);
+    await record.client.invoke({
+      _: "toggleChatIsPinned",
+      chat_list: chatList,
+      chat_id: chatId,
+      is_pinned: nextPinned,
+    });
+    const refreshed = (await record.client.invoke({
+      _: "getChat",
+      chat_id: chatId,
+    })) as TdChat;
+    const { patchLiveChatFromTdlib } = await import("./liveChatCache.js");
+    patchLiveChatFromTdlib(telegramUsername, refreshed, {});
+    const pinned = archiveOnly
+      ? (refreshed.positions ?? []).some(
+          (row) => row.list?._ === "chatListArchive" && row.is_pinned === true,
+        )
+      : chatPreview.isChatPinnedInMainList(refreshed);
+    return { ok: true, is_pinned: pinned };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "pin_failed";
+    return { ok: false, is_pinned: nextPinned, error: message };
+  }
+}
+
 export async function getMessageMediaForUser(
   telegramUsername: string,
   chatId: number,

@@ -64,6 +64,7 @@ import {
   telegramMessagesStatusHandler,
   telegramMessagesWarmupHandler,
   telegramMessagesViewInboxHandler,
+  telegramMessagesPinChatHandler,
   telegramMessagesSearchHandler,
   telegramMessagesStreamTicketHandler,
 } from './_handlers/telegram-messages.js';
@@ -150,6 +151,7 @@ const ROUTES: Record<string, ApiHandler> = {
   'telegram-messages-resync': telegramMessagesResyncHandler as ApiHandler,
   'telegram-messages-warmup': telegramMessagesWarmupHandler as ApiHandler,
   'telegram-messages-view-inbox': telegramMessagesViewInboxHandler as ApiHandler,
+  'telegram-messages-pin-chat': telegramMessagesPinChatHandler as ApiHandler,
   /** TDLib QR connect (proxies to local/remote gateway). */
   'telegram-mtproto-connect-start': telegramMtprotoConnectStartHandler as ApiHandler,
   'telegram-mtproto-connect-status': telegramMtprotoConnectStatusHandler as ApiHandler,

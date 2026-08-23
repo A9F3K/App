@@ -1,4 +1,10 @@
-import { Pressable, View, useWindowDimensions, type ReactNode } from "react-native";
+import { type ReactNode } from "react";
+import {
+  Platform,
+  Pressable,
+  useWindowDimensions,
+  type GestureResponderEvent,
+} from "react-native";
 import {
   layout,
   type ThemeColors,
@@ -17,8 +23,9 @@ type Props = {
   isActive?: boolean;
   colors: ThemeColors;
   onPress?: () => void;
-  onLongPress?: () => void;
+  onLongPress?: (event: GestureResponderEvent) => void;
   onHoverIn?: () => void;
+  onContextMenu?: (event: GestureResponderEvent) => void;
   children: ReactNode;
 };
 
@@ -46,6 +53,7 @@ export function HomeListRowShell({
   onPress,
   onLongPress,
   onHoverIn,
+  onContextMenu,
   children,
 }: Props) {
   const { width: windowWidth } = useWindowDimensions();
@@ -53,19 +61,15 @@ export function HomeListRowShell({
   const widePressHighlight = windowWidth > layout.authenticatedHome.firstBreakpoint;
   const columnBleedPx = layout.contentSideInsetPx;
 
-  if (!widePressHighlight) {
-    return (
-      <View
-        style={{
-          width: "100%",
-          alignSelf: "stretch",
-          marginBottom: isLast ? 0 : LIST_ROW_GAP_PX,
-        }}
-      >
-        {children}
-      </View>
-    );
-  }
+  const webContextMenuProps =
+    Platform.OS === "web" && onContextMenu
+      ? {
+          onContextMenu: (event: GestureResponderEvent & { preventDefault?: () => void }) => {
+            event.preventDefault?.();
+            onContextMenu(event);
+          },
+        }
+      : {};
 
   return (
     <Pressable
@@ -73,20 +77,36 @@ export function HomeListRowShell({
       accessibilityState={{ selected: isActive }}
       onPress={onPress}
       onLongPress={onLongPress}
+      delayLongPress={450}
       onHoverIn={onHoverIn}
-      style={({ pressed, hovered }) => ({
-        marginHorizontal: -columnBleedPx,
-        paddingHorizontal: columnBleedPx,
-        paddingVertical: LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX,
-        marginBottom: 0,
-        alignSelf: "stretch",
-        backgroundColor: rowShellBackground(
-          colors,
-          colorScheme,
-          { pressed, hovered: hovered ?? false },
-          isActive,
-        ),
-      })}
+      {...webContextMenuProps}
+      style={({ pressed, hovered }) =>
+        widePressHighlight
+          ? {
+              marginHorizontal: -columnBleedPx,
+              paddingHorizontal: columnBleedPx,
+              paddingVertical: LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX,
+              marginBottom: 0,
+              alignSelf: "stretch",
+              backgroundColor: rowShellBackground(
+                colors,
+                colorScheme,
+                { pressed, hovered: hovered ?? false },
+                isActive,
+              ),
+            }
+          : {
+              width: "100%",
+              alignSelf: "stretch",
+              marginBottom: isLast ? 0 : LIST_ROW_GAP_PX,
+              backgroundColor: rowShellBackground(
+                colors,
+                colorScheme,
+                { pressed, hovered: hovered ?? false },
+                isActive,
+              ),
+            }
+      }
     >
       {children}
     </Pressable>

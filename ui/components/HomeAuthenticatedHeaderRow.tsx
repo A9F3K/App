@@ -8,6 +8,7 @@ import {
   authenticatedHomeWideMenuColumnWidthPx,
   homeHeaderProfileNameText,
   homeWideMenuItemLabel,
+  displayAmountTextProps,
   homeWalletAddressHeaderText,
   homeWalletBalanceHeaderText,
   layout,
@@ -436,6 +437,7 @@ export function HomeAuthenticatedHeaderRow({
             </View>
             <View style={wideHeaderBottomBandStyle}>
               <Text
+                {...displayAmountTextProps}
                 style={[homeWalletBalanceHeaderText, { color: colors.primary }]}
                 accessibilityLabel={t("home.header.balanceA11y")}
               >
@@ -461,6 +463,7 @@ export function HomeAuthenticatedHeaderRow({
               </Text>
             </Pressable>
             <Text
+              {...displayAmountTextProps}
               style={[
                 homeWalletBalanceHeaderText,
                 {

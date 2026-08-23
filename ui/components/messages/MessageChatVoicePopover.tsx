@@ -2575,7 +2575,7 @@ export function MessageChatVoicePopover({
               // while Join longtasks froze Close.
               cursor: "default",
               pointerEvents: "auto",
-              background: "rgba(0,0,0,0.45)",
+              background: "transparent",
               zIndex: 0,
             },
           })

@@ -364,6 +364,45 @@ export async function gatewayFocusChat(
   }
 }
 
+export async function gatewayToggleChatPinned(
+  telegramUsername: string,
+  chatId: number,
+  isPinned: boolean,
+): Promise<{ ok: boolean; is_pinned: boolean; error: string | null }> {
+  const base = getGatewayBaseUrl();
+  const secret = getGatewaySecret();
+  const url = `${base}/v1/chats/pin`;
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gateway-Secret": secret,
+      },
+      body: JSON.stringify({ telegramUsername, chatId, isPinned }),
+    });
+    const json = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      is_pinned?: boolean;
+      error?: string;
+    };
+    if (!response.ok || !json.ok) {
+      return {
+        ok: false,
+        is_pinned: Boolean(isPinned),
+        error: json.error ?? "pin_failed",
+      };
+    }
+    return { ok: true, is_pinned: Boolean(json.is_pinned), error: null };
+  } catch (err) {
+    return {
+      ok: false,
+      is_pinned: Boolean(isPinned),
+      error: err instanceof Error ? err.message : "pin_failed",
+    };
+  }
+}
+
 export async function gatewayViewChatInboxMessages(
   telegramUsername: string,
   chatId: number,

@@ -1,6 +1,6 @@
 import type { FormattedTextSegment } from "../../../shared/formattedTextSegments";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { Platform, Text, View } from "react-native";
+import { Platform, Text, View, type GestureResponderEvent } from "react-native";
 import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import { TELEGRAM_THREAD_NO_AVATAR } from "../../../shared/telegramThreadConstants";
 import { resolveTelegramDisplayName } from "../../../shared/telegramDisplayName";
@@ -107,6 +107,15 @@ function resolveAvatarUrl(item: MessageChatRowData): string | null {
   return resolveTelegramThreadAvatarUrl(item);
 }
 
+function eventToAnchor(event: GestureResponderEvent): { x: number; y: number } {
+  const x = Number(event.nativeEvent.pageX);
+  const y = Number(event.nativeEvent.pageY);
+  return {
+    x: Number.isFinite(x) ? x : 0,
+    y: Number.isFinite(y) ? y : 0,
+  };
+}
+
 export function MessageChatRow({
   item,
   isLast,
@@ -117,6 +126,7 @@ export function MessageChatRow({
   onLongPress,
   onAvatarPress,
   onPrefetch,
+  onOpenContextMenu,
 }: {
   item: MessageChatRowData;
   isLast: boolean;
@@ -125,6 +135,8 @@ export function MessageChatRow({
   timePendingLabel: string;
   onPress?: () => void;
   onLongPress?: () => void;
+  /** Opens the chat-list context menu (right-click / long-press). */
+  onOpenContextMenu?: (anchor: { x: number; y: number }) => void;
   /** Opens peer/chat profile without selecting the row when provided. */
   onAvatarPress?: () => void;
   onPrefetch?: () => void;
@@ -228,7 +240,20 @@ export function MessageChatRow({
       isActive={isActive}
       colors={colors}
       onPress={onPress}
-      onLongPress={onLongPress}
+      onLongPress={(event) => {
+        if (onOpenContextMenu) {
+          onOpenContextMenu(eventToAnchor(event));
+          return;
+        }
+        onLongPress?.();
+      }}
+      onContextMenu={
+        onOpenContextMenu
+          ? (event) => {
+              onOpenContextMenu(eventToAnchor(event));
+            }
+          : undefined
+      }
     >
       <View
         ref={rowRef}

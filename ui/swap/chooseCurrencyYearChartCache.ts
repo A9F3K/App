@@ -18,22 +18,21 @@ const LOADING_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "loading" };
 const EMPTY_SNAPSHOT: ChooseCurrencyYearChartSnapshot = { status: "empty" };
 
 /**
- * Fill last-year plots top-to-bottom in table order. Concurrent DYOR calls
- * 429 and complete out of order, which looks like lazy/random loading.
+ * Viewport-first DYOR sparkline pump.
+ *
+ * Blast-all 429s and fills out of order. Strict 1-by-1 with a 4s 429 skip
+ * leaves the first rows last. Balance: two in-flight, short start spacing,
+ * visible/lookahead before the rest, and a 429 retries that same row next.
  */
-const MAX_CONCURRENT = 1;
-const REQUEST_GAP_MS = 220;
-const RATE_LIMIT_GAP_MS = 1500;
-const RETRY_BASE_DELAY_MS = 4000;
-const RETRY_MAX_DELAY_MS = 24000;
-/**
- * FlatList windowSize≈9 mounts far more than 40 sparklines. A tiny queue dropped
- * pending addresses permanently (mounted cells never re-called ensure).
- */
+const MAX_CONCURRENT_HEALTHY = 2;
+const START_GAP_HEALTHY_MS = 90;
+const START_GAP_COOLDOWN_MS = 650;
+const RATE_LIMIT_BACKOFF_MS = 700;
+const RATE_LIMIT_BACKOFF_CAP_MS = 2400;
+/** Rows below the visible window that still outrank the rest of the catalog. */
+const LOOKAHEAD_ROWS = 24;
 const MAX_QUEUED = 240;
-/** Re-try hard empties after this cooldown (e.g. brief API gaps). */
 const EMPTY_RETRY_COOLDOWN_MS = 60_000;
-/** Downsample for 40px-tall sparklines. */
 const MINI_CHART_MAX_POINTS = 48;
 
 function normalizeAddress(address: string): string {
@@ -42,17 +41,14 @@ function normalizeAddress(address: string): string {
 
 const cache = new Map<string, ChooseCurrencyYearChartSnapshot>();
 const emptyAtMs = new Map<string, number>();
-const attemptCount = new Map<string, number>();
 const listeners = new Map<string, Set<() => void>>();
 /** Scroll-window rows from ChooseCurrencyTable — highest fetch priority. */
 const visibleWindow = new Set<string>();
-/** IntersectionObserver near-view rows (refcounted per address). */
-const nearViewRefcount = new Map<string, number>();
 /** Top-to-bottom sparkline order of the current currency table. */
 const listOrder = new Map<string, number>();
 const queued: string[] = [];
 const queuedSet = new Set<string>();
-let activeCount = 0;
+const inFlight = new Set<string>();
 let lastStartMs = 0;
 let pumpTimer: ReturnType<typeof setTimeout> | null = null;
 let rateLimitedUntilMs = 0;
@@ -102,21 +98,95 @@ function trySeedFromSeriesCache(address: string): boolean {
   return true;
 }
 
-function scheduleRetry(address: string, attempt: number): void {
-  const delay = Math.min(RETRY_MAX_DELAY_MS, RETRY_BASE_DELAY_MS * 2 ** Math.min(attempt - 1, 3));
-  setTimeout(() => {
-    const current = cache.get(address);
-    // Only retry if still waiting (not ready/empty from another path).
-    if (current && current.status !== "loading" && current.status !== "idle") return;
-    cache.delete(address);
-    queuedSet.delete(address);
-    ensureChooseCurrencyYearChart(address);
-  }, delay);
+function visibleExtent(): { min: number; max: number } {
+  let min = Number.POSITIVE_INFINITY;
+  let max = -1;
+  for (const address of visibleWindow) {
+    const index = listOrder.get(address);
+    if (index == null) continue;
+    if (index < min) min = index;
+    if (index > max) max = index;
+  }
+  if (max < 0) {
+    return { min: 0, max: Math.max(0, LOOKAHEAD_ROWS - 1) };
+  }
+  return { min, max };
+}
+
+function priorityBand(address: string): 0 | 1 | 2 {
+  const index = listOrder.get(address);
+  if (index == null) return 2;
+  const { min, max } = visibleExtent();
+  if (index >= min && index <= max) return 0;
+  if (index <= max + LOOKAHEAD_ROWS) return 1;
+  return 2;
+}
+
+function compareQueueOrder(a: string, b: string): number {
+  const bandDelta = priorityBand(a) - priorityBand(b);
+  if (bandDelta !== 0) return bandDelta;
+  return (listOrder.get(a) ?? Number.MAX_SAFE_INTEGER) - (listOrder.get(b) ?? Number.MAX_SAFE_INTEGER);
+}
+
+function rebalanceQueue(): void {
+  if (queued.length < 2) return;
+  queued.sort(compareQueueOrder);
+}
+
+function currentMaxConcurrent(): number {
+  return consecutiveRateLimits > 0 ? 1 : MAX_CONCURRENT_HEALTHY;
+}
+
+function currentStartGapMs(): number {
+  return consecutiveRateLimits > 0 ? START_GAP_COOLDOWN_MS : START_GAP_HEALTHY_MS;
+}
+
+function noteRateLimit(): void {
+  consecutiveSuccesses = 0;
+  consecutiveRateLimits += 1;
+  const wait = Math.min(
+    RATE_LIMIT_BACKOFF_CAP_MS,
+    RATE_LIMIT_BACKOFF_MS * consecutiveRateLimits,
+  );
+  rateLimitedUntilMs = Math.max(rateLimitedUntilMs, Date.now() + wait);
+}
+
+function noteSuccess(): void {
+  consecutiveRateLimits = 0;
+}
+
+function enqueue(address: string): void {
+  while (queued.length >= MAX_QUEUED) {
+    let dropIdx = -1;
+    let dropBand = -1;
+    let dropOrder = -1;
+    for (let i = 0; i < queued.length; i++) {
+      const candidate = queued[i]!;
+      const band = priorityBand(candidate);
+      if (band === 0) continue;
+      const order = listOrder.get(candidate) ?? Number.MAX_SAFE_INTEGER;
+      if (band > dropBand || (band === dropBand && order >= dropOrder)) {
+        dropIdx = i;
+        dropBand = band;
+        dropOrder = order;
+      }
+    }
+    if (dropIdx < 0) break;
+    const dropped = queued.splice(dropIdx, 1)[0];
+    if (dropped) queuedSet.delete(dropped);
+  }
+
+  if (queuedSet.has(address)) {
+    rebalanceQueue();
+    return;
+  }
+  queuedSet.add(address);
+  queued.push(address);
+  rebalanceQueue();
 }
 
 async function runFetch(address: string): Promise<void> {
   if (isVoiceDialogUiOpen()) {
-    // Defer mid-dialog — parsing chart JSON on the main thread freezes Close.
     enqueue(address);
     return;
   }
@@ -124,20 +194,17 @@ async function runFetch(address: string): Promise<void> {
 
   setSnapshot(address, LOADING_SNAPSHOT);
   const result = await fetchJettonChartSeries(address, "day1", {
-    // Pump is already serial; the 1s global limiter made the column look lazy.
     respectGlobalRateLimit: false,
   });
 
   if (isVoiceDialogUiOpen()) {
-    // Dialog opened while the fetch was in flight — don't parse/apply yet.
     enqueue(address);
     cache.delete(address);
     return;
   }
 
   if (result.ok) {
-    consecutiveRateLimits = 0;
-    attemptCount.delete(address);
+    noteSuccess();
     setSnapshot(address, {
       status: "ready",
       normalized: downsample(result.series.normalized),
@@ -147,26 +214,13 @@ async function runFetch(address: string): Promise<void> {
 
   if (result.retryable) {
     if (result.error.toLowerCase().includes("rate limit")) {
-      consecutiveRateLimits += 1;
-      rateLimitedUntilMs = Date.now() + RATE_LIMIT_GAP_MS * consecutiveRateLimits;
+      noteRateLimit();
     }
-    // Never give up on 429 / network — keep loading and back off.
-    const attempts = (attemptCount.get(address) ?? 0) + 1;
-    attemptCount.set(address, attempts);
-    scheduleRetry(address, attempts);
+    enqueue(address);
     return;
   }
 
-  attemptCount.delete(address);
   setSnapshot(address, EMPTY_SNAPSHOT);
-}
-
-function currentMaxConcurrent(): number {
-  return consecutiveRateLimits > 0 ? 1 : MAX_CONCURRENT;
-}
-
-function currentRequestGapMs(): number {
-  return consecutiveRateLimits > 0 ? RATE_LIMIT_GAP_MS : REQUEST_GAP_MS;
 }
 
 function pumpQueue(): void {
@@ -175,22 +229,22 @@ function pumpQueue(): void {
   const tick = () => {
     pumpTimer = null;
     rebalanceQueue();
-    // Year sparklines parse 200–300 points each and freeze the voice dialog
-    // (logs: swap_chart_parse_done overlapping voice_dialog_longtask / raf_stall).
     if (isVoiceDialogUiOpen()) {
       pumpTimer = setTimeout(tick, 2_500);
       return;
     }
     if (isMainChartFetchActive()) {
-      pumpTimer = setTimeout(tick, 150);
+      pumpTimer = setTimeout(tick, 120);
       return;
     }
 
-    while (activeCount < currentMaxConcurrent() && queued.length > 0) {
+    while (inFlight.size < currentMaxConcurrent() && queued.length > 0) {
       const now = Date.now();
-      const rateWait = Math.max(0, rateLimitedUntilMs - now);
-      const gapWait = Math.max(0, currentRequestGapMs() - (now - lastStartMs));
-      const wait = Math.max(rateWait, gapWait);
+      const wait = Math.max(
+        0,
+        rateLimitedUntilMs - now,
+        currentStartGapMs() - (now - lastStartMs),
+      );
       if (wait > 0) {
         pumpTimer = setTimeout(tick, wait);
         return;
@@ -200,18 +254,14 @@ function pumpQueue(): void {
       if (!address) return;
       queuedSet.delete(address);
 
+      if (inFlight.has(address)) continue;
       const existing = cache.get(address);
-      if (
-        existing &&
-        (existing.status === "ready" || existing.status === "empty" || existing.status === "loading")
-      ) {
-        continue;
-      }
+      if (existing?.status === "ready" || existing?.status === "empty") continue;
 
-      activeCount += 1;
+      inFlight.add(address);
       lastStartMs = Date.now();
       void runFetch(address).finally(() => {
-        activeCount -= 1;
+        inFlight.delete(address);
         pumpQueue();
       });
     }
@@ -237,6 +287,7 @@ export function syncChooseCurrencyYearChartListOrder(addresses: readonly string[
     listOrder.set(key, index);
     index += 1;
   }
+  rebalanceQueue();
 }
 
 /** Scroll-visible window from ChooseCurrencyTable — on-screen rows win the queue. */
@@ -256,22 +307,10 @@ export function clearChooseCurrencyYearChartVisibleWindow(): void {
   rebalanceQueue();
 }
 
-export function registerChooseCurrencyYearChartNearView(address: string): void {
-  const key = normalizeAddress(address);
-  if (!key) return;
-  nearViewRefcount.set(key, (nearViewRefcount.get(key) ?? 0) + 1);
-  rebalanceQueue();
-  pumpQueue();
-}
+/** Kept so older callers compile; fetch priority is scroll + list order, not IO. */
+export function registerChooseCurrencyYearChartNearView(_address: string): void {}
 
-export function unregisterChooseCurrencyYearChartNearView(address: string): void {
-  const key = normalizeAddress(address);
-  if (!key) return;
-  const next = (nearViewRefcount.get(key) ?? 0) - 1;
-  if (next <= 0) nearViewRefcount.delete(key);
-  else nearViewRefcount.set(key, next);
-  rebalanceQueue();
-}
+export function unregisterChooseCurrencyYearChartNearView(_address: string): void {}
 
 setOnMainChartFetchIdle(() => {
   pumpQueue();
@@ -298,60 +337,16 @@ export function subscribeChooseCurrencyYearChart(
   };
 }
 
-function isPriorityAddress(address: string): boolean {
-  return visibleWindow.has(address) || (nearViewRefcount.get(address) ?? 0) > 0;
-}
-
-function compareQueueOrder(a: string, b: string): number {
-  const pa = isPriorityAddress(a) ? 0 : 1;
-  const pb = isPriorityAddress(b) ? 0 : 1;
-  if (pa !== pb) return pa - pb;
-  const ia = listOrder.get(a) ?? Number.MAX_SAFE_INTEGER;
-  const ib = listOrder.get(b) ?? Number.MAX_SAFE_INTEGER;
-  return ia - ib;
-}
-
-function rebalanceQueue(): void {
-  if (queued.length < 2) return;
-  queued.sort(compareQueueOrder);
-}
-
-function enqueue(address: string): void {
-  while (queued.length >= MAX_QUEUED) {
-    let dropIdx = -1;
-    let dropOrder = -1;
-    for (let i = 0; i < queued.length; i++) {
-      const candidate = queued[i]!;
-      if (isPriorityAddress(candidate)) continue;
-      const order = listOrder.get(candidate) ?? Number.MAX_SAFE_INTEGER;
-      if (order >= dropOrder) {
-        dropIdx = i;
-        dropOrder = order;
-      }
-    }
-    if (dropIdx < 0) break;
-    const dropped = queued.splice(dropIdx, 1)[0];
-    if (dropped) queuedSet.delete(dropped);
-  }
-
-  if (queuedSet.has(address)) {
-    rebalanceQueue();
-    return;
-  }
-  queuedSet.add(address);
-  queued.push(address);
-  rebalanceQueue();
-}
-
 /** Ensure a year sparkline is loading / cached for this jetton address. */
 export function ensureChooseCurrencyYearChart(address: string): void {
   const key = normalizeAddress(address);
   if (!key || key.startsWith("jetton:")) return;
 
   if (trySeedFromSeriesCache(key)) return;
+  if (inFlight.has(key)) return;
 
   const existing = cache.get(key);
-  if (existing?.status === "ready" || existing?.status === "loading") return;
+  if (existing?.status === "ready") return;
   if (existing?.status === "empty") {
     const emptiedAt = emptyAtMs.get(key) ?? 0;
     if (Date.now() - emptiedAt < EMPTY_RETRY_COOLDOWN_MS) return;

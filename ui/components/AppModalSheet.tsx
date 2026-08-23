@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import {
   Modal,
   Platform,
@@ -7,7 +7,6 @@ import {
   Text,
   useWindowDimensions,
   View,
-  type ReactNode,
 } from "react-native";
 import { layout, typographyFixedRow40Label, typographyRect15, typographySansSemibold, useColors } from "../theme";
 import { HspScrollColumn } from "./HspScrollColumn";
@@ -22,7 +21,7 @@ export const appModalSheetStyles = StyleSheet.create({
   },
   backdropFill: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: "transparent",
   },
   sheet: {
     width: "100%",

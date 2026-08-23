@@ -183,6 +183,7 @@ export function ScrollIndicatorDragHandle({
           top: inset,
           width: crossAxisVisualSpan,
           height: thumbSpan,
+          overflow: "visible",
         }
       : {
           position: "absolute",
@@ -190,6 +191,7 @@ export function ScrollIndicatorDragHandle({
           top: inset,
           width: thumbSpan,
           height: crossAxisVisualSpan,
+          overflow: "visible",
         };
 
   const trackProbeStyle: ViewStyle =

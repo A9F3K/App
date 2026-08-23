@@ -41,6 +41,7 @@ import {
   demoteQueuedNetworkFetches,
 } from "./messages/networkFetchQueue";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
+import { MessageChatListContextMenu } from "./messages/MessageChatListContextMenu";
 import { useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
 import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
 import {
@@ -76,6 +77,7 @@ import {
 import { telegramEmojiDebug } from "./messages/telegramEmojiDebug";
 import { useTelegramMessagesChatListStream } from "./messages/useTelegramMessagesChatListStream";
 import { fetchTelegramChatListSearch, rememberTelegramFoundChat, clearTelegramRecentFoundChats, removeTelegramRecentFoundChat, type TelegramChatListSearchHit } from "../telegram/fetchTelegramChatListSearch";
+import { toggleTelegramChatPinned } from "../telegram/toggleTelegramChatPinned";
 
 function normalizeSearchNeedle(raw: string): string {
   return raw.trim().toLowerCase().replace(/^@+/, "");
@@ -1546,6 +1548,70 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     clearAuthenticatedHomeSelectedChat();
   }, [chatSelectionEnabled]);
 
+  const [chatListMenu, setChatListMenu] = useState<{
+    row: MessageChatRowData;
+    anchor: { x: number; y: number };
+  } | null>(null);
+
+  const handleOpenChatListMenu = useCallback(
+    (row: MessageChatRowData, anchor: { x: number; y: number }) => {
+      setChatListMenu({ row, anchor });
+    },
+    [],
+  );
+
+  const handleCloseChatListMenu = useCallback(() => {
+    setChatListMenu(null);
+  }, []);
+
+  const handleToggleChatPinned = useCallback((row: MessageChatRowData) => {
+    const chatId = row.telegram_chat_id;
+    const nextPinned = !Boolean(row.is_pinned);
+    setChatListMenu(null);
+    setChats((prev) =>
+      prev.map((item) =>
+        item.telegram_chat_id === chatId
+          ? {
+              ...item,
+              is_pinned: nextPinned,
+              list_tier: nextPinned ? "pinned" : "positioned",
+            }
+          : item,
+      ),
+    );
+    void toggleTelegramChatPinned(chatId, nextPinned).then((result) => {
+      if (result.ok) {
+        setChats((prev) =>
+          prev.map((item) =>
+            item.telegram_chat_id === chatId
+              ? {
+                  ...item,
+                  is_pinned: result.is_pinned,
+                  list_tier: result.is_pinned ? "pinned" : "positioned",
+                }
+              : item,
+          ),
+        );
+        return;
+      }
+      setChats((prev) =>
+        prev.map((item) =>
+          item.telegram_chat_id === chatId
+            ? { ...item, is_pinned: row.is_pinned, list_tier: row.list_tier }
+            : item,
+        ),
+      );
+    });
+  }, []);
+
+  const handleViewChatProfile = useCallback(
+    (row: MessageChatRowData) => {
+      setChatListMenu(null);
+      openProfileSheet(row);
+    },
+    [openProfileSheet],
+  );
+
   const sortedChats = useMemo(() => sortChatRowsTierAware(chats), [chats]);
   const searchNeedle = useMemo(
     () => normalizeSearchNeedle(chatListSearchQuery),
@@ -2201,11 +2267,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
               colors={colors}
               timePendingLabel={t("feed.timePending")}
               onPress={chatSelectionEnabled ? () => handleChatPress(item.row) : undefined}
-              onLongPress={
-                recentsMode
-                  ? () => handleRemoveRecentSearch(item.row.telegram_chat_id)
-                  : undefined
-              }
+              onOpenContextMenu={(anchor) => handleOpenChatListMenu(item.row, anchor)}
               onAvatarPress={() => openProfileSheet(item.row)}
               onPrefetch={() => handleRowPrefetch(item.row)}
             />
@@ -2325,20 +2387,40 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     </View>
   );
 
+  const chatListMenuEl = (
+    <MessageChatListContextMenu
+      visible={chatListMenu != null}
+      anchor={chatListMenu?.anchor ?? null}
+      colors={colors}
+      row={chatListMenu?.row ?? null}
+      onClose={handleCloseChatListMenu}
+      onTogglePin={handleToggleChatPinned}
+      onViewProfile={handleViewChatProfile}
+    />
+  );
+
   if (!scrollable) {
-    return list;
+    return (
+      <>
+        {list}
+        {chatListMenuEl}
+      </>
+    );
   }
 
   return (
-    <ScrollView
-      style={{ width: "100%" }}
-      contentContainerStyle={{ ...listShellStyle, flexGrow: 1 }}
-      onScrollBeginDrag={handleClearSelection}
-    >
-      {searchField}
-      {searchEmpty}
-      {renderChatRows(visibleChats, visibleChatStartIndex)}
-      <Pressable style={{ flexGrow: 1, minHeight: 1 }} onPress={handleClearSelection} />
-    </ScrollView>
+    <>
+      <ScrollView
+        style={{ width: "100%" }}
+        contentContainerStyle={{ ...listShellStyle, flexGrow: 1 }}
+        onScrollBeginDrag={handleClearSelection}
+      >
+        {searchField}
+        {searchEmpty}
+        {renderChatRows(visibleChats, visibleChatStartIndex)}
+        <Pressable style={{ flexGrow: 1, minHeight: 1 }} onPress={handleClearSelection} />
+      </ScrollView>
+      {chatListMenuEl}
+    </>
   );
 }

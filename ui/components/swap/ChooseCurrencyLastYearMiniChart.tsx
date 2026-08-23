@@ -1,13 +1,10 @@
-import { createElement, useEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
+import { createElement, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Platform, View, type LayoutChangeEvent } from "react-native";
 
-import { useElementVisible } from "../messages/useElementVisible";
 import {
   ensureChooseCurrencyYearChart,
   getChooseCurrencyYearChartSnapshot,
-  registerChooseCurrencyYearChartNearView,
   subscribeChooseCurrencyYearChart,
-  unregisterChooseCurrencyYearChartNearView,
 } from "../../swap/chooseCurrencyYearChartCache";
 import { useColors } from "../../theme";
 import { CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX } from "./chooseCurrencyTableConstants";
@@ -139,22 +136,10 @@ function FlatMiniChartLine() {
 function SparklineMiniChart({ address }: { address: string }) {
   const colors = useColors();
   const [width, setWidth] = useState(0);
-  const hostRef = useRef<View>(null);
-  // On-screen rows bump queue priority; fetch itself is table-order top → bottom.
-  const nearView = useElementVisible(hostRef as RefObject<Element | null>, {
-    rootMargin: "280px",
-    threshold: 0.01,
-  });
 
   useEffect(() => {
     ensureChooseCurrencyYearChart(address);
   }, [address]);
-
-  useEffect(() => {
-    if (!nearView) return;
-    registerChooseCurrencyYearChartNearView(address);
-    return () => unregisterChooseCurrencyYearChartNearView(address);
-  }, [address, nearView]);
 
   const snapshot = useSyncExternalStore(
     (onStoreChange) => subscribeChooseCurrencyYearChart(address, onStoreChange),
@@ -171,7 +156,6 @@ function SparklineMiniChart({ address }: { address: string }) {
 
   return (
     <View
-      ref={hostRef}
       onLayout={onLayout}
       style={{
         width: "100%",

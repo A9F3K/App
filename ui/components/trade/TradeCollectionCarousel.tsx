@@ -34,6 +34,11 @@ function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
+function wrapIndex(index: number, count: number): number {
+  if (count <= 0) return 0;
+  return ((index % count) + count) % count;
+}
+
 function rubberTranslate(next: number, min: number, max: number): number {
   if (next > max) return max + (next - max) * RUBBER;
   if (next < min) return min + (next - min) * RUBBER;
@@ -45,15 +50,23 @@ function snapIndexFromDrag(args: {
   dx: number;
   velocityX: number;
   width: number;
-  lastIndex: number;
+  count: number;
+  loop: boolean;
 }): number {
-  const { startIndex, dx, velocityX, width, lastIndex } = args;
-  if (width <= 0) return startIndex;
-  if (velocityX > VELOCITY_PX_PER_MS) return clamp(startIndex - 1, 0, lastIndex);
-  if (velocityX < -VELOCITY_PX_PER_MS) return clamp(startIndex + 1, 0, lastIndex);
-  if (dx <= -width * SNAP_RATIO) return clamp(startIndex + 1, 0, lastIndex);
-  if (dx >= width * SNAP_RATIO) return clamp(startIndex - 1, 0, lastIndex);
-  return startIndex;
+  const { startIndex, dx, velocityX, width, count, loop } = args;
+  if (width <= 0 || count <= 0) return startIndex;
+  let next = startIndex;
+  if (velocityX > VELOCITY_PX_PER_MS) next = startIndex - 1;
+  else if (velocityX < -VELOCITY_PX_PER_MS) next = startIndex + 1;
+  else if (dx <= -width * SNAP_RATIO) next = startIndex + 1;
+  else if (dx >= width * SNAP_RATIO) next = startIndex - 1;
+  if (loop) return wrapIndex(next, count);
+  return clamp(next, 0, count - 1);
+}
+
+function gestureDirection(dx: number, velocityX: number): 1 | -1 {
+  if (Math.abs(velocityX) > VELOCITY_PX_PER_MS) return velocityX < 0 ? 1 : -1;
+  return dx <= 0 ? 1 : -1;
 }
 
 function clearBrowserTextSelection() {
@@ -86,9 +99,44 @@ type WebPointerEvt = {
   currentTarget?: unknown;
 };
 
+function SlideRow({
+  slide,
+  slideKey,
+  width,
+  gapPx,
+  colors,
+}: {
+  slide: TradeCollectionItem[];
+  slideKey: string;
+  width: number | `${number}%`;
+  gapPx: number;
+  colors: ThemeColors;
+}) {
+  return (
+    <View key={slideKey} style={{ width }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", width: "100%" }}>
+        {slide.map((collection, index) => (
+          <Fragment key={`${slideKey}-${collection.title}-${index}`}>
+            {index > 0 ? <View style={{ width: gapPx }} /> : null}
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <TradeCollectionColumn
+                image={collection.image}
+                title={collection.title}
+                subtitle={collection.subtitle}
+                colors={colors}
+              />
+            </View>
+          </Fragment>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 /**
  * Horizontal collection slides: mouse-drag on web, swipe on native / touch.
  * Vertical parent scroll still wins until the gesture is clearly horizontal.
+ * Looping clones let the last batch continue into the first.
  */
 export function TradeCollectionCarousel({
   collections,
@@ -109,13 +157,28 @@ export function TradeCollectionCarousel({
     return out.length > 0 ? out : [[]];
   }, [collections, columnCount, itemsPerSlide]);
 
-  const lastIndex = Math.max(0, slides.length - 1);
+  const count = slides.length;
+  const looping = count > 1;
+  const lastIndex = Math.max(0, count - 1);
+  const trackSlides = useMemo(() => {
+    if (!looping) return slides.map((slide, i) => ({ slide, key: `slide-${i}` }));
+    return [
+      { slide: slides[lastIndex]!, key: "clone-last" },
+      ...slides.map((slide, i) => ({ slide, key: `slide-${i}` })),
+      { slide: slides[0]!, key: "clone-first" },
+    ];
+  }, [looping, lastIndex, slides]);
+
   const [viewportWidth, setViewportWidth] = useState(0);
+  const [grabbing, setGrabbing] = useState(false);
   const widthRef = useRef(0);
   const activeIndexRef = useRef(activeIndex);
-  const lastIndexRef = useRef(lastIndex);
+  const prevIndexRef = useRef(activeIndex);
+  const countRef = useRef(count);
+  const loopingRef = useRef(looping);
   const draggingRef = useRef(false);
   const trackingRef = useRef(false);
+  const skipIndexEffectRef = useRef(false);
   const startXRef = useRef(0);
   const startYRef = useRef(0);
   const startTranslateRef = useRef(0);
@@ -130,27 +193,69 @@ export function TradeCollectionCarousel({
   const translateX = useRef(new Animated.Value(0)).current;
 
   activeIndexRef.current = activeIndex;
-  lastIndexRef.current = lastIndex;
+  countRef.current = count;
+  loopingRef.current = looping;
   onActiveIndexChangeRef.current = onActiveIndexChange;
   onUserInteractRef.current = onUserInteract;
 
-  const animateToIndex = useCallback(
-    (index: number, width: number) => {
+  const logicalToTranslate = useCallback(
+    (logicalIndex: number, width: number) => -(logicalIndex + (loopingRef.current ? 1 : 0)) * width,
+    [],
+  );
+
+  const jumpToLogical = useCallback(
+    (logicalIndex: number, width: number) => {
+      translateX.setValue(logicalToTranslate(logicalIndex, width));
+    },
+    [logicalToTranslate, translateX],
+  );
+
+  const animateToLogical = useCallback(
+    (fromLogical: number, toLogical: number, width: number, direction: 1 | -1) => {
+      if (width <= 0) return;
+      const slideCount = countRef.current;
+      const loop = loopingRef.current;
+      const offset = loop ? 1 : 0;
+      let trackTarget = toLogical + offset;
+      if (loop && slideCount > 1) {
+        if (direction === 1 && fromLogical === slideCount - 1 && toLogical === 0) {
+          trackTarget = slideCount + 1;
+        } else if (direction === -1 && fromLogical === 0 && toLogical === slideCount - 1) {
+          trackTarget = 0;
+        }
+      }
       Animated.timing(translateX, {
-        toValue: -index * width,
+        toValue: -trackTarget * width,
         duration: SNAP_MS,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
-      }).start();
+      }).start(({ finished }) => {
+        if (!finished) return;
+        if (trackTarget !== toLogical + offset) {
+          jumpToLogical(toLogical, width);
+        }
+      });
     },
-    [translateX],
+    [jumpToLogical, translateX],
   );
 
   useEffect(() => {
     const width = widthRef.current;
+    const from = prevIndexRef.current;
+    prevIndexRef.current = activeIndex;
     if (width <= 0 || draggingRef.current) return;
-    animateToIndex(activeIndex, width);
-  }, [activeIndex, animateToIndex, lastIndex]);
+    if (skipIndexEffectRef.current) {
+      skipIndexEffectRef.current = false;
+      return;
+    }
+    if (from === activeIndex) {
+      jumpToLogical(activeIndex, width);
+      return;
+    }
+    const direction: 1 | -1 =
+      wrapIndex(from + 1, countRef.current) === activeIndex ? 1 : -1;
+    animateToLogical(from, activeIndex, width, direction);
+  }, [activeIndex, animateToLogical, jumpToLogical, lastIndex]);
 
   useEffect(
     () => () => {
@@ -159,37 +264,60 @@ export function TradeCollectionCarousel({
     [],
   );
 
+  const beginDragFromCurrent = useCallback(() => {
+    const width = widthRef.current;
+    const offset = loopingRef.current ? 1 : 0;
+    startIndexRef.current = activeIndexRef.current;
+    startTranslateRef.current = -(activeIndexRef.current + offset) * width;
+    translateX.stopAnimation((value) => {
+      if (typeof value === "number") startTranslateRef.current = value;
+    });
+    velocityXRef.current = 0;
+  }, [translateX]);
+
   const finishDrag = useCallback(
     (dx: number) => {
       if (!draggingRef.current) {
         trackingRef.current = false;
+        setGrabbing(false);
         return;
       }
       const width = widthRef.current;
+      const slideCount = countRef.current;
+      const from = startIndexRef.current;
       const nextIndex = snapIndexFromDrag({
-        startIndex: startIndexRef.current,
+        startIndex: from,
         dx,
         velocityX: velocityXRef.current,
         width,
-        lastIndex: lastIndexRef.current,
+        count: slideCount,
+        loop: loopingRef.current,
       });
       draggingRef.current = false;
       trackingRef.current = false;
+      setGrabbing(false);
       setDocumentDragSelectLock(false);
-      if (width > 0) animateToIndex(nextIndex, width);
+      if (width > 0) {
+        animateToLogical(from, nextIndex, width, gestureDirection(dx, velocityXRef.current));
+      }
       if (nextIndex !== activeIndexRef.current) {
+        skipIndexEffectRef.current = true;
+        prevIndexRef.current = nextIndex;
         onActiveIndexChangeRef.current(nextIndex);
       }
     },
-    [animateToIndex],
+    [animateToLogical],
   );
 
   const applyDragDx = useCallback(
     (dx: number) => {
       const width = widthRef.current;
       if (width <= 0) return;
-      const min = -lastIndexRef.current * width;
-      translateX.setValue(rubberTranslate(startTranslateRef.current + dx, min, 0));
+      const loop = loopingRef.current;
+      const min = loop ? -(countRef.current + 1) * width : -Math.max(0, countRef.current - 1) * width;
+      const max = 0;
+      const next = startTranslateRef.current + dx;
+      translateX.setValue(loop ? clamp(next, min, max) : rubberTranslate(next, min, max));
     },
     [translateX],
   );
@@ -224,13 +352,13 @@ export function TradeCollectionCarousel({
       if (!(width > 0)) return;
       const prev = widthRef.current;
       widthRef.current = width;
-      setViewportWidth((prev) => (prev === width ? prev : width));
+      setViewportWidth((current) => (current === width ? current : width));
       onWidthChange(width);
       if (prev !== width && !draggingRef.current) {
-        translateX.setValue(-activeIndexRef.current * width);
+        jumpToLogical(activeIndexRef.current, width);
       }
     },
-    [onWidthChange, translateX],
+    [jumpToLogical, onWidthChange],
   );
 
   const panResponder = useMemo(
@@ -249,9 +377,8 @@ export function TradeCollectionCarousel({
         onShouldBlockNativeResponder: () => Platform.OS !== "web",
         onPanResponderGrant: () => {
           draggingRef.current = true;
-          startIndexRef.current = activeIndexRef.current;
-          startTranslateRef.current = -activeIndexRef.current * widthRef.current;
-          velocityXRef.current = 0;
+          setGrabbing(true);
+          beginDragFromCurrent();
           onUserInteractRef.current();
         },
         onPanResponderMove: (_, g: PanResponderGestureState) => {
@@ -267,7 +394,7 @@ export function TradeCollectionCarousel({
           finishDrag(g.dx);
         },
       }),
-    [applyDragDx, finishDrag],
+    [applyDragDx, beginDragFromCurrent, finishDrag],
   );
 
   const capturePointer = useCallback((e: WebPointerEvt) => {
@@ -284,20 +411,21 @@ export function TradeCollectionCarousel({
     }
   }, []);
 
-  const onWebPointerDown = useCallback((e: WebPointerEvt) => {
-    const ne = e.nativeEvent;
-    if (typeof ne.button === "number" && ne.button !== 0) return;
-    trackingRef.current = true;
-    draggingRef.current = false;
-    startXRef.current = ne.clientX;
-    startYRef.current = ne.clientY;
-    startIndexRef.current = activeIndexRef.current;
-    startTranslateRef.current = -activeIndexRef.current * widthRef.current;
-    lastMoveXRef.current = ne.clientX;
-    lastMoveAtRef.current = Date.now();
-    velocityXRef.current = 0;
-    hostRef.current = (e.currentTarget ?? null) as HTMLElement | null;
-  }, []);
+  const onWebPointerDown = useCallback(
+    (e: WebPointerEvt) => {
+      const ne = e.nativeEvent;
+      if (typeof ne.button === "number" && ne.button !== 0) return;
+      trackingRef.current = true;
+      draggingRef.current = false;
+      startXRef.current = ne.clientX;
+      startYRef.current = ne.clientY;
+      lastMoveXRef.current = ne.clientX;
+      lastMoveAtRef.current = Date.now();
+      beginDragFromCurrent();
+      hostRef.current = (e.currentTarget ?? null) as HTMLElement | null;
+    },
+    [beginDragFromCurrent],
+  );
 
   const onWebPointerMove = useCallback(
     (e: WebPointerEvt) => {
@@ -312,6 +440,7 @@ export function TradeCollectionCarousel({
           return;
         }
         draggingRef.current = true;
+        setGrabbing(true);
         setDocumentDragSelectLock(true);
         capturePointer(e);
         onUserInteractRef.current();
@@ -349,6 +478,9 @@ export function TradeCollectionCarousel({
         }
       : null;
 
+  const slideWidth: number | `${number}%` =
+    viewportWidth > 0 ? viewportWidth : `${100 / Math.max(1, trackSlides.length)}%`;
+
   return (
     <View
       {...nativeHandlers}
@@ -358,11 +490,12 @@ export function TradeCollectionCarousel({
       style={{
         width: "100%",
         overflow: "hidden",
+        opacity: viewportWidth > 0 ? 1 : 0,
         ...(Platform.OS === "web"
           ? ({
               touchAction: "pan-y",
               userSelect: "none",
-              cursor: "grab",
+              cursor: grabbing ? "grabbing" : "pointer",
             } as const)
           : null),
       }}
@@ -370,33 +503,22 @@ export function TradeCollectionCarousel({
       <Animated.View
         style={{
           flexDirection: "row",
-          width: viewportWidth > 0 ? viewportWidth * slides.length : `${slides.length * 100}%`,
+          width:
+            viewportWidth > 0
+              ? viewportWidth * trackSlides.length
+              : `${trackSlides.length * 100}%`,
           transform: [{ translateX }],
         }}
       >
-        {slides.map((slide, slideIndex) => (
-          <View
-            key={slideIndex}
-            style={{
-              width: viewportWidth > 0 ? viewportWidth : `${100 / slides.length}%`,
-            }}
-          >
-            <View style={{ flexDirection: "row", alignItems: "flex-start", width: "100%" }}>
-              {slide.map((collection, index) => (
-                <Fragment key={`${collection.title}-${slideIndex}-${index}`}>
-                  {index > 0 ? <View style={{ width: gapPx }} /> : null}
-                  <View style={{ flex: 1, minWidth: 0 }}>
-                    <TradeCollectionColumn
-                      image={collection.image}
-                      title={collection.title}
-                      subtitle={collection.subtitle}
-                      colors={colors}
-                    />
-                  </View>
-                </Fragment>
-              ))}
-            </View>
-          </View>
+        {trackSlides.map(({ slide, key }) => (
+          <SlideRow
+            key={key}
+            slide={slide}
+            slideKey={key}
+            width={slideWidth}
+            gapPx={gapPx}
+            colors={colors}
+          />
         ))}
       </Animated.View>
     </View>

@@ -454,13 +454,13 @@ export function ChooseCurrencyTable({
     [onLayout],
   );
 
-  const sparklinePrefetchStart = Math.max(
+  const sparklineViewStart = Math.max(
     0,
-    Math.floor(scroll.scrollY / SPARKLINE_ROW_STRIDE_PX) - 4,
+    Math.floor(scroll.scrollY / SPARKLINE_ROW_STRIDE_PX),
   );
-  const sparklinePrefetchCount = Math.max(
-    16,
-    Math.ceil((scroll.layoutH || shellLayoutH || 480) / SPARKLINE_ROW_STRIDE_PX) + 8,
+  const sparklineViewCount = Math.max(
+    8,
+    Math.ceil((scroll.layoutH || shellLayoutH || 480) / SPARKLINE_ROW_STRIDE_PX) + 1,
   );
 
   useEffect(() => {
@@ -472,16 +472,16 @@ export function ChooseCurrencyTable({
     for (const row of rows) {
       if (row.lastYearKind === "sparkline") allSparkline.push(row.rowKey);
     }
-    const end = Math.min(rows.length, sparklinePrefetchStart + sparklinePrefetchCount);
+    const end = Math.min(rows.length, sparklineViewStart + sparklineViewCount);
     const visible: string[] = [];
-    for (let i = sparklinePrefetchStart; i < end; i++) {
+    for (let i = sparklineViewStart; i < end; i++) {
       const row = rows[i];
       if (row?.lastYearKind === "sparkline") visible.push(row.rowKey);
     }
     syncChooseCurrencyYearChartListOrder(allSparkline);
     syncChooseCurrencyYearChartVisibleWindow(visible);
     if (allSparkline.length > 0) prefetchChooseCurrencyYearCharts(allSparkline);
-  }, [prefetchCharts, rows, sparklinePrefetchCount, sparklinePrefetchStart]);
+  }, [prefetchCharts, rows, sparklineViewCount, sparklineViewStart]);
 
   useEffect(() => {
     if (prefetchCharts) return;

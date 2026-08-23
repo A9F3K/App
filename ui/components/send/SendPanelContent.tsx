@@ -22,6 +22,8 @@ import {
   typographyAeroport15,
   typographyAeroport20,
   useColors,
+  displayAmountTextProps,
+  webNonEditableTextStyle,
 } from "../../theme";
 import { SendActionRow } from "./SendActionRow";
 
@@ -170,7 +172,12 @@ export function SendPanelContent() {
             width: "100%",
           }}
         >
-          <Text style={[amountTextStyle, { color: colors.primary }]}>1</Text>
+          <Text
+            {...displayAmountTextProps}
+            style={[amountTextStyle, webNonEditableTextStyle, { color: colors.primary }]}
+          >
+            1
+          </Text>
           <Text style={[action15, { color: colors.primary }]}>max.</Text>
         </View>
 
@@ -183,7 +190,9 @@ export function SendPanelContent() {
             width: "100%",
           }}
         >
-          <Text style={muted15}>1$</Text>
+          <Text {...displayAmountTextProps} style={[muted15, webNonEditableTextStyle]}>
+            1$
+          </Text>
           <Text style={muted15}>having 1 dllr on ton</Text>
         </View>
 

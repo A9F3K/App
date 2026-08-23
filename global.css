@@ -36,6 +36,17 @@
 }
 
 /*
+ * Display-only amounts (header “1$”, send/swap placeholders). Not inputs — no I-beam or caret.
+ */
+[data-hsp-display-amount="true"],
+[data-hsp-display-amount="true"] * {
+  cursor: default !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  caret-color: transparent;
+}
+
+/*
  * Main RN-web column (`MainWebScrollColumn`): native scrollbar is hidden; a 1px custom thumb is drawn in React.
  * Inline `scrollbar-width: none` covers Firefox; WebKit needs the pseudo-element on the scrolling node class.
  */
@@ -71,11 +82,12 @@
 }
 
 /*
- * Custom scrollbar thumb: `width:0` + left border (width from JS: 1/dpr for device-pixel hairline).
+ * Custom scrollbar thumb: content width 0 + left border (width from JS: 1/dpr hairline).
+ * Must be content-box: border-box + width/max-width 0 collapses the border to 0 used width.
  * Do not set border-left-width here — it would override the hairline and match thick 1 CSS px lines.
  */
 .hsp-scroll-indicator-thumb {
-  box-sizing: border-box !important;
+  box-sizing: content-box !important;
   padding: 0 !important;
   margin: 0 !important;
   background-color: transparent !important;
@@ -88,7 +100,8 @@
   box-shadow: none !important;
   width: 0 !important;
   min-width: 0 !important;
-  max-width: 0 !important;
+  max-width: none !important;
+  overflow: visible !important;
   transform: translateZ(0);
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;

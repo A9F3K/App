@@ -351,6 +351,7 @@ export function SmartUndercoverMultilineField({
             ? ({
                 "--smart-field-autofill-bg": colors.undercover,
                 "--smart-field-autofill-fg": colors.primary,
+                isolation: "isolate",
               } as Record<string, string>)
             : {}),
         },

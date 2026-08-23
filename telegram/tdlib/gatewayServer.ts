@@ -60,6 +60,7 @@ import {
   hydrateChatSearchHitsForUser,
   focusChatForUser,
   viewChatInboxMessagesForUser,
+  toggleChatPinnedForUser,
   startConnectAttempt,
   resendConnectCode,
   submitConnectCode,
@@ -730,6 +731,34 @@ export function startTdlibGatewayServer(): http.Server {
             unread_count: result.unread_count,
             last_read_inbox_message_id: result.last_read_inbox_message_id,
           });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chats/pin") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            chatId?: number;
+            isPinned?: boolean;
+          };
+          const telegramUsername = (body.telegramUsername || "").trim();
+          const chatId = Number(body.chatId);
+          if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0) {
+            sendJson(res, 400, { ok: false, error: "username_and_chat_id_required" });
+            return;
+          }
+          const result = await toggleChatPinnedForUser(
+            telegramUsername,
+            chatId,
+            Boolean(body.isPinned),
+          );
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 502, {
+              ok: false,
+              error: result.error ?? "pin_failed",
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true, is_pinned: result.is_pinned });
           return;
         }
 
