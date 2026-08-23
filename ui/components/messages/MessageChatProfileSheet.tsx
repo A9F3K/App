@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 import {
-  Modal,
   Platform,
   Pressable,
   Text,
-  useWindowDimensions,
   View,
   type TextStyle,
 } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
-import { layout, typographyRect15, useColors, type ThemeColors } from "../../theme";
+import { typographyRect15, useColors, type ThemeColors } from "../../theme";
+import { FloatingDialogShell } from "../FloatingDialogShell";
 import { HspScrollColumn } from "../HspScrollColumn";
-import { appModalSheetStyles } from "../AppModalSheet";
 import { useTelegram } from "../Telegram";
 import { openAuthenticatedHomeChatHistory } from "../../authenticatedHomeSelectedChat";
 import {
@@ -225,7 +222,6 @@ export function MessageChatProfileSheet({
   const { t, tf, locale } = useAppStrings();
   const { colorScheme } = useTelegram();
   const { openMusicPlaylistSheet } = useProfileSheet();
-  const { height: windowHeight } = useWindowDimensions();
   const [profile, setProfile] = useState<TelegramUserProfile | null>(null);
   const [blockPending, setBlockPending] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
@@ -235,20 +231,6 @@ export function MessageChatProfileSheet({
     getMusicPlayer,
     getMusicPlayer,
   );
-
-  useEffect(() => {
-    if (!visible || Platform.OS !== "web" || typeof document === "undefined") return;
-    const html = document.documentElement;
-    const body = document.body;
-    const prevHtmlOverflow = html.style.overflow;
-    const prevBodyOverflow = body.style.overflow;
-    html.style.overflow = "hidden";
-    body.style.overflow = "hidden";
-    return () => {
-      html.style.overflow = prevHtmlOverflow;
-      body.style.overflow = prevBodyOverflow;
-    };
-  }, [visible]);
 
   useEffect(() => {
     if (!visible || !chat) {
@@ -421,18 +403,13 @@ export function MessageChatProfileSheet({
 
   const sheetBody = (
     <View
-      style={[
-        appModalSheetStyles.sheet,
-        {
-          maxWidth: SHEET_MAX_WIDTH_PX,
-          backgroundColor: colors.background,
-          borderColor: colors.highlight,
-          paddingHorizontal: PAD_X_PX,
-          paddingTop: PAD_TOP_PX,
-          paddingBottom: PAD_BOTTOM_PX,
-          zIndex: 1,
-        },
-      ]}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        paddingHorizontal: PAD_X_PX,
+        paddingTop: PAD_TOP_PX,
+        paddingBottom: PAD_BOTTOM_PX,
+      }}
       {...(Platform.OS === "web"
         ? ({
             onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
@@ -672,56 +649,23 @@ export function MessageChatProfileSheet({
     </View>
   );
 
-  const overlay = (
-    <View
-      pointerEvents="box-none"
-      style={{
-        position: Platform.OS === "web" ? ("fixed" as unknown as "absolute") : "absolute",
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: "100%",
-        height: windowHeight,
-        zIndex: PROFILE_OVERLAY_Z,
-        elevation: PROFILE_OVERLAY_Z,
-        justifyContent: "center",
-        alignItems: "center",
-        ...(Platform.OS === "web"
-          ? ({ width: "100vw", height: "100vh", pointerEvents: "auto" } as object)
-          : {}),
-      }}
-      {...(Platform.OS === "web" ? ({ "data-profile-overlay": "1" } as object) : {})}
-    >
-      <Pressable
-        style={[appModalSheetStyles.backdropFill, { zIndex: 0 }]}
-        onPress={onClose}
-        accessibilityRole="button"
-        accessibilityLabel={t("common.back")}
-      />
-      <HspScrollColumn
-        style={{
-          width: "100%",
-          maxHeight: windowHeight,
-          zIndex: 1,
-          ...(Platform.OS === "web"
-            ? ({ maxHeight: "100vh", pointerEvents: "auto" } as object)
-            : {}),
-        }}
-        contentContainerStyle={{
-          flexGrow: 1,
-          minHeight: windowHeight,
-          justifyContent: "center",
-          alignItems: "center",
-          paddingHorizontal: layout.contentSideInsetPx,
-          paddingVertical: layout.contentSideInsetPx,
-        }}
-        containOverscroll
+  return (
+    <>
+      <FloatingDialogShell
+        visible={Boolean(chat && visible)}
+        zIndex={PROFILE_OVERLAY_Z}
+        defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 560 }}
+        minSize={{ width: 300, height: 320 }}
+        sizeStorageKey="hsp.profileSheet.size.v1"
+        offsetStorageKey="hsp.profileSheet.offset.v1"
+        onRequestClose={onClose}
+        testId="profile-sheet"
+        sheetStyle={{ borderWidth: 0 }}
       >
-        <View style={[appModalSheetStyles.overlayBlock, { minHeight: 0, flexGrow: 0 }]}>
+        <HspScrollColumn style={{ flex: 1, minHeight: 0 }} containOverscroll>
           {sheetBody}
-        </View>
-      </HspScrollColumn>
+        </HspScrollColumn>
+      </FloatingDialogShell>
       <MessageChatProfileMediaSheet
         visible={mediaKindOpen != null}
         kind={mediaKindOpen}
@@ -729,16 +673,6 @@ export function MessageChatProfileSheet({
         onClose={() => setMediaKindOpen(null)}
         onNavigateToMessage={onClose}
       />
-    </View>
-  );
-
-  if (Platform.OS === "web" && typeof document !== "undefined") {
-    return createPortal(overlay, document.body);
-  }
-
-  return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      {overlay}
-    </Modal>
+    </>
   );
 }

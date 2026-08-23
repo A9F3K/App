@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   FlatList,
-  Modal,
   Platform,
   Pressable,
   Text,
@@ -32,7 +31,7 @@ import {
   typographyFixedRow30Label,
   useColors,
 } from "../../theme";
-import { appModalSheetStyles } from "../AppModalSheet";
+import { FloatingDialogShell } from "../FloatingDialogShell";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
 import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
@@ -655,126 +654,106 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         </PanelGradientCtaBlock>
       ) : null}
 
-      <Modal
+      <FloatingDialogShell
         visible={pickerOpen}
-        transparent
-        animationType="fade"
+        zIndex={10070}
+        defaultSize={{ width: 380, height: 420 }}
+        minSize={{ width: 300, height: 240 }}
+        sizeStorageKey="hsp.getCurrencyPicker.size.v1"
+        offsetStorageKey="hsp.getCurrencyPicker.offset.v1"
         onRequestClose={() => setPickerOpen(false)}
+        testId="get-currency-picker"
+        sheetStyle={{ borderWidth: 0, paddingTop: 20, paddingBottom: 12 }}
       >
-        <View style={[appModalSheetStyles.overlayBlock, { flex: 1 }]}>
+        <View
+          style={{
+            paddingHorizontal: 20,
+            paddingBottom: 12,
+            flexDirection: "row",
+            alignItems: "center",
+          }}
+        >
+          <Text
+            style={[
+              typographyAeroport20,
+              { color: colors.primary, fontWeight: "400", flex: 1, minWidth: 0, paddingRight: 36 },
+            ]}
+          >
+            {t("get.chooseCurrencyTitle")}
+          </Text>
           <Pressable
-            style={appModalSheetStyles.backdropFill}
-            onPress={() => setPickerOpen(false)}
             accessibilityRole="button"
             accessibilityLabel={t("common.close")}
-          />
-          <View
-            style={[
-              appModalSheetStyles.sheet,
-              {
-                backgroundColor: colors.background,
-                borderColor: colors.highlight,
-                maxHeight: "70%",
-                paddingTop: 20,
-                paddingBottom: 12,
-              },
-            ]}
-            {...(Platform.OS === "web"
-              ? ({
-                  onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
-                } as object)
-              : {})}
-            onStartShouldSetResponder={() => true}
+            onPress={() => setPickerOpen(false)}
+            hitSlop={8}
+            style={{
+              position: "absolute",
+              top: 0,
+              right: 12,
+              width: 32,
+              height: 32,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            {...(Platform.OS === "web" ? ({ "data-floating-no-drag": "1" } as object) : {})}
           >
-            <View
-              style={{
-                paddingHorizontal: 20,
-                paddingBottom: 12,
-                flexDirection: "row",
-                alignItems: "center",
-              }}
-            >
-              <Text
-                style={[
-                  typographyAeroport20,
-                  { color: colors.primary, fontWeight: "400", flex: 1, minWidth: 0, paddingRight: 36 },
-                ]}
-              >
-                {t("get.chooseCurrencyTitle")}
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("common.close")}
-                onPress={() => setPickerOpen(false)}
-                hitSlop={8}
-                style={{
-                  position: "absolute",
-                  top: 0,
-                  right: 12,
-                  width: 32,
-                  height: 32,
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <VoiceWindowCrossIcon color={colors.primary} size={15} />
-              </Pressable>
-            </View>
-            <FlatList
-              data={options.length > 0 ? options : [selected]}
-              keyExtractor={(item) => item.token.address}
-              keyboardShouldPersistTaps="handled"
-              style={{ flexGrow: 0 }}
-              renderItem={({ item }) => {
-                const symbol = swapTokenDisplaySymbol(item.token);
-                const active =
-                  item.token.address.toLowerCase() === selected.token.address.toLowerCase();
-                return (
-                  <Pressable
-                    onPress={() => {
-                      setSelected(item);
-                      setPickerOpen(false);
-                    }}
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 12,
-                      paddingHorizontal: 20,
-                      paddingVertical: 12,
-                      backgroundColor: active ? colors.undercover : "transparent",
-                    }}
-                  >
-                    <Image
-                      source={tokenIconSource(item.token)}
-                      style={{
-                        width: CURRENCY_ICON_PX,
-                        height: CURRENCY_ICON_PX,
-                        borderRadius: CURRENCY_ICON_PX / 2,
-                      }}
-                    />
-                    <View style={{ flex: 1, minWidth: 0 }}>
-                      <Text
-                        style={[typographyAeroport20, { color: colors.primary, fontWeight: "400" }]}
-                      >
-                        {symbol}
-                      </Text>
-                      <Text
-                        style={[
-                          typographyAeroport15,
-                          { color: colors.secondary, lineHeight: MULTI_LINE_HEIGHT_PX },
-                        ]}
-                        numberOfLines={1}
-                      >
-                        {item.balanceText}
-                      </Text>
-                    </View>
-                  </Pressable>
-                );
-              }}
-            />
-          </View>
+            <VoiceWindowCrossIcon color={colors.primary} size={15} />
+          </Pressable>
         </View>
-      </Modal>
+        <FlatList
+          data={options.length > 0 ? options : [selected]}
+          keyExtractor={(item) => item.token.address}
+          keyboardShouldPersistTaps="handled"
+          style={{ flex: 1, minHeight: 0 }}
+          renderItem={({ item }) => {
+            const symbol = swapTokenDisplaySymbol(item.token);
+            const active =
+              item.token.address.toLowerCase() === selected.token.address.toLowerCase();
+            return (
+              <Pressable
+                onPress={() => {
+                  setSelected(item);
+                  setPickerOpen(false);
+                }}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 12,
+                  paddingHorizontal: 20,
+                  paddingVertical: 12,
+                  backgroundColor: active ? colors.undercover : "transparent",
+                }}
+                {...(Platform.OS === "web" ? ({ "data-floating-no-drag": "1" } as object) : {})}
+              >
+                <Image
+                  source={tokenIconSource(item.token)}
+                  style={{
+                    width: CURRENCY_ICON_PX,
+                    height: CURRENCY_ICON_PX,
+                    borderRadius: CURRENCY_ICON_PX / 2,
+                  }}
+                />
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text
+                    style={[typographyAeroport20, { color: colors.primary, fontWeight: "400" }]}
+                  >
+                    {symbol}
+                  </Text>
+                  <Text
+                    style={[
+                      typographyAeroport15,
+                      { color: colors.secondary, lineHeight: MULTI_LINE_HEIGHT_PX },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {item.balanceText}
+                  </Text>
+                </View>
+              </Pressable>
+            );
+          }}
+        />
+      </FloatingDialogShell>
     </View>
   );
 }

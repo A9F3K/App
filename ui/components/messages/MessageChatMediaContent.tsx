@@ -1105,6 +1105,31 @@ export function MessageChatMediaContent({
     );
   }
 
+  // Video stickers (WebM) — Image cannot decode them; loop muted like inline emoji.
+  if (contentKind === "sticker" && mediaKind === "video" && Platform.OS === "web") {
+    return (
+      <View>
+        {createElement("video", {
+          src: mediaUri,
+          autoPlay: true,
+          loop: true,
+          muted: true,
+          playsInline: true,
+          style: {
+            display: "block",
+            width: displayWidthPx,
+            height: displayHeightPx,
+            objectFit: "fill",
+          },
+          ref: (node: HTMLVideoElement | null) => {
+            if (!node) return;
+            void node.play().catch(() => {});
+          },
+        })}
+      </View>
+    );
+  }
+
   if (mediaKind === "gif" && Platform.OS === "web") {
     return (
       <View>

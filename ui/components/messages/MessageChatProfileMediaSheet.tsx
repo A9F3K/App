@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
 import {
-  Modal,
   Platform,
   Pressable,
   Text,
-  useWindowDimensions,
   View,
   type TextStyle,
 } from "react-native";
@@ -13,8 +10,8 @@ import { useAppStrings } from "../../../locales/AppStringsContext";
 import type { AppStringKey } from "../../../locales/appStrings";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useColors, type ThemeColors } from "../../theme";
+import { FloatingDialogShell } from "../FloatingDialogShell";
 import { HspScrollColumn } from "../HspScrollColumn";
-import { appModalSheetStyles } from "../AppModalSheet";
 import { openAuthenticatedHomeChatHistoryAtMessage } from "../../authenticatedHomeSelectedChat";
 import {
   fetchTelegramChatMedia,
@@ -40,7 +37,8 @@ const SHEET_MAX_WIDTH_PX = 380;
 const PAD_X_PX = 20;
 const PAD_TOP_PX = 20;
 const PAD_BOTTOM_PX = 24;
-const PROFILE_OVERLAY_Z = 10060;
+/** Above profile sheet (10100). */
+const PROFILE_OVERLAY_Z = 10120;
 const HEADER_ICON_PX = 18;
 
 const MEDIA_TITLE_KEY: Record<ProfileMediaKind, AppStringKey> = {
@@ -181,7 +179,6 @@ export function MessageChatProfileMediaSheet({
 }: Props) {
   const colors = useColors();
   const { t } = useAppStrings();
-  const { height: windowHeight } = useWindowDimensions();
   const [items, setItems] = useState<TelegramChatMediaItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -250,36 +247,23 @@ export function MessageChatProfileMediaSheet({
     [chat, onClose, onNavigateToMessage],
   );
 
-  if (!chat || !visible || !kind) return null;
-
   const sheetBody = (
     <View
-      style={[
-        appModalSheetStyles.sheet,
-        {
-          maxWidth: SHEET_MAX_WIDTH_PX,
-          width: "100%",
-          backgroundColor: colors.background,
-          borderColor: colors.highlight,
-          paddingHorizontal: PAD_X_PX,
-          paddingTop: PAD_TOP_PX,
-          paddingBottom: PAD_BOTTOM_PX,
-          maxHeight: Math.min(windowHeight * 0.82, 640),
-          zIndex: 1,
-        },
-      ]}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        paddingHorizontal: PAD_X_PX,
+        paddingTop: PAD_TOP_PX,
+        paddingBottom: PAD_BOTTOM_PX,
+      }}
       {...(Platform.OS === "web"
-        ? ({
-            onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
-            "data-profile-media-sheet": kind,
-          } as object)
+        ? ({ "data-profile-media-sheet": kind ?? undefined } as object)
         : {})}
-      onStartShouldSetResponder={() => true}
     >
       <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
-        <MediaKindIcon kind={kind} color={colors.primary} />
+        {kind ? <MediaKindIcon kind={kind} color={colors.primary} /> : null}
         <Text style={[textBase(colors.primary), { marginLeft: 10, flex: 1 }]}>
-          {t(MEDIA_TITLE_KEY[kind])}
+          {kind ? t(MEDIA_TITLE_KEY[kind]) : ""}
         </Text>
         <ProfileOpenHitTarget
           label={t("common.back")}
@@ -291,24 +275,26 @@ export function MessageChatProfileMediaSheet({
       </View>
 
       <HspScrollColumn
-        style={{ flex: 1, minHeight: 120, maxHeight: Math.min(windowHeight * 0.65, 520) }}
+        style={{ flex: 1, minHeight: 0 }}
         contentContainerStyle={{ paddingBottom: 8 }}
         containOverscroll
       >
         {items.length === 0 && !loading ? (
           <Text style={textBase(colors.secondary)}>
-            {error ? error : t(MEDIA_EMPTY_KEY[kind])}
+            {error ? error : kind ? t(MEDIA_EMPTY_KEY[kind]) : ""}
           </Text>
         ) : (
-          items.map((item) => (
-            <MediaItemRow
-              key={`${kind}:${item.telegram_message_id}:${item.url}`}
-              item={item}
-              kind={kind}
-              colors={colors}
-              onPress={() => openItemMessage(item)}
-            />
-          ))
+          kind
+            ? items.map((item) => (
+                <MediaItemRow
+                  key={`${kind}:${item.telegram_message_id}:${item.url}`}
+                  item={item}
+                  kind={kind}
+                  colors={colors}
+                  onPress={() => openItemMessage(item)}
+                />
+              ))
+            : null
         )}
         {hasMore ? (
           <Pressable
@@ -327,45 +313,19 @@ export function MessageChatProfileMediaSheet({
     </View>
   );
 
-  const overlay = (
-    <View
-      pointerEvents="box-none"
-      style={{
-        position: Platform.OS === "web" ? ("fixed" as unknown as "absolute") : "absolute",
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: "100%",
-        height: windowHeight,
-        zIndex: PROFILE_OVERLAY_Z,
-        elevation: PROFILE_OVERLAY_Z,
-        justifyContent: "center",
-        alignItems: "center",
-        ...(Platform.OS === "web"
-          ? ({ width: "100vw", height: "100vh", pointerEvents: "auto" } as object)
-          : {}),
-      }}
-    >
-      <Pressable
-        style={[appModalSheetStyles.backdropFill, { zIndex: 0 }]}
-        onPress={onClose}
-        accessibilityRole="button"
-        accessibilityLabel={t("common.back")}
-      />
-      <View style={[appModalSheetStyles.overlayBlock, { minHeight: 0, flexGrow: 0, zIndex: 1 }]}>
-        {sheetBody}
-      </View>
-    </View>
-  );
-
-  if (Platform.OS === "web" && typeof document !== "undefined") {
-    return createPortal(overlay, document.body);
-  }
-
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      {overlay}
-    </Modal>
+    <FloatingDialogShell
+      visible={Boolean(chat && visible && kind)}
+      zIndex={PROFILE_OVERLAY_Z}
+      defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 520 }}
+      minSize={{ width: 300, height: 280 }}
+      sizeStorageKey="hsp.profileMediaSheet.size.v1"
+      offsetStorageKey="hsp.profileMediaSheet.offset.v1"
+      onRequestClose={onClose}
+      testId={kind ? `profile-media-sheet-${kind}` : "profile-media-sheet"}
+      sheetStyle={{ borderWidth: 0 }}
+    >
+      {sheetBody}
+    </FloatingDialogShell>
   );
 }

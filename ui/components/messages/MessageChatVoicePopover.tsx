@@ -22,6 +22,7 @@ import { LiquidGlassShaderUndercover } from "../LiquidGlassShaderUndercover";
 import { HspScrollColumn } from "../HspScrollColumn";
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
+import { applyIndependentEdgeResize } from "../floatingDialogGeometry";
 import { logPageDisplay } from "../../pageDisplayLog";
 import type { TelegramChatVoiceParticipant } from "../../telegram/fetchTelegramChatVoiceParticipants";
 import {
@@ -1358,11 +1359,6 @@ export function MessageChatVoicePopover({
         } catch {
           /* best-effort leave */
         }
-        return;
-      }
-      if (target.closest('[data-voice-chrome="backdrop"]')) {
-        e.stopPropagation();
-        closeNow("backdrop_capture");
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -1409,6 +1405,8 @@ export function MessageChatVoicePopover({
     startY: number;
     startWidth: number;
     startHeight: number;
+    startOffsetX: number;
+    startOffsetY: number;
     pointerId: number;
     host: { setPointerCapture?: (id: number) => void; releasePointerCapture?: (id: number) => void } | null;
   } | null>(null);
@@ -1510,16 +1508,22 @@ export function MessageChatVoicePopover({
       }
       const drag = dragRef.current;
       if (!drag) return;
-      const dx = e.clientX - drag.startX;
-      const dy = e.clientY - drag.startY;
-      let nextWidth = drag.startWidth;
-      let nextHeight = drag.startHeight;
-      const edges = edgesForHandle(drag.handle);
-      if (edges.includes("e")) nextWidth = drag.startWidth + dx;
-      if (edges.includes("w")) nextWidth = drag.startWidth - dx;
-      if (edges.includes("s")) nextHeight = drag.startHeight + dy;
-      if (edges.includes("n")) nextHeight = drag.startHeight - dy;
-      setSheetSize(clampSize({ width: nextWidth, height: nextHeight }));
+      const applied = applyIndependentEdgeResize({
+        handle: drag.handle,
+        startSize: { width: drag.startWidth, height: drag.startHeight },
+        startOffset: { x: drag.startOffsetX, y: drag.startOffsetY },
+        dx: e.clientX - drag.startX,
+        dy: e.clientY - drag.startY,
+        clampSize,
+      });
+      const offset = clampSheetOffset(
+        applied.offset,
+        applied.size,
+        window.innerWidth,
+        window.innerHeight,
+      );
+      setSheetSize(applied.size);
+      setSheetOffset(offset);
     };
     const onUp = () => {
       if (moveDragRef.current) endMoveDrag();
@@ -1568,6 +1572,8 @@ export function MessageChatVoicePopover({
         startY: e.nativeEvent.clientY,
         startWidth: sheetSizeRef.current.width,
         startHeight: sheetSizeRef.current.height,
+        startOffsetX: sheetOffsetRef.current.x,
+        startOffsetY: sheetOffsetRef.current.y,
         pointerId: e.nativeEvent.pointerId,
         host,
       };
@@ -2541,57 +2547,11 @@ export function MessageChatVoicePopover({
         {
           minHeight: windowHeight,
           zIndex: 2,
+          // No full-viewport hit target — underlay stays interactive.
+          pointerEvents: "box-none",
         },
       ]}
     >
-      {Platform.OS === "web"
-        ? createElement("button", {
-            type: "button",
-            "aria-label": t("common.back"),
-            "data-voice-chrome": "backdrop",
-            tabIndex: -1,
-            onPointerDown: (e: {
-              button?: number;
-              stopPropagation?: () => void;
-            }) => {
-              if (e.button != null && e.button !== 0) return;
-              e.stopPropagation?.();
-              logPageDisplay("messages_voice_dialog_control_click", {
-                action: "backdrop_leave",
-              });
-              onDropPress();
-            },
-            style: {
-              position: "absolute",
-              left: 0,
-              top: 0,
-              right: 0,
-              bottom: 0,
-              margin: 0,
-              padding: 0,
-              border: "none",
-              // Dimmer is dismissible but must not paint the whole site as a link.
-              // cursor:pointer here made every non-clickable chat pixel look active
-              // while Join longtasks froze Close.
-              cursor: "default",
-              pointerEvents: "auto",
-              background: "transparent",
-              zIndex: 0,
-            },
-          })
-        : (
-          <Pressable
-            style={[appModalSheetStyles.backdropFill, { zIndex: 0 }]}
-            onPress={() => {
-              logPageDisplay("messages_voice_dialog_control_click", {
-                action: "backdrop_leave",
-              });
-              onDropPress();
-            }}
-            accessibilityRole="button"
-            accessibilityLabel={t("messages.voiceChat.controls.drop")}
-          />
-        )}
       <View
         pointerEvents="auto"
         style={[
@@ -2618,6 +2578,7 @@ export function MessageChatVoicePopover({
                   flexDirection: "column",
                   transform: `translate(${sheetOffset.x}px, ${sheetOffset.y}px)`,
                   cursor: movingSheet ? "grabbing" : undefined,
+                  overscrollBehavior: "contain",
                 } as object)
               : {
                   flexDirection: "column",

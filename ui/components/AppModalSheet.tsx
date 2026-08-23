@@ -1,14 +1,13 @@
-import { useEffect, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import {
-  Modal,
   Platform,
   Pressable,
   StyleSheet,
   Text,
-  useWindowDimensions,
   View,
 } from "react-native";
 import { layout, typographyFixedRow40Label, typographyRect15, typographySansSemibold, useColors } from "../theme";
+import { FloatingDialogShell } from "./FloatingDialogShell";
 import { HspScrollColumn } from "./HspScrollColumn";
 
 export const appModalSheetStyles = StyleSheet.create({
@@ -123,73 +122,43 @@ export function AppModalSheet({
   titleEmphasis = "default",
 }: Props) {
   const colors = useColors();
-  const { height: windowHeight } = useWindowDimensions();
-
-  useEffect(() => {
-    if (!visible || Platform.OS !== "web" || typeof document === "undefined") return;
-    const html = document.documentElement;
-    const body = document.body;
-    const prevHtmlOverflow = html.style.overflow;
-    const prevBodyOverflow = body.style.overflow;
-    html.style.overflow = "hidden";
-    body.style.overflow = "hidden";
-    return () => {
-      html.style.overflow = prevHtmlOverflow;
-      body.style.overflow = prevBodyOverflow;
-    };
-  }, [visible]);
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <FloatingDialogShell
+      visible={visible}
+      zIndex={10070}
+      defaultSize={{ width: 380, height: 420 }}
+      minSize={{ width: 300, height: 240 }}
+      sizeStorageKey="hsp.appModalSheet.size.v1"
+      offsetStorageKey="hsp.appModalSheet.offset.v1"
+      onRequestClose={onClose}
+      testId="app-modal"
+      sheetStyle={{
+        // Shell already draws the border; avoid double chrome from sheet styles.
+        borderWidth: 0,
+        paddingHorizontal: 20,
+        paddingVertical: 20,
+      }}
+    >
       <HspScrollColumn
-        style={{ height: windowHeight, width: "100%", minHeight: 0 }}
-        contentContainerStyle={{
-          flexGrow: 1,
-          minHeight: windowHeight,
-          justifyContent: "center",
-          alignItems: "center",
-        }}
+        style={{ flex: 1, minHeight: 0 }}
+        contentContainerStyle={{ paddingBottom: 4 }}
         containOverscroll
       >
-        <View style={[appModalSheetStyles.overlayBlock, { minHeight: windowHeight }]}>
-          <Pressable
-            style={appModalSheetStyles.backdropFill}
-            onPress={onClose}
-            accessibilityRole="button"
-            accessibilityLabel="Close"
-          />
-          <View
-            style={[
-              appModalSheetStyles.sheet,
-              appModalSheetStyles.sheetBody,
-              {
-                backgroundColor: colors.background,
-                borderColor: colors.highlight,
-              },
-            ]}
-            {...(Platform.OS === "web"
-              ? ({
-                  onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
-                } as object)
-              : {})}
-            onStartShouldSetResponder={() => true}
-          >
-            <Text
-              style={[
-                titleEmphasis === "primary"
-                  ? [typographySansSemibold, appModalSheetStyles.titlePrimary]
-                  : [typographyRect15, appModalSheetStyles.title],
-                { color: colors.primary },
-              ]}
-            >
-              {title}
-            </Text>
-            {children}
-            {footer}
-          </View>
-        </View>
+        <Text
+          style={[
+            titleEmphasis === "primary"
+              ? [typographySansSemibold, appModalSheetStyles.titlePrimary]
+              : [typographyRect15, appModalSheetStyles.title],
+            { color: colors.primary },
+          ]}
+        >
+          {title}
+        </Text>
+        {children}
+        {footer}
       </HspScrollColumn>
-    </Modal>
+    </FloatingDialogShell>
   );
 }
 
@@ -213,6 +182,7 @@ export function AppModalSheetBackFooter({
         onPress={onClose}
         style={[appModalSheetStyles.button, { backgroundColor: colors.undercover }]}
         disabled={disabled}
+        {...(Platform.OS === "web" ? ({ "data-floating-no-drag": "1" } as object) : {})}
       >
         <Text style={[typographyFixedRow40Label, { color: colors.secondary }]}>{label}</Text>
       </Pressable>

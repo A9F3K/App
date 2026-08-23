@@ -1,19 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { createPortal } from "react-dom";
 import {
-  Modal,
   Platform,
   Pressable,
   Text,
-  useWindowDimensions,
   View,
   type TextStyle,
 } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useColors, layout, type ThemeColors } from "../../theme";
+import { FloatingDialogShell } from "../FloatingDialogShell";
 import { HspScrollColumn } from "../HspScrollColumn";
-import { appModalSheetStyles } from "../AppModalSheet";
 import {
   fetchTelegramUserProfile,
   telegramProfileAudioCoverUrl,
@@ -112,7 +109,6 @@ export function MessageChatProfilePlaylistSheet({
 }: Props) {
   const colors = useColors();
   const { t } = useAppStrings();
-  const { height: windowHeight } = useWindowDimensions();
   const player = useSyncExternalStore(subscribeMusicPlayer, getMusicPlayer, getMusicPlayer);
   const [localTracks, setLocalTracks] = useState(tracks);
   const [scrollY, setScrollY] = useState(0);
@@ -243,35 +239,18 @@ export function MessageChatProfilePlaylistSheet({
     return player.tracks[player.index]?.file_id ?? null;
   }, [localTracks, player.index, player.tracks, player.visible]);
 
-  if (!visible) return null;
-
-  const sheetHeightPx = Math.min(windowHeight * 0.82, 640);
-
   const sheetBody = (
     <View
-      style={[
-        appModalSheetStyles.sheet,
-        {
-          maxWidth: SHEET_MAX_WIDTH_PX,
-          width: "100%",
-          height: sheetHeightPx,
-          maxHeight: sheetHeightPx,
-          backgroundColor: colors.background,
-          borderColor: colors.highlight,
-          paddingTop: PAD_TOP_PX,
-          paddingBottom: 0,
-          zIndex: 1,
-          flexDirection: "column",
-          overflow: "hidden",
-        },
-      ]}
+      style={{
+        flex: 1,
+        minHeight: 0,
+        paddingTop: PAD_TOP_PX,
+        flexDirection: "column",
+        overflow: "hidden",
+      }}
       {...(Platform.OS === "web"
-        ? ({
-            onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
-            "data-profile-playlist-sheet": "1",
-          } as object)
+        ? ({ "data-profile-playlist-sheet": "1" } as object)
         : {})}
-      onStartShouldSetResponder={() => true}
     >
       <View style={{ paddingHorizontal: PAD_X_PX }}>
         <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
@@ -339,7 +318,6 @@ export function MessageChatProfilePlaylistSheet({
               const cover = trackCoverUri(track);
               const coverLoadEnabled =
                 index >= coverFetchWindow.start && index <= coverFetchWindow.end;
-              const isLast = index === localTracks.length - 1;
               return (
                 <View
                   key={`${track.user_id}:${track.file_id}`}
@@ -351,7 +329,6 @@ export function MessageChatProfilePlaylistSheet({
                     alignItems: "center",
                     paddingVertical: 8,
                     gap: ROW_GAP_PX,
-                    marginBottom: isLast ? 0 : 0,
                   }}
                 >
                   <Pressable
@@ -368,6 +345,9 @@ export function MessageChatProfilePlaylistSheet({
                       opacity: pressed ? 0.6 : 1,
                       cursor: Platform.OS === "web" ? ("grab" as never) : undefined,
                     })}
+                    {...(Platform.OS === "web"
+                      ? ({ "data-floating-no-drag": "1" } as object)
+                      : {})}
                   >
                     <MusicReorderIcon color={colors.primary} size={16} />
                   </Pressable>
@@ -388,6 +368,9 @@ export function MessageChatProfilePlaylistSheet({
                       justifyContent: "center",
                       opacity: pressed ? 0.75 : 1,
                     })}
+                    {...(Platform.OS === "web"
+                      ? ({ "data-floating-no-drag": "1" } as object)
+                      : {})}
                   >
                     {active && player.playing ? (
                       <MusicPauseIcon color={colors.primary} size={12} />
@@ -395,7 +378,13 @@ export function MessageChatProfilePlaylistSheet({
                       <MusicPlayIcon color={colors.primary} size={12} />
                     )}
                   </Pressable>
-                  <Pressable onPress={() => playTrack(index)} style={{ flex: 1, minWidth: 0 }}>
+                  <Pressable
+                    onPress={() => playTrack(index)}
+                    style={{ flex: 1, minWidth: 0 }}
+                    {...(Platform.OS === "web"
+                      ? ({ "data-floating-no-drag": "1" } as object)
+                      : {})}
+                  >
                     <Text numberOfLines={1} style={textBase(colors.primary)}>
                       {track.artist}
                       {track.title ? (
@@ -442,45 +431,21 @@ export function MessageChatProfilePlaylistSheet({
     </View>
   );
 
-  const overlay = (
-    <View
-      pointerEvents="box-none"
-      style={{
-        position: Platform.OS === "web" ? ("fixed" as unknown as "absolute") : "absolute",
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: "100%",
-        height: windowHeight,
-        zIndex: PROFILE_OVERLAY_Z,
-        elevation: PROFILE_OVERLAY_Z,
-        justifyContent: "center",
-        alignItems: "center",
-        ...(Platform.OS === "web"
-          ? ({ width: "100vw", height: "100vh", pointerEvents: "auto" } as object)
-          : {}),
-      }}
-    >
-      <Pressable
-        style={[appModalSheetStyles.backdropFill, { zIndex: 0 }]}
-        onPress={onBack}
-        accessibilityRole="button"
-        accessibilityLabel={t("common.back")}
-      />
-      <View style={[appModalSheetStyles.overlayBlock, { minHeight: 0, flexGrow: 0, zIndex: 1 }]}>
-        {sheetBody}
-      </View>
-    </View>
-  );
-
-  if (Platform.OS === "web" && typeof document !== "undefined") {
-    return createPortal(overlay, document.body);
-  }
-
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onBack}>
-      {overlay}
-    </Modal>
+    <FloatingDialogShell
+      visible={visible}
+      zIndex={PROFILE_OVERLAY_Z}
+      defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 560 }}
+      minSize={{ width: 300, height: 320 }}
+      sizeStorageKey="hsp.profilePlaylistSheet.size.v1"
+      offsetStorageKey="hsp.profilePlaylistSheet.offset.v1"
+      onRequestClose={onBack}
+      testId="profile-playlist-sheet"
+      sheetStyle={{ borderWidth: 0 }}
+      moveIgnoreSelector="[data-floating-no-drag],button,[role='button']"
+    >
+      {sheetBody}
+    </FloatingDialogShell>
   );
 }
+

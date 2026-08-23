@@ -27,7 +27,6 @@ import {
   rememberSelfTelegramProfile,
 } from "../../telegram/selfTelegramProfileCache";
 import { useTelegram } from "../Telegram";
-import { appModalSheetStyles } from "../AppModalSheet";
 import { VoiceWindowCrossIcon } from "./MessageChatVoiceControlIcons";
 import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
 import { MessageChatDownIcon } from "./MessageChatDownIcon";
@@ -141,7 +140,7 @@ function SideMenuRow({
   );
 }
 
-function AccountLogoutCross({
+function AccountLogoutText({
   colors,
   label,
   onPress,
@@ -158,6 +157,43 @@ function AccountLogoutCross({
       onPress={(e) => {
         (e as { stopPropagation?: () => void }).stopPropagation?.();
         onPress?.();
+      }}
+      style={({ pressed }) => ({
+        opacity: pressed ? 0.7 : 1,
+        paddingVertical: 2,
+      })}
+    >
+      <Text
+        style={{
+          color: colors.secondary,
+          fontSize: 13,
+          lineHeight: 18,
+          fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+        }}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function SideMenuCloseButton({
+  colors,
+  label,
+  onPress,
+}: {
+  colors: ReturnType<typeof useColors>;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      hitSlop={8}
+      onPress={(e) => {
+        (e as { stopPropagation?: () => void }).stopPropagation?.();
+        onPress();
       }}
       style={({ pressed }) => ({
         width: 28,
@@ -432,17 +468,12 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
         zIndex: SIDE_MENU_Z,
         elevation: SIDE_MENU_Z,
         ...(Platform.OS === "web"
-          ? ({ width: "100vw", pointerEvents: "auto" } as object)
+          ? ({ width: "100vw", pointerEvents: "none" } as object)
           : {}),
       }}
     >
-      <Pressable
-        style={[appModalSheetStyles.backdropFill, { zIndex: 0 }]}
-        onPress={onClose}
-        accessibilityRole="button"
-        accessibilityLabel={t("common.close")}
-      />
       <View
+        pointerEvents="auto"
         style={{
           position: "absolute",
           left: 0,
@@ -474,7 +505,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
           containOverscroll
         >
           <View style={{ paddingHorizontal: PAD_X, paddingTop: 18, paddingBottom: 12 }}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={t("messages.sideMenu.myProfile")}
@@ -540,13 +571,26 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                   </Text>
                 </View>
               </Pressable>
-              <AccountsExpandChevron
-                colors={colors}
-                expanded={accountsExpanded}
-                expandLabel={t("messages.sideMenu.expandAccounts")}
-                collapseLabel={t("messages.sideMenu.collapseAccounts")}
-                onPress={toggleAccountsExpanded}
-              />
+              <View
+                style={{
+                  alignItems: "center",
+                  gap: 4,
+                  paddingTop: 2,
+                }}
+              >
+                <SideMenuCloseButton
+                  colors={colors}
+                  label={t("common.close")}
+                  onPress={onClose}
+                />
+                <AccountsExpandChevron
+                  colors={colors}
+                  expanded={accountsExpanded}
+                  expandLabel={t("messages.sideMenu.expandAccounts")}
+                  collapseLabel={t("messages.sideMenu.collapseAccounts")}
+                  onPress={toggleAccountsExpanded}
+                />
+              </View>
             </View>
           </View>
 
@@ -591,9 +635,9 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                       ) : null}
                     </View>
                     {isTelegramMessagesConnected ? (
-                      <AccountLogoutCross
+                      <AccountLogoutText
                         colors={colors}
-                        label={t("messages.sideMenu.logoutAccount")}
+                        label={t("messages.sideMenu.logOut")}
                         onPress={handleDisconnect}
                       />
                     ) : null}
