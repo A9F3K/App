@@ -151,9 +151,31 @@ export function setMusicTracks(tracks: TelegramProfileAudioTrack[], keepFileId?:
     setSnapshot({ tracks: [], order: [], index: 0, playing: false, visible: false });
     return;
   }
-  const keepIndex =
-    keepFileId != null ? tracks.findIndex((row) => row.file_id === keepFileId) : snapshot.index;
-  const index = keepIndex >= 0 ? keepIndex : 0;
+  const current = snapshot.tracks[snapshot.index] ?? null;
+  let keepIndex =
+    keepFileId != null ? tracks.findIndex((row) => row.file_id === keepFileId) : -1;
+  if (keepIndex < 0 && current) {
+    keepIndex = tracks.findIndex(
+      (row) =>
+        row.file_id === current.file_id &&
+        row.user_id === current.user_id,
+    );
+  }
+  if (keepIndex < 0 && current) {
+    const next = [
+      current,
+      ...tracks.filter(
+        (row) => !(row.file_id === current.file_id && row.user_id === current.user_id),
+      ),
+    ];
+    setSnapshot({
+      tracks: next,
+      index: 0,
+      order: rebuildOrder(next.length, snapshot.shuffle, 0),
+    });
+    return;
+  }
+  const index = keepIndex >= 0 ? keepIndex : snapshot.index < tracks.length ? snapshot.index : 0;
   setSnapshot({
     tracks,
     index,

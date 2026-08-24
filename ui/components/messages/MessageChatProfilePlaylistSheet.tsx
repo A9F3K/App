@@ -19,7 +19,6 @@ import {
 } from "../../telegram/fetchTelegramUserProfile";
 import {
   getMusicPlayer,
-  playMusicIndex,
   setMusicTracks,
   startMusicPlaylist,
   subscribeMusicPlayer,
@@ -118,7 +117,19 @@ export function MessageChatProfilePlaylistSheet({
   const playlistRefreshGenRef = useRef(0);
 
   useEffect(() => {
-    setLocalTracks(Array.isArray(tracks) ? tracks : []);
+    const incoming = Array.isArray(tracks) ? tracks : [];
+    setLocalTracks((prev) => {
+      if (!visible) return incoming;
+      if (
+        Array.isArray(prev) &&
+        prev.length > incoming.length &&
+        incoming.length > 0 &&
+        prev[0]?.user_id === incoming[0]?.user_id
+      ) {
+        return prev;
+      }
+      return incoming;
+    });
   }, [tracks, visible]);
 
   useEffect(() => {
@@ -138,10 +149,6 @@ export function MessageChatProfilePlaylistSheet({
       const full = result.profile.playlist;
       if (!Array.isArray(full) || full.length === 0) return;
       setLocalTracks(full);
-      const snap = getMusicPlayer();
-      if (snap.visible && snap.tracks.some((row) => row.user_id === userId)) {
-        setMusicTracks(full, snap.tracks[snap.index]?.file_id);
-      }
     });
 
     return () => {
@@ -223,24 +230,25 @@ export function MessageChatProfilePlaylistSheet({
 
   const playTrack = useCallback(
     (index: number) => {
+      const track = localTracks[index];
+      if (!track) return;
       unlockMusicAutoplay();
-      if (samePlaylist(localTracks) && player.index === index && player.playing) {
+      const snap = getMusicPlayer();
+      const current = snap.tracks[snap.index];
+      const sameTrack =
+        current != null &&
+        current.file_id === track.file_id &&
+        current.user_id === track.user_id;
+      if (sameTrack && snap.playing) {
         toggleMusicPlay();
-        return;
-      }
-      if (samePlaylist(localTracks)) {
-        playMusicIndex(index);
         return;
       }
       startMusicPlaylist(localTracks, index);
     },
-    [localTracks, player.index, player.playing],
+    [localTracks],
   );
 
-  const activeFileId = useMemo(() => {
-    if (!samePlaylist(localTracks)) return null;
-    return player.tracks[player.index]?.file_id ?? null;
-  }, [localTracks, player.index, player.tracks, player.visible]);
+  const activeTrack = player.tracks[player.index] ?? null;
 
   const sheetBody = (
     <View
@@ -307,7 +315,10 @@ export function MessageChatProfilePlaylistSheet({
           </Text>
         ) : (
           localTracks.map((track, index) => {
-            const active = activeFileId === track.file_id;
+            const active =
+              activeTrack != null &&
+              activeTrack.file_id === track.file_id &&
+              activeTrack.user_id === track.user_id;
             const meta = [formatClock(track.duration_sec), formatSize(track.size_bytes)]
               .filter(Boolean)
               .join(", ");

@@ -200,10 +200,7 @@ export async function readProfileAudioBytes(
 ): Promise<{ data: Buffer; mime: string } | null> {
   if (!Number.isFinite(userId) || userId === 0) return null;
   if (!Number.isFinite(fileId) || fileId <= 0) return null;
-  const tracks = await listUserProfileAudios(client, Math.trunc(userId));
-  const track = tracks.find((row) => row.file_id === Math.trunc(fileId));
-  if (!track) return null;
-  const bytes = await readLocalFileBytes(client, track.file_id, AUDIO_DOWNLOAD_TIMEOUT_MS);
+  const bytes = await readLocalFileBytes(client, Math.trunc(fileId), AUDIO_DOWNLOAD_TIMEOUT_MS);
   if (!bytes) return null;
   return { data: bytes.data, mime: mimeFromAudioPath(bytes.path) };
 }

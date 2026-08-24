@@ -21,8 +21,6 @@ import {
 export function MusicPlayerEngine(): null {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const loadedKeyRef = useRef<string>("");
-  const loadingKeyRef = useRef<string>("");
-  const objectUrlRef = useRef<string>("");
   const loadSeqRef = useRef(0);
 
   useEffect(() => {
@@ -31,13 +29,8 @@ export function MusicPlayerEngine(): null {
     const audio = getMusicAudioElement();
     if (!audio) return;
     audioRef.current = audio;
-
-    const revokeObjectUrl = () => {
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = "";
-      }
-    };
+    audio.crossOrigin = "use-credentials";
+    audio.preload = "auto";
 
     const onTime = () => {
       reportMusicTime(audio.currentTime || 0, audio.duration || 0);
@@ -90,83 +83,41 @@ export function MusicPlayerEngine(): null {
       }
     };
 
-    const waitForCanPlay = (el: HTMLAudioElement): Promise<void> =>
-      new Promise((resolve, reject) => {
-        if (el.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
-          resolve();
-          return;
-        }
-        const onReady = () => {
-          cleanup();
-          resolve();
-        };
-        const onFail = () => {
-          cleanup();
-          reject(new Error("audio_load_failed"));
-        };
-        const cleanup = () => {
-          el.removeEventListener("canplay", onReady);
-          el.removeEventListener("loadeddata", onReady);
-          el.removeEventListener("error", onFail);
-        };
-        el.addEventListener("canplay", onReady);
-        el.addEventListener("loadeddata", onReady);
-        el.addEventListener("error", onFail);
-      });
-
-    const loadTrack = (key: string, src: string) => {
-      if (loadingKeyRef.current === key) return;
-      loadingKeyRef.current = key;
-      const seq = ++loadSeqRef.current;
-      void (async () => {
-        try {
-          const response = await fetch(src, { credentials: "include" });
-          if (!response.ok) throw new Error("audio_unavailable");
-          const blob = await response.blob();
-          if (seq !== loadSeqRef.current) return;
-          revokeObjectUrl();
-          const objectUrl = URL.createObjectURL(blob);
-          objectUrlRef.current = objectUrl;
-          audio.pause();
-          audio.src = objectUrl;
-          audio.load();
-          await waitForCanPlay(audio);
-          if (seq !== loadSeqRef.current) return;
-          loadedKeyRef.current = key;
-          loadingKeyRef.current = "";
-          applyPlayback();
-        } catch {
-          if (seq !== loadSeqRef.current) return;
-          loadingKeyRef.current = "";
-          if (loadedKeyRef.current === key) {
-            loadedKeyRef.current = "";
-          }
-          setMusicPlaying(false);
-        }
-      })();
-    };
-
     const apply = () => {
       const snap = getMusicPlayer();
       const track = snap.tracks[snap.index] ?? null;
       const key = track ? musicTrackPlaybackKey(track) : "";
 
       if (!snap.visible || !track) {
-        if (loadedKeyRef.current || loadingKeyRef.current) {
+        if (loadedKeyRef.current) {
           audio.pause();
           audio.removeAttribute("src");
           audio.load();
           loadedKeyRef.current = "";
-          loadingKeyRef.current = "";
-          revokeObjectUrl();
         }
         return;
       }
 
       if (loadedKeyRef.current !== key) {
-        if (loadingKeyRef.current !== key) {
-          loadTrack(key, musicTrackPlaybackUrl(track));
+        const seq = ++loadSeqRef.current;
+        loadedKeyRef.current = key;
+        const src = musicTrackPlaybackUrl(track);
+        audio.pause();
+        if (audio.src !== src) {
+          audio.src = src;
+          audio.load();
         }
+        const onReady = () => {
+          if (seq !== loadSeqRef.current) return;
+          applyPlayback();
+        };
+        if (audio.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+          onReady();
+        } else {
+          audio.addEventListener("canplay", onReady, { once: true });
+          audio.addEventListener("loadeddata", onReady, { once: true });
+        }
+        void audio.play().catch(() => undefined);
         return;
       }
 
@@ -187,8 +138,6 @@ export function MusicPlayerEngine(): null {
       audio.load();
       audioRef.current = null;
       loadedKeyRef.current = "";
-      loadingKeyRef.current = "";
-      revokeObjectUrl();
     };
   }, []);
 

@@ -23,10 +23,13 @@ export function getMusicAudioElement(): HTMLAudioElement | null {
   return audio;
 }
 
-/** Call from a click/tap so later blob-src play() is allowed. Does not touch voice audio. */
+/** Call from a click/tap so later play() is allowed. Does not touch voice audio. */
 export function unlockMusicAutoplay(): void {
   const audio = getMusicAudioElement();
   if (!audio) return;
-  if (!audio.src) audio.src = SILENT_WAV;
+  const src = audio.getAttribute("src") || audio.src || "";
+  if (!src || src.startsWith("data:")) {
+    audio.src = SILENT_WAV;
+  }
   void audio.play().catch(() => undefined);
 }
