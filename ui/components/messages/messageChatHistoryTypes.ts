@@ -99,6 +99,8 @@ export type MessageChatHistoryItem = {
 export type HistoryMessageContext = {
   peerUserId?: number | null;
   selfUserId?: number | null;
+  chatKind?: MessageChatKind | null;
+  peerIsBot?: boolean | null;
 };
 
 /** Resolve whether a history row is outgoing (only our messages get delivery ticks). */
@@ -129,7 +131,7 @@ export function resolveHistoryMessageIsOutgoing(params: {
   return false;
 }
 
-/** Delivery ticks render only on messages we actually sent. */
+/** Delivery ticks on messages we actually sent (incl. channel posts + bot DMs). */
 export function messageShowsOutgoingChecks(
   item: Pick<MessageChatHistoryItem, "is_outgoing" | "sender_user_id">,
   ctx?: HistoryMessageContext,

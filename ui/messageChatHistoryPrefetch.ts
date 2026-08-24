@@ -32,7 +32,7 @@ import {
 
 /** Max visible chats we warm in the background (viewport-driven). */
 const PREFETCH_VISIBLE_MAX = 7;
-/** Preview rows warmed immediately when the viewport changes (top-first in column-reverse). */
+/** Preview rows warmed immediately when the viewport changes (visual top first). */
 const VISIBLE_PREVIEW_BATCH = 5;
 const MAX_BACKGROUND_CONCURRENT = 2;
 /** Stagger between background list prefetches (telegram-tt). */
@@ -540,7 +540,7 @@ export function prefetchChatHistory(
 export function prefetchVisibleChatNeighbors(
   chats: readonly MessageChatRowData[],
   selectedChatId: number | null | undefined,
-  options?: { radius?: number },
+  options?: { radius?: number; /** Search/recents column-reverse: visual top is at the end. */ visualTopAtEnd?: boolean },
 ): void {
   if (chats.length === 0) return;
   if (isOpenChatFocusHoldActive()) {
@@ -579,22 +579,41 @@ export function prefetchVisibleChatNeighbors(
     }
   }
 
-  // Visible-first preview batch: column-reverse puts high indices at the visual top.
+  // Visible-first preview batch: walk visual top → bottom.
+  const visualTopAtEnd = options?.visualTopAtEnd === true;
   let previewBudget = VISIBLE_PREVIEW_BATCH;
-  for (let i = chats.length - 1; i >= 0 && previewBudget > 0; i--) {
-    const chat = chats[i]!;
-    if (selectedChatId != null && chat.telegram_chat_id === selectedChatId) {
-      continue;
+  if (visualTopAtEnd) {
+    for (let i = chats.length - 1; i >= 0 && previewBudget > 0; i--) {
+      const chat = chats[i]!;
+      if (selectedChatId != null && chat.telegram_chat_id === selectedChatId) {
+        continue;
+      }
+      if (selectedIdx >= 0 && Math.abs(i - selectedIdx) <= radius) {
+        continue;
+      }
+      enqueueBackgroundPrefetch(
+        chat.telegram_chat_id,
+        chat.peer_user_id ?? null,
+        resolveLoadSpec(chat, { previewOnly: true }),
+      );
+      previewBudget -= 1;
     }
-    if (selectedIdx >= 0 && Math.abs(i - selectedIdx) <= radius) {
-      continue;
+  } else {
+    for (let i = 0; i < chats.length && previewBudget > 0; i++) {
+      const chat = chats[i]!;
+      if (selectedChatId != null && chat.telegram_chat_id === selectedChatId) {
+        continue;
+      }
+      if (selectedIdx >= 0 && Math.abs(i - selectedIdx) <= radius) {
+        continue;
+      }
+      enqueueBackgroundPrefetch(
+        chat.telegram_chat_id,
+        chat.peer_user_id ?? null,
+        resolveLoadSpec(chat, { previewOnly: true }),
+      );
+      previewBudget -= 1;
     }
-    enqueueBackgroundPrefetch(
-      chat.telegram_chat_id,
-      chat.peer_user_id ?? null,
-      resolveLoadSpec(chat, { previewOnly: true }),
-    );
-    previewBudget -= 1;
   }
 }
 

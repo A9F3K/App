@@ -221,6 +221,11 @@ export function MessageChatMessageRow({
   const showOutgoingChecks = messageShowsOutgoingChecks(item, {
     peerUserId: chat.peer_user_id,
     selfUserId,
+    chatKind: chatKind ?? chat.chat_kind,
+    peerIsBot:
+      Boolean(chat.peer_is_bot) ||
+      ((chatKind ?? chat.chat_kind) === "private" &&
+        Boolean(chat.peer_username?.toLowerCase().endsWith("bot"))),
   });
   const checksWidthPx = showOutgoingChecks
     ? messageChatOutgoingChecksWidthPx(
@@ -681,6 +686,11 @@ export function MessageChatMessageRow({
               onMediaDisplaySizeChange={(widthPx) => setLiveMediaWidthPx(widthPx)}
               peerUserId={chat.peer_user_id}
               selfUserId={selfUserId}
+              peerIsBot={
+                Boolean(chat.peer_is_bot) ||
+                ((chatKind ?? chat.chat_kind) === "private" &&
+                  Boolean(chat.peer_username?.toLowerCase().endsWith("bot")))
+              }
               emojiContentActive={contentActive && rowInView}
               mediaFetchEnabled={contentActive}
               deferFullMediaFetch={

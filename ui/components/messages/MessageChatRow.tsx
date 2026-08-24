@@ -132,7 +132,7 @@ export function MessageChatRow({
   item: MessageChatRowData;
   isLast: boolean;
   isActive?: boolean;
-  /** Boost avatar fetch priority for rows in the visible viewport (column-reverse top). */
+  /** Boost avatar fetch priority for rows at the visual top of the chat-list viewport. */
   prioritizeAvatar?: boolean;
   colors: ThemeColors;
   timePendingLabel: string;
@@ -158,6 +158,10 @@ export function MessageChatRow({
   const showTimeMeta = Boolean(timeLabel.trim());
   const listOutgoing = resolveChatListOutgoingPreview(item);
   const listOutgoingStatus = listOutgoing.status;
+  const peerIsBot =
+    Boolean(item.peer_is_bot) ||
+    (item.chat_kind === "private" &&
+      Boolean(item.peer_username?.toLowerCase().endsWith("bot")));
   const showListOutgoingChecks =
     listOutgoing.isOutgoing &&
     !isMessageChatActionLive(item) &&
@@ -195,10 +199,6 @@ export function MessageChatRow({
     : hasActiveVoice
       ? MESSAGE_CHAT_ACTIVE_VOICE_RING_COLOR
       : undefined;
-  const peerIsBot =
-    Boolean(item.peer_is_bot) ||
-    (item.chat_kind === "private" &&
-      Boolean(item.peer_username?.toLowerCase().endsWith("bot")));
   const previewIsVoice = hasActiveVoice && !isMessageChatActionLive(item);
 
   useEffect(() => {

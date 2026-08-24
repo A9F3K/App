@@ -587,8 +587,13 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     (): HistoryMessageContext => ({
       peerUserId: chat.peer_user_id,
       selfUserId,
+      chatKind: chat.chat_kind ?? null,
+      peerIsBot:
+        Boolean(chat.peer_is_bot) ||
+        (chat.chat_kind === "private" &&
+          Boolean(chat.peer_username?.toLowerCase().endsWith("bot"))),
     }),
-    [chat.peer_user_id, selfUserId],
+    [chat.chat_kind, chat.peer_is_bot, chat.peer_user_id, chat.peer_username, selfUserId],
   );
 
   const mergeHistoryWithWindow = useCallback(
@@ -2852,6 +2857,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           ) {
             return prev;
           }
+          // Fresh replace must not keep a previous chat's 1-row display override.
+          displaySliceBoundsOverrideRef.current = null;
           let nextMessages = cached.messages;
           // telegram-tt: first paint only the viewport around the oldest unread.
           if (
@@ -3080,6 +3087,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       displaySliceBoundsOverrideRef.current,
       MESSAGE_LIST_SLICE,
     );
+    // Sync healed/cleared override back to the ref so expand/prepend paths
+    // do not keep a stale 1-row window after short-history self-heal.
+    if (window.override == null) {
+      displaySliceBoundsOverrideRef.current = null;
+    }
     // Self-heal oversized windows without re-centering (keeps scroll item stable).
     const displayCount =
       window.bounds.endIndex >= window.bounds.startIndex
@@ -5803,19 +5815,28 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         displaySliceBoundsOverrideRef.current = null;
         displaySliceBoundsRef.current = { startIndex: 0, endIndex: -1 };
       } else if (override != null) {
-        displaySliceBoundsOverrideRef.current = {
-          startIndex: Math.max(
-            0,
-            Math.min(override.startIndex, next.length - 1),
+        const nextStart = Math.max(
+          0,
+          Math.min(override.startIndex, next.length - 1),
+        );
+        const nextEnd = Math.max(
+          nextStart,
+          Math.min(
+            Math.max(override.endIndex, override.startIndex),
+            next.length - 1,
           ),
-          endIndex: Math.max(
-            0,
-            Math.min(
-              Math.max(override.endIndex, override.startIndex),
-              next.length - 1,
-            ),
-          ),
-        };
+        );
+        // Collapsed to one row while the buffer still has more → drop override
+        // so resolveDisplayWindow can show the full short history.
+        if (nextEnd === nextStart && next.length > 1) {
+          displaySliceBoundsOverrideRef.current = null;
+          displaySliceBoundsRef.current = { startIndex: 0, endIndex: -1 };
+        } else {
+          displaySliceBoundsOverrideRef.current = {
+            startIndex: nextStart,
+            endIndex: nextEnd,
+          };
+        }
       }
 
       messagesRef.current = next;

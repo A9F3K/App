@@ -110,21 +110,23 @@ export function MessageChatProfilePlaylistSheet({
   const colors = useColors();
   const { t } = useAppStrings();
   const player = useSyncExternalStore(subscribeMusicPlayer, getMusicPlayer, getMusicPlayer);
-  const [localTracks, setLocalTracks] = useState(tracks);
+  const safeTracks = Array.isArray(tracks) ? tracks : [];
+  const [localTracks, setLocalTracks] = useState<TelegramProfileAudioTrack[]>(safeTracks);
   const [scrollY, setScrollY] = useState(0);
   const [scrollLayoutH, setScrollLayoutH] = useState(0);
   const dragFromRef = useRef<number | null>(null);
   const playlistRefreshGenRef = useRef(0);
 
   useEffect(() => {
-    setLocalTracks(tracks);
+    setLocalTracks(Array.isArray(tracks) ? tracks : []);
   }, [tracks, visible]);
 
   useEffect(() => {
     if (!visible) return;
+    const seedTracks = Array.isArray(tracks) ? tracks : [];
     const userId =
       getMusicPlayer().tracks[0]?.user_id ??
-      tracks[0]?.user_id;
+      seedTracks[0]?.user_id;
     if (userId == null || !Number.isFinite(userId) || userId === 0) return;
 
     const refreshGen = playlistRefreshGenRef.current + 1;
@@ -134,7 +136,7 @@ export function MessageChatProfilePlaylistSheet({
     void fetchTelegramUserProfile(0, userId, undefined, { priority: "high" }).then((result) => {
       if (cancelled || refreshGen !== playlistRefreshGenRef.current || !result.ok) return;
       const full = result.profile.playlist;
-      if (full.length === 0) return;
+      if (!Array.isArray(full) || full.length === 0) return;
       setLocalTracks(full);
       const snap = getMusicPlayer();
       if (snap.visible && snap.tracks.some((row) => row.user_id === userId)) {
@@ -146,6 +148,7 @@ export function MessageChatProfilePlaylistSheet({
       cancelled = true;
     };
     // Refresh once when the sheet opens; full list comes from profile API (may exceed player queue).
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open-once refresh keyed on visible
   }, [visible]);
 
   const coverFetchWindow = useMemo(() => {
@@ -179,7 +182,7 @@ export function MessageChatProfilePlaylistSheet({
   const moveTrack = useCallback((from: number, to: number) => {
     if (from === to || from < 0 || to < 0) return;
     setLocalTracks((prev) => {
-      if (from >= prev.length || to >= prev.length) return prev;
+      if (!Array.isArray(prev) || from >= prev.length || to >= prev.length) return prev;
       const next = [...prev];
       const [row] = next.splice(from, 1);
       if (!row) return prev;

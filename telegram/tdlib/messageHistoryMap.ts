@@ -701,9 +701,16 @@ export async function mapHistoryMessage(
   const isCall = isCallMessage(resolved);
   const isAudio = messageContentKind(resolved) === "audio";
   const audioMeta = isAudio ? parseTdAudioMeta(resolved.content) : null;
-  const text = bodyText(resolved).trim();
+  let text = bodyText(resolved).trim();
   const hasMedia = hasDisplayableMedia(resolved);
-  if (!text && !hasMedia && !isCall && !isAudio) return null;
+  // Keep non-media channel/group posts that only have a preview label (polls,
+  // voice notes, locations, unpaid captions, etc.). Documents without captions
+  // used to return "" from messageBodyText and were dropped entirely.
+  if (!text && !hasMedia && !isCall && !isAudio) {
+    const preview = previewFromMessage(resolved)?.trim() ?? "";
+    if (!preview || isGenericMessagePreviewLabel(preview)) return null;
+    text = preview;
+  }
 
   const sender = await resolveSenderName(client, resolved, chat, userCache, chatCache);
   const senderChatIdValue = senderChatId(resolved);

@@ -67,6 +67,7 @@ type Props = {
   onMediaDisplaySizeChange?: (widthPx: number, heightPx: number) => void;
   peerUserId?: number | null;
   selfUserId?: number | null;
+  peerIsBot?: boolean | null;
   /** Message row is on-screen — unlock inline emoji fetches in bubble text. */
   emojiContentActive?: boolean;
   /**
@@ -466,6 +467,7 @@ export function MessageChatBubbleBody({
   onMediaDisplaySizeChange,
   peerUserId = null,
   selfUserId = null,
+  peerIsBot = null,
   emojiContentActive = true,
   mediaFetchEnabled,
   deferFullMediaFetch,
@@ -483,7 +485,12 @@ export function MessageChatBubbleBody({
     telegram_chat_id: chatId,
     peer_user_id: peerUserId,
   });
-  const showOutgoingChecks = messageShowsOutgoingChecks(item, { peerUserId, selfUserId });
+  const showOutgoingChecks = messageShowsOutgoingChecks(item, {
+    peerUserId,
+    selfUserId,
+    chatKind,
+    peerIsBot,
+  });
   const senderDisplayName = resolveMessageSenderDisplayName(
     item.sender_name,
     item.sender_user_id,

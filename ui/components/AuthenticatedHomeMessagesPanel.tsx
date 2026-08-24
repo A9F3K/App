@@ -2177,13 +2177,19 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const visibleChatIdsKey = visibleChats
     .map((row) => row.telegram_chat_id)
     .join(",");
-  /** Column-reverse list: higher indices are visual top — boost avatar fetch there first. */
+  /**
+   * Boost avatar fetch for the visual top of the viewport first.
+   * Default list is top→bottom (index 0 = top). Search/recents use column-reverse
+   * (last indices = visual top).
+   */
   const prioritizeAvatarChatIds = useMemo(() => {
-    const topVisibleCount = Math.min(8, visibleChats.length);
-    return new Set(
-      visibleChats.slice(-topVisibleCount).map((row) => row.telegram_chat_id),
-    );
-  }, [visibleChatIdsKey]);
+    const topVisibleCount = Math.min(12, visibleChats.length);
+    if (topVisibleCount === 0) return new Set<number>();
+    const topFirst = listSearchActive
+      ? visibleChats.slice(-topVisibleCount)
+      : visibleChats.slice(0, topVisibleCount);
+    return new Set(topFirst.map((row) => row.telegram_chat_id));
+  }, [listSearchActive, visibleChatIdsKey]);
 
   // tdesktop: keep neighbors warm so the next switch paints from cache.
   useEffect(() => {
@@ -2193,10 +2199,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     // history storms competed for the main thread (logs: prefetch_ok mid-freeze).
     const selected = visibleChats.find((row) => row.telegram_chat_id === selectedChatId);
     if (selected?.has_active_voice_chat) return;
-    prefetchVisibleChatNeighbors(visibleChats, selectedChatId, { radius: 1 });
+    prefetchVisibleChatNeighbors(visibleChats, selectedChatId, {
+      radius: 1,
+      visualTopAtEnd: listSearchActive,
+    });
     // visibleChats identity changes every render; key on ids + selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- visibleChatIdsKey
-  }, [isTelegramMessagesConnected, selectedChatId, visibleChatIdsKey]);
+  }, [isTelegramMessagesConnected, listSearchActive, selectedChatId, visibleChatIdsKey]);
 
   useEffect(() => {
     setChatListBottomLoaderActive(showBottomLoader);

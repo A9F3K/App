@@ -207,7 +207,7 @@ export function GlobalMusicControlBar({ colors }: Props) {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t("messages.profile.playlistTitle")}
-          onPress={openMusicPlaylistSheet}
+          onPress={() => openMusicPlaylistSheet()}
           style={({ pressed }) => ({
             flex: 1,
             minWidth: 0,

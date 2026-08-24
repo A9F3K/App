@@ -495,10 +495,12 @@ export function messageBodyText(msg: TdMessage | undefined | null): string {
   const primary = extractPrimaryMessageText(c as Record<string, unknown>, type);
   if (primary) return primary;
 
+  // Photo / video / sticker / animation / paid media without caption stay empty so
+  // the media bubble can render alone. Documents and other labeled types fall through
+  // to previewFromMessage so they are not dropped from history.
   if (
     type === "messagePhoto" ||
     type === "messageVideo" ||
-    type === "messageDocument" ||
     type === "messageAnimation" ||
     type === "messageSticker" ||
     type === "messagePaidMedia"

@@ -167,11 +167,25 @@ export function afterOlderPrepend(
   _options?: { pinToLoadedTop?: boolean },
 ): ChatMessageWindowState {
   if (loadedLength <= 0) return emptyChatMessageWindow();
-  const prevStart = current.override?.startIndex ?? current.bounds.startIndex;
-  const prevEnd = Math.max(
-    current.bounds.endIndex,
-    current.override?.endIndex ?? current.bounds.endIndex,
-  );
+  const settled =
+    current.override != null &&
+    current.override.endIndex >= current.override.startIndex
+      ? current.override
+      : current.bounds;
+  // Empty / unset display bounds ({0,-1}) must not invent a 1-row override —
+  // prevEnd=-1 + prependedCount ≈ buffer growth collapses to the last index
+  // (logs: count=3, displayCount=1 on HyperlinkSpace Channel Chat).
+  if (settled.endIndex < settled.startIndex) {
+    return {
+      bounds: { startIndex: 0, endIndex: loadedLength - 1 },
+      override: null,
+      anchorMessageId: current.anchorMessageId,
+      atLoadedTop: true,
+      atLoadedBottom: true,
+    };
+  }
+  const prevStart = settled.startIndex;
+  const prevEnd = Math.max(prevStart, settled.endIndex);
   if (prependedCount <= 0) {
     const bounds = clampBounds(loadedLength, current.bounds);
     return {
@@ -190,6 +204,16 @@ export function afterOlderPrepend(
   // Keep the shifted window within 2N+1 (drop from the newer end).
   if (nextEnd - nextStart + 1 > MESSAGE_LIST_DISPLAY_MAX) {
     nextEnd = nextStart + MESSAGE_LIST_DISPLAY_MAX - 1;
+  }
+  // Never pin a collapsed 1-row window while the buffer still has more rows.
+  if (nextStart === nextEnd && loadedLength > 1) {
+    return {
+      bounds: { startIndex: 0, endIndex: loadedLength - 1 },
+      override: null,
+      anchorMessageId: current.anchorMessageId,
+      atLoadedTop: true,
+      atLoadedBottom: true,
+    };
   }
   const override: CountSliceBounds = {
     startIndex: nextStart,
@@ -214,6 +238,25 @@ export function resolveDisplayWindow(
 ): ChatMessageWindowState {
   if (loaded.length === 0) return emptyChatMessageWindow();
   const base = sliceMessagesByCountAroundId(loaded, anchorMessageId, sliceSize);
+  const resolvedAnchorId =
+    anchorMessageId > 0
+      ? anchorMessageId
+      : loaded[loaded.length - 1]!.telegram_message_id;
+
+  // When the natural window already covers the full loaded buffer (short
+  // channel/bot threads, early history), never apply a narrowing override.
+  // Stale 1-row overrides after keepEnd trim / chat-switch races otherwise
+  // hide already-loaded stickers (logs: count=3, displayCount=1).
+  if (base.startIndex === 0 && base.endIndex >= loaded.length - 1) {
+    return {
+      bounds: base,
+      override: null,
+      anchorMessageId: resolvedAnchorId,
+      atLoadedTop: true,
+      atLoadedBottom: true,
+    };
+  }
+
   // Override is authoritative (afterOlderPrepend shift, expandOlder/Newer).
   // Merging with a re-centered base (min start / max end) widens the window on
   // API prepend and mounts new older rows above the viewport — that grows
@@ -224,9 +267,14 @@ export function resolveDisplayWindow(
     const clamped = clampBounds(loaded.length, override);
     const overrideSpan = override.endIndex - override.startIndex;
     const clampedSpan = clamped.endIndex - clamped.startIndex;
+    const baseSpan = base.endIndex - base.startIndex;
     // After a keepEnd trim, stale high indices clamp to a single last row and
-    // trap scroll (contentH≈layoutH). Fall back to the anchor-centered slice.
-    if (overrideSpan > 0 && clampedSpan === 0 && override.startIndex >= loaded.length) {
+    // trap scroll (contentH≈layoutH). Also heal any override that collapsed
+    // narrower than the anchor-centered base while still inside the buffer.
+    if (
+      (overrideSpan > 0 && clampedSpan === 0 && override.startIndex >= loaded.length) ||
+      (clampedSpan < baseSpan && clampedSpan === 0)
+    ) {
       nextOverride = null;
       bounds = base;
     } else {
@@ -236,10 +284,7 @@ export function resolveDisplayWindow(
   return {
     bounds,
     override: nextOverride,
-    anchorMessageId:
-      anchorMessageId > 0
-        ? anchorMessageId
-        : loaded[loaded.length - 1]!.telegram_message_id,
+    anchorMessageId: resolvedAnchorId,
     atLoadedTop: bounds.startIndex === 0,
     atLoadedBottom: bounds.endIndex >= loaded.length - 1,
   };

@@ -127,8 +127,9 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const openMusicPlaylistSheet = useCallback((tracks?: TelegramProfileAudioTrack[]) => {
-    const rows = tracks ?? getMusicPlayer().tracks;
-    if (rows.length === 0) return;
+    // Must ignore non-arrays: Pressable onPress={openMusicPlaylistSheet} would pass the event.
+    const rows = Array.isArray(tracks) ? tracks : getMusicPlayer().tracks;
+    if (!Array.isArray(rows) || rows.length === 0) return;
     setPlaylistSheetTracks(rows);
     setMusicPlaylistSheetVisible(true);
   }, []);
