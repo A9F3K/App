@@ -28,6 +28,7 @@ import {
   isTier3ChatSyncInProgress,
 } from "./syncChats.js";
 import { fetchChatHistory, fetchChatHistoryAroundMessage, fetchChatHistoryAroundUnread, fetchChatHistorySince, sendChatTextMessage, sendChatPhotoMessage, editChatTextMessage, deleteChatMessages, viewChatInboxMessagesUpTo } from "./chatHistory.js";
+import { readUserAvatarAnimationBytes } from "./chatPhoto.js";
 import { attachLiveChatSync, detachLiveChatSync } from "./liveChatSync.js";
 import { ingestChatFoldersUpdate } from "./chatFolderCache.js";
 import { isPositionedComplete } from "./chatListSyncState.js";
@@ -993,6 +994,7 @@ export async function resolveVoiceStreamGroupCallId(
 type AvatarImageResult = { data: Buffer; mime: string } | "no_avatar" | null;
 type CachedAvatarEntry = { value: AvatarImageResult; atMs: number };
 const userAvatarCache = new Map<string, CachedAvatarEntry>();
+const userAvatarAnimationCache = new Map<string, CachedAvatarEntry>();
 /** Cold getUser often lacks profile_photo — keep miss TTL short so hydration can recover. */
 const USER_NO_AVATAR_TTL_MS = 15_000;
 const USER_AVATAR_OK_TTL_MS = 10 * 60_000;
@@ -1706,6 +1708,29 @@ export async function getUserAvatarImageForUser(
   return resolved;
 }
 
+export async function getUserAvatarAnimationForUser(
+  telegramUsername: string,
+  userId: number,
+): Promise<{ data: Buffer; mime: string } | "no_avatar" | null> {
+  const cacheKey = `${avatarCacheKey(telegramUsername, userId)}:anim`;
+  const cached = userAvatarAnimationCache.get(cacheKey);
+  if (cached !== undefined) {
+    const ttl =
+      cached.value === "no_avatar" || cached.value == null
+        ? USER_NO_AVATAR_TTL_MS
+        : USER_AVATAR_OK_TTL_MS;
+    if (Date.now() - cached.atMs < ttl) return cached.value;
+    userAvatarAnimationCache.delete(cacheKey);
+  }
+
+  const record = await requireReadySessionFast(telegramUsername);
+  if (!record) return null;
+  const result = await readUserAvatarAnimationBytes(record.client, userId);
+  const resolved: AvatarImageResult = result === "no_avatar" ? "no_avatar" : result;
+  userAvatarAnimationCache.set(cacheKey, { value: resolved, atMs: Date.now() });
+  return resolved;
+}
+
 export async function getUserProfileForUser(
   telegramUsername: string,
   chatId: number,
@@ -2349,6 +2374,56 @@ export async function toggleChatPinnedForUser(
   } catch (err) {
     const message = err instanceof Error ? err.message : "pin_failed";
     return { ok: false, is_pinned: nextPinned, error: message };
+  }
+}
+
+/**
+ * Reorder pinned chats via Telegram (`setPinnedChats`).
+ * `chatIds` must be the full pinned list in display order (top → bottom).
+ */
+export async function setPinnedChatsOrderForUser(
+  telegramUsername: string,
+  chatIds: number[],
+  options?: { archive?: boolean },
+): Promise<{ ok: boolean; chat_ids: number[]; error?: string }> {
+  const ordered = chatIds
+    .map((id) => Math.trunc(Number(id)))
+    .filter((id, index, arr) => Number.isFinite(id) && id !== 0 && arr.indexOf(id) === index);
+  if (ordered.length === 0) {
+    return { ok: false, chat_ids: [], error: "chat_ids_required" };
+  }
+
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) {
+    return { ok: false, chat_ids: ordered, error: "session_not_ready" };
+  }
+
+  const chatList = options?.archive
+    ? ({ _: "chatListArchive" } as const)
+    : ({ _: "chatListMain" } as const);
+
+  try {
+    await record.client.invoke({
+      _: "setPinnedChats",
+      chat_list: chatList,
+      chat_ids: ordered,
+    });
+    const { patchLiveChatFromTdlib } = await import("./liveChatCache.js");
+    for (const chatId of ordered) {
+      try {
+        const refreshed = (await record.client.invoke({
+          _: "getChat",
+          chat_id: chatId,
+        })) as TdChat;
+        patchLiveChatFromTdlib(telegramUsername, refreshed, {});
+      } catch {
+        // Best-effort refresh; live stream will catch up.
+      }
+    }
+    return { ok: true, chat_ids: ordered };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "reorder_pinned_failed";
+    return { ok: false, chat_ids: ordered, error: message };
   }
 }
 

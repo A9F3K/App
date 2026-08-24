@@ -9,10 +9,12 @@ import {
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { typographyRect15, useColors, type ThemeColors } from "../../theme";
+import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { FloatingDialogShell } from "../FloatingDialogShell";
 import { HspScrollColumn } from "../HspScrollColumn";
 import { useTelegram } from "../Telegram";
 import { openAuthenticatedHomeChatHistory } from "../../authenticatedHomeSelectedChat";
+import { buildApiUrl } from "../../../api/_base";
 import {
   blockTelegramUser,
   fetchTelegramUserProfile,
@@ -25,7 +27,6 @@ import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { formatMessageChatPresenceLabel } from "./formatMessageChatPresence";
 import { formatTelegramUsernameAt } from "./formatTelegramChatRowUsername";
 import type { MessageChatRowData } from "./MessageChatRow";
-import { VoiceWindowCrossIcon } from "./MessageChatVoiceControlIcons";
 import {
   ProfileBlockIcon,
   ProfileGiftIcon,
@@ -45,14 +46,14 @@ import {
   MESSAGE_LINE_HEIGHT_PX,
   MESSAGE_LIST_INLINE_EMOJI_SIZE_PX,
 } from "./messageListLayout";
-import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import { MessageChatProfileMediaSheet } from "./MessageChatProfileMediaSheet";
+import { MessageChatProfilePhotoViewer } from "./MessageChatProfilePhotoViewer";
 import type { ProfileMediaKind } from "../../telegram/fetchTelegramUserProfile";
 import { useProfileSheet } from "../../profile/ProfileContext";
 import { getMusicPlayer, subscribeMusicPlayer } from "../../music/musicPlayerStore";
 
-/** Layout matches the profile design sheet (≈380×740 content frame). */
-const SHEET_MAX_WIDTH_PX = 380;
+/** Thin default profile frame (matches previous UX feel). */
+const SHEET_MAX_WIDTH_PX = 320;
 const PAD_X_PX = 20;
 const PAD_TOP_PX = 20;
 const PAD_BOTTOM_PX = 24;
@@ -226,6 +227,7 @@ export function MessageChatProfileSheet({
   const [blockPending, setBlockPending] = useState(false);
   const [isBlocked, setIsBlocked] = useState(false);
   const [mediaKindOpen, setMediaKindOpen] = useState<ProfileMediaKind | null>(null);
+  const [photoViewerOpen, setPhotoViewerOpen] = useState(false);
   const musicPlayer = useSyncExternalStore(
     subscribeMusicPlayer,
     getMusicPlayer,
@@ -237,6 +239,7 @@ export function MessageChatProfileSheet({
       setProfile(null);
       setIsBlocked(false);
       setMediaKindOpen(null);
+      setPhotoViewerOpen(false);
       return;
     }
     const controller = new AbortController();
@@ -271,6 +274,15 @@ export function MessageChatProfileSheet({
   const media = profile?.media ?? null;
   const iconUrl = chat ? resolveTelegramThreadAvatarUrl(chat) : null;
   const avatarInitials = useMemo(() => extractChatAvatarInitials(title), [title]);
+  const profilePhoto = profile?.profile_photo ?? null;
+  const animatedIconUrl = useMemo(() => {
+    if (!profilePhoto?.has_animation) return null;
+    const userId = profile?.user_id ?? chat?.peer_user_id ?? null;
+    if (userId == null || !Number.isFinite(userId) || userId === 0) return null;
+    return buildApiUrl(
+      `/api/telegram-messages-avatar?user_id=${encodeURIComponent(String(userId))}&animated=1`,
+    );
+  }, [chat?.peer_user_id, profile?.user_id, profilePhoto?.has_animation]);
   const channelAvatarUrl = channel
     ? `/api/telegram-messages-avatar?chat_id=${encodeURIComponent(String(channel.chat_id))}`
     : null;
@@ -403,13 +415,7 @@ export function MessageChatProfileSheet({
 
   const sheetBody = (
     <View
-      style={{
-        flex: 1,
-        minHeight: 0,
-        paddingHorizontal: PAD_X_PX,
-        paddingTop: PAD_TOP_PX,
-        paddingBottom: PAD_BOTTOM_PX,
-      }}
+      style={{ flex: 1, minHeight: 0 }}
       {...(Platform.OS === "web"
         ? ({
             onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
@@ -419,15 +425,27 @@ export function MessageChatProfileSheet({
       onStartShouldSetResponder={() => true}
     >
       <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
-        <MessageChatAvatarSlot
-          iconUrl={iconUrl}
-          initials={avatarInitials}
-          sizePx={HEADER_AVATAR_PX}
-          colors={colors}
-          scheme={colorScheme}
-          loadEnabled
-          fetchPriority="critical"
-        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("messages.profile.photoOpenA11y")}
+          onPress={() => {
+            if (iconUrl || profilePhoto) setPhotoViewerOpen(true);
+          }}
+          style={({ pressed }) => ({ opacity: pressed ? 0.75 : 1 })}
+        >
+          <MessageChatAvatarSlot
+            iconUrl={iconUrl}
+            initials={avatarInitials}
+            sizePx={HEADER_AVATAR_PX}
+            colors={colors}
+            scheme={colorScheme}
+            loadEnabled
+            fetchPriority="critical"
+            profilePhoto={profilePhoto}
+            animatedIconUrl={animatedIconUrl}
+            emojiFetchEnabled={visible}
+          />
+        </Pressable>
         <View
           style={{
             flex: 1,
@@ -464,19 +482,15 @@ export function MessageChatProfileSheet({
             </Text>
           ) : null}
         </View>
-        <ProfileOpenHitTarget
-          label={t("common.back")}
+        <FloatingDialogCloseButton
+          label={t("common.close")}
           onPress={onClose}
           style={{
             position: "absolute",
             top: 0,
             right: 0,
-            width: 32,
-            height: 32,
           }}
-        >
-          <VoiceWindowCrossIcon color={colors.primary} size={15} />
-        </ProfileOpenHitTarget>
+        />
       </View>
 
       <View
@@ -654,25 +668,50 @@ export function MessageChatProfileSheet({
       <FloatingDialogShell
         visible={Boolean(chat && visible)}
         zIndex={PROFILE_OVERLAY_Z}
-        defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 560 }}
-        minSize={{ width: 300, height: 320 }}
-        sizeStorageKey="hsp.profileSheet.size.v1"
-        offsetStorageKey="hsp.profileSheet.offset.v1"
+        defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 420 }}
+        minSize={{ width: 280, height: 280 }}
+        sizeStorageKey="hsp.profileSheet.size.v4"
+        offsetStorageKey="hsp.profileSheet.offset.v4"
         onRequestClose={onClose}
         testId="profile-sheet"
-        sheetStyle={{ borderWidth: 0 }}
       >
-        <HspScrollColumn style={{ flex: 1, minHeight: 0 }} containOverscroll>
-          {sheetBody}
-        </HspScrollColumn>
+        <ProfileSheetScrollBody>{sheetBody}</ProfileSheetScrollBody>
       </FloatingDialogShell>
       <MessageChatProfileMediaSheet
         visible={mediaKindOpen != null}
         kind={mediaKindOpen}
         chat={chat}
         onClose={() => setMediaKindOpen(null)}
+        onDismissAll={onClose}
         onNavigateToMessage={onClose}
       />
+      <MessageChatProfilePhotoViewer
+        visible={photoViewerOpen}
+        onClose={() => setPhotoViewerOpen(false)}
+        title={title}
+        iconUrl={iconUrl}
+        animatedIconUrl={animatedIconUrl}
+        profilePhoto={profilePhoto}
+        addedAt={profilePhoto?.added_at ?? null}
+      />
     </>
+  );
+}
+
+function ProfileSheetScrollBody({ children }: { children: ReactNode }) {
+  return (
+    <HspScrollColumn
+      style={{ flex: 1, minHeight: 0 }}
+      contentContainerStyle={{
+        paddingHorizontal: PAD_X_PX,
+        paddingTop: PAD_TOP_PX,
+        paddingBottom: PAD_BOTTOM_PX,
+      }}
+      scrollbarRightInsetPx={0}
+      scrollIndicatorOverlaySeam={false}
+      containOverscroll
+    >
+      {children}
+    </HspScrollColumn>
   );
 }

@@ -86,6 +86,11 @@ type Props = {
   /** Inset (px) of the thumb from the right edge of the scroll shell; default {@link layout.scrollIndicatorRightInsetPx}. */
   scrollbarRightInsetPx?: number;
   /**
+   * When false, keep the thumb in the scroll shell (for floating dialogs).
+   * Default: portal to the viewport seam when {@link scrollbarRightInsetPx} is 0 (chat columns).
+   */
+  scrollIndicatorOverlaySeam?: boolean;
+  /**
    * Extend the scroll-thumb track below the scroll viewport (px) so the indicator can travel
    * through a pinned gradient CTA row that sits under the scroller.
    */
@@ -145,6 +150,7 @@ export function HspScrollColumn({
   onMetricsChange,
   onScrollPositionChange,
   scrollbarRightInsetPx = DEFAULT_SCROLLBAR_RIGHT_INSET,
+  scrollIndicatorOverlaySeam,
   scrollIndicatorExtendBottomPx = 0,
   indicatorThumbMinPx = SCROLL_INDICATOR_THUMB_MIN_PX,
   indicatorContentSpanPx = null,
@@ -965,6 +971,7 @@ export function HspScrollColumn({
         maxScroll={indicator.show ? indicator.maxScroll : 0}
         thumbColor={thumbColor}
         scrollbarRightInsetPx={scrollbarRightInsetPx}
+        overlaySeam={scrollIndicatorOverlaySeam}
         scrollIndicatorExtendBottomPx={scrollIndicatorExtendBottomPx}
         onScrollTo={(y) => {
           onUserScrollIntent?.();

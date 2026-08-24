@@ -14,6 +14,8 @@ type Props = {
   lowPriority?: boolean;
   priority?: boolean;
   fetchEnabled?: boolean;
+  suppressFallback?: boolean;
+  onMediaReady?: () => void;
 };
 
 function resolveFetchRef(props: Props): TelegramEmojiFetchRef | null {
@@ -30,6 +32,8 @@ export function MessageChatInlineTgsEmoji({
   emoji,
   sizePx,
   fallbackText = "",
+  suppressFallback = false,
+  onMediaReady,
 }: Props) {
   const fetchRef = useMemo(
     () => resolveFetchRef({ customEmojiId, emoji, sizePx, fallbackText }),
@@ -52,6 +56,7 @@ export function MessageChatInlineTgsEmoji({
         }
         telegramEmojiDebug.inlineDecode(fetchRef, "unsupported", asset.mime, asset.bytes.length);
         setLoadedFallback(fallbackText || emoji || "🎭");
+        onMediaReady?.();
       })
       .catch((err) => {
         telegramEmojiDebug.fetchNetworkError(fetchRef, err);
@@ -59,8 +64,11 @@ export function MessageChatInlineTgsEmoji({
     return () => {
       cancelled = true;
     };
-  }, [fetchRef, fallbackText, emoji]);
+  }, [fetchRef, fallbackText, emoji, onMediaReady]);
 
+  if (suppressFallback) {
+    return <View style={{ width: sizePx, height: sizePx }} />;
+  }
   if (loadedFallback) {
     return (
       <Text style={{ fontSize: Math.round(sizePx * 0.85), lineHeight: sizePx }}>

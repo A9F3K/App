@@ -31,11 +31,11 @@ import {
   typographyFixedRow30Label,
   useColors,
 } from "../../theme";
+import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { FloatingDialogShell } from "../FloatingDialogShell";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
 import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
-import { VoiceWindowCrossIcon } from "../messages/MessageChatVoiceControlIcons";
 import { SwapSelectChevron } from "../swap/SwapFormIcons";
 import { swapTonTokenImage } from "../swap/swapFormAssets";
 import { GetActionSummaryRow } from "./GetActionSummaryRow";
@@ -659,12 +659,12 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         zIndex={10070}
         defaultSize={{ width: 380, height: 420 }}
         minSize={{ width: 300, height: 240 }}
-        sizeStorageKey="hsp.getCurrencyPicker.size.v1"
-        offsetStorageKey="hsp.getCurrencyPicker.offset.v1"
+        sizeStorageKey="hsp.getCurrencyPicker.size.v3"
+        offsetStorageKey="hsp.getCurrencyPicker.offset.v3"
         onRequestClose={() => setPickerOpen(false)}
         testId="get-currency-picker"
-        sheetStyle={{ borderWidth: 0, paddingTop: 20, paddingBottom: 12 }}
       >
+        <View style={{ flex: 1, minHeight: 0, paddingTop: 20, paddingBottom: 12 }}>
         <View
           style={{
             paddingHorizontal: 20,
@@ -681,30 +681,22 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
           >
             {t("get.chooseCurrencyTitle")}
           </Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("common.close")}
+          <FloatingDialogCloseButton
+            label={t("common.close")}
             onPress={() => setPickerOpen(false)}
-            hitSlop={8}
             style={{
               position: "absolute",
               top: 0,
               right: 12,
-              width: 32,
-              height: 32,
-              alignItems: "center",
-              justifyContent: "center",
             }}
-            {...(Platform.OS === "web" ? ({ "data-floating-no-drag": "1" } as object) : {})}
-          >
-            <VoiceWindowCrossIcon color={colors.primary} size={15} />
-          </Pressable>
+          />
         </View>
         <FlatList
           data={options.length > 0 ? options : [selected]}
           keyExtractor={(item) => item.token.address}
           keyboardShouldPersistTaps="handled"
           style={{ flex: 1, minHeight: 0 }}
+          showsVerticalScrollIndicator={false}
           renderItem={({ item }) => {
             const symbol = swapTokenDisplaySymbol(item.token);
             const active =
@@ -753,6 +745,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
             );
           }}
         />
+        </View>
       </FloatingDialogShell>
     </View>
   );

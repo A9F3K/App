@@ -31,6 +31,11 @@ type Props = {
   maxScroll: number;
   thumbColor: string;
   scrollbarRightInsetPx: number;
+  /**
+   * Override seam portal. Default: portal when inset is 0 on web (split-pane columns).
+   * Floating dialogs pass false so the thumb stays on the dialog’s right edge.
+   */
+  overlaySeam?: boolean;
   scrollIndicatorExtendBottomPx?: number;
   onScrollTo: (y: number) => void;
   style?: StyleProp<ViewStyle>;
@@ -52,6 +57,7 @@ export function HspVerticalScrollIndicator({
   maxScroll,
   thumbColor,
   scrollbarRightInsetPx,
+  overlaySeam: overlaySeamProp,
   scrollIndicatorExtendBottomPx = 0,
   onScrollTo,
   style,
@@ -59,7 +65,8 @@ export function HspVerticalScrollIndicator({
   const { colorScheme } = useTelegram();
   const hairline = scrollIndicatorHairlineBorderWidthPx();
   const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
-  const overlaySeam = Platform.OS === "web" && scrollbarRightInsetPx <= 0;
+  const overlaySeam =
+    overlaySeamProp ?? (Platform.OS === "web" && scrollbarRightInsetPx <= 0);
 
   const [seamBox, setSeamBox] = useState<TrackBox | null>(null);
 

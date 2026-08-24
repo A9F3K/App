@@ -22,6 +22,7 @@ import { LiquidGlassShaderUndercover } from "../LiquidGlassShaderUndercover";
 import { HspScrollColumn } from "../HspScrollColumn";
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
+import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { applyIndependentEdgeResize } from "../floatingDialogGeometry";
 import { logPageDisplay } from "../../pageDisplayLog";
 import type { TelegramChatVoiceParticipant } from "../../telegram/fetchTelegramChatVoiceParticipants";
@@ -57,7 +58,6 @@ import {
   VoiceMicControlIcon,
   VoiceMoreIcon,
   VoiceScreenShareIcon,
-  VoiceWindowCrossIcon,
   VoiceWindowSizeIcon,
   VoiceWindowTrayIcon,
 } from "./MessageChatVoiceControlIcons";
@@ -2066,19 +2066,16 @@ export function MessageChatVoicePopover({
         >
           <VoiceWindowSizeIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
         </VoiceWindowChromeButton>
-        <VoiceWindowChromeButton
+        <FloatingDialogCloseButton
           label={t("messages.voiceChat.controls.drop")}
-          hitExtraPx={8}
-          testId="close"
+          color={iconColor}
           onPress={() => {
             // Close leaves the call entirely (stop hearing).
             logPageDisplay("messages_voice_dialog_control_click", { action: "close_leave" });
             requestClose("chrome_x_leave");
             onDropPress();
           }}
-        >
-          <VoiceWindowCrossIcon color={iconColor} size={WINDOW_ICON_SIZE_PX} />
-        </VoiceWindowChromeButton>
+        />
       </View>
     </View>
   );
@@ -2193,7 +2190,8 @@ export function MessageChatVoicePopover({
             paddingBottom: 16,
             flexGrow: 1,
           }}
-          scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
+          scrollbarRightInsetPx={0}
+          scrollIndicatorOverlaySeam={false}
           containOverscroll
         >
           {includeStackedMedia && mediaCount > 0 ? (

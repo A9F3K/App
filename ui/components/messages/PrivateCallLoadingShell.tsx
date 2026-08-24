@@ -1,12 +1,12 @@
-import { Modal, Platform, Pressable, Text, View } from "react-native";
+import { Modal, Platform, Text, View } from "react-native";
 import { useColors } from "../../theme";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { useTelegram } from "../Telegram";
+import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { resolveTelegramThreadAvatarUrl } from "./resolveTelegramThreadAvatarUrl";
 import type { MessageChatRowData } from "./MessageChatRow";
-import { VoiceDropIcon } from "./MessageChatVoiceControlIcons";
 
 type Props = {
   chat: MessageChatRowData;
@@ -38,14 +38,11 @@ export function PrivateCallLoadingShell({ chat, onClose }: Props) {
           paddingHorizontal: 24,
         }}
       >
-        <Pressable
+        <FloatingDialogCloseButton
+          label={t("common.close")}
           onPress={onClose}
-          style={{ position: "absolute", top: 16, right: 16, padding: 8 }}
-          accessibilityRole="button"
-          accessibilityLabel={t("messages.voiceChat.minimize")}
-        >
-          <VoiceDropIcon color={colors.text} />
-        </Pressable>
+          style={{ position: "absolute", top: 16, right: 16 }}
+        />
         <MessageChatAvatarSlot
           iconUrl={avatarUrl}
           initials={initials}

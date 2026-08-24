@@ -24,6 +24,9 @@ type Props = {
   fetchEnabled?: boolean;
   /** Wide sticker replacing a word (e.g. styled "Alipay") — not a square pictograph. */
   textLabel?: boolean;
+  /** Skip Unicode placeholder while bytes load (e.g. avatar static photo underneath). */
+  suppressFallback?: boolean;
+  onMediaReady?: () => void;
 };
 
 function lottieRenderSize(animationData: object, heightPx: number): { widthPx: number; heightPx: number } {
@@ -107,6 +110,8 @@ export function MessageChatInlineTgsEmoji(props: Props) {
     priority = false,
     fetchEnabled = true,
     textLabel = false,
+    suppressFallback = false,
+    onMediaReady,
   } = props;
   const fetchRef = useMemo(() => resolveFetchRef(props), [props.customEmojiId, props.emoji]);
   const { emojiFetchEpoch } = useTelegramMessagesConnection();
@@ -224,9 +229,14 @@ export function MessageChatInlineTgsEmoji(props: Props) {
       };
 
   const mediaReady = Boolean(animationData || mediaUrl);
+  useEffect(() => {
+    if (!mediaReady) return;
+    onMediaReady?.();
+  }, [mediaReady, onMediaReady]);
+
   const labelFallback =
     textLabel && displayFallback && displayFallback !== "🎭" ? displayFallback : null;
-  const showUnicodeFallback = Boolean(!mediaReady && displayFallback);
+  const showUnicodeFallback = Boolean(!suppressFallback && !mediaReady && displayFallback);
   const tgsSize = animationData ? lottieRenderSize(animationData, sizePx) : null;
   const rasterStyle: CSSProperties = textLabel
     ? { height: sizePx, width: "auto", display: "block", objectFit: "contain" }

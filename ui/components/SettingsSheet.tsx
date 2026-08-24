@@ -1,4 +1,4 @@
-import { Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { useAuth } from "../../auth/AuthContext";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { typographyRect15, useColors, type ThemeName } from "../theme";
@@ -25,6 +25,7 @@ function ThemeOptionRow({
       accessibilityState={{ selected }}
       onPress={onPress}
       style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}
+      {...(Platform.OS === "web" ? ({ "data-floating-no-drag": "1" } as object) : {})}
     >
       <View
         style={{
@@ -133,6 +134,7 @@ export function SettingsSheet() {
           accessibilityLabel={t("feed.manualWelcomeTranslationA11y")}
           onPress={() => setWelcomeFeedManualTranslation(!welcomeFeedManualTranslation)}
           style={{ flexDirection: "row", alignItems: "center", marginBottom: 4, marginTop: 12 }}
+          {...(Platform.OS === "web" ? ({ "data-floating-no-drag": "1" } as object) : {})}
         >
           <View
             style={{

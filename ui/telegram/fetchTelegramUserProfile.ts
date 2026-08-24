@@ -3,6 +3,12 @@ import {
   runQueuedNetworkFetch,
   type NetworkFetchPriority,
 } from "../components/messages/networkFetchQueue";
+import {
+  normalizeTelegramProfilePhotoMarkup,
+  type TelegramProfilePhotoMarkup,
+} from "../../shared/telegramProfilePhoto";
+
+export type { TelegramProfilePhotoMarkup };
 
 export type TelegramProfileAudioTrack = {
   user_id: number;
@@ -28,6 +34,7 @@ export type TelegramUserProfile = {
   is_bot: boolean;
   is_blocked: boolean;
   emoji_status_custom_emoji_id: string | null;
+  profile_photo: TelegramProfilePhotoMarkup | null;
   music: { artist: string; title: string } | null;
   playlist: TelegramProfileAudioTrack[];
   channel: {
@@ -95,6 +102,7 @@ export async function fetchTelegramUserProfile(
           ...json.profile,
           is_blocked: Boolean(json.profile.is_blocked),
           playlist: Array.isArray(json.profile.playlist) ? json.profile.playlist : [],
+          profile_photo: normalizeTelegramProfilePhotoMarkup(json.profile.profile_photo),
         },
       };
     } catch (err) {

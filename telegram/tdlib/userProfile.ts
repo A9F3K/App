@@ -2,6 +2,8 @@ import type { Client } from "tdl";
 import { formattedTextPlain, type TdChat } from "./chatPreview.js";
 import { emojiStatusCustomIdFromUser } from "./emojiStatus.js";
 import { userDisplayNameFromTdUser, isBotFromTdUser } from "./tdUserProfile.js";
+import type { TelegramProfilePhotoMarkup } from "../../shared/telegramProfilePhoto.js";
+import { resolveUserProfilePhotoMarkup } from "./chatPhoto.js";
 import {
   listUserProfileAudios,
   parseTdProfileAudio,
@@ -21,6 +23,7 @@ export type TelegramUserProfilePayload = {
   is_bot: boolean;
   is_blocked: boolean;
   emoji_status_custom_emoji_id: string | null;
+  profile_photo: TelegramProfilePhotoMarkup | null;
   music: { artist: string; title: string } | null;
   playlist: TelegramProfileAudioTrack[];
   channel: {
@@ -295,6 +298,7 @@ export async function fetchTelegramUserProfile(
     is_bot: false,
     is_blocked: false,
     emoji_status_custom_emoji_id: null,
+    profile_photo: null,
     music: null,
     playlist: [],
     channel: null,
@@ -311,11 +315,13 @@ export async function fetchTelegramUserProfile(
       : Promise.resolve([] as TelegramProfileAudioTrack[]);
 
   if (resolvedUserId != null) {
+    let userRow: Record<string, unknown> | null = null;
     try {
       const user = (await client.invoke({
         _: "getUser",
         user_id: resolvedUserId,
       })) as Record<string, unknown>;
+      userRow = user;
       base.title = userDisplayNameFromTdUser(user);
       base.username = usernameFromTdUser(user);
       base.phone_number = formatPhoneDisplay(phoneFromTdUser(user));
@@ -339,6 +345,12 @@ export async function fetchTelegramUserProfile(
         first_profile_audio?: unknown;
         firstProfileAudio?: unknown;
       };
+      base.profile_photo = await resolveUserProfilePhotoMarkup(
+        client,
+        resolvedUserId,
+        userRow,
+        full as Record<string, unknown>,
+      );
       const bio = formattedTextPlain(full.bio)?.trim() || null;
       if (bio) base.bio = bio;
       else if (typeof full.bot_info?.description === "string" && full.bot_info.description.trim()) {
@@ -363,6 +375,19 @@ export async function fetchTelegramUserProfile(
       }
     } catch {
       // keep defaults
+    }
+
+    if (!base.profile_photo) {
+      try {
+        base.profile_photo = await resolveUserProfilePhotoMarkup(
+          client,
+          resolvedUserId,
+          userRow,
+          null,
+        );
+      } catch {
+        /* keep null */
+      }
     }
 
     base.is_blocked = await isUserBlocked(client, resolvedUserId);

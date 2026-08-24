@@ -9,6 +9,7 @@ import {
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useColors, layout, type ThemeColors } from "../../theme";
+import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { FloatingDialogShell } from "../FloatingDialogShell";
 import { HspScrollColumn } from "../HspScrollColumn";
 import {
@@ -31,7 +32,6 @@ import {
   MusicPlayIcon,
   MusicReorderIcon,
 } from "../music/MusicControlIcons";
-import { VoiceWindowCrossIcon } from "./MessageChatVoiceControlIcons";
 import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import {
   MessageChatProfileAudioCoverImage,
@@ -244,7 +244,6 @@ export function MessageChatProfilePlaylistSheet({
       style={{
         flex: 1,
         minHeight: 0,
-        paddingTop: PAD_TOP_PX,
         flexDirection: "column",
         overflow: "hidden",
       }}
@@ -252,7 +251,24 @@ export function MessageChatProfilePlaylistSheet({
         ? ({ "data-profile-playlist-sheet": "1" } as object)
         : {})}
     >
-      <View style={{ paddingHorizontal: PAD_X_PX }}>
+      <HspScrollColumn
+        style={{ flex: 1, minHeight: 0 }}
+        contentContainerStyle={{
+          paddingTop: PAD_TOP_PX,
+          paddingHorizontal: PAD_X_PX,
+          paddingBottom: SCROLL_PAD_BOTTOM_PX,
+        }}
+        scrollbarRightInsetPx={0}
+        scrollIndicatorOverlaySeam={false}
+        containOverscroll
+        onScrollPositionChange={(metrics) => {
+          setScrollY(metrics.scrollY);
+          setScrollLayoutH(metrics.layoutH);
+        }}
+        onMetricsChange={(metrics) => {
+          setScrollLayoutH(metrics.layoutH);
+        }}
+      >
         <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
           <ProfileOpenHitTarget
             label={t("common.back")}
@@ -268,166 +284,142 @@ export function MessageChatProfilePlaylistSheet({
           >
             {t("messages.profile.playlistTitle")}
           </Text>
-          <ProfileOpenHitTarget
+          <FloatingDialogCloseButton
             label={t("common.close")}
             onPress={onClose}
-            style={{ width: 32, height: 32 }}
-          >
-            <VoiceWindowCrossIcon color={colors.primary} size={15} />
-          </ProfileOpenHitTarget>
+          />
         </View>
-      </View>
-      <View
-        style={{
-          height: hairline,
-          width: "100%",
-          alignSelf: "stretch",
-          backgroundColor: colors.accent,
-        }}
-      />
-      <View
-        style={{
-          flex: 1,
-          minHeight: 0,
-          marginTop: 4,
-        }}
-      >
-        <HspScrollColumn
-          style={{ flex: 1, minHeight: 0 }}
-          contentContainerStyle={{ paddingHorizontal: PAD_X_PX, paddingBottom: SCROLL_PAD_BOTTOM_PX }}
-          scrollbarRightInsetPx={layout.scrollIndicatorRightInsetPx}
-          containOverscroll
-          onScrollPositionChange={(metrics) => {
-            setScrollY(metrics.scrollY);
-            setScrollLayoutH(metrics.layoutH);
+        <View
+          style={{
+            height: hairline,
+            width: "100%",
+            alignSelf: "stretch",
+            backgroundColor: colors.accent,
+            marginBottom: 4,
           }}
-          onMetricsChange={(metrics) => {
-            setScrollLayoutH(metrics.layoutH);
-          }}
-        >
-          {localTracks.length === 0 ? (
-            <Text style={[textBase(colors.secondary), { paddingTop: 8 }]}>
-              {t("messages.profile.playlistEmpty")}
-            </Text>
-          ) : (
-            localTracks.map((track, index) => {
-              const active = activeFileId === track.file_id;
-              const meta = [formatClock(track.duration_sec), formatSize(track.size_bytes)]
-                .filter(Boolean)
-                .join(", ");
-              const cover = trackCoverUri(track);
-              const coverLoadEnabled =
-                index >= coverFetchWindow.start && index <= coverFetchWindow.end;
-              return (
-                <View
-                  key={`${track.user_id}:${track.file_id}`}
-                  {...(Platform.OS === "web"
-                    ? ({ "data-playlist-index": String(index) } as object)
-                    : {})}
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    paddingVertical: 8,
-                    gap: ROW_GAP_PX,
+        />
+        {localTracks.length === 0 ? (
+          <Text style={[textBase(colors.secondary), { paddingTop: 8 }]}>
+            {t("messages.profile.playlistEmpty")}
+          </Text>
+        ) : (
+          localTracks.map((track, index) => {
+            const active = activeFileId === track.file_id;
+            const meta = [formatClock(track.duration_sec), formatSize(track.size_bytes)]
+              .filter(Boolean)
+              .join(", ");
+            const cover = trackCoverUri(track);
+            const coverLoadEnabled =
+              index >= coverFetchWindow.start && index <= coverFetchWindow.end;
+            return (
+              <View
+                key={`${track.user_id}:${track.file_id}`}
+                {...(Platform.OS === "web"
+                  ? ({ "data-playlist-index": String(index) } as object)
+                  : {})}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  paddingVertical: 8,
+                  gap: ROW_GAP_PX,
+                }}
+              >
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("messages.music.reorder")}
+                  onPressIn={() => {
+                    dragFromRef.current = index;
                   }}
+                  style={({ pressed }) => ({
+                    width: 22,
+                    height: 30,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: pressed ? 0.6 : 1,
+                    cursor: Platform.OS === "web" ? ("grab" as never) : undefined,
+                  })}
+                  {...(Platform.OS === "web"
+                    ? ({ "data-floating-no-drag": "1" } as object)
+                    : {})}
                 >
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={t("messages.music.reorder")}
-                    onPressIn={() => {
-                      dragFromRef.current = index;
-                    }}
-                    style={({ pressed }) => ({
-                      width: 22,
-                      height: 30,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      opacity: pressed ? 0.6 : 1,
-                      cursor: Platform.OS === "web" ? ("grab" as never) : undefined,
-                    })}
-                    {...(Platform.OS === "web"
-                      ? ({ "data-floating-no-drag": "1" } as object)
-                      : {})}
-                  >
-                    <MusicReorderIcon color={colors.primary} size={16} />
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={
-                      active && player.playing
-                        ? t("messages.music.pause")
-                        : t("messages.music.play")
-                    }
-                    onPress={() => playTrack(index)}
-                    style={({ pressed }) => ({
-                      width: PLAY_BTN_PX,
-                      height: PLAY_BTN_PX,
-                      borderRadius: PLAY_BTN_PX / 2,
-                      backgroundColor: colors.undercover,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      opacity: pressed ? 0.75 : 1,
-                    })}
-                    {...(Platform.OS === "web"
-                      ? ({ "data-floating-no-drag": "1" } as object)
-                      : {})}
-                  >
-                    {active && player.playing ? (
-                      <MusicPauseIcon color={colors.primary} size={12} />
-                    ) : (
-                      <MusicPlayIcon color={colors.primary} size={12} />
-                    )}
-                  </Pressable>
-                  <Pressable
-                    onPress={() => playTrack(index)}
-                    style={{ flex: 1, minWidth: 0 }}
-                    {...(Platform.OS === "web"
-                      ? ({ "data-floating-no-drag": "1" } as object)
-                      : {})}
-                  >
-                    <Text numberOfLines={1} style={textBase(colors.primary)}>
-                      {track.artist}
-                      {track.title ? (
-                        <Text style={{ color: colors.secondary }}>{` – ${track.title}`}</Text>
-                      ) : null}
-                    </Text>
-                    {meta ? (
-                      <Text
-                        numberOfLines={1}
-                        style={textBase(colors.secondary, {
-                          fontSize: 12,
-                          lineHeight: 15,
-                          marginTop: 2,
-                        })}
-                      >
-                        {meta}
-                      </Text>
+                  <MusicReorderIcon color={colors.primary} size={16} />
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    active && player.playing
+                      ? t("messages.music.pause")
+                      : t("messages.music.play")
+                  }
+                  onPress={() => playTrack(index)}
+                  style={({ pressed }) => ({
+                    width: PLAY_BTN_PX,
+                    height: PLAY_BTN_PX,
+                    borderRadius: PLAY_BTN_PX / 2,
+                    backgroundColor: colors.undercover,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    opacity: pressed ? 0.75 : 1,
+                  })}
+                  {...(Platform.OS === "web"
+                    ? ({ "data-floating-no-drag": "1" } as object)
+                    : {})}
+                >
+                  {active && player.playing ? (
+                    <MusicPauseIcon color={colors.primary} size={12} />
+                  ) : (
+                    <MusicPlayIcon color={colors.primary} size={12} />
+                  )}
+                </Pressable>
+                <Pressable
+                  onPress={() => playTrack(index)}
+                  style={{ flex: 1, minWidth: 0 }}
+                  {...(Platform.OS === "web"
+                    ? ({ "data-floating-no-drag": "1" } as object)
+                    : {})}
+                >
+                  <Text numberOfLines={1} style={textBase(colors.primary)}>
+                    {track.artist}
+                    {track.title ? (
+                      <Text style={{ color: colors.secondary }}>{` – ${track.title}`}</Text>
                     ) : null}
-                  </Pressable>
-                  {cover ? (
-                    <View
-                      style={{
-                        width: COVER_PX,
-                        height: COVER_PX,
-                        borderRadius: 4,
-                        overflow: "hidden",
-                        backgroundColor: colors.undercover,
-                      }}
+                  </Text>
+                  {meta ? (
+                    <Text
+                      numberOfLines={1}
+                      style={textBase(colors.secondary, {
+                        fontSize: 12,
+                        lineHeight: 15,
+                        marginTop: 2,
+                      })}
                     >
-                      <MessageChatProfileAudioCoverImage
-                        uri={cover}
-                        sizePx={COVER_PX}
-                        loadEnabled={coverLoadEnabled}
-                        fetchPriority="high"
-                      />
-                    </View>
+                      {meta}
+                    </Text>
                   ) : null}
-                </View>
-              );
-            })
-          )}
-        </HspScrollColumn>
-      </View>
+                </Pressable>
+                {cover ? (
+                  <View
+                    style={{
+                      width: COVER_PX,
+                      height: COVER_PX,
+                      borderRadius: 4,
+                      overflow: "hidden",
+                      backgroundColor: colors.undercover,
+                    }}
+                  >
+                    <MessageChatProfileAudioCoverImage
+                      uri={cover}
+                      sizePx={COVER_PX}
+                      loadEnabled={coverLoadEnabled}
+                      fetchPriority="high"
+                    />
+                  </View>
+                ) : null}
+              </View>
+            );
+          })
+        )}
+      </HspScrollColumn>
     </View>
   );
 
@@ -435,13 +427,12 @@ export function MessageChatProfilePlaylistSheet({
     <FloatingDialogShell
       visible={visible}
       zIndex={PROFILE_OVERLAY_Z}
-      defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 560 }}
-      minSize={{ width: 300, height: 320 }}
-      sizeStorageKey="hsp.profilePlaylistSheet.size.v1"
-      offsetStorageKey="hsp.profilePlaylistSheet.offset.v1"
+      defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 480 }}
+      minSize={{ width: 280, height: 280 }}
+      sizeStorageKey="hsp.profilePlaylistSheet.size.v3"
+      offsetStorageKey="hsp.profilePlaylistSheet.offset.v3"
       onRequestClose={onBack}
       testId="profile-playlist-sheet"
-      sheetStyle={{ borderWidth: 0 }}
       moveIgnoreSelector="[data-floating-no-drag],button,[role='button']"
     >
       {sheetBody}

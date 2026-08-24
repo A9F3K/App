@@ -1,8 +1,11 @@
+import type { TelegramProfilePhotoMarkup } from "../../shared/telegramProfilePhoto";
+
 export type CachedSelfTelegramProfile = {
   userId: number;
   title: string;
   username: string | null;
   emojiStatusCustomEmojiId: string | null;
+  profilePhoto: TelegramProfilePhotoMarkup | null;
 };
 
 let cached: CachedSelfTelegramProfile | null = null;
@@ -27,6 +30,7 @@ export function rememberSelfTelegramProfile(
     title,
     username: profile.username?.trim() || null,
     emojiStatusCustomEmojiId: profile.emojiStatusCustomEmojiId?.trim() || null,
+    profilePhoto: profile.profilePhoto ?? null,
   };
 }
 

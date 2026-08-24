@@ -21,15 +21,17 @@ import { useProfileSheet } from "../../profile/ProfileContext";
 import { layout, typographyFixedRow30Label, useColors } from "../../theme";
 import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesConnectionContext";
 import { fetchTelegramUserProfile } from "../../telegram/fetchTelegramUserProfile";
+import type { TelegramProfilePhotoMarkup } from "../../../shared/telegramProfilePhoto";
 import {
   clearSelfTelegramProfileCache,
   getCachedSelfTelegramProfile,
   rememberSelfTelegramProfile,
 } from "../../telegram/selfTelegramProfileCache";
 import { useTelegram } from "../Telegram";
-import { VoiceWindowCrossIcon } from "./MessageChatVoiceControlIcons";
+import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
 import { MessageChatDownIcon } from "./MessageChatDownIcon";
+import { MessageChatProfilePhotoViewer } from "./MessageChatProfilePhotoViewer";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { formatTelegramUsernameAt } from "./formatTelegramChatRowUsername";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
@@ -177,37 +179,6 @@ function AccountLogoutText({
   );
 }
 
-function SideMenuCloseButton({
-  colors,
-  label,
-  onPress,
-}: {
-  colors: ReturnType<typeof useColors>;
-  label: string;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      hitSlop={8}
-      onPress={(e) => {
-        (e as { stopPropagation?: () => void }).stopPropagation?.();
-        onPress();
-      }}
-      style={({ pressed }) => ({
-        width: 28,
-        height: 28,
-        alignItems: "center",
-        justifyContent: "center",
-        opacity: pressed ? 0.7 : 1,
-      })}
-    >
-      <VoiceWindowCrossIcon color={colors.primary} size={15} />
-    </Pressable>
-  );
-}
-
 function AccountsExpandChevron({
   colors,
   expanded,
@@ -278,6 +249,8 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   const [telegramDisplayName, setTelegramDisplayName] = useState<string | null>(null);
   const [telegramProfileUsername, setTelegramProfileUsername] = useState<string | null>(null);
   const [emojiStatusCustomEmojiId, setEmojiStatusCustomEmojiId] = useState<string | null>(null);
+  const [profilePhoto, setProfilePhoto] = useState<TelegramProfilePhotoMarkup | null>(null);
+  const [photoViewerOpen, setPhotoViewerOpen] = useState(false);
 
   useEffect(() => {
     if (!visible) {
@@ -296,6 +269,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       setTelegramDisplayName(null);
       setTelegramProfileUsername(null);
       setEmojiStatusCustomEmojiId(null);
+      setProfilePhoto(null);
       if (!isTelegramMessagesConnected) {
         clearSelfTelegramProfileCache();
       }
@@ -307,6 +281,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       setTelegramDisplayName(cached.title);
       setTelegramProfileUsername(cached.username);
       setEmojiStatusCustomEmojiId(cached.emojiStatusCustomEmojiId);
+      setProfilePhoto(cached.profilePhoto);
     }
 
     const controller = new AbortController();
@@ -317,14 +292,17 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       const title = result.profile.title?.trim() || null;
       const username = result.profile.username?.trim() || null;
       const statusId = result.profile.emoji_status_custom_emoji_id?.trim() || null;
+      const nextPhoto = result.profile.profile_photo ?? null;
       if (title) setTelegramDisplayName(title);
       if (username) setTelegramProfileUsername(username);
       setEmojiStatusCustomEmojiId(statusId);
+      setProfilePhoto(nextPhoto);
       if (title) {
         rememberSelfTelegramProfile(connectedTelegramUserId, {
           title,
           username,
           emojiStatusCustomEmojiId: statusId,
+          profilePhoto: nextPhoto,
         });
       }
     });
@@ -342,6 +320,10 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       `/api/telegram-messages-avatar?user_id=${encodeURIComponent(String(connectedTelegramUserId))}`,
     );
   }, [connectedTelegramUserId]);
+  const selfAnimatedAvatarUrl = useMemo(() => {
+    if (connectedTelegramUserId == null || !profilePhoto?.has_animation) return null;
+    return `${selfAvatarUrl}&animated=1`;
+  }, [connectedTelegramUserId, profilePhoto?.has_animation, selfAvatarUrl]);
 
   const handleDisconnect = useCallback(() => {
     // Logout only — never close the side menu from this control.
@@ -381,6 +363,11 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     resolvedUsername,
     selfAvatarUrl,
   ]);
+
+  const openSelfProfilePhoto = useCallback(() => {
+    if (!selfAvatarUrl && !profilePhoto) return;
+    setPhotoViewerOpen(true);
+  }, [profilePhoto, selfAvatarUrl]);
 
   /** Connected Telegram sessions listed in the expandable switcher (one is fine). */
   const connectedAccounts: Array<{
@@ -451,7 +438,19 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     [openMyProfile],
   );
 
-  if (!mounted) return null;
+  if (!mounted) {
+    return (
+      <MessageChatProfilePhotoViewer
+        visible={photoViewerOpen}
+        onClose={() => setPhotoViewerOpen(false)}
+        title={profileTitle}
+        iconUrl={selfAvatarUrl}
+        animatedIconUrl={selfAnimatedAvatarUrl}
+        profilePhoto={profilePhoto}
+        addedAt={profilePhoto?.added_at ?? null}
+      />
+    );
+  }
 
   const panelHeight = Math.max(0, windowHeight - musicTopInset);
   const translateX = drawerOpen ? 0 : -SIDE_MENU_WIDTH_PX;
@@ -508,14 +507,9 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
             <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel={t("messages.sideMenu.myProfile")}
-                onPress={openMyProfile}
+                accessibilityLabel={t("messages.profile.photoOpenA11y")}
+                onPress={openSelfProfilePhoto}
                 style={({ pressed }) => ({
-                  flexDirection: "row",
-                  alignItems: "flex-start",
-                  gap: 12,
-                  flex: 1,
-                  minWidth: 0,
                   opacity: pressed ? 0.75 : 1,
                 })}
               >
@@ -527,49 +521,62 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                   scheme={colorScheme}
                   loadEnabled={visible && connectedTelegramUserId != null}
                   fetchPriority="critical"
+                  profilePhoto={profilePhoto}
+                  animatedIconUrl={selfAnimatedAvatarUrl}
+                  emojiFetchEnabled={visible}
                 />
-                <View style={{ flex: 1, minWidth: 0, paddingTop: 2 }}>
-                  <SpecialTelegramUserName
-                    name={profileTitle}
-                    telegramUserId={connectedTelegramUserId}
-                    emojiStatusCustomEmojiId={emojiStatusCustomEmojiId}
-                    emojiStatusPriority
-                    inlineEmojiFetchEnabled={visible}
-                    inlineEmojiFetchPriority
-                    inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
-                    textAlign="left"
-                    numberOfLines={1}
-                    textStyle={{
-                      ...typographyFixedRow30Label,
-                      color: colors.primary,
-                      fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-                      fontWeight: "600",
-                    }}
-                  />
-                  {usernameAt ? (
-                    <Text
-                      style={{
-                        marginTop: 2,
-                        color: colors.secondary,
-                        fontSize: 13,
-                        lineHeight: 18,
-                      }}
-                      numberOfLines={1}
-                    >
-                      {usernameAt}
-                    </Text>
-                  ) : null}
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("messages.sideMenu.myProfile")}
+                onPress={openMyProfile}
+                style={({ pressed }) => ({
+                  flex: 1,
+                  minWidth: 0,
+                  paddingTop: 2,
+                  opacity: pressed ? 0.75 : 1,
+                })}
+              >
+                <SpecialTelegramUserName
+                  name={profileTitle}
+                  telegramUserId={connectedTelegramUserId}
+                  emojiStatusCustomEmojiId={emojiStatusCustomEmojiId}
+                  emojiStatusPriority
+                  inlineEmojiFetchEnabled={visible}
+                  inlineEmojiFetchPriority
+                  inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
+                  textAlign="left"
+                  numberOfLines={1}
+                  textStyle={{
+                    ...typographyFixedRow30Label,
+                    color: colors.primary,
+                    fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                    fontWeight: "600",
+                  }}
+                />
+                {usernameAt ? (
                   <Text
                     style={{
-                      marginTop: 4,
+                      marginTop: 2,
                       color: colors.secondary,
                       fontSize: 13,
                       lineHeight: 18,
                     }}
+                    numberOfLines={1}
                   >
-                    {t("messages.sideMenu.changeEmojiStatus")}
+                    {usernameAt}
                   </Text>
-                </View>
+                ) : null}
+                <Text
+                  style={{
+                    marginTop: 4,
+                    color: colors.secondary,
+                    fontSize: 13,
+                    lineHeight: 18,
+                  }}
+                >
+                  {t("messages.sideMenu.changeEmojiStatus")}
+                </Text>
               </Pressable>
               <View
                 style={{
@@ -578,8 +585,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                   paddingTop: 2,
                 }}
               >
-                <SideMenuCloseButton
-                  colors={colors}
+                <FloatingDialogCloseButton
                   label={t("common.close")}
                   onPress={onClose}
                 />
@@ -596,7 +602,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
 
           {showAccountsSection ? (
             <>
-              <SideMenuSectionDivider color={colors.accent} />
+              <SideMenuSectionDivider color={colors.highlight} />
               <View style={{ paddingTop: 8, paddingBottom: 8 }}>
                 {connectedAccounts.map((account) => (
                   <View
@@ -609,15 +615,25 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                       gap: 12,
                     }}
                   >
-                    <MessageChatAvatarSlot
-                      iconUrl={account.avatarUrl}
-                      initials={account.initials}
-                      sizePx={ACCOUNT_AVATAR_PX}
-                      colors={colors}
-                      scheme={colorScheme}
-                      loadEnabled={visible}
-                      fetchPriority="high"
-                    />
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={t("messages.profile.photoOpenA11y")}
+                      onPress={openSelfProfilePhoto}
+                      style={({ pressed }) => ({ opacity: pressed ? 0.75 : 1 })}
+                    >
+                      <MessageChatAvatarSlot
+                        iconUrl={account.avatarUrl}
+                        initials={account.initials}
+                        sizePx={ACCOUNT_AVATAR_PX}
+                        colors={colors}
+                        scheme={colorScheme}
+                        loadEnabled={visible}
+                        fetchPriority="high"
+                        profilePhoto={profilePhoto}
+                        animatedIconUrl={selfAnimatedAvatarUrl}
+                        emojiFetchEnabled={visible}
+                      />
+                    </Pressable>
                     <View style={{ flex: 1, minWidth: 0 }}>
                       <Text
                         style={[typographyFixedRow30Label, { color: colors.primary }]}
@@ -650,10 +666,10 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                   onPress={handleAddAccount}
                 />
               </View>
-              <SideMenuSectionDivider color={colors.accent} />
+              <SideMenuSectionDivider color={colors.highlight} />
             </>
           ) : (
-            <SideMenuSectionDivider color={colors.accent} />
+            <SideMenuSectionDivider color={colors.highlight} />
           )}
 
           <View style={{ paddingTop: showAccountsSection ? 4 : 8 }}>
@@ -673,13 +689,33 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     </View>
   );
 
+  const photoViewer = (
+    <MessageChatProfilePhotoViewer
+      visible={photoViewerOpen}
+      onClose={() => setPhotoViewerOpen(false)}
+      title={profileTitle}
+      iconUrl={selfAvatarUrl}
+      animatedIconUrl={selfAnimatedAvatarUrl}
+      profilePhoto={profilePhoto}
+      addedAt={profilePhoto?.added_at ?? null}
+    />
+  );
+
   if (Platform.OS === "web" && typeof document !== "undefined") {
-    return createPortal(drawer, document.body);
+    return (
+      <>
+        {createPortal(drawer, document.body)}
+        {photoViewer}
+      </>
+    );
   }
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      {drawer}
-    </Modal>
+    <>
+      <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+        {drawer}
+      </Modal>
+      {photoViewer}
+    </>
   );
 }

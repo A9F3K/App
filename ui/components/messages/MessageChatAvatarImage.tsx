@@ -104,6 +104,10 @@ async function fetchAvatarBlob(uri: string): Promise<string | null> {
   return promise;
 }
 
+export function loadMessageChatAvatarObjectUrl(uri: string): Promise<string | null> {
+  return fetchAvatarBlob(uri);
+}
+
 /** Populate the shared avatar blob cache (open-chat prefetch). */
 export function prefetchMessageChatAvatar(
   uri: string,

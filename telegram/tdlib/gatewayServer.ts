@@ -24,6 +24,7 @@ import {
   getTelegramEmojiForUser,
   getMessageMediaForUser,
   getUserAvatarImageForUser,
+  getUserAvatarAnimationForUser,
   getUserProfileForUser,
   getProfileAudioFileForUser,
   getProfileAudioCoverForUser,
@@ -61,6 +62,7 @@ import {
   focusChatForUser,
   viewChatInboxMessagesForUser,
   toggleChatPinnedForUser,
+  setPinnedChatsOrderForUser,
   startConnectAttempt,
   resendConnectCode,
   submitConnectCode,
@@ -759,6 +761,34 @@ export function startTdlibGatewayServer(): http.Server {
             return;
           }
           sendJson(res, 200, { ok: true, is_pinned: result.is_pinned });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chats/pinned-order") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            chatIds?: unknown;
+            archive?: boolean;
+          };
+          const telegramUsername = (body.telegramUsername || "").trim();
+          const chatIds = Array.isArray(body.chatIds)
+            ? body.chatIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id !== 0)
+            : [];
+          if (!telegramUsername || chatIds.length === 0) {
+            sendJson(res, 400, { ok: false, error: "username_and_chat_ids_required" });
+            return;
+          }
+          const result = await setPinnedChatsOrderForUser(telegramUsername, chatIds, {
+            archive: Boolean(body.archive),
+          });
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 502, {
+              ok: false,
+              error: result.error ?? "reorder_pinned_failed",
+            });
+            return;
+          }
+          sendJson(res, 200, { ok: true, chat_ids: result.chat_ids });
           return;
         }
 
@@ -1643,12 +1673,17 @@ export function startTdlibGatewayServer(): http.Server {
         if (req.method === "GET" && pathname === "/v1/user/avatar") {
           const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
           const userId = Number(url.searchParams.get("userId"));
+          const animated =
+            url.searchParams.get("animated") === "1" ||
+            url.searchParams.get("animated") === "true";
           if (!telegramUsername || !Number.isFinite(userId)) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
             return;
           }
           const started = Date.now();
-          const avatar = await getUserAvatarImageForUser(telegramUsername, userId);
+          const avatar = animated
+            ? await getUserAvatarAnimationForUser(telegramUsername, userId)
+            : await getUserAvatarImageForUser(telegramUsername, userId);
           if (avatar === "no_avatar") {
             sendJson(res, 404, { ok: false, error: "no_avatar" });
             return;
@@ -1657,10 +1692,11 @@ export function startTdlibGatewayServer(): http.Server {
             sendJson(res, 503, { ok: false, error: "avatar_unavailable" });
             return;
           }
-          logGateway("user_avatar_ok", {
+          logGateway(animated ? "user_avatar_animation_ok" : "user_avatar_ok", {
             telegramUsername,
             userId,
             bytes: avatar.data.length,
+            mime: avatar.mime,
             ms: Date.now() - started,
           });
           res.statusCode = 200;

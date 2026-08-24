@@ -403,6 +403,56 @@ export async function gatewayToggleChatPinned(
   }
 }
 
+export async function gatewaySetPinnedChatsOrder(
+  telegramUsername: string,
+  chatIds: number[],
+  options?: { archive?: boolean },
+): Promise<{ ok: boolean; chat_ids: number[]; error: string | null }> {
+  const base = getGatewayBaseUrl();
+  const secret = getGatewaySecret();
+  const url = `${base}/v1/chats/pinned-order`;
+  const ordered = chatIds
+    .map((id) => Math.trunc(Number(id)))
+    .filter((id) => Number.isFinite(id) && id !== 0);
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Gateway-Secret": secret,
+      },
+      body: JSON.stringify({
+        telegramUsername,
+        chatIds: ordered,
+        archive: Boolean(options?.archive),
+      }),
+    });
+    const json = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      chat_ids?: number[];
+      error?: string;
+    };
+    if (!response.ok || !json.ok) {
+      return {
+        ok: false,
+        chat_ids: ordered,
+        error: json.error ?? "reorder_pinned_failed",
+      };
+    }
+    return {
+      ok: true,
+      chat_ids: Array.isArray(json.chat_ids) ? json.chat_ids.map(Number) : ordered,
+      error: null,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      chat_ids: ordered,
+      error: err instanceof Error ? err.message : "reorder_pinned_failed",
+    };
+  }
+}
+
 export async function gatewayViewChatInboxMessages(
   telegramUsername: string,
   chatId: number,
@@ -1681,18 +1731,25 @@ export async function gatewayFetchCustomEmoji(
 export async function gatewayFetchUserAvatar(
   telegramUsername: string,
   userId: number,
+  options?: { animated?: boolean },
 ): Promise<{ data: ArrayBuffer; mime: string } | "no_avatar" | null> {
   const base = getGatewayBaseUrl();
   const secret = getGatewaySecret();
-  const url = `${base}/v1/user/avatar?telegramUsername=${encodeURIComponent(telegramUsername)}&userId=${encodeURIComponent(String(userId))}`;
+  const params = new URLSearchParams({
+    telegramUsername,
+    userId: String(userId),
+  });
+  if (options?.animated) params.set("animated", "1");
+  const url = `${base}/v1/user/avatar?${params.toString()}`;
   const started = Date.now();
+  const path = options?.animated ? "/v1/user/avatar?animated=1" : "/v1/user/avatar";
   try {
     const response = await fetch(url, {
       method: "GET",
       headers: { "X-Gateway-Secret": secret },
     });
     logTdlibGatewayApi("gateway_fetch_done", {
-      path: "/v1/user/avatar",
+      path,
       status: response.status,
       ok: response.ok,
       elapsedMs: Date.now() - started,
@@ -1700,11 +1757,11 @@ export async function gatewayFetchUserAvatar(
     });
     if (response.status === 404) return "no_avatar";
     if (!response.ok) return null;
-    const mime = response.headers.get("content-type") ?? "image/jpeg";
+    const mime = response.headers.get("content-type") ?? (options?.animated ? "video/mp4" : "image/jpeg");
     return { data: await response.arrayBuffer(), mime };
   } catch (err) {
     logTdlibGatewayApi("gateway_fetch_error", {
-      path: "/v1/user/avatar",
+      path,
       elapsedMs: Date.now() - started,
       fetchError: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
       userId,
@@ -1723,6 +1780,12 @@ export type GatewayUserProfile = {
   status_text: string | null;
   is_bot: boolean;
   emoji_status_custom_emoji_id: string | null;
+  profile_photo?: {
+    custom_emoji_id: string | null;
+    fill: { kind: string; color?: string; top_color?: string; bottom_color?: string; colors?: string[] } | null;
+    has_animation: boolean;
+    added_at?: string | null;
+  } | null;
   music: { artist: string; title: string } | null;
   playlist: Array<{
     user_id: number;

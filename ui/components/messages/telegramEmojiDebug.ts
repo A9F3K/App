@@ -166,6 +166,18 @@ export const telegramEmojiDebug = {
     appLog(TAG, "emoji_status_badge", details);
   },
 
+  profilePhotoAvatar(details: {
+    context: string;
+    customEmojiId: string | null;
+    fillKind: string | null;
+    hasAnimation: boolean;
+  }) {
+    if (!details.customEmojiId && !details.hasAnimation) return;
+    const key = `avatar:${details.context}:${details.customEmojiId}:${details.hasAnimation}`;
+    if (!shouldLog(key)) return;
+    appLog(TAG, "profile_photo_avatar", details);
+  },
+
   richTextSegments(context: string, text: string, segments: FormattedTextSegment[]) {
     if (!segmentsContainTelegramEmoji(segments)) return;
     const custom = segments.filter((segment) => segment.kind === "custom_emoji");
@@ -216,7 +228,7 @@ export const telegramEmojiDebug = {
   },
 
   playerAction(
-    action: "ready" | "play" | "pause" | "paint_only",
+    action: "ready" | "play" | "pause" | "paint_only" | "dotlottie_construct_fail",
     details: Record<string, unknown>,
   ) {
     const key = `player:${action}:${String(details.reason ?? details.hasCanvas ?? "")}`;

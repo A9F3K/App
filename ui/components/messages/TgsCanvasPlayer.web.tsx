@@ -1,6 +1,5 @@
 import { useEffect, useRef, type CSSProperties } from "react";
-import type { AnimationConfig, AnimationItem } from "lottie-web";
-import lottie from "lottie-web/build/player/lottie_canvas";
+import { DotLottie } from "@lottiefiles/dotlottie-web";
 import { telegramEmojiDebug } from "./telegramEmojiDebug";
 import { useElementVisible } from "./useElementVisible.web";
 import { MESSAGE_INLINE_EMOJI_VERTICAL_ALIGN_CSS } from "./messageChatLayout";
@@ -12,7 +11,7 @@ type Props = {
   loop?: boolean;
   /** Smaller canvas + lower DPR for chat-list inline emoji (telegram-tt low-priority quality). */
   lowPriority?: boolean;
-  /** Status badges: always paint frame 0 and skip the global active-player cap. */
+  /** Status badges: always play and skip the global active-player cap. */
   priority?: boolean;
   className?: string;
   style?: React.CSSProperties;
@@ -31,35 +30,23 @@ function releasePlaySlot(): void {
   activePlayerCount = Math.max(0, activePlayerCount - 1);
 }
 
-function safeAnimCall(anim: AnimationItem | null, fn: (item: AnimationItem) => void): void {
-  if (!anim) return;
-  try {
-    fn(anim);
-  } catch {
-    /* lottie can throw when the canvas was torn down during chat switches */
-  }
-}
-
-function forcePaintFrame(anim: AnimationItem): void {
-  safeAnimCall(anim, (item) => {
-    item.goToAndStop(0, true);
-    const renderer = item.renderer as { renderFrame?: (frame: number) => void } | undefined;
-    if (renderer?.renderFrame) {
-      renderer.renderFrame(item.currentFrame);
-    }
-  });
-}
-
-function styleLottieCanvas(host: HTMLElement, widthPx: number, heightPx: number): void {
-  const canvas = host.querySelector("canvas");
-  if (!canvas) return;
+function sizeCanvas(canvas: HTMLCanvasElement, widthPx: number, heightPx: number, lowPriority: boolean): void {
+  const dpr = lowPriority
+    ? 1
+    : Math.min(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1, 2);
+  canvas.width = Math.max(1, Math.round(widthPx * dpr));
+  canvas.height = Math.max(1, Math.round(heightPx * dpr));
   canvas.style.width = `${widthPx}px`;
   canvas.style.height = `${heightPx}px`;
   canvas.style.display = "block";
   canvas.style.verticalAlign = MESSAGE_INLINE_EMOJI_VERTICAL_ALIGN_CSS;
 }
 
-/** Canvas-based TGS loop — avoids lottie-react SVG DOM churn. */
+/**
+ * Telegram `.tgs` is gzipped Lottie. Official clients play it with rlottie/ThorVG,
+ * not lottie-web. DotLottie (ThorVG WASM) actually loops TGS; lottie-web canvas
+ * often freezes on frame 0 after `goToAndStop`.
+ */
 export function TgsCanvasPlayer({
   animationData,
   widthPx,
@@ -72,104 +59,99 @@ export function TgsCanvasPlayer({
 }: Props) {
   const height = heightPx ?? widthPx;
   const hostRef = useRef<HTMLSpanElement>(null);
-  const animRef = useRef<AnimationItem | null>(null);
+  const playerRef = useRef<DotLottie | null>(null);
   const slotHeldRef = useRef(false);
   const visibleRef = useRef(true);
-  const mountGenRef = useRef(0);
   const visible = useElementVisible(hostRef, { enabled: !priority });
-  visibleRef.current = visible;
+  visibleRef.current = priority || visible;
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
 
-    const mountGen = mountGenRef.current + 1;
-    mountGenRef.current = mountGen;
-    const isStale = () => mountGenRef.current !== mountGen;
+    host.replaceChildren();
+    const canvas = document.createElement("canvas");
+    canvas.setAttribute("aria-hidden", "true");
+    sizeCanvas(canvas, widthPx, height, lowPriority);
+    host.appendChild(canvas);
 
-    let anim: AnimationItem | null = null;
+    let player: DotLottie | null = null;
     let localSlotHeld = false;
+    let destroyed = false;
 
     const releaseLocalSlot = () => {
       if (!localSlotHeld) return;
       releasePlaySlot();
       localSlotHeld = false;
-      if (slotHeldRef.current) slotHeldRef.current = false;
+      slotHeldRef.current = false;
     };
 
-    try {
-      host.replaceChildren();
-      anim = lottie.loadAnimation({
-        container: host,
-        renderer: "canvas",
-        loop,
-        autoplay: false,
-        animationData,
-        rendererSettings: {
-          clearCanvas: true,
-          progressiveLoad: false,
-          hideOnTransparent: false,
-        },
-      } as AnimationConfig);
-    } catch {
-      return;
-    }
-
-    if (isStale()) {
-      safeAnimCall(anim, (item) => item.destroy());
-      return;
-    }
-
-    animRef.current = anim;
-
-    const onReady = () => {
-      if (isStale() || !animRef.current) return;
-      const currentAnim = animRef.current;
-      const currentHost = hostRef.current;
-      if (!currentHost) return;
-
-      styleLottieCanvas(currentHost, widthPx, height);
-      forcePaintFrame(currentAnim);
-
+    const applyPlayback = () => {
+      if (destroyed || !player) return;
       const shouldPlay = priority || visibleRef.current;
-      telegramEmojiDebug.playerAction("ready", {
-        priority,
-        visible: visibleRef.current,
-        shouldPlay,
-        hasCanvas: Boolean(currentHost.querySelector("canvas")),
-      });
-
-      if (!shouldPlay) return;
-
+      if (!shouldPlay) {
+        player.pause();
+        releaseLocalSlot();
+        telegramEmojiDebug.playerAction("pause", { priority, visible: visibleRef.current });
+        return;
+      }
       if (!localSlotHeld && (priority || acquirePlaySlot())) {
         localSlotHeld = true;
         slotHeldRef.current = true;
       }
       if (localSlotHeld || priority) {
-        safeAnimCall(currentAnim, (item) => item.play());
+        player.play();
         telegramEmojiDebug.playerAction("play", {
           priority,
           visible: visibleRef.current,
-          reason: "ready",
+          reason: "dotlottie",
         });
       }
     };
 
-    anim.addEventListener("DOMLoaded", onReady);
-    anim.addEventListener("data_ready", onReady);
-    requestAnimationFrame(() => {
-      if (!isStale()) onReady();
+    try {
+      player = new DotLottie({
+        canvas,
+        data: animationData as Record<string, unknown>,
+        loop,
+        autoplay: false,
+        layout: { fit: "contain", align: [0.5, 0.5] },
+        renderConfig: {
+          autoResize: false,
+          freezeOnOffscreen: false,
+          devicePixelRatio: lowPriority
+            ? 1
+            : Math.min(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1, 2),
+        },
+      });
+    } catch (err) {
+      telegramEmojiDebug.playerAction("dotlottie_construct_fail", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return () => {
+        host.replaceChildren();
+      };
+    }
+
+    playerRef.current = player;
+    player.addEventListener("load", applyPlayback);
+    player.addEventListener("ready", applyPlayback);
+    player.addEventListener("loadError", () => {
+      telegramEmojiDebug.playerAction("dotlottie_construct_fail", { reason: "loadError" });
     });
+    applyPlayback();
 
     return () => {
-      mountGenRef.current += 1;
+      destroyed = true;
       releaseLocalSlot();
-      safeAnimCall(anim, (item) => {
-        item.removeEventListener("DOMLoaded", onReady);
-        item.removeEventListener("data_ready", onReady);
-        item.destroy();
-      });
-      animRef.current = null;
+      try {
+        player?.removeEventListener("load", applyPlayback);
+        player?.removeEventListener("ready", applyPlayback);
+        player?.destroy();
+      } catch {
+        /* WASM player can throw if the canvas is already gone */
+      }
+      playerRef.current = null;
       try {
         host.replaceChildren();
       } catch {
@@ -179,33 +161,23 @@ export function TgsCanvasPlayer({
   }, [animationData, widthPx, height, loop, lowPriority, priority]);
 
   useEffect(() => {
-    const anim = animRef.current;
-    if (!anim) return;
-
+    const player = playerRef.current;
+    if (!player) return;
     const shouldPlay = priority || visible;
-
     if (shouldPlay) {
       if (!slotHeldRef.current && (priority || acquirePlaySlot())) {
         slotHeldRef.current = true;
-        safeAnimCall(anim, (item) => item.play());
-        telegramEmojiDebug.playerAction("play", { priority, visible, reason: "slot_acquired" });
-      } else if (slotHeldRef.current) {
-        safeAnimCall(anim, (item) => item.play());
-        telegramEmojiDebug.playerAction("play", { priority, visible, reason: "slot_held" });
-      } else {
-        forcePaintFrame(anim);
-        telegramEmojiDebug.playerAction("paint_only", { priority, visible, reason: "player_cap" });
+      }
+      if (slotHeldRef.current || priority) {
+        player.play();
       }
       return;
     }
-
-    safeAnimCall(anim, (item) => item.pause());
+    player.pause();
     if (slotHeldRef.current) {
       releasePlaySlot();
       slotHeldRef.current = false;
     }
-    forcePaintFrame(anim);
-    telegramEmojiDebug.playerAction("pause", { priority, visible });
   }, [priority, visible]);
 
   return (

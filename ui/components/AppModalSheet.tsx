@@ -6,7 +6,9 @@ import {
   Text,
   View,
 } from "react-native";
+import { useAppStrings } from "../../locales/AppStringsContext";
 import { layout, typographyFixedRow40Label, typographyRect15, typographySansSemibold, useColors } from "../theme";
+import { FloatingDialogCloseButton } from "./FloatingDialogCloseButton";
 import { FloatingDialogShell } from "./FloatingDialogShell";
 import { HspScrollColumn } from "./HspScrollColumn";
 
@@ -122,6 +124,7 @@ export function AppModalSheet({
   titleEmphasis = "default",
 }: Props) {
   const colors = useColors();
+  const { t } = useAppStrings();
 
   return (
     <FloatingDialogShell
@@ -129,32 +132,48 @@ export function AppModalSheet({
       zIndex={10070}
       defaultSize={{ width: 380, height: 420 }}
       minSize={{ width: 300, height: 240 }}
-      sizeStorageKey="hsp.appModalSheet.size.v1"
-      offsetStorageKey="hsp.appModalSheet.offset.v1"
+      sizeStorageKey="hsp.appModalSheet.size.v2"
+      offsetStorageKey="hsp.appModalSheet.offset.v2"
       onRequestClose={onClose}
       testId="app-modal"
-      sheetStyle={{
-        // Shell already draws the border; avoid double chrome from sheet styles.
-        borderWidth: 0,
-        paddingHorizontal: 20,
-        paddingVertical: 20,
-      }}
     >
       <HspScrollColumn
         style={{ flex: 1, minHeight: 0 }}
-        contentContainerStyle={{ paddingBottom: 4 }}
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 16,
+          paddingBottom: 20,
+        }}
+        scrollbarRightInsetPx={0}
+        scrollIndicatorOverlaySeam={false}
         containOverscroll
       >
-        <Text
-          style={[
-            titleEmphasis === "primary"
-              ? [typographySansSemibold, appModalSheetStyles.titlePrimary]
-              : [typographyRect15, appModalSheetStyles.title],
-            { color: colors.primary },
-          ]}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "flex-start",
+            marginBottom: title ? 8 : 0,
+            minHeight: 28,
+          }}
         >
-          {title}
-        </Text>
+          <Text
+            style={[
+              titleEmphasis === "primary"
+                ? [typographySansSemibold, appModalSheetStyles.titlePrimary]
+                : [typographyRect15, appModalSheetStyles.title],
+              {
+                color: colors.primary,
+                flex: 1,
+                minWidth: 0,
+                marginBottom: 0,
+                paddingRight: 8,
+              },
+            ]}
+          >
+            {title}
+          </Text>
+          <FloatingDialogCloseButton label={t("common.close")} onPress={onClose} />
+        </View>
         {children}
         {footer}
       </HspScrollColumn>

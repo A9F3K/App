@@ -2,6 +2,7 @@ import { startTransition, useCallback, useEffect, useMemo, useRef, useState } fr
 import {
   ActivityIndicator,
   Animated,
+  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -18,6 +19,8 @@ import { useProfileSheet } from "../profile/ProfileContext";
 import { logPageDisplay, firstChatListLogFields, chatLogFields } from "../pageDisplayLog";
 import { layout, type ThemeColors } from "../theme";
 import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConnectionContext";
+import { reorderTelegramPinnedChats } from "../telegram/reorderTelegramPinnedChats";
+import { toggleTelegramChatPinned } from "../telegram/toggleTelegramChatPinned";
 import {
   clearAuthenticatedHomeSelectedChat,
   mergeChatRowVoicePreferClientClear,
@@ -77,7 +80,6 @@ import {
 import { telegramEmojiDebug } from "./messages/telegramEmojiDebug";
 import { useTelegramMessagesChatListStream } from "./messages/useTelegramMessagesChatListStream";
 import { fetchTelegramChatListSearch, rememberTelegramFoundChat, clearTelegramRecentFoundChats, removeTelegramRecentFoundChat, type TelegramChatListSearchHit } from "../telegram/fetchTelegramChatListSearch";
-import { toggleTelegramChatPinned } from "../telegram/toggleTelegramChatPinned";
 
 function normalizeSearchNeedle(raw: string): string {
   return raw.trim().toLowerCase().replace(/^@+/, "");
@@ -1661,6 +1663,121 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     });
   }, []);
 
+  const pinnedDragFromRef = useRef<number | null>(null);
+  const pinnedDragStartYRef = useRef(0);
+  const pinnedDragMovedRef = useRef(false);
+  const pinnedOrderBeforeDragRef = useRef<number[] | null>(null);
+  const pinnedOrderLiveRef = useRef<number[] | null>(null);
+  const pinnedCommitPendingRef = useRef(false);
+
+  const movePinnedChat = useCallback((from: number, to: number) => {
+    if (from === to || from < 0 || to < 0) return;
+    setChats((prev) => {
+      const sorted = sortChatRowsTierAware(prev);
+      const pinned = sorted.filter((row) => resolveChatListTier(row) === "pinned");
+      if (from >= pinned.length || to >= pinned.length) return prev;
+      const nextPinned = [...pinned];
+      const [moved] = nextPinned.splice(from, 1);
+      if (!moved) return prev;
+      nextPinned.splice(to, 0, moved);
+      const ids = nextPinned.map((row) => row.telegram_chat_id);
+      pinnedOrderLiveRef.current = ids;
+      const base = Date.now();
+      const orderById = new Map(
+        ids.map((id, i) => [id, `${base}${String(Math.max(0, 9999 - i)).padStart(4, "0")}`]),
+      );
+      return prev.map((row) => {
+        const nextOrder = orderById.get(row.telegram_chat_id);
+        if (nextOrder == null) return row;
+        return {
+          ...row,
+          is_pinned: true,
+          list_tier: "pinned" as const,
+          pin_order: nextOrder,
+        };
+      });
+    });
+    pinnedDragMovedRef.current = true;
+  }, []);
+
+  const applyOptimisticPinnedOrder = useCallback((pinnedIdsTopToBottom: number[]) => {
+    const base = Date.now();
+    const orderById = new Map(
+      pinnedIdsTopToBottom.map((id, i) => [
+        id,
+        `${base}${String(Math.max(0, 9999 - i)).padStart(4, "0")}`,
+      ]),
+    );
+    setChats((prev) =>
+      prev.map((row) => {
+        const nextOrder = orderById.get(row.telegram_chat_id);
+        if (nextOrder == null) return row;
+        return {
+          ...row,
+          is_pinned: true,
+          list_tier: "pinned" as const,
+          pin_order: nextOrder,
+        };
+      }),
+    );
+  }, []);
+
+  const commitPinnedOrder = useCallback(() => {
+    if (pinnedCommitPendingRef.current) return;
+    const before = pinnedOrderBeforeDragRef.current;
+    const current = pinnedOrderLiveRef.current;
+    pinnedOrderBeforeDragRef.current = null;
+    pinnedOrderLiveRef.current = null;
+    if (!before || !current || !pinnedDragMovedRef.current) return;
+    if (
+      current.length === 0 ||
+      (current.length === before.length && current.every((id, i) => id === before[i]))
+    ) {
+      return;
+    }
+    pinnedCommitPendingRef.current = true;
+    void reorderTelegramPinnedChats(current).then((result) => {
+      pinnedCommitPendingRef.current = false;
+      if (result.ok) return;
+      applyOptimisticPinnedOrder(before);
+    });
+  }, [applyOptimisticPinnedOrder]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const onMove = (event: PointerEvent) => {
+      const from = pinnedDragFromRef.current;
+      if (from == null) return;
+      if (!pinnedDragMovedRef.current) {
+        if (Math.abs(event.clientY - pinnedDragStartYRef.current) < 6) return;
+        pinnedDragMovedRef.current = true;
+      }
+      const el = document.elementFromPoint(event.clientX, event.clientY);
+      const row = el?.closest?.("[data-pinned-index]") as HTMLElement | null;
+      if (!row) return;
+      const to = Number(row.dataset.pinnedIndex);
+      if (!Number.isFinite(to) || to === from) return;
+      movePinnedChat(from, to);
+      pinnedDragFromRef.current = to;
+    };
+    const onUp = () => {
+      if (pinnedDragFromRef.current == null) return;
+      pinnedDragFromRef.current = null;
+      commitPinnedOrder();
+      window.setTimeout(() => {
+        pinnedDragMovedRef.current = false;
+      }, 0);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+    return () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+    };
+  }, [commitPinnedOrder, movePinnedChat]);
+
   const handleViewChatProfile = useCallback(
     (row: MessageChatRowData) => {
       setChatListMenu(null);
@@ -1670,6 +1787,16 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   );
 
   const sortedChats = useMemo(() => sortChatRowsTierAware(chats), [chats]);
+  const pinnedIndexByChatId = useMemo(() => {
+    const map = new Map<number, number>();
+    let pinnedIndex = 0;
+    for (const row of sortedChats) {
+      if (resolveChatListTier(row) !== "pinned") continue;
+      map.set(row.telegram_chat_id, pinnedIndex);
+      pinnedIndex += 1;
+    }
+    return map;
+  }, [sortedChats]);
   const searchNeedle = useMemo(
     () => normalizeSearchNeedle(chatListSearchQuery),
     [chatListSearchQuery],
@@ -2319,7 +2446,35 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           );
         }
         return (
-          <View key={item.key}>
+          <View
+            key={item.key}
+            {...(Platform.OS === "web" &&
+            !listSearchActive &&
+            pinnedIndexByChatId.has(item.row.telegram_chat_id)
+              ? ({
+                  "data-pinned-index": String(
+                    pinnedIndexByChatId.get(item.row.telegram_chat_id),
+                  ),
+                  onPointerDown: (e: {
+                    button?: number;
+                    clientY: number;
+                    stopPropagation?: () => void;
+                  }) => {
+                    if (e.button != null && e.button !== 0) return;
+                    const idx = pinnedIndexByChatId.get(item.row.telegram_chat_id);
+                    if (idx == null) return;
+                    pinnedDragFromRef.current = idx;
+                    pinnedDragStartYRef.current = e.clientY;
+                    pinnedDragMovedRef.current = false;
+                    pinnedOrderBeforeDragRef.current = sortedChats
+                      .filter((row) => resolveChatListTier(row) === "pinned")
+                      .map((row) => row.telegram_chat_id);
+                    pinnedOrderLiveRef.current = pinnedOrderBeforeDragRef.current;
+                  },
+                  style: { cursor: "grab" },
+                } as object)
+              : {})}
+          >
             <MessageChatRow
               item={item.row}
               isLast={isVisualBottomEdge}
@@ -2331,7 +2486,14 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
               prioritizeAvatar={prioritizeAvatarChatIds.has(item.row.telegram_chat_id)}
               colors={colors}
               timePendingLabel={t("feed.timePending")}
-              onPress={chatSelectionEnabled ? () => handleChatPress(item.row) : undefined}
+              onPress={
+                chatSelectionEnabled
+                  ? () => {
+                      if (pinnedDragMovedRef.current) return;
+                      handleChatPress(item.row);
+                    }
+                  : undefined
+              }
               onOpenContextMenu={(anchor) => handleOpenChatListMenu(item.row, anchor)}
               onAvatarPress={() => openProfileSheet(item.row)}
               onPrefetch={() => handleRowPrefetch(item.row)}

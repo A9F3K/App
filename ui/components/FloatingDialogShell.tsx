@@ -1,5 +1,7 @@
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -34,6 +36,15 @@ import {
 const AH = layout.authenticatedHome;
 const HIT = AH.splitPaneDividerHitWidthPx;
 const STROKE = AH.splitPaneDividerStrokePx;
+/** Pointer must travel this far before the sheet starts moving — otherwise clicks (theme radios, etc.) never fire. */
+const MOVE_DRAG_THRESHOLD_PX = 5;
+
+const FloatingDialogSizingContext = createContext({ contentSizing: false });
+
+/** True while the shell is measuring intrinsic content height (fit-content open). */
+export function useFloatingDialogContentSizing(): boolean {
+  return useContext(FloatingDialogSizingContext).contentSizing;
+}
 
 export type FloatingDialogShellProps = {
   visible: boolean;
@@ -46,6 +57,11 @@ export type FloatingDialogShellProps = {
   /** Persist size/offset under these keys (web localStorage). */
   sizeStorageKey?: string;
   offsetStorageKey?: string;
+  /**
+   * When true and nothing is stored, open at content height (capped by viewport)
+   * instead of a fixed default tall frame — matches the old profile card.
+   */
+  fitContentHeight?: boolean;
   /** Web-only edge resize. Default true. */
   resizable?: boolean;
   /** Drag the sheet body to move (web). Default true. */
@@ -196,9 +212,10 @@ export function FloatingDialogShell({
   minSize = { width: 280, height: 220 },
   sizeStorageKey,
   offsetStorageKey,
+  fitContentHeight = false,
   resizable = true,
   movable = true,
-  moveIgnoreSelector = "button, a, input, textarea, [data-floating-no-drag]",
+  moveIgnoreSelector = "button, a, input, textarea, [role='button'], [role='radio'], [role='checkbox'], [data-floating-no-drag]",
   sheetStyle,
   onRequestClose,
   testId = "floating-dialog",
@@ -219,10 +236,27 @@ export function FloatingDialogShell({
     [maxSize, minSize],
   );
 
-  const [sheetSize, setSheetSize] = useState<FloatingDialogSize>(() =>
-    clampSize(defaultSize),
-  );
-  const [sheetOffset, setSheetOffset] = useState<FloatingDialogOffset>({ x: 0, y: 0 });
+  const [sheetSize, setSheetSize] = useState<FloatingDialogSize>(() => {
+    const stored = sizeStorageKey && visible ? readFloatingDialogStoredSize(sizeStorageKey) : null;
+    return clampSize(stored ?? defaultSize);
+  });
+  const [sheetOffset, setSheetOffset] = useState<FloatingDialogOffset>(() => {
+    const storedOffset =
+      offsetStorageKey && visible ? readFloatingDialogStoredOffset(offsetStorageKey) : null;
+    const storedSize =
+      sizeStorageKey && visible ? readFloatingDialogStoredSize(sizeStorageKey) : null;
+    const size = clampSize(storedSize ?? defaultSize);
+    return clampFloatingDialogOffset(storedOffset ?? { x: 0, y: 0 }, size, windowWidth, windowHeight);
+  });
+  const [contentSizing, setContentSizing] = useState(() => {
+    if (!visible) return false;
+    if (sizeStorageKey) {
+      const stored = readFloatingDialogStoredSize(sizeStorageKey);
+      // If we have stored geometry, don't try to measure intrinsic height.
+      return !stored && fitContentHeight;
+    }
+    return fitContentHeight;
+  });
   const [hoveredHandle, setHoveredHandle] = useState<FloatingDialogResizeHandle | null>(null);
   const [draggingHandle, setDraggingHandle] = useState<FloatingDialogResizeHandle | null>(null);
   const [movingSheet, setMovingSheet] = useState(false);
@@ -246,19 +280,36 @@ export function FloatingDialogShell({
     pointerId: number;
     host: { setPointerCapture?: (id: number) => void; releasePointerCapture?: (id: number) => void } | null;
   } | null>(null);
+  const pendingMoveRef = useRef<{
+    startX: number;
+    startY: number;
+    startOffsetX: number;
+    startOffsetY: number;
+    pointerId: number;
+    host: { setPointerCapture?: (id: number) => void; releasePointerCapture?: (id: number) => void } | null;
+  } | null>(null);
   const sheetSizeRef = useRef(sheetSize);
   sheetSizeRef.current = sheetSize;
   const sheetOffsetRef = useRef(sheetOffset);
   sheetOffsetRef.current = sheetOffset;
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      setContentSizing(false);
+      return;
+    }
     if (sizeStorageKey) {
       const stored = readFloatingDialogStoredSize(sizeStorageKey);
-      if (stored) setSheetSize(clampSize(stored));
-      else setSheetSize(clampSize(defaultSize));
+      if (stored) {
+        setSheetSize(clampSize(stored));
+        setContentSizing(false);
+      } else {
+        setSheetSize(clampSize(defaultSize));
+        setContentSizing(fitContentHeight);
+      }
     } else {
       setSheetSize(clampSize(defaultSize));
+      setContentSizing(fitContentHeight);
     }
     if (offsetStorageKey) {
       const storedOffset = readFloatingDialogStoredOffset(offsetStorageKey);
@@ -276,6 +327,7 @@ export function FloatingDialogShell({
   }, [
     clampSize,
     defaultSize,
+    fitContentHeight,
     offsetStorageKey,
     sizeStorageKey,
     visible,
@@ -308,6 +360,7 @@ export function FloatingDialogShell({
   }, [offsetStorageKey, sizeStorageKey]);
 
   const endMoveDrag = useCallback(() => {
+    pendingMoveRef.current = null;
     const move = moveDragRef.current;
     if (move?.host && typeof move.host.releasePointerCapture === "function") {
       try {
@@ -316,9 +369,10 @@ export function FloatingDialogShell({
         // ignore
       }
     }
+    const didMove = move != null;
     moveDragRef.current = null;
     setMovingSheet(false);
-    if (offsetStorageKey) {
+    if (didMove && offsetStorageKey) {
       writeFloatingDialogStoredOffset(offsetStorageKey, sheetOffsetRef.current);
     }
   }, [offsetStorageKey]);
@@ -326,6 +380,21 @@ export function FloatingDialogShell({
   useEffect(() => {
     if (!visible || Platform.OS !== "web" || typeof window === "undefined") return;
     const onMove = (e: PointerEvent) => {
+      const pending = pendingMoveRef.current;
+      if (pending && !moveDragRef.current) {
+        const dist = Math.hypot(e.clientX - pending.startX, e.clientY - pending.startY);
+        if (dist < MOVE_DRAG_THRESHOLD_PX) return;
+        pendingMoveRef.current = null;
+        if (pending.host && typeof pending.host.setPointerCapture === "function") {
+          try {
+            pending.host.setPointerCapture(pending.pointerId);
+          } catch {
+            // ignore
+          }
+        }
+        moveDragRef.current = pending;
+        setMovingSheet(true);
+      }
       const move = moveDragRef.current;
       if (move) {
         const next = clampFloatingDialogOffset(
@@ -360,6 +429,7 @@ export function FloatingDialogShell({
       setSheetOffset(offset);
     };
     const onUp = () => {
+      pendingMoveRef.current = null;
       if (moveDragRef.current) endMoveDrag();
       if (dragRef.current) endDrag();
     };
@@ -454,22 +524,13 @@ export function FloatingDialogShell({
       ) {
         return;
       }
-      e.nativeEvent.preventDefault?.();
-      e.nativeEvent.stopPropagation?.();
       dragRef.current = null;
       setDraggingHandle(null);
       const host = e.currentTarget as {
         setPointerCapture?: (id: number) => void;
         releasePointerCapture?: (id: number) => void;
       } | null;
-      if (host && typeof host.setPointerCapture === "function") {
-        try {
-          host.setPointerCapture(e.nativeEvent.pointerId);
-        } catch {
-          // ignore
-        }
-      }
-      moveDragRef.current = {
+      pendingMoveRef.current = {
         startX: e.nativeEvent.clientX,
         startY: e.nativeEvent.clientY,
         startOffsetX: sheetOffsetRef.current.x,
@@ -477,7 +538,6 @@ export function FloatingDialogShell({
         pointerId: e.nativeEvent.pointerId,
         host,
       };
-      setMovingSheet(true);
     },
     [movable, moveIgnoreSelector],
   );
@@ -505,16 +565,28 @@ export function FloatingDialogShell({
   const sheet = (
     <View
       pointerEvents="auto"
+      onLayout={(e) => {
+        if (!contentSizing) return;
+        const measuredH = Math.round(e.nativeEvent.layout.height);
+        if (!Number.isFinite(measuredH) || measuredH < minSize.height) return;
+        const next = clampSize({ width: sheetSize.width, height: measuredH });
+        setSheetSize(next);
+        setContentSizing(false);
+      }}
       style={[
         {
           width: sheetSize.width,
           maxWidth: sheetSize.width,
-          height: sheetSize.height,
-          maxHeight: sheetSize.height,
+          ...(contentSizing
+            ? {
+                height: undefined,
+                maxHeight: maxSize.height,
+              }
+            : {
+                height: sheetSize.height,
+                maxHeight: sheetSize.height,
+              }),
           backgroundColor: colors.background,
-          borderColor: colors.highlight,
-          borderWidth: STROKE,
-          ...borderColors,
           overflow: "visible",
           zIndex: 5,
           ...(Platform.OS === "web"
@@ -527,6 +599,12 @@ export function FloatingDialogShell({
                 cursor: movingSheet ? "grabbing" : movable ? "grab" : undefined,
                 // Keep scroll inside the dialog when the pointer is over it.
                 overscrollBehavior: "contain",
+                boxSizing: "border-box",
+                // Outline survives child backgrounds covering the border box.
+                outlineStyle: "solid",
+                outlineWidth: Math.max(1, STROKE),
+                outlineColor: activeEdges.size > 0 ? colors.primary : colors.highlight,
+                outlineOffset: 0,
               } as object)
             : {
                 flexDirection: "column",
@@ -534,6 +612,13 @@ export function FloatingDialogShell({
               }),
         },
         sheetStyle,
+        // Always paint dialog chrome last so callers cannot strip the border.
+        {
+          borderWidth: Math.max(1, STROKE),
+          borderStyle: "solid" as const,
+          borderColor: colors.highlight,
+          ...borderColors,
+        },
       ]}
       {...(Platform.OS === "web"
         ? ({
@@ -561,8 +646,10 @@ export function FloatingDialogShell({
         : null}
       <View
         style={{
-          flex: 1,
-          minHeight: 0,
+          flex: contentSizing ? undefined : 1,
+          flexGrow: contentSizing ? 0 : 1,
+          flexShrink: 1,
+          minHeight: contentSizing ? undefined : 0,
           minWidth: 0,
           overflow: "hidden",
           ...(Platform.OS === "web"
@@ -571,7 +658,9 @@ export function FloatingDialogShell({
         }}
         pointerEvents="box-none"
       >
-        {children}
+        <FloatingDialogSizingContext.Provider value={{ contentSizing }}>
+          {children}
+        </FloatingDialogSizingContext.Provider>
       </View>
     </View>
   );
