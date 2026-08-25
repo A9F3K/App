@@ -124,6 +124,7 @@ export function MessageChatRow({
   colors,
   timePendingLabel,
   onPress,
+  onPressIn,
   onLongPress,
   onAvatarPress,
   onPrefetch,
@@ -137,6 +138,7 @@ export function MessageChatRow({
   colors: ThemeColors;
   timePendingLabel: string;
   onPress?: () => void;
+  onPressIn?: () => void;
   onLongPress?: () => void;
   /** Opens the chat-list context menu (right-click / long-press). */
   onOpenContextMenu?: (anchor: { x: number; y: number }) => void;
@@ -244,6 +246,7 @@ export function MessageChatRow({
       isActive={isActive}
       colors={colors}
       onPress={onPress}
+      onPressIn={onPressIn}
       onLongPress={(event) => {
         if (onOpenContextMenu) {
           onOpenContextMenu(eventToAnchor(event));
@@ -456,6 +459,8 @@ export function MessageChatRow({
               emojiFetchEnabled={rowInView || Boolean(isActive)}
               emojiFetchPriority={rowInView || Boolean(isActive)}
               chatId={item.telegram_chat_id}
+              peerUserId={item.peer_user_id}
+              spoilerOverlayColor={colors.undercover}
               style={{
                 ...textBase,
                 color: previewIsVoice ? colors.accent : colors.secondary,

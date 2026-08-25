@@ -25,6 +25,8 @@ type Props = {
   emojiStatusCustomEmojiId?: string | null;
   /** When true, fetch/render Telegram emoji status immediately (open thread). */
   emojiStatusPriority?: boolean;
+  /** Prefer static WEBP/PNG status over animated TGS/WebM. */
+  emojiStatusStatic?: boolean;
   /** Inline title/preview emoji fetches — enabled for visible list rows and open chat. */
   inlineEmojiFetchEnabled?: boolean;
   inlineEmojiFetchPriority?: boolean;
@@ -71,6 +73,7 @@ export function SpecialTelegramUserName({
   telegramChatId = null,
   emojiStatusCustomEmojiId,
   emojiStatusPriority = true,
+  emojiStatusStatic = false,
   inlineEmojiFetchEnabled = true,
   inlineEmojiFetchPriority = false,
   inlineEmojiSizePx,
@@ -208,6 +211,7 @@ export function SpecialTelegramUserName({
             sizePx={SPECIAL_USER_BADGE_SIZE_PX}
             priority={emojiStatusPriority}
             fetchEnabled={inlineEmojiFetchEnabled}
+            preferStatic={emojiStatusStatic}
           />
         ) : null}
       </View>

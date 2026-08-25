@@ -18,11 +18,19 @@ import {
 } from "../../../shared/formattedTextSegments";
 import { openMessageLinkUrl } from "./openMessageLinkUrl";
 import { enrichSegmentsWithBotCommands } from "./parseMessageBotCommands";
+import { enrichSegmentsWithMentions } from "./enrichMessageMentions";
+import { logPageDisplay } from "../../pageDisplayLog";
+import {
+  enrichServiceChatMessageForCodeSpoilers,
+  isTelegramServiceNotificationsChat,
+} from "./enrichServiceChatCodeSpoilers";
+import { MessageChatSpoilerCode } from "./MessageChatSpoilerCode";
 import { messageChatBubbleTextWebWrapStyle, inlineEmojiHostCss } from "./messageChatLayout";
 import { MessageChatInlineTgsEmoji } from "./MessageChatInlineTgsEmoji";
 import { parseMessageTextLinks } from "./parseMessageTextLinks";
 import { telegramEmojiDebug } from "./telegramEmojiDebug";
 import { submitChatBotCommand } from "../../telegram/submitChatBotCommand";
+import { useAppStrings } from "../../../locales/AppStringsContext";
 
 const MESSAGE_LINK_COLOR = "#3390ec";
 const DEFAULT_INLINE_EMOJI_SIZE_PX = 20;
@@ -45,6 +53,12 @@ type Props = {
   enrichStandardEmojis?: boolean;
   /** When set, tapping a bot command (e.g. /start) re-sends it to this chat. */
   chatId?: number;
+  /** Peer user id — used with chatId to detect Telegram service notifications (777000). */
+  peerUserId?: number | null;
+  /** Message sender — service login codes also key off sender 777000. */
+  senderUserId?: number | null;
+  /** Solid fill under login-code white-noise overlay (bubble background). */
+  spoilerOverlayColor?: string;
   onBotCommandPress?: (command: string) => void;
 } & Pick<TextProps, "numberOfLines">;
 
@@ -76,7 +90,11 @@ function flattenSegmentsForSingleLine(segments: FormattedTextSegment[]): Formatt
     if (segment.kind === "text") {
       return { ...segment, text: flattenSegmentTextForSingleLine(segment.text) };
     }
-    if (segment.kind === "link" || segment.kind === "bot_command") {
+    if (
+      segment.kind === "link" ||
+      segment.kind === "bot_command" ||
+      segment.kind === "spoiler_code"
+    ) {
       return { ...segment, text: flattenSegmentTextForSingleLine(segment.text) };
     }
     return segment;
@@ -86,7 +104,11 @@ function flattenSegmentsForSingleLine(segments: FormattedTextSegment[]): Formatt
 function resolveSegments(
   text: string,
   segments: FormattedTextSegment[] | null | undefined,
-  options?: { enrichStandardEmojis?: boolean; singleLine?: boolean },
+  options?: {
+    enrichStandardEmojis?: boolean;
+    singleLine?: boolean;
+    hideServiceCodes?: boolean;
+  },
 ): FormattedTextSegment[] {
   const normalized = segments ? normalizeFormattedTextSegments(segments) : null;
   const base =
@@ -97,6 +119,12 @@ function resolveSegments(
     resolved = text ? [{ kind: "text", text }] : [];
   } else {
     resolved = enrichSegmentsWithBotCommands(base);
+  }
+  resolved = enrichSegmentsWithMentions(resolved);
+  if (options?.hideServiceCodes) {
+    // Prefer full message text so dropped/unknown entity kinds cannot leave
+    // login digits only on the plain `text` prop (visible, unspoiled path).
+    resolved = enrichServiceChatMessageForCodeSpoilers(text, resolved);
   }
   if (options?.enrichStandardEmojis) {
     resolved = enrichSegmentsWithStandardEmojis(resolved);
@@ -168,6 +196,8 @@ function RichTextWebRow({
   nowrap = false,
   chatId,
   onBotCommandPress,
+  revealCodeLabel,
+  spoilerOverlayColor,
 }: {
   segments: FormattedTextSegment[];
   style: TextStyle;
@@ -180,6 +210,8 @@ function RichTextWebRow({
   nowrap?: boolean;
   chatId?: number;
   onBotCommandPress?: (command: string) => void;
+  revealCodeLabel?: string;
+  spoilerOverlayColor?: string;
 }) {
   const wrapStyle =
     Platform.OS === "web" && !nowrap ? (messageChatBubbleTextWebWrapStyle as TextStyle) : null;
@@ -301,6 +333,15 @@ function RichTextWebRow({
             segment.text,
           );
         }
+        if (segment.kind === "spoiler_code") {
+          return createElement(MessageChatSpoilerCode, {
+            key: index,
+            text: segment.text,
+            style: { ...baseTextCss, ...inlineTextCss },
+            revealLabel: revealCodeLabel,
+            overlayBackgroundColor: spoilerOverlayColor,
+          });
+        }
         return createElement(
           "span",
           {
@@ -338,6 +379,17 @@ function RichTextWebRow({
               >
                 {segment.text}
               </Text>
+            );
+          }
+          if (segment.kind === "spoiler_code") {
+            return (
+              <MessageChatSpoilerCode
+                key={index}
+                text={segment.text}
+                style={resolvedTextStyle}
+                revealLabel={revealCodeLabel}
+                overlayBackgroundColor={spoilerOverlayColor}
+              />
             );
           }
           return (
@@ -407,6 +459,17 @@ function RichTextWebRow({
             </Text>
           );
         }
+        if (segment.kind === "spoiler_code") {
+          return (
+            <MessageChatSpoilerCode
+              key={index}
+              text={segment.text}
+              style={resolvedTextStyle}
+              revealLabel={revealCodeLabel}
+              overlayBackgroundColor={spoilerOverlayColor}
+            />
+          );
+        }
         return (
           <Text
             key={index}
@@ -471,25 +534,52 @@ export function MessageChatRichText({
   nowrap = false,
   enrichStandardEmojis = false,
   chatId,
+  peerUserId = null,
+  senderUserId = null,
+  spoilerOverlayColor,
   onBotCommandPress,
 }: Props) {
+  const { t } = useAppStrings();
   const singleLine = numberOfLines === 1 || nowrap;
+  const hideServiceCodes = isTelegramServiceNotificationsChat(
+    chatId,
+    peerUserId,
+    senderUserId,
+  );
   const resolvedSegments = useMemo(
-    () => resolveSegments(text, segments, { enrichStandardEmojis, singleLine }),
-    [enrichStandardEmojis, segments, singleLine, text],
+    () =>
+      resolveSegments(text, segments, {
+        enrichStandardEmojis,
+        singleLine,
+        hideServiceCodes,
+      }),
+    [enrichStandardEmojis, hideServiceCodes, segments, singleLine, text],
   );
   const hasTelegramEmoji = segmentsContainTelegramEmoji(resolvedSegments);
+  const revealCodeLabel = t("messages.chat.revealCode");
 
   useEffect(() => {
     telegramEmojiDebug.richTextSegments("message_chat_rich_text", text, resolvedSegments);
-  }, [resolvedSegments, text]);
+    if (!hideServiceCodes) return;
+    const spoiled = resolvedSegments.filter((s) => s.kind === "spoiler_code").map((s) => s.text);
+    logPageDisplay("messages_service_code_spoiler", {
+      chatId: chatId ?? null,
+      peerUserId: peerUserId ?? null,
+      senderUserId: senderUserId ?? null,
+      spoilerCount: spoiled.length,
+      sampleSpoilers: spoiled.slice(0, 3),
+      textPreview: String(text || "").slice(0, 80),
+    });
+  }, [resolvedSegments, text, hideServiceCodes, chatId, peerUserId, senderUserId]);
 
+  const hasSpoilerCode = resolvedSegments.some((segment) => segment.kind === "spoiler_code");
   const hasRichContent = resolvedSegments.some(
     (segment) =>
       segment.kind === "link" ||
       segment.kind === "bot_command" ||
       segment.kind === "custom_emoji" ||
-      segment.kind === "animated_emoji",
+      segment.kind === "animated_emoji" ||
+      segment.kind === "spoiler_code",
   );
   const flatStyle = textStyleFromProp(style);
   const wrapStyle =
@@ -514,7 +604,7 @@ export function MessageChatRichText({
     );
   }
 
-  if (Platform.OS === "web" && (hasTelegramEmoji || (singleLine && hasRichContent))) {
+  if (Platform.OS === "web" && (hasTelegramEmoji || hasSpoilerCode || (singleLine && hasRichContent))) {
     return (
       <RichTextWebRow
         segments={resolvedSegments}
@@ -528,6 +618,8 @@ export function MessageChatRichText({
         nowrap={nowrap}
         chatId={chatId}
         onBotCommandPress={onBotCommandPress}
+        revealCodeLabel={revealCodeLabel}
+        spoilerOverlayColor={spoilerOverlayColor}
       />
     );
   }
@@ -557,6 +649,17 @@ export function MessageChatRichText({
             lowPriorityEmoji,
             emojiFetchEnabled,
             emojiFetchPriority,
+          );
+        }
+        if (segment.kind === "spoiler_code") {
+          return (
+            <MessageChatSpoilerCode
+              key={index}
+              text={segment.text}
+              style={flatStyle}
+              revealLabel={revealCodeLabel}
+              overlayBackgroundColor={spoilerOverlayColor}
+            />
           );
         }
         if (segment.kind === "bot_command") {

@@ -3,6 +3,7 @@ import {
   Platform,
   Pressable,
   Text,
+  useWindowDimensions,
   View,
   type TextStyle,
 } from "react-native";
@@ -11,7 +12,9 @@ import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useColors, layout, type ThemeColors } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { FloatingDialogShell } from "../FloatingDialogShell";
+import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
+import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollIndicatorPx";
 import {
   fetchTelegramUserProfile,
   telegramProfileAudioCoverUrl,
@@ -41,7 +44,6 @@ import {
   MESSAGE_LINE_HEIGHT_PX,
 } from "./messageListLayout";
 
-const SHEET_MAX_WIDTH_PX = 380;
 const PAD_X_PX = 20;
 const PAD_TOP_PX = 20;
 const SCROLL_PAD_BOTTOM_PX = 24;
@@ -108,6 +110,11 @@ export function MessageChatProfilePlaylistSheet({
 }: Props) {
   const colors = useColors();
   const { t } = useAppStrings();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const defaultSize = useMemo(
+    () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "profileList"),
+    [windowHeight, windowWidth],
+  );
   const player = useSyncExternalStore(subscribeMusicPlayer, getMusicPlayer, getMusicPlayer);
   const safeTracks = Array.isArray(tracks) ? tracks : [];
   const [localTracks, setLocalTracks] = useState<TelegramProfileAudioTrack[]>(safeTracks);
@@ -269,7 +276,7 @@ export function MessageChatProfilePlaylistSheet({
           paddingHorizontal: PAD_X_PX,
           paddingBottom: SCROLL_PAD_BOTTOM_PX,
         }}
-        scrollbarRightInsetPx={0}
+        scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
         scrollIndicatorOverlaySeam={false}
         containOverscroll
         onScrollPositionChange={(metrics) => {
@@ -441,10 +448,10 @@ export function MessageChatProfilePlaylistSheet({
     <FloatingDialogShell
       visible={visible}
       zIndex={PROFILE_OVERLAY_Z}
-      defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 480 }}
-      minSize={{ width: 280, height: 280 }}
-      sizeStorageKey="hsp.profilePlaylistSheet.size.v3"
-      offsetStorageKey="hsp.profilePlaylistSheet.offset.v3"
+      defaultSize={defaultSize}
+      minSize={{ width: 300, height: 300 }}
+      sizeStorageKey="hsp.profilePlaylistSheet.size.v4"
+      offsetStorageKey="hsp.profilePlaylistSheet.offset.v4"
       onRequestClose={onBack}
       testId="profile-playlist-sheet"
       moveIgnoreSelector="[data-floating-no-drag],button,[role='button']"

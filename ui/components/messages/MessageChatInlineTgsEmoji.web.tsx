@@ -26,6 +26,8 @@ type Props = {
   textLabel?: boolean;
   /** Skip Unicode placeholder while bytes load (e.g. avatar static photo underneath). */
   suppressFallback?: boolean;
+  /** Prefer WEBP/PNG thumbnail over animated TGS/WebM (profile / side-menu status). */
+  preferStatic?: boolean;
   onMediaReady?: () => void;
 };
 
@@ -38,7 +40,13 @@ function lottieRenderSize(animationData: object, heightPx: number): { widthPx: n
 
 function resolveFetchRef(props: Props): TelegramEmojiFetchRef | null {
   const customEmojiId = props.customEmojiId?.trim();
-  if (customEmojiId) return { kind: "custom", customEmojiId };
+  if (customEmojiId) {
+    return {
+      kind: "custom",
+      customEmojiId,
+      ...(props.preferStatic ? { preferStatic: true } : {}),
+    };
+  }
   const emoji = props.emoji?.trim();
   if (emoji) return { kind: "animated", emoji };
   return null;
@@ -113,7 +121,10 @@ export function MessageChatInlineTgsEmoji(props: Props) {
     suppressFallback = false,
     onMediaReady,
   } = props;
-  const fetchRef = useMemo(() => resolveFetchRef(props), [props.customEmojiId, props.emoji]);
+  const fetchRef = useMemo(
+    () => resolveFetchRef(props),
+    [props.customEmojiId, props.emoji, props.preferStatic],
+  );
   const { emojiFetchEpoch } = useTelegramMessagesConnection();
   const hostRef = useRef<HTMLSpanElement>(null);
   const visible = useElementVisible(hostRef as RefObject<Element | null>, {

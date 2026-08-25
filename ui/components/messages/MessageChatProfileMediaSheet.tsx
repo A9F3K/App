@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Image } from "expo-image";
 import {
   Platform,
-  Pressable,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
   type TextStyle,
 } from "react-native";
@@ -15,7 +15,9 @@ import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useColors, type ThemeColors } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { FloatingDialogShell } from "../FloatingDialogShell";
+import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
+import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollIndicatorPx";
 import { openAuthenticatedHomeChatHistoryAtMessage } from "../../authenticatedHomeSelectedChat";
 import {
   fetchTelegramChatMedia,
@@ -31,7 +33,6 @@ import {
   MESSAGE_LINE_HEIGHT_PX,
 } from "./messageListLayout";
 
-const SHEET_MAX_WIDTH_PX = 380;
 const PAD_X_PX = 20;
 const PAD_TOP_PX = 20;
 const HEADER_ROW_H_PX = 32;
@@ -58,10 +59,30 @@ const MEDIA_EMPTY_KEY: Record<ProfileMediaKind, AppStringKey> = {
 
 const GRID_KINDS = new Set<ProfileMediaKind>(["photos", "images", "gifs"]);
 
+function resolveProfileMediaChatId(
+  chat: MessageChatRowData | null | undefined,
+  profileChatId?: number | null,
+  profileUserId?: number | null,
+): number {
+  const candidates = [
+    profileChatId,
+    chat?.telegram_chat_id,
+    chat?.peer_user_id,
+    profileUserId,
+  ];
+  for (const raw of candidates) {
+    const id = Math.trunc(Number(raw));
+    if (Number.isFinite(id) && id !== 0) return id;
+  }
+  return 0;
+}
+
 type Props = {
   visible: boolean;
   kind: ProfileMediaKind | null;
   chat: MessageChatRowData | null;
+  /** Prefer profile-resolved chat id (createPrivateChat) over telegram_chat_id: 0. */
+  resolvedChatId?: number | null;
   onClose: () => void;
   /** Close media sheet and the profile sheet (header X). */
   onDismissAll?: () => void;
@@ -233,41 +254,44 @@ function MediaGrid({
       }}
     >
       {items.map((item) => (
-        <Pressable
+        <ProfileOpenHitTarget
           key={`${item.telegram_message_id}:${item.url}`}
-          accessibilityRole="button"
+          label={`Open message ${item.telegram_message_id}`}
           onPress={() => onPressItem(item)}
           style={{
             width: cellSizePx,
             height: cellSizePx,
             backgroundColor: colors.undercover,
             overflow: "hidden",
+            flexShrink: 0,
           }}
         >
-          <Image
-            source={{ uri: mediaPreviewUrl(chatId, item.telegram_message_id) }}
-            style={{ width: "100%", height: "100%" }}
-            contentFit="cover"
-            recyclingKey={`profile-media:${chatId}:${item.telegram_message_id}`}
-          />
-          {showVideoPlay ? (
-            <View
-              pointerEvents="none"
-              style={{
-                position: "absolute",
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-                alignItems: "center",
-                justifyContent: "center",
-                backgroundColor: "rgba(0,0,0,0.18)",
-              }}
-            >
-              <MusicPlayIcon color="#FFFFFF" size={14} />
-            </View>
-          ) : null}
-        </Pressable>
+          <View style={{ width: cellSizePx, height: cellSizePx, position: "relative" }}>
+            <Image
+              source={{ uri: mediaPreviewUrl(chatId, item.telegram_message_id) }}
+              style={{ width: "100%", height: "100%" }}
+              contentFit="cover"
+              recyclingKey={`profile-media:${chatId}:${item.telegram_message_id}`}
+            />
+            {showVideoPlay ? (
+              <View
+                pointerEvents="none"
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  backgroundColor: "rgba(0,0,0,0.18)",
+                }}
+              >
+                <MusicPlayIcon color="#FFFFFF" size={14} />
+              </View>
+            ) : null}
+          </View>
+        </ProfileOpenHitTarget>
       ))}
     </View>
   );
@@ -286,37 +310,42 @@ function LinkRow({
   const url = item.url?.trim() || "";
   const dateLabel = formatItemDate(item.date);
   return (
-    <Pressable
-      accessibilityRole="button"
+    <ProfileOpenHitTarget
+      label={title}
       onPress={onPress}
-      style={({ pressed }) => ({
+      style={{
+        width: "100%",
+        alignItems: "stretch",
+        justifyContent: "flex-start",
         paddingVertical: 12,
-        opacity: pressed ? 0.7 : 1,
-      })}
+        cursor: "pointer",
+      }}
     >
-      <Text numberOfLines={2} style={textBase(colors.primary, { fontWeight: "600" as const })}>
-        {title}
-      </Text>
-      {url ? (
-        <Text
-          numberOfLines={2}
-          style={textBase(colors.secondary, {
-            marginTop: 4,
-            color: "#2AABEE",
-          })}
-        >
-          {url}
+      <View style={{ width: "100%" }}>
+        <Text numberOfLines={2} style={textBase(colors.primary, { fontWeight: "600" as const })}>
+          {title}
         </Text>
-      ) : null}
-      {dateLabel ? (
-        <Text
-          numberOfLines={1}
-          style={textBase(colors.secondary, { marginTop: 4, fontSize: 12, lineHeight: 15 })}
-        >
-          {dateLabel}
-        </Text>
-      ) : null}
-    </Pressable>
+        {url ? (
+          <Text
+            numberOfLines={2}
+            style={textBase(colors.secondary, {
+              marginTop: 4,
+              color: "#2AABEE",
+            })}
+          >
+            {url}
+          </Text>
+        ) : null}
+        {dateLabel ? (
+          <Text
+            numberOfLines={1}
+            style={textBase(colors.secondary, { marginTop: 4, fontSize: 12, lineHeight: 15 })}
+          >
+            {dateLabel}
+          </Text>
+        ) : null}
+      </View>
+    </ProfileOpenHitTarget>
   );
 }
 
@@ -330,17 +359,20 @@ function MarkedRow({
   onPress: () => void;
 }) {
   const dateLabel = formatItemDate(item.date);
+  const label = item.text?.trim() || "…";
   return (
-    <Pressable
-      accessibilityRole="button"
+    <ProfileOpenHitTarget
+      label={label}
       onPress={onPress}
-      style={({ pressed }) => ({
+      style={{
+        width: "100%",
         flexDirection: "row",
         alignItems: "center",
+        justifyContent: "flex-start",
         paddingVertical: 10,
         gap: 12,
-        opacity: pressed ? 0.7 : 1,
-      })}
+        cursor: "pointer",
+      }}
     >
       <View
         style={{
@@ -350,13 +382,14 @@ function MarkedRow({
           backgroundColor: colors.undercover,
           alignItems: "center",
           justifyContent: "center",
+          flexShrink: 0,
         }}
       >
         <ProfileMarkedIcon color={colors.primary} size={14} />
       </View>
       <View style={{ flex: 1, minWidth: 0 }}>
         <Text numberOfLines={2} style={textBase(colors.primary)}>
-          {item.text?.trim() || "…"}
+          {label}
         </Text>
         {dateLabel ? (
           <Text
@@ -367,7 +400,7 @@ function MarkedRow({
           </Text>
         ) : null}
       </View>
-    </Pressable>
+    </ProfileOpenHitTarget>
   );
 }
 
@@ -376,33 +409,49 @@ export function MessageChatProfileMediaSheet({
   visible,
   kind,
   chat,
+  resolvedChatId = null,
   onClose,
   onDismissAll,
   onNavigateToMessage,
 }: Props) {
   const colors = useColors();
   const { t, locale } = useAppStrings();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const defaultSize = useMemo(
+    () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "profileList"),
+    [windowHeight, windowWidth],
+  );
+  const mediaChatId = useMemo(
+    () => resolveProfileMediaChatId(chat, resolvedChatId, chat?.peer_user_id),
+    [chat, resolvedChatId],
+  );
+  const mediaChat = useMemo((): MessageChatRowData | null => {
+    if (!chat) return null;
+    if (mediaChatId === 0 || chat.telegram_chat_id === mediaChatId) return chat;
+    return { ...chat, telegram_chat_id: mediaChatId };
+  }, [chat, mediaChatId]);
   const [items, setItems] = useState<TelegramChatMediaItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [linkQuery, setLinkQuery] = useState("");
-  const [sheetWidthPx, setSheetWidthPx] = useState(SHEET_MAX_WIDTH_PX);
+  const [sheetWidthPx, setSheetWidthPx] = useState(defaultSize.width);
 
   useEffect(() => {
-    if (!visible || !chat || !kind) {
+    if (!visible || !kind || mediaChatId === 0) {
       setItems([]);
       setHasMore(false);
-      setError(null);
+      setError(mediaChatId === 0 && visible && kind ? "chat_id_required" : null);
       setLinkQuery("");
       return;
     }
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    void fetchTelegramChatMedia(chat.telegram_chat_id, kind, {
+    void fetchTelegramChatMedia(mediaChatId, kind, {
       limit: 50,
       signal: controller.signal,
+      userId: chat?.peer_user_id ?? null,
     }).then((result) => {
       if (controller.signal.aborted) return;
       setLoading(false);
@@ -416,16 +465,17 @@ export function MessageChatProfileMediaSheet({
       setHasMore(result.has_more);
     });
     return () => controller.abort();
-  }, [visible, chat, kind]);
+  }, [visible, kind, mediaChatId, chat?.peer_user_id]);
 
   const loadMore = useCallback(() => {
-    if (!chat || !kind || loading || !hasMore || items.length === 0) return;
+    if (mediaChatId === 0 || !kind || loading || !hasMore || items.length === 0) return;
     const fromId = items[items.length - 1]?.telegram_message_id;
     if (fromId == null) return;
     setLoading(true);
-    void fetchTelegramChatMedia(chat.telegram_chat_id, kind, {
+    void fetchTelegramChatMedia(mediaChatId, kind, {
       fromMessageId: fromId,
       limit: 50,
+      userId: chat?.peer_user_id ?? null,
     }).then((result) => {
       setLoading(false);
       if (!result.ok) return;
@@ -441,16 +491,19 @@ export function MessageChatProfileMediaSheet({
       });
       setHasMore(result.has_more);
     });
-  }, [chat, hasMore, items, kind, loading]);
+  }, [chat?.peer_user_id, hasMore, items, kind, loading, mediaChatId]);
 
   const openItemMessage = useCallback(
     (item: TelegramChatMediaItem) => {
-      if (!chat) return;
-      openAuthenticatedHomeChatHistoryAtMessage(chat, item.telegram_message_id);
+      if (!mediaChat || mediaChatId === 0) return;
+      const messageId = Math.trunc(Number(item.telegram_message_id));
+      if (!Number.isFinite(messageId) || messageId <= 0) return;
+      // Jump first, then dismiss overlays so history open isn't interrupted.
+      openAuthenticatedHomeChatHistoryAtMessage(mediaChat, messageId);
       onNavigateToMessage?.();
       onClose();
     },
-    [chat, onClose, onNavigateToMessage],
+    [mediaChat, mediaChatId, onClose, onNavigateToMessage],
   );
 
   const filteredItems = useMemo(() => {
@@ -485,7 +538,7 @@ export function MessageChatProfileMediaSheet({
       );
     }
 
-    if (GRID_KINDS.has(kind) && chat) {
+    if (GRID_KINDS.has(kind) && mediaChatId !== 0) {
       return (
         <View style={{ paddingTop: 8, paddingBottom: 8 }}>
           {monthGroups.map((group) => (
@@ -505,7 +558,7 @@ export function MessageChatProfileMediaSheet({
                 </Text>
               ) : null}
               <MediaGrid
-                chatId={chat.telegram_chat_id}
+                chatId={mediaChatId}
                 items={group.items}
                 colors={colors}
                 showVideoPlay={kind === "images"}
@@ -561,7 +614,7 @@ export function MessageChatProfileMediaSheet({
       <HspScrollColumn
         style={{ flex: 1, minHeight: 0 }}
         contentContainerStyle={{ paddingBottom: 24 }}
-        scrollbarRightInsetPx={0}
+        scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
         scrollIndicatorOverlaySeam={false}
         containOverscroll
         onNearBottom={hasMore && !loading ? loadMore : undefined}
@@ -615,14 +668,15 @@ export function MessageChatProfileMediaSheet({
 
   return (
     <FloatingDialogShell
-      visible={Boolean(chat && visible && kind)}
+      visible={Boolean(visible && kind && mediaChatId !== 0)}
       zIndex={PROFILE_OVERLAY_Z}
-      defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 480 }}
-      minSize={{ width: 280, height: 260 }}
-      sizeStorageKey="hsp.profileMediaSheet.size.v3"
-      offsetStorageKey="hsp.profileMediaSheet.offset.v3"
+      defaultSize={defaultSize}
+      minSize={{ width: 300, height: 280 }}
+      sizeStorageKey="hsp.profileMediaSheet.size.v4"
+      offsetStorageKey="hsp.profileMediaSheet.offset.v4"
       onRequestClose={onClose}
       testId={kind ? `profile-media-sheet-${kind}` : "profile-media-sheet"}
+      moveIgnoreSelector="[data-floating-no-drag],button,[role='button'],a,input,textarea"
     >
       {sheetBody}
     </FloatingDialogShell>

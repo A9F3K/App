@@ -19,7 +19,8 @@ export function messageChatActionPreviewText(item: MessageChatHistoryItem): stri
   return "Message";
 }
 
-export function canReplyToMessage(_item: MessageChatHistoryItem): boolean {
+export function canReplyToMessage(item: MessageChatHistoryItem): boolean {
+  if (item.content_kind === "service") return false;
   return true;
 }
 
@@ -42,6 +43,7 @@ export function canEditMessage(
 ): boolean {
   if (!isOwnMessage(item, selfUserId, peerUserId)) return false;
   if (item.content_kind === "call") return false;
+  if (item.content_kind === "service") return false;
   if (item.content_kind === "sticker" || item.content_kind === "animation") return false;
   return item.text.trim().length > 0;
 }
@@ -54,5 +56,6 @@ export function canDeleteMessage(
 ): boolean {
   if (!isOwnMessage(item, selfUserId, peerUserId)) return false;
   if (item.content_kind === "call") return false;
+  if (item.content_kind === "service") return false;
   return Number(item.telegram_message_id) > 0;
 }

@@ -68,6 +68,10 @@ import {
   telegramMessagesPinnedChatsOrderHandler,
   telegramMessagesSearchHandler,
   telegramMessagesStreamTicketHandler,
+  telegramMessagesContactsHandler,
+  telegramMessagesCreateGroupHandler,
+  telegramMessagesCreateChannelHandler,
+  telegramMessagesCallsHandler,
 } from './_handlers/telegram-messages.js';
 import {
   telegramMtprotoConnectCodeHandler,
@@ -148,6 +152,10 @@ const ROUTES: Record<string, ApiHandler> = {
   'telegram-messages-voice-participants-stream': telegramMessagesVoiceParticipantsStreamHandler as ApiHandler,
   'telegram-messages-resolve-chat': telegramMessagesResolveChatHandler as ApiHandler,
   'telegram-messages-search': telegramMessagesSearchHandler as ApiHandler,
+  'telegram-messages-contacts': telegramMessagesContactsHandler as ApiHandler,
+  'telegram-messages-create-group': telegramMessagesCreateGroupHandler as ApiHandler,
+  'telegram-messages-create-channel': telegramMessagesCreateChannelHandler as ApiHandler,
+  'telegram-messages-calls': telegramMessagesCallsHandler as ApiHandler,
   'telegram-messages-stream-ticket': telegramMessagesStreamTicketHandler as ApiHandler,
   'telegram-messages-resync': telegramMessagesResyncHandler as ApiHandler,
   'telegram-messages-warmup': telegramMessagesWarmupHandler as ApiHandler,

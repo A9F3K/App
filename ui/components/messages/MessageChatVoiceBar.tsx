@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
-import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { appLocaleToBcp47 } from "../../../locales/appStrings";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
@@ -61,6 +61,7 @@ import {
   MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX,
   MESSAGE_CHAT_VOICE_BAR_HEIGHT_PX,
   MESSAGE_CHAT_VOICE_BAR_MAX_AVATARS,
+  voiceBarLabelTextWidthPx,
   voiceBarOverflowLabelWidthPx,
   resolveVoiceBarParticipantPreview,
 } from "./messageListLayout";
@@ -76,26 +77,6 @@ const STRIP_MIC_TO_AVATARS_GAP_PX = 10;
 const STRIP_AVATAR_OVERFLOW_GAP_PX = MESSAGE_CHAT_VOICE_BAR_AVATAR_GAP_PX;
 const STRIP_JOIN_MARGIN_LEFT_PX = 12;
 const STRIP_LEAVE_BUTTON_PX = 36;
-
-const voiceStripMeasureStyles = StyleSheet.create({
-  participantLabelMeasure: {
-    position: "absolute",
-    opacity: 0,
-    top: 0,
-    left: 0,
-    zIndex: -1,
-    fontSize: 13,
-    lineHeight: MESSAGE_CHAT_VOICE_BAR_AVATAR_PX,
-    ...Platform.select({
-      web: {
-        whiteSpace: "nowrap" as const,
-        width: "max-content" as const,
-        pointerEvents: "none" as const,
-      },
-      default: {},
-    }),
-  },
-});
 
 /** TDLib / Telegram FLOOD_WAIT — "Too Many Requests: retry after 32". */
 function parseTelegramFloodWaitMs(
@@ -374,7 +355,8 @@ export function MessageChatVoiceBar({
   const stripPaddingX = layout.contentSideInsetPx;
   const [stripInnerWidthPx, setStripInnerWidthPx] = useState(0);
   const [stripTrailingWidthPx, setStripTrailingWidthPx] = useState(0);
-  const [participantLabelWidthPx, setParticipantLabelWidthPx] = useState(0);
+  /** Real flex row width for avatars + overflow + count (after mic / Join). */
+  const [avatarBudgetWidthPx, setAvatarBudgetWidthPx] = useState(0);
   const speakingByKeyRef = useRef(speakingByKey);
   speakingByKeyRef.current = speakingByKey;
   // Preview faces = other people only (never lead with self).
@@ -390,7 +372,17 @@ export function MessageChatVoiceBar({
           count: previewDisplayTotal.toLocaleString(appLocaleToBcp47(locale)),
         })
       : t("messages.voiceChat.participants");
+  const participantLabelReservePx = useMemo(() => {
+    if (previewParticipants.length <= 0) return 0;
+    const labelWidth = voiceBarLabelTextWidthPx(participantsA11yLabel);
+    return labelWidth > 0 ? labelWidth + MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX : 0;
+  }, [participantsA11yLabel, previewParticipants.length]);
   const avatarStackAvailablePx = useMemo(() => {
+    // Prefer measured budget (accounts for real Join width / gaps). Fall back to
+    // strip math before the first layout pass.
+    if (avatarBudgetWidthPx > 0) {
+      return Math.max(0, avatarBudgetWidthPx - participantLabelReservePx);
+    }
     if (stripInnerWidthPx <= 0) return undefined;
     const contentWidth = Math.max(0, stripInnerWidthPx - stripPaddingX * 2);
     const trailingWidth =
@@ -398,24 +390,20 @@ export function MessageChatVoiceBar({
         ? stripTrailingWidthPx
         : joined
           ? STRIP_LEAVE_BUTTON_PX
-          : STRIP_JOIN_MARGIN_LEFT_PX + JOIN_BUTTON_TEXT_INSET_PX * 2 + 36;
+          : JOIN_BUTTON_TEXT_INSET_PX * 2 + 36;
     const trailingGap = joined ? 0 : STRIP_JOIN_MARGIN_LEFT_PX;
     const pressableWidth = Math.max(0, contentWidth - trailingWidth - trailingGap);
-    const participantLabelReserve =
-      previewParticipants.length > 0 && participantLabelWidthPx > 0
-        ? participantLabelWidthPx + MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX
-        : 0;
     return Math.max(
       0,
       pressableWidth -
         STRIP_MIC_BLOCK_PX -
         STRIP_MIC_TO_AVATARS_GAP_PX -
-        participantLabelReserve,
+        participantLabelReservePx,
     );
   }, [
+    avatarBudgetWidthPx,
     joined,
-    participantLabelWidthPx,
-    previewParticipants.length,
+    participantLabelReservePx,
     stripInnerWidthPx,
     stripPaddingX,
     stripTrailingWidthPx,
@@ -442,10 +430,6 @@ export function MessageChatVoiceBar({
       overflowLabelWidthPx: overflowLabelWidthForCount,
     });
   const stackedParticipants = previewParticipants.slice(0, stackedLimit);
-
-  useEffect(() => {
-    setParticipantLabelWidthPx(0);
-  }, [participantsA11yLabel]);
 
   const voiceJoinedRef = useRef(false);
   voiceJoinedRef.current = Boolean(joined);
@@ -2986,9 +2970,30 @@ export function MessageChatVoiceBar({
     const target = 4;
     const committed = autoScreenCommittedEndpointsRef.current;
     const stillValid = eligible.filter((c) => committed.has(c.endpoint));
+    // Adding a second screencast while the first is live used to renegotiate
+    // immediately and freeze mix Opus. Wait until mix is hearable, then add
+    // one extra publisher per pass so settle/primary-on-stage can protect voice.
+    if (stillValid.length > 0 && !heardRemoteMixRef.current) {
+      logPageDisplay("messages_voice_remote_screen_auto_show_wait_mix", {
+        chatId,
+        committed: stillValid.length,
+        candidates: eligible.length,
+        level: "info",
+        note: "defer second screencast auto-show until mix is hearable",
+      });
+    } else {
     const toAdd = eligible
       .filter((c) => !committed.has(c.endpoint))
-      .slice(0, Math.max(0, target - stillValid.length));
+      .slice(
+        0,
+        Math.max(
+          0,
+          Math.min(
+            target - stillValid.length,
+            stillValid.length > 0 ? 1 : target,
+          ),
+        ),
+      );
     if (toAdd.length > 0) {
     const nextRequests: Array<{
       endpointId: string;
@@ -3065,6 +3070,7 @@ export function MessageChatVoiceBar({
       level: "info",
       note: "auto_show_instant_subscribe",
     });
+    }
     }
     }
     }
@@ -5199,23 +5205,6 @@ export function MessageChatVoiceBar({
           position: "relative",
         }}
       >
-        {previewParticipants.length > 0 ? (
-          <Text
-            numberOfLines={1}
-            style={[
-              voiceStripMeasureStyles.participantLabelMeasure,
-              {
-                fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-              },
-            ]}
-            onLayout={(event) => {
-              const next = Math.ceil(event.nativeEvent.layout.width);
-              setParticipantLabelWidthPx((current) => (current === next ? current : next));
-            }}
-          >
-            {participantsA11yLabel}
-          </Text>
-        ) : null}
         <Pressable
           onPress={handleStripPress}
           accessibilityRole="button"
@@ -5226,7 +5215,7 @@ export function MessageChatVoiceBar({
           style={({ pressed }) => ({
             flexDirection: "row",
             alignItems: "center",
-            gap: 10,
+            gap: STRIP_MIC_TO_AVATARS_GAP_PX,
             minWidth: 0,
             flexShrink: 1,
             flex: 1,
@@ -5250,19 +5239,24 @@ export function MessageChatVoiceBar({
               size={20}
             />
           </View>
+          <View
+            onLayout={(event) => {
+              const next = Math.ceil(event.nativeEvent.layout.width);
+              setAvatarBudgetWidthPx((current) => (current === next ? current : next));
+            }}
+            style={{
+              flex: 1,
+              minWidth: 0,
+              flexDirection: "row",
+              alignItems: "center",
+              gap: MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX,
+              overflow: "visible",
+            }}
+          >
           {stackedParticipants.length > 0 ? (
-            <View
-              accessibilityLabel={participantsA11yLabel}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                minWidth: 0,
-                flexShrink: 1,
-                overflow: "visible",
-                gap: MESSAGE_CHAT_VOICE_BAR_AVATAR_ROW_GAP_PX,
-              }}
-            >
+            <>
               <View
+                accessibilityLabel={participantsA11yLabel}
                 style={{
                   flexDirection: "row",
                   alignItems: "center",
@@ -5341,7 +5335,7 @@ export function MessageChatVoiceBar({
               >
                 {participantsA11yLabel}
               </Text>
-            </View>
+            </>
           ) : (
             <Text
               numberOfLines={1}
@@ -5357,6 +5351,7 @@ export function MessageChatVoiceBar({
               {participantsA11yLabel}
             </Text>
           )}
+          </View>
         </Pressable>
         {joined ? (
           <Pressable

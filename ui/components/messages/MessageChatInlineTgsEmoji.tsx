@@ -15,12 +15,19 @@ type Props = {
   priority?: boolean;
   fetchEnabled?: boolean;
   suppressFallback?: boolean;
+  preferStatic?: boolean;
   onMediaReady?: () => void;
 };
 
 function resolveFetchRef(props: Props): TelegramEmojiFetchRef | null {
   const customEmojiId = props.customEmojiId?.trim();
-  if (customEmojiId) return { kind: "custom", customEmojiId };
+  if (customEmojiId) {
+    return {
+      kind: "custom",
+      customEmojiId,
+      ...(props.preferStatic ? { preferStatic: true } : {}),
+    };
+  }
   const emoji = props.emoji?.trim();
   if (emoji) return { kind: "animated", emoji };
   return null;
@@ -32,12 +39,13 @@ export function MessageChatInlineTgsEmoji({
   emoji,
   sizePx,
   fallbackText = "",
+  preferStatic = false,
   suppressFallback = false,
   onMediaReady,
 }: Props) {
   const fetchRef = useMemo(
-    () => resolveFetchRef({ customEmojiId, emoji, sizePx, fallbackText }),
-    [customEmojiId, emoji, sizePx, fallbackText],
+    () => resolveFetchRef({ customEmojiId, emoji, sizePx, fallbackText, preferStatic }),
+    [customEmojiId, emoji, sizePx, fallbackText, preferStatic],
   );
   const [loadedFallback, setLoadedFallback] = useState(fallbackText);
 

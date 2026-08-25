@@ -1,3 +1,10 @@
+reactions, message edited
+chats output
+checkmarks 
+links
+link treated like text with other link
+verify
+Clean chat list
 Server side effectiveness
 Gradient tuning like in Figma...
 Avatar animation everywhere...

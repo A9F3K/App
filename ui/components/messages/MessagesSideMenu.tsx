@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactElement } from "react";
 import { createPortal } from "react-dom";
 import {
   Modal,
@@ -29,6 +29,13 @@ import {
 } from "../../telegram/selfTelegramProfileCache";
 import { useTelegram } from "../Telegram";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
+import {
+  allocateFloatingSurfaceId,
+  bringFloatingSurfaceToFront,
+  FLOATING_SURFACE_BASE_Z,
+  registerFloatingSurface,
+  unregisterFloatingSurface,
+} from "../floatingSurfaceStack";
 import { MessageChatAvatarSlot } from "./MessageChatAvatarSlot";
 import { MessageChatDownIcon } from "./MessageChatDownIcon";
 import { MessageChatProfilePhotoViewer } from "./MessageChatProfilePhotoViewer";
@@ -48,9 +55,14 @@ import {
   SideMenuWalletIcon,
 } from "./MessagesSideMenuIcons";
 import { HspScrollColumn } from "../HspScrollColumn";
+import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollIndicatorPx";
+import {
+  MessagesMenuDialogs,
+  type MessagesMenuDialogKind,
+} from "./MessagesMenuDialogs";
 
 const SIDE_MENU_WIDTH_PX = 300;
-const SIDE_MENU_Z = 10060;
+const SIDE_MENU_MIN_Z = FLOATING_SURFACE_BASE_Z + 10;
 const AVATAR_PX = 54;
 const ACCOUNT_AVATAR_PX = 36;
 const ROW_ICON_PX = 22;
@@ -251,6 +263,19 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   const [emojiStatusCustomEmojiId, setEmojiStatusCustomEmojiId] = useState<string | null>(null);
   const [profilePhoto, setProfilePhoto] = useState<TelegramProfilePhotoMarkup | null>(null);
   const [photoViewerOpen, setPhotoViewerOpen] = useState(false);
+  const [menuDialogKind, setMenuDialogKind] = useState<MessagesMenuDialogKind>(null);
+  const surfaceIdRef = useRef(allocateFloatingSurfaceId("side-menu"));
+  const [stackZ, setStackZ] = useState(() =>
+    registerFloatingSurface(surfaceIdRef.current, SIDE_MENU_MIN_Z),
+  );
+  const raiseToFront = useCallback(() => {
+    setStackZ(bringFloatingSurfaceToFront(surfaceIdRef.current, SIDE_MENU_MIN_Z));
+  }, []);
+
+  useEffect(() => {
+    const id = surfaceIdRef.current;
+    return () => unregisterFloatingSurface(id);
+  }, []);
 
   useEffect(() => {
     if (!visible) {
@@ -260,9 +285,10 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       return () => clearTimeout(timer);
     }
     setMounted(true);
+    raiseToFront();
     const frame = requestAnimationFrame(() => setDrawerOpen(true));
     return () => cancelAnimationFrame(frame);
-  }, [visible]);
+  }, [raiseToFront, visible]);
 
   useEffect(() => {
     if (!isTelegramMessagesConnected || connectedTelegramUserId == null) {
@@ -341,10 +367,10 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   const openMyProfile = useCallback(() => {
     if (connectedTelegramUserId == null && !isTelegramMessagesConnected) return;
     onClose();
-    // Close drawer first so profile sheet is not trapped under SIDE_MENU_Z.
+    // Close drawer first; profile sheet then raises itself on open.
     requestAnimationFrame(() => {
       openProfileSheet({
-        telegram_chat_id: 0,
+        telegram_chat_id: connectedTelegramUserId ?? 0,
         title: profileTitle,
         peer_user_id: connectedTelegramUserId,
         peer_username: resolvedUsername,
@@ -368,6 +394,14 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     if (!selfAvatarUrl && !profilePhoto) return;
     setPhotoViewerOpen(true);
   }, [profilePhoto, selfAvatarUrl]);
+
+  const openMenuDialog = useCallback(
+    (kind: Exclude<MessagesMenuDialogKind, null>) => {
+      onClose();
+      setMenuDialogKind(kind);
+    },
+    [onClose],
+  );
 
   /** Connected Telegram sessions listed in the expandable switcher (one is fine). */
   const connectedAccounts: Array<{
@@ -408,21 +442,25 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
         key: "newGroup",
         labelKey: "messages.sideMenu.newGroup",
         Icon: SideMenuGroupIcon,
+        onPress: () => openMenuDialog("newGroup"),
       },
       {
         key: "newChannel",
         labelKey: "messages.sideMenu.newChannel",
         Icon: SideMenuChannelIcon,
+        onPress: () => openMenuDialog("newChannel"),
       },
       {
         key: "contacts",
         labelKey: "messages.sideMenu.contacts",
         Icon: SideMenuContactsIcon,
+        onPress: () => openMenuDialog("contacts"),
       },
       {
         key: "calls",
         labelKey: "messages.sideMenu.calls",
         Icon: SideMenuCallsIcon,
+        onPress: () => openMenuDialog("calls"),
       },
       {
         key: "saved",
@@ -433,22 +471,40 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
         key: "settings",
         labelKey: "messages.sideMenu.messengerSettings",
         Icon: SideMenuMessengerSettingsIcon,
+        onPress: () => openMenuDialog("settings"),
       },
     ],
-    [openMyProfile],
+    [openMenuDialog, openMyProfile],
+  );
+
+  const menuDialogs = (
+    <MessagesMenuDialogs
+      kind={menuDialogKind}
+      onClose={() => setMenuDialogKind(null)}
+      settingsProfile={{
+        title: profileTitle,
+        phone: null,
+        usernameAt,
+        avatarUrl: selfAvatarUrl,
+        initials: avatarInitials.join(""),
+      }}
+    />
   );
 
   if (!mounted) {
     return (
-      <MessageChatProfilePhotoViewer
-        visible={photoViewerOpen}
-        onClose={() => setPhotoViewerOpen(false)}
-        title={profileTitle}
-        iconUrl={selfAvatarUrl}
-        animatedIconUrl={selfAnimatedAvatarUrl}
-        profilePhoto={profilePhoto}
-        addedAt={profilePhoto?.added_at ?? null}
-      />
+      <>
+        <MessageChatProfilePhotoViewer
+          visible={photoViewerOpen}
+          onClose={() => setPhotoViewerOpen(false)}
+          title={profileTitle}
+          iconUrl={selfAvatarUrl}
+          animatedIconUrl={selfAnimatedAvatarUrl}
+          profilePhoto={profilePhoto}
+          addedAt={profilePhoto?.added_at ?? null}
+        />
+        {menuDialogs}
+      </>
     );
   }
 
@@ -464,8 +520,8 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
         top: musicTopInset,
         right: 0,
         height: panelHeight,
-        zIndex: SIDE_MENU_Z,
-        elevation: SIDE_MENU_Z,
+        zIndex: stackZ,
+        elevation: stackZ,
         ...(Platform.OS === "web"
           ? ({ width: "100vw", pointerEvents: "none" } as object)
           : {}),
@@ -482,6 +538,8 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
           backgroundColor: colors.background,
           borderRightWidth: 1,
           borderRightColor: colors.highlight,
+          // Visible so the scroll thumb can paint onto the 1px right border.
+          overflow: "visible",
           zIndex: 1,
           transform: [{ translateX }],
           ...(Platform.OS === "web"
@@ -495,12 +553,15 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
         {...(Platform.OS === "web"
           ? ({
               onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
+              onPointerDown: () => raiseToFront(),
             } as object)
           : {})}
       >
         <HspScrollColumn
           style={{ flex: 1, minHeight: 0 }}
           contentContainerStyle={{ paddingBottom: 24 }}
+          scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+          scrollIndicatorOverlaySeam={false}
           containOverscroll
         >
           <View style={{ paddingHorizontal: PAD_X, paddingTop: 18, paddingBottom: 12 }}>
@@ -542,6 +603,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                   telegramUserId={connectedTelegramUserId}
                   emojiStatusCustomEmojiId={emojiStatusCustomEmojiId}
                   emojiStatusPriority
+                  emojiStatusStatic
                   inlineEmojiFetchEnabled={visible}
                   inlineEmojiFetchPriority
                   inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
@@ -706,6 +768,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       <>
         {createPortal(drawer, document.body)}
         {photoViewer}
+        {menuDialogs}
       </>
     );
   }
@@ -716,6 +779,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
         {drawer}
       </Modal>
       {photoViewer}
+      {menuDialogs}
     </>
   );
 }

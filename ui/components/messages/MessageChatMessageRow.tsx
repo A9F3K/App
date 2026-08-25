@@ -15,9 +15,11 @@ import {
   isDisplayableMediaMessage,
   messageChatAudioCaptionText,
   messageShowsOutgoingChecks,
+  resolveMessageChatServiceNotice,
   resolveOutgoingStatusForDisplay,
   shouldShowMessageSenderHeader,
 } from "./messageChatHistoryTypes";
+import { MessageChatServiceNotice } from "./MessageChatServiceNotice";
 import {
   measureBubbleInnerContentWidth,
   measureLongestWrappedBodyLineWidth,
@@ -562,6 +564,46 @@ export function MessageChatMessageRow({
       >
         <View style={{ width: MESSAGE_BUBBLE_AVATAR_PX, height: MESSAGE_BUBBLE_AVATAR_PX, flexShrink: 0 }} />
         <View style={{ width: MESSAGE_BUBBLE_AVATAR_GAP_PX }} />
+      </View>
+    );
+  }
+
+  const serviceNotice = resolveMessageChatServiceNotice(item);
+  if (serviceNotice) {
+    const actorName = resolveMessageSenderDisplayName(
+      serviceNotice.actor_name,
+      serviceNotice.actor_user_id,
+      chat.telegram_chat_id,
+    );
+    const suffix =
+      serviceNotice.kind === "chat_leave"
+        ? t("messages.service.leftGroupSuffix")
+        : t("messages.service.joinedGroupSuffix");
+    const openActorProfile = () => {
+      if (serviceNotice.actor_user_id == null) return;
+      openProfileSheet({
+        telegram_chat_id: chat.telegram_chat_id,
+        title: actorName,
+        peer_user_id: serviceNotice.actor_user_id,
+        peer_username: null,
+        chat_username: null,
+        chat_kind: chat.chat_kind ?? chatKind,
+        avatar_url: null,
+        peer_emoji_status_custom_emoji_id: null,
+        peer_is_bot: false,
+      });
+    };
+    return (
+      <View ref={rowRef} style={{ alignSelf: "stretch", width: "100%" }}>
+        <MessageChatServiceNotice
+          actorName={actorName}
+          suffix={suffix}
+          colors={colors}
+          onPressActor={
+            serviceNotice.actor_user_id != null ? openActorProfile : null
+          }
+          accessibilityLabel={`${actorName}${suffix}`}
+        />
       </View>
     );
   }

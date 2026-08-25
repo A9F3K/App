@@ -46,9 +46,11 @@ export function shouldIncludeChatInList(
 ): boolean {
   const tier = chatListTier(chat, { allowSupplementaryPrivate: true, ...options });
   if (tier === "pinned" || tier === "positioned") return true;
-  // Default: keep unpositioned (contacts / force-included) — matches Telegram’s full roster.
   if (tier === "unpositioned") {
-    return options?.includeUnpositioned !== false;
+    if (options?.includeUnpositioned !== false) return true;
+    // Special force-included peers stay in the roster even when supplementary search is off.
+    const peerUserId = peerUserIdFromChat(chat);
+    return peerUserId != null && specialUserForceIncludedPeerUserIds().includes(peerUserId);
   }
   return false;
 }

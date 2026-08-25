@@ -24,4 +24,8 @@ EXPOSE 8787
 
 CMD ["npx", "tsx", "scripts/run-tdlib-gateway.ts"]
 
-# redeploy-bump 20260821135500
+# redeploy-bump 20260825083000
+
+# redeploy 2026-08-25T22:17:42+03:00
+
+# cors+links 2026-08-25T22:39:40+03:00

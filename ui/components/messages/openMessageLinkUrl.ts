@@ -1,6 +1,13 @@
 import * as Linking from "expo-linking";
 import { Platform } from "react-native";
 import { openTelegramDeepLink } from "../../telegram/openTelegramDeepLink";
+import {
+  extractTelegramUsernameFromMention,
+  extractTelegramUsernameFromUrl,
+  isInAppTelegramUsernameLink,
+  openTelegramUsernameInApp,
+  tryOpenTelegramEntityInApp,
+} from "../../telegram/openTelegramEntityLink";
 
 type TelegramWebAppBridge = {
   openTelegramLink?: (url: string) => void;
@@ -12,8 +19,7 @@ function getTelegramWebApp(): TelegramWebAppBridge | null {
   return tg ?? null;
 }
 
-/** Open http(s), t.me, or tg:// links from chat message text. */
-export function openMessageLinkUrl(url: string): void {
+function openExternalMessageLink(url: string): void {
   const trimmed = url.trim();
   if (!trimmed) return;
 
@@ -34,4 +40,25 @@ export function openMessageLinkUrl(url: string): void {
   }
 
   void Linking.openURL(trimmed);
+}
+
+/** Open http(s), t.me, tg://, or @username links — prefer in-app Telegram entities. */
+export function openMessageLinkUrl(url: string): void {
+  const trimmed = url.trim();
+  if (!trimmed) return;
+
+  void (async () => {
+    const mentionUser = extractTelegramUsernameFromMention(trimmed);
+    if (mentionUser) {
+      await openTelegramUsernameInApp(mentionUser);
+      // Never hand public @mentions to Telegram — stay in Hyperlinks Space.
+      return;
+    }
+    if (await tryOpenTelegramEntityInApp(trimmed)) return;
+    // Public t.me/@username already attempted above; do not open Telegram for those.
+    if (isInAppTelegramUsernameLink(trimmed) || extractTelegramUsernameFromUrl(trimmed)) {
+      return;
+    }
+    openExternalMessageLink(trimmed);
+  })();
 }

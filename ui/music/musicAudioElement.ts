@@ -4,10 +4,11 @@ const SILENT_WAV =
   "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA";
 
 let musicEl: HTMLAudioElement | null = null;
+/** Separate element so gesture unlock never clobbers the track `src` mid-load. */
+let unlockEl: HTMLAudioElement | null = null;
 
-export function getMusicAudioElement(): HTMLAudioElement | null {
+function ensureHiddenAudio(): HTMLAudioElement | null {
   if (typeof document === "undefined") return null;
-  if (musicEl && musicEl.isConnected) return musicEl;
   const audio = document.createElement("audio");
   audio.preload = "auto";
   audio.setAttribute("playsinline", "true");
@@ -19,16 +20,25 @@ export function getMusicAudioElement(): HTMLAudioElement | null {
   audio.style.pointerEvents = "none";
   audio.setAttribute("aria-hidden", "true");
   document.body.appendChild(audio);
-  musicEl = audio;
   return audio;
+}
+
+export function getMusicAudioElement(): HTMLAudioElement | null {
+  if (typeof document === "undefined") return null;
+  if (musicEl && musicEl.isConnected) return musicEl;
+  musicEl = ensureHiddenAudio();
+  return musicEl;
 }
 
 /** Call from a click/tap so later play() is allowed. Does not touch voice audio. */
 export function unlockMusicAutoplay(): void {
-  const audio = getMusicAudioElement();
+  if (typeof document === "undefined") return;
+  if (!unlockEl || !unlockEl.isConnected) {
+    unlockEl = ensureHiddenAudio();
+  }
+  const audio = unlockEl;
   if (!audio) return;
-  const src = audio.getAttribute("src") || audio.src || "";
-  if (!src || src.startsWith("data:")) {
+  if (!audio.src) {
     audio.src = SILENT_WAV;
   }
   void audio.play().catch(() => undefined);

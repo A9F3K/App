@@ -1,16 +1,19 @@
-import { type ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import {
   Platform,
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { layout, typographyFixedRow40Label, typographyRect15, typographySansSemibold, useColors } from "../theme";
 import { FloatingDialogCloseButton } from "./FloatingDialogCloseButton";
 import { FloatingDialogShell } from "./FloatingDialogShell";
+import { resolveFloatingDialogDefaultSize } from "./floatingDialogGeometry";
 import { HspScrollColumn } from "./HspScrollColumn";
+import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
 
 export const appModalSheetStyles = StyleSheet.create({
   overlayBlock: {
@@ -125,15 +128,20 @@ export function AppModalSheet({
 }: Props) {
   const colors = useColors();
   const { t } = useAppStrings();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const defaultSize = useMemo(
+    () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "modal"),
+    [windowHeight, windowWidth],
+  );
 
   return (
     <FloatingDialogShell
       visible={visible}
       zIndex={10070}
-      defaultSize={{ width: 380, height: 420 }}
+      defaultSize={defaultSize}
       minSize={{ width: 300, height: 240 }}
-      sizeStorageKey="hsp.appModalSheet.size.v2"
-      offsetStorageKey="hsp.appModalSheet.offset.v2"
+      sizeStorageKey="hsp.appModalSheet.size.v3"
+      offsetStorageKey="hsp.appModalSheet.offset.v3"
       onRequestClose={onClose}
       testId="app-modal"
     >
@@ -144,7 +152,7 @@ export function AppModalSheet({
           paddingTop: 16,
           paddingBottom: 20,
         }}
-        scrollbarRightInsetPx={0}
+        scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
         scrollIndicatorOverlaySeam={false}
         containOverscroll
       >

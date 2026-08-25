@@ -16,7 +16,9 @@ function shouldLog(key: string): boolean {
 }
 
 function refLabel(ref: TelegramEmojiFetchRef): string {
-  return ref.kind === "custom" ? `custom:${ref.customEmojiId}` : `animated:${ref.emoji}`;
+  return ref.kind === "custom"
+    ? `custom:${ref.preferStatic ? "static:" : ""}${ref.customEmojiId}`
+    : `animated:${ref.emoji}`;
 }
 
 export const telegramEmojiDebug = {

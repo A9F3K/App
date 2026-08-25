@@ -929,28 +929,84 @@ export async function gatewayFetchChatMessages(
     params.set("newerBelow", String(Math.trunc(newerBelow)));
   }
   const url = `${base}/v1/chat/messages?${params.toString()}`;
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { "X-Gateway-Secret": secret },
-    });
-    const json = (await response.json().catch(() => ({}))) as {
-      ok?: boolean;
-      messages?: Record<string, unknown>[];
-      chat_kind?: string;
-      member_count?: number;
-      has_more_older?: boolean;
-      next_before_message_id?: number;
-      last_read_outbox_message_id?: number;
-      last_read_inbox_message_id?: number;
-      self_user_id?: number;
-      error?: string;
-    };
-    if (!response.ok || !json.ok) {
+  const MAX_ATTEMPTS = 3;
+  const RETRY_BASE_MS = 400;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { "X-Gateway-Secret": secret },
+      });
+      const json = (await response.json().catch(() => ({}))) as {
+        ok?: boolean;
+        messages?: Record<string, unknown>[];
+        chat_kind?: string;
+        member_count?: number;
+        has_more_older?: boolean;
+        next_before_message_id?: number;
+        last_read_outbox_message_id?: number;
+        last_read_inbox_message_id?: number;
+        self_user_id?: number;
+        error?: string;
+      };
+      if (!response.ok || !json.ok) {
+        const error = json.error ?? "history_unavailable";
+        const transient =
+          error === "session_not_ready" ||
+          error === "history_unavailable" ||
+          error === "history_failed" ||
+          response.status === 502 ||
+          response.status === 503 ||
+          response.status === 504;
+        if (transient && attempt < MAX_ATTEMPTS - 1) {
+          await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_MS * (attempt + 1)));
+          continue;
+        }
+        return {
+          messages: [],
+          chatKind: null,
+          error,
+          hasMoreOlder: false,
+          nextBeforeMessageId: null,
+          lastReadOutboxMessageId: null,
+          lastReadInboxMessageId: null,
+          memberCount: null,
+          selfUserId: null,
+        };
+      }
+      const lastReadRaw = Number(json.last_read_outbox_message_id);
+      const lastReadInboxRaw = Number(json.last_read_inbox_message_id);
+      const memberRaw = Number(json.member_count);
+      const selfUserRaw = Number(json.self_user_id);
+      return {
+        messages: Array.isArray(json.messages) ? json.messages : [],
+        chatKind: typeof json.chat_kind === "string" ? json.chat_kind : null,
+        error: null,
+        hasMoreOlder: Boolean(json.has_more_older),
+        nextBeforeMessageId:
+          typeof json.next_before_message_id === "number" &&
+          Number.isFinite(json.next_before_message_id) &&
+          json.next_before_message_id > 0
+            ? json.next_before_message_id
+            : null,
+        lastReadOutboxMessageId:
+          Number.isFinite(lastReadRaw) && lastReadRaw > 0 ? lastReadRaw : null,
+        lastReadInboxMessageId:
+          Number.isFinite(lastReadInboxRaw) && lastReadInboxRaw > 0 ? lastReadInboxRaw : null,
+        memberCount:
+          Number.isFinite(memberRaw) && memberRaw > 0 ? Math.trunc(memberRaw) : null,
+        selfUserId:
+          Number.isFinite(selfUserRaw) && selfUserRaw > 0 ? Math.trunc(selfUserRaw) : null,
+      };
+    } catch (err) {
+      if (attempt < MAX_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_BASE_MS * (attempt + 1)));
+        continue;
+      }
       return {
         messages: [],
         chatKind: null,
-        error: json.error ?? "history_unavailable",
+        error: err instanceof Error ? err.message : "gateway_unreachable",
         hasMoreOlder: false,
         nextBeforeMessageId: null,
         lastReadOutboxMessageId: null,
@@ -959,43 +1015,18 @@ export async function gatewayFetchChatMessages(
         selfUserId: null,
       };
     }
-    const lastReadRaw = Number(json.last_read_outbox_message_id);
-    const lastReadInboxRaw = Number(json.last_read_inbox_message_id);
-    const memberRaw = Number(json.member_count);
-    const selfUserRaw = Number(json.self_user_id);
-    return {
-      messages: Array.isArray(json.messages) ? json.messages : [],
-      chatKind: typeof json.chat_kind === "string" ? json.chat_kind : null,
-      error: null,
-      hasMoreOlder: Boolean(json.has_more_older),
-      nextBeforeMessageId:
-        typeof json.next_before_message_id === "number" &&
-        Number.isFinite(json.next_before_message_id) &&
-        json.next_before_message_id > 0
-          ? json.next_before_message_id
-          : null,
-      lastReadOutboxMessageId:
-        Number.isFinite(lastReadRaw) && lastReadRaw > 0 ? lastReadRaw : null,
-      lastReadInboxMessageId:
-        Number.isFinite(lastReadInboxRaw) && lastReadInboxRaw > 0 ? lastReadInboxRaw : null,
-      memberCount:
-        Number.isFinite(memberRaw) && memberRaw > 0 ? Math.trunc(memberRaw) : null,
-      selfUserId:
-        Number.isFinite(selfUserRaw) && selfUserRaw > 0 ? Math.trunc(selfUserRaw) : null,
-    };
-  } catch (err) {
-    return {
-      messages: [],
-      chatKind: null,
-      error: err instanceof Error ? err.message : "gateway_unreachable",
-      hasMoreOlder: false,
-      nextBeforeMessageId: null,
-      lastReadOutboxMessageId: null,
-      lastReadInboxMessageId: null,
-      memberCount: null,
-      selfUserId: null,
-    };
   }
+  return {
+    messages: [],
+    chatKind: null,
+    error: "history_unavailable",
+    hasMoreOlder: false,
+    nextBeforeMessageId: null,
+    lastReadOutboxMessageId: null,
+    lastReadInboxMessageId: null,
+    memberCount: null,
+    selfUserId: null,
+  };
 }
 
 export async function gatewaySetChatVoiceMicMuted(
@@ -1660,6 +1691,29 @@ export async function gatewayFetchMessageMedia(
   messageId: number,
   preview = false,
 ): Promise<{ data: ArrayBuffer; mime: string } | null> {
+  const response = await gatewayOpenMessageMediaStream(
+    telegramUsername,
+    chatId,
+    messageId,
+    preview,
+  );
+  if (!response) return null;
+  try {
+    const mime = response.headers.get("Content-Type") || "application/octet-stream";
+    const data = await response.arrayBuffer();
+    return { data, mime };
+  } catch {
+    return null;
+  }
+}
+
+export async function gatewayOpenMessageMediaStream(
+  telegramUsername: string,
+  chatId: number,
+  messageId: number,
+  preview = false,
+  rangeHeader?: string | null,
+): Promise<Response | null> {
   const base = getGatewayBaseUrl();
   const secret = getGatewaySecret();
   const params = new URLSearchParams({
@@ -1669,29 +1723,45 @@ export async function gatewayFetchMessageMedia(
   });
   if (preview) params.set("preview", "1");
   const url = `${base}/v1/chat/message-media?${params.toString()}`;
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { "X-Gateway-Secret": secret },
-    });
-    if (!response.ok) return null;
-    const mime = response.headers.get("Content-Type") || "application/octet-stream";
-    const data = await response.arrayBuffer();
-    return { data, mime };
-  } catch {
-    return null;
+  const headers: Record<string, string> = { "X-Gateway-Secret": secret };
+  if (rangeHeader && rangeHeader.trim()) headers.Range = rangeHeader.trim();
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers,
+      });
+      if (response.status === 416) return response;
+      if (response.status === 503 || response.status === 502 || response.status === 504) {
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+          continue;
+        }
+      }
+      if (!response.ok) return null;
+      return response;
+    } catch {
+      if (attempt < 2) {
+        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+        continue;
+      }
+      return null;
+    }
   }
+  return null;
 }
 
 export async function gatewayFetchTelegramEmoji(
   telegramUsername: string,
-  options: { customEmojiId?: string; emoji?: string },
+  options: { customEmojiId?: string; emoji?: string; preferStatic?: boolean },
 ): Promise<{ data: ArrayBuffer; mime: string } | null> {
   const base = getGatewayBaseUrl();
   const secret = getGatewaySecret();
   const params = new URLSearchParams({ telegramUsername });
   if (options.customEmojiId?.trim()) params.set("customEmojiId", options.customEmojiId.trim());
   if (options.emoji?.trim()) params.set("emoji", options.emoji.trim());
+  if (options.preferStatic) params.set("static", "1");
   const url = `${base}/v1/custom-emoji?${params.toString()}`;
   const started = Date.now();
   try {
@@ -1706,6 +1776,7 @@ export async function gatewayFetchTelegramEmoji(
       elapsedMs: Date.now() - started,
       hasCustomEmojiId: Boolean(options.customEmojiId?.trim()),
       hasEmoji: Boolean(options.emoji?.trim()),
+      preferStatic: Boolean(options.preferStatic),
     });
     if (!response.ok) return null;
     const mime = response.headers.get("Content-Type") || "application/octet-stream";
@@ -1779,6 +1850,7 @@ export type GatewayUserProfile = {
   phone_number: string | null;
   status_text: string | null;
   is_bot: boolean;
+  is_blocked?: boolean;
   emoji_status_custom_emoji_id: string | null;
   profile_photo?: {
     custom_emoji_id: string | null;
@@ -1801,6 +1873,17 @@ export type GatewayUserProfile = {
     chat_id: number;
     title: string;
     subtitle: string | null;
+  } | null;
+  membership?: {
+    status: string | null;
+    role: "creator" | "admin" | "moderator" | "member" | "left";
+    is_channel: boolean;
+    member_count: number | null;
+    administrator_count: number | null;
+    linked_chat_id: number | null;
+    invite_link: string | null;
+    joined_date: number | null;
+    can_be_edited: boolean;
   } | null;
   media: {
     marked: number;
@@ -1843,11 +1926,12 @@ export async function gatewayFetchUserProfile(
   }
 }
 
-export async function gatewayFetchProfileAudioFile(
+export async function gatewayOpenProfileAudioStream(
   telegramUsername: string,
   userId: number,
   fileId: number,
-): Promise<{ data: ArrayBuffer; mime: string } | null> {
+  rangeHeader?: string | null,
+): Promise<Response | null> {
   const base = getGatewayBaseUrl();
   const secret = getGatewaySecret();
   const params = new URLSearchParams({
@@ -1857,14 +1941,15 @@ export async function gatewayFetchProfileAudioFile(
   });
   const url = `${base}/v1/user/profile-audio?${params.toString()}`;
   try {
+    const headers: Record<string, string> = { "X-Gateway-Secret": secret };
+    if (rangeHeader && rangeHeader.trim()) headers.Range = rangeHeader.trim();
     const response = await fetch(url, {
       method: "GET",
-      headers: { "X-Gateway-Secret": secret },
+      headers,
     });
+    if (response.status === 416) return response;
     if (!response.ok) return null;
-    const mime = response.headers.get("Content-Type") || "audio/mpeg";
-    const data = await response.arrayBuffer();
-    return { data, mime };
+    return response;
   } catch {
     return null;
   }
@@ -1963,16 +2048,23 @@ export async function gatewaySearchChatMedia(
   telegramUsername: string,
   chatId: number,
   kind: GatewayChatMediaKind,
-  options?: { fromMessageId?: number | null; limit?: number },
+  options?: { fromMessageId?: number | null; limit?: number; userId?: number | null },
 ): Promise<
   | { ok: true; items: GatewayChatMediaItem[]; has_more: boolean }
   | { ok: false; error: string }
 > {
   const params = new URLSearchParams({
     telegramUsername,
-    chatId: String(Math.trunc(chatId)),
+    chatId: String(Math.trunc(chatId || 0)),
     kind,
   });
+  if (
+    options?.userId != null &&
+    Number.isFinite(options.userId) &&
+    options.userId !== 0
+  ) {
+    params.set("userId", String(Math.trunc(options.userId)));
+  }
   if (
     options?.fromMessageId != null &&
     Number.isFinite(options.fromMessageId) &&
@@ -2225,6 +2317,8 @@ export type TelegramChatListSearchHit = {
   peerUsername: string | null;
   chatUsername: string | null;
   chatKind: "private" | "group" | "supergroup" | "channel" | null;
+  has_active_voice_chat?: boolean;
+  voice_chat_is_joined?: boolean;
 };
 
 export async function gatewaySearchChats(
@@ -2313,6 +2407,12 @@ function parseChatSearchHitRows(rawRows: unknown): TelegramChatListSearchHit[] {
         kind === "channel"
           ? kind
           : null,
+      has_active_voice_chat: Boolean(
+        row.has_active_voice_chat ?? row.hasActiveVoiceChat,
+      ),
+      voice_chat_is_joined: Boolean(
+        row.voice_chat_is_joined ?? row.voiceChatIsJoined,
+      ),
     });
   }
   return chats;
@@ -2479,6 +2579,246 @@ export async function gatewayClearRecentlyFoundChats(
 export async function gatewayHealthCheck(): Promise<boolean> {
   const result = await gatewayHealthCheckDetailed();
   return result.ok;
+}
+
+export type GatewaySideMenuContact = {
+  userId: number;
+  firstName: string;
+  lastName: string;
+  title: string;
+  username: string | null;
+  chatId: number | null;
+  presenceKind: string | null;
+  presenceAt: string | null;
+};
+
+export async function gatewayListContacts(
+  telegramUsername: string,
+): Promise<{ ok: true; contacts: GatewaySideMenuContact[] } | { ok: false; error: string }> {
+  try {
+    const { response, json } = await gatewayFetch(
+      `/v1/contacts/list?telegramUsername=${encodeURIComponent(telegramUsername)}`,
+      { method: "GET" },
+    );
+    if (!response.ok || json.ok === false) {
+      return { ok: false, error: String(json.error ?? `http_${response.status}`) };
+    }
+    const contacts: GatewaySideMenuContact[] = [];
+    const raw = Array.isArray(json.contacts) ? json.contacts : [];
+    for (const row of raw) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const userId = Number(item.userId);
+      if (!Number.isFinite(userId) || userId === 0) continue;
+      contacts.push({
+        userId: Math.trunc(userId),
+        firstName: typeof item.firstName === "string" ? item.firstName : "",
+        lastName: typeof item.lastName === "string" ? item.lastName : "",
+        title: typeof item.title === "string" ? item.title : `User ${userId}`,
+        username: typeof item.username === "string" ? item.username : null,
+        chatId:
+          Number.isFinite(Number(item.chatId)) && Number(item.chatId) !== 0
+            ? Math.trunc(Number(item.chatId))
+            : null,
+        presenceKind: typeof item.presenceKind === "string" ? item.presenceKind : null,
+        presenceAt: typeof item.presenceAt === "string" ? item.presenceAt : null,
+      });
+    }
+    return { ok: true, contacts };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewayAddContact(
+  telegramUsername: string,
+  args: { phoneNumber: string; firstName: string; lastName?: string },
+): Promise<
+  | { ok: true; userId: number | null; chatId: number | null }
+  | { ok: false; error: string }
+> {
+  try {
+    const { response, json } = await gatewayFetch("/v1/contacts/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        telegramUsername,
+        phoneNumber: args.phoneNumber,
+        firstName: args.firstName,
+        lastName: args.lastName ?? "",
+      }),
+    });
+    if (!response.ok || json.ok === false) {
+      return { ok: false, error: String(json.error ?? `http_${response.status}`) };
+    }
+    const userId = Number(json.userId);
+    const chatId = Number(json.chatId);
+    return {
+      ok: true,
+      userId: Number.isFinite(userId) && userId !== 0 ? Math.trunc(userId) : null,
+      chatId: Number.isFinite(chatId) && chatId !== 0 ? Math.trunc(chatId) : null,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewayCreateGroup(
+  telegramUsername: string,
+  args: { title: string; userIds: number[] },
+): Promise<
+  | { ok: true; chat: { chatId: number; title: string; chatKind: string | null } }
+  | { ok: false; error: string }
+> {
+  try {
+    const { response, json } = await gatewayFetch("/v1/chats/create-group", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        telegramUsername,
+        title: args.title,
+        userIds: args.userIds,
+      }),
+    });
+    if (!response.ok || json.ok === false) {
+      return { ok: false, error: String(json.error ?? `http_${response.status}`) };
+    }
+    const chat = (json.chat && typeof json.chat === "object"
+      ? json.chat
+      : {}) as Record<string, unknown>;
+    const chatId = Number(chat.chatId);
+    if (!Number.isFinite(chatId) || chatId === 0) {
+      return { ok: false, error: "create_group_failed" };
+    }
+    return {
+      ok: true,
+      chat: {
+        chatId: Math.trunc(chatId),
+        title: typeof chat.title === "string" ? chat.title : args.title,
+        chatKind: typeof chat.chatKind === "string" ? chat.chatKind : null,
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export async function gatewayCreateChannel(
+  telegramUsername: string,
+  args: { title: string; description?: string },
+): Promise<
+  | { ok: true; chat: { chatId: number; title: string; chatKind: string | null } }
+  | { ok: false; error: string }
+> {
+  try {
+    const { response, json } = await gatewayFetch("/v1/chats/create-channel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        telegramUsername,
+        title: args.title,
+        description: args.description ?? "",
+      }),
+    });
+    if (!response.ok || json.ok === false) {
+      return { ok: false, error: String(json.error ?? `http_${response.status}`) };
+    }
+    const chat = (json.chat && typeof json.chat === "object"
+      ? json.chat
+      : {}) as Record<string, unknown>;
+    const chatId = Number(chat.chatId);
+    if (!Number.isFinite(chatId) || chatId === 0) {
+      return { ok: false, error: "create_channel_failed" };
+    }
+    return {
+      ok: true,
+      chat: {
+        chatId: Math.trunc(chatId),
+        title: typeof chat.title === "string" ? chat.title : args.title,
+        chatKind: typeof chat.chatKind === "string" ? chat.chatKind : "channel",
+      },
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
+}
+
+export type GatewayActiveVoiceChat = {
+  chatId: number;
+  title: string;
+  chatKind: string | null;
+  groupCallId: number | null;
+  isJoined: boolean;
+};
+
+export type GatewayCallHistoryRow = {
+  chatId: number;
+  title: string;
+  peerUserId: number | null;
+  isOutgoing: boolean;
+  isMissed: boolean;
+  callCount: number;
+  at: string | null;
+};
+
+export async function gatewayFetchCallsOverview(
+  telegramUsername: string,
+): Promise<
+  | {
+      ok: true;
+      activeVoiceChats: GatewayActiveVoiceChat[];
+      history: GatewayCallHistoryRow[];
+    }
+  | { ok: false; error: string }
+> {
+  try {
+    const { response, json } = await gatewayFetch(
+      `/v1/calls/history?telegramUsername=${encodeURIComponent(telegramUsername)}`,
+      { method: "GET" },
+    );
+    if (!response.ok || json.ok === false) {
+      return { ok: false, error: String(json.error ?? `http_${response.status}`) };
+    }
+    const activeVoiceChats: GatewayActiveVoiceChat[] = [];
+    for (const row of Array.isArray(json.activeVoiceChats) ? json.activeVoiceChats : []) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const chatId = Number(item.chatId);
+      if (!Number.isFinite(chatId) || chatId === 0) continue;
+      activeVoiceChats.push({
+        chatId: Math.trunc(chatId),
+        title: typeof item.title === "string" ? item.title : `Chat ${chatId}`,
+        chatKind: typeof item.chatKind === "string" ? item.chatKind : null,
+        groupCallId:
+          Number.isFinite(Number(item.groupCallId)) && Number(item.groupCallId) !== 0
+            ? Math.trunc(Number(item.groupCallId))
+            : null,
+        isJoined: Boolean(item.isJoined),
+      });
+    }
+    const history: GatewayCallHistoryRow[] = [];
+    for (const row of Array.isArray(json.history) ? json.history : []) {
+      if (!row || typeof row !== "object") continue;
+      const item = row as Record<string, unknown>;
+      const chatId = Number(item.chatId);
+      if (!Number.isFinite(chatId) || chatId === 0) continue;
+      history.push({
+        chatId: Math.trunc(chatId),
+        title: typeof item.title === "string" ? item.title : `Chat ${chatId}`,
+        peerUserId:
+          Number.isFinite(Number(item.peerUserId)) && Number(item.peerUserId) !== 0
+            ? Math.trunc(Number(item.peerUserId))
+            : null,
+        isOutgoing: Boolean(item.isOutgoing),
+        isMissed: Boolean(item.isMissed),
+        callCount: Math.max(1, Math.trunc(Number(item.callCount) || 1)),
+        at: typeof item.at === "string" ? item.at : null,
+      });
+    }
+    return { ok: true, activeVoiceChats, history };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "gateway_unreachable" };
+  }
 }
 
 export { gatewayHealthCheckDetailed, type GatewayHealthResult };

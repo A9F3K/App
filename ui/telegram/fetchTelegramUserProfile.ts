@@ -23,6 +23,21 @@ export type TelegramProfileAudioTrack = {
   message_id?: number | null;
 };
 
+/** Telegram Desktop–style role for channel/supergroup profile chrome. */
+export type TelegramChannelProfileRole = "creator" | "admin" | "moderator" | "member" | "left";
+
+export type TelegramChannelMembership = {
+  status: string | null;
+  role: TelegramChannelProfileRole;
+  is_channel: boolean;
+  member_count: number | null;
+  administrator_count: number | null;
+  linked_chat_id: number | null;
+  invite_link: string | null;
+  joined_date: number | null;
+  can_be_edited: boolean;
+};
+
 export type TelegramUserProfile = {
   user_id: number | null;
   chat_id: number;
@@ -42,6 +57,7 @@ export type TelegramUserProfile = {
     title: string;
     subtitle: string | null;
   } | null;
+  membership: TelegramChannelMembership | null;
   media: {
     marked: number;
     images: number;
@@ -103,6 +119,10 @@ export async function fetchTelegramUserProfile(
           is_blocked: Boolean(json.profile.is_blocked),
           playlist: Array.isArray(json.profile.playlist) ? json.profile.playlist : [],
           profile_photo: normalizeTelegramProfilePhotoMarkup(json.profile.profile_photo),
+          membership:
+            json.profile.membership && typeof json.profile.membership === "object"
+              ? json.profile.membership
+              : null,
         },
       };
     } catch (err) {
@@ -177,18 +197,36 @@ export async function fetchTelegramChatLinks(
 export async function fetchTelegramChatMedia(
   chatId: number,
   kind: ProfileMediaKind,
-  options?: { fromMessageId?: number | null; limit?: number; signal?: AbortSignal },
+  options?: {
+    fromMessageId?: number | null;
+    limit?: number;
+    signal?: AbortSignal;
+    userId?: number | null;
+  },
 ): Promise<
   | { ok: true; items: TelegramChatMediaItem[]; has_more: boolean }
   | { ok: false; error: string }
 > {
-  if (!Number.isFinite(chatId) || chatId === 0) {
+  const resolvedChatId =
+    Number.isFinite(chatId) && chatId !== 0
+      ? Math.trunc(chatId)
+      : options?.userId != null && Number.isFinite(options.userId) && options.userId !== 0
+        ? Math.trunc(options.userId)
+        : 0;
+  if (resolvedChatId === 0) {
     return { ok: false, error: "chat_id_required" };
   }
   const params = new URLSearchParams({
-    chat_id: String(Math.trunc(chatId)),
+    chat_id: String(resolvedChatId),
     kind,
   });
+  if (
+    options?.userId != null &&
+    Number.isFinite(options.userId) &&
+    options.userId !== 0
+  ) {
+    params.set("user_id", String(Math.trunc(options.userId)));
+  }
   if (
     options?.fromMessageId != null &&
     Number.isFinite(options.fromMessageId) &&
@@ -219,7 +257,7 @@ export async function fetchTelegramChatMedia(
     if (err instanceof Error && err.name === "AbortError") {
       return { ok: false, error: "aborted" };
     }
-    return { ok: false, error: err instanceof Error ? err.message : "fetch_failed" };
+    return { ok: false, error: err instanceof Error && err.message ? err.message : "fetch_failed" };
   }
 }
 

@@ -109,16 +109,14 @@ function sortLiveChatRows(rows: LiveChatRow[]): LiveChatRow[] {
   return [...rows].sort((a, b) => {
     const tierDiff = tierRank(a.list_tier) - tierRank(b.list_tier);
     if (tierDiff !== 0) return tierDiff;
-    if (a.is_pinned !== b.is_pinned) return a.is_pinned ? -1 : 1;
-    if (a.is_pinned && b.is_pinned) {
-      const byPinOrder = comparePinOrderDesc(a.pin_order, b.pin_order);
-      if (byPinOrder !== 0) return byPinOrder;
+    // Same tier: TDLib order for pinned + positioned (Telegram Desktop / WebK).
+    if (a.list_tier === "pinned" || a.list_tier === "positioned") {
+      const byOrder = comparePinOrderDesc(a.pin_order, b.pin_order);
+      if (byOrder !== 0) return byOrder;
     }
-    if (a.list_tier === "positioned" && b.list_tier === "positioned") {
-      const byMainOrder = comparePinOrderDesc(a.pin_order, b.pin_order);
-      if (byMainOrder !== 0) return byMainOrder;
-    }
-    return Date.parse(b.last_message_at) - Date.parse(a.last_message_at);
+    const byTime = Date.parse(b.last_message_at) - Date.parse(a.last_message_at);
+    if (byTime !== 0) return byTime;
+    return b.telegram_chat_id - a.telegram_chat_id;
   });
 }
 

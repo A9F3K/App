@@ -567,6 +567,15 @@ export class TelegramGroupCallWebSession {
   /** How many deferred on-stage probe passes have run for this video attach. */
   private videoOnStageProbeAttempts = 0;
   /**
+   * After 1→N screen SDP, put only the primary screencast on-stage first so
+   * Colibri does not flood two H264 streams and freeze Opus (prod: second
+   * demo on → voice interrupted while both tiles paint). Escalates to all
+   * endpoints once mix stays healthy.
+   */
+  private multiScreenOnStagePrimaryOnly = false;
+  private multiScreenFullOnStageTimer: ReturnType<typeof setTimeout> | null =
+    null;
+  /**
    * Forced soft on-stage once while Opus was flat and inboundVideoPackets=0.
    * Colibri often never forwards H264 with onStage=[] — defer forever = ghost
    * m-line + frozen mix (prod Vespiol: packets stuck at 59, video RTP never).
@@ -1655,6 +1664,44 @@ export class TelegramGroupCallWebSession {
     this.requestedRemoteVideo = normalized;
     this.notifyVideoListeners();
     this.notifyRemoteVideoSourceListeners();
+    // Growing from one live screen to two (or adding any endpoint while video
+    // SDP is already settled) used to renegotiate immediately — Colibri froze
+    // Opus under dual H264 while both demos stayed painted. Re-arm settle so
+    // queueRemoteVideoRenegotiation waits for a healthy multi-screen floor.
+    {
+      const prevScreens = prevRequested.filter((r) => r.kind === "screen")
+        .length;
+      const nextScreens = normalized.filter((r) => r.kind === "screen").length;
+      const grewScreens = nextScreens > prevScreens && nextScreens >= 2;
+      const grewWhileLive =
+        this.lastAppliedRemoteVideoEndpoints.length > 0 &&
+        normalized.length > this.lastAppliedRemoteVideoEndpoints.length;
+      if (
+        (grewScreens || grewWhileLive) &&
+        this.remoteVideoSdpSubscribeEnabled &&
+        !this.remoteVideoSdpBlockedAfterStall
+      ) {
+        this.remoteAudioSettledForVideo = false;
+        this.remoteAudioSettleArmed = false;
+        this.clearVideoRenegotiateAudioWait();
+        this.multiScreenOnStagePrimaryOnly = nextScreens >= 2;
+        if (this.multiScreenFullOnStageTimer) {
+          clearTimeout(this.multiScreenFullOnStageTimer);
+          this.multiScreenFullOnStageTimer = null;
+        }
+        logPageDisplay("messages_voice_remote_video_resettle_for_extra_screen", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          prevScreens,
+          nextScreens,
+          prevApplied: this.lastAppliedRemoteVideoEndpoints.length,
+          next: normalized.length,
+          level: "info",
+          note:
+            "extra screencast — re-settle mix before video SDP; primary on-stage first",
+        });
+      }
+    }
     // Only menu unmute arms video SDP. Storing requests without arm keeps the
     // mix alive until the user opts in (or after a prior explicit open).
     if (
@@ -3840,16 +3887,28 @@ export class TelegramGroupCallWebSession {
         return;
       }
       this.videoOnStageDeferred = false;
+      const screenCount = this.requestedRemoteVideo.filter(
+        (r) => r.kind === "screen",
+      ).length;
+      const primaryOnlyFirst =
+        screenCount >= 2 && this.multiScreenOnStagePrimaryOnly;
       logPageDisplay("messages_voice_video_on_stage_promote", {
         chatId: this.input.chatId,
         groupCallId: this.input.groupCallId,
         inboundPackets: stats.inboundPackets,
         audioGrowth,
         inboundVideoPackets: stats.inboundVideoPackets,
+        screenCount,
+        primaryOnly: primaryOnlyFirst,
         level: "info",
-        note: "mix healthy — promote screencast to on-stage",
+        note: primaryOnlyFirst
+          ? "mix healthy — promote primary screencast; escalate dual after mix holds"
+          : "mix healthy — promote screencast to on-stage",
       });
       this.sendReceiverVideoConstraints({ forceOnStage: true });
+      if (primaryOnlyFirst) {
+        this.scheduleMultiScreenFullOnStage(connection);
+      }
     } catch (err) {
       logPageDisplay("messages_voice_video_on_stage_probe_fail", {
         chatId: this.input.chatId,
@@ -3866,6 +3925,90 @@ export class TelegramGroupCallWebSession {
       ) {
         this.armVideoOnStageProbe(connection);
       }
+    }
+  }
+
+  /**
+   * After primary-only dual promote, wait for mix to stay healthy then put all
+   * screencasts on-stage (both demos visible without freezing Opus on attach).
+   */
+  private scheduleMultiScreenFullOnStage(connection: RTCPeerConnection): void {
+    if (typeof window === "undefined") {
+      this.multiScreenOnStagePrimaryOnly = false;
+      this.sendReceiverVideoConstraints({ forceOnStage: true });
+      return;
+    }
+    if (this.multiScreenFullOnStageTimer) {
+      clearTimeout(this.multiScreenFullOnStageTimer);
+      this.multiScreenFullOnStageTimer = null;
+    }
+    const escalateMs = 3_600;
+    logPageDisplay("messages_voice_video_on_stage_dual_arm", {
+      chatId: this.input.chatId,
+      groupCallId: this.input.groupCallId,
+      escalateMs,
+      level: "info",
+      note: "primary on-stage — escalate remaining screens after mix floor",
+    });
+    this.multiScreenFullOnStageTimer = window.setTimeout(() => {
+      this.multiScreenFullOnStageTimer = null;
+      void this.escalateMultiScreenFullOnStage(connection);
+    }, escalateMs);
+  }
+
+  private async escalateMultiScreenFullOnStage(
+    connection: RTCPeerConnection,
+  ): Promise<void> {
+    if (this.connection !== connection || !this.joined) return;
+    if (!this.multiScreenOnStagePrimaryOnly) return;
+    if (this.constraintsThrottleInFlight || this.audioRecoverInFlight) {
+      this.scheduleMultiScreenFullOnStage(connection);
+      return;
+    }
+    try {
+      const stats = await this.logIceDiagnostics(
+        connection,
+        "dual_screen_full_on_stage",
+      );
+      const frozen = this.isOpusHardFrozenSinceVideoRenegotiate(
+        stats.inboundPackets,
+      );
+      const mixOk =
+        !frozen &&
+        (this.mixRecentlyHearableForScreenProtect(4_000) ||
+          stats.inboundPackets >
+            this.inboundPacketsAtVideoRenegotiate +
+              OPUS_POST_VIDEO_ON_STAGE_MIN_AUDIO_GROWTH);
+      if (!mixOk) {
+        logPageDisplay("messages_voice_video_on_stage_dual_defer", {
+          chatId: this.input.chatId,
+          groupCallId: this.input.groupCallId,
+          inboundPackets: stats.inboundPackets,
+          frozen,
+          level: "warn",
+          note: "mix not ready for second on-stage — keep primary only, retry",
+        });
+        this.scheduleMultiScreenFullOnStage(connection);
+        return;
+      }
+      this.multiScreenOnStagePrimaryOnly = false;
+      logPageDisplay("messages_voice_video_on_stage_dual_promote", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        inboundPackets: stats.inboundPackets,
+        endpoints: this.requestedRemoteVideo.map((r) => r.endpointId).slice(0, 4),
+        level: "info",
+        note: "mix held — promote all screencasts on-stage",
+      });
+      this.sendReceiverVideoConstraints({ forceOnStage: true });
+    } catch (err) {
+      logPageDisplay("messages_voice_video_on_stage_dual_fail", {
+        chatId: this.input.chatId,
+        groupCallId: this.input.groupCallId,
+        error: err instanceof Error ? err.message : String(err),
+        level: "warn",
+      });
+      this.scheduleMultiScreenFullOnStage(connection);
     }
   }
 
@@ -3944,7 +4087,21 @@ export class TelegramGroupCallWebSession {
     }
     const deferOnStage =
       this.videoOnStageDeferred && !opts?.forceOnStage && endpoints.length > 0;
-    const onStageEndpoints = deferOnStage ? [] : endpoints;
+    let onStageEndpoints = deferOnStage ? [] : endpoints;
+    // Dual+ screencast: stage primary first so Opus keeps flowing; escalate later.
+    if (
+      !deferOnStage &&
+      this.multiScreenOnStagePrimaryOnly &&
+      endpoints.length > 1
+    ) {
+      const screenIds = this.requestedRemoteVideo
+        .filter((r) => r.kind === "screen")
+        .map((r) => r.endpointId)
+        .filter(Boolean);
+      const primary =
+        screenIds.find((id) => endpoints.includes(id)) ?? endpoints[0]!;
+      onStageEndpoints = [primary];
+    }
     const message = {
       colibriClass: "ReceiverVideoConstraints",
       // Match telegram-tt groupCall.ts updateRemoteVideoConstraints.
@@ -3961,6 +4118,7 @@ export class TelegramGroupCallWebSession {
         endpoints,
         onStage: onStageEndpoints,
         deferredOnStage: deferOnStage,
+        primaryOnly: this.multiScreenOnStagePrimaryOnly && endpoints.length > 1,
         maxHeight,
         level: "info",
       });
@@ -4324,6 +4482,12 @@ export class TelegramGroupCallWebSession {
           ? inboundBefore.inboundPackets
           : this.peakInboundAudioPackets,
       );
+      const screenCount = wanted.filter((r) => r.kind === "screen").length;
+      this.multiScreenOnStagePrimaryOnly = screenCount >= 2;
+      if (this.multiScreenFullOnStageTimer) {
+        clearTimeout(this.multiScreenFullOnStageTimer);
+        this.multiScreenFullOnStageTimer = null;
+      }
     } else {
       this.postVideoRenegotiateAt = 0;
       this.inboundPacketsAtVideoRenegotiate = 0;
@@ -4334,6 +4498,11 @@ export class TelegramGroupCallWebSession {
       this.lastMixPacketAdvanceAt = 0;
       this.videoOnStageDeferred = false;
       this.videoOnStageProbeAttempts = 0;
+      this.multiScreenOnStagePrimaryOnly = false;
+      if (this.multiScreenFullOnStageTimer) {
+        clearTimeout(this.multiScreenFullOnStageTimer);
+        this.multiScreenFullOnStageTimer = null;
+      }
       this.clearVideoOnStageProbe();
     }
     this.sendReceiverVideoConstraints();
@@ -6703,6 +6872,11 @@ export class TelegramGroupCallWebSession {
     this.firstRemoteVideoFrameAt = 0;
     this.peakInboundVideoPackets = 0;
     this.videoOnStageForcedDespiteFlatMix = false;
+    this.multiScreenOnStagePrimaryOnly = false;
+    if (this.multiScreenFullOnStageTimer) {
+      clearTimeout(this.multiScreenFullOnStageTimer);
+      this.multiScreenFullOnStageTimer = null;
+    }
     this.postVideoSilenceTicks = 0;
     this.remoteAudioSettledForVideo = false;
     this.remoteAudioSettleArmed = false;
@@ -11387,6 +11561,11 @@ export class TelegramGroupCallWebSession {
     this.videoOnStageDeferred = false;
     this.videoOnStageProbeAttempts = 0;
     this.videoOnStageForcedDespiteFlatMix = false;
+    this.multiScreenOnStagePrimaryOnly = false;
+    if (this.multiScreenFullOnStageTimer) {
+      clearTimeout(this.multiScreenFullOnStageTimer);
+      this.multiScreenFullOnStageTimer = null;
+    }
     this.clearVideoOnStageProbe();
     this.lastMixProtectDropHadLiveVideo = false;
     this.firstRemoteVideoFrameAt = 0;
@@ -11460,6 +11639,11 @@ export class TelegramGroupCallWebSession {
     this.videoOnStageDeferred = false;
     this.videoOnStageProbeAttempts = 0;
     this.videoOnStageForcedDespiteFlatMix = false;
+    this.multiScreenOnStagePrimaryOnly = false;
+    if (this.multiScreenFullOnStageTimer) {
+      clearTimeout(this.multiScreenFullOnStageTimer);
+      this.multiScreenFullOnStageTimer = null;
+    }
     this.clearVideoOnStageProbe();
     this.lastMixProtectDropHadLiveVideo = false;
     this.firstRemoteVideoFrameAt = 0;

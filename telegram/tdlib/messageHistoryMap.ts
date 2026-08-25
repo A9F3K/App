@@ -30,7 +30,10 @@ export type MessageContentKind =
   | "sticker"
   | "audio"
   | "call"
+  | "service"
   | "other";
+
+export type MessageServiceNoticeKind = "chat_join" | "chat_leave";
 
 export type MessageOutgoingStatus = "pending" | "delivered" | "read" | "failed";
 
@@ -73,6 +76,11 @@ export type MappedChatHistoryMessage = {
     size_bytes: number;
     cover_data_url: string | null;
   } | null;
+  service_notice?: {
+    kind: MessageServiceNoticeKind;
+    actor_user_id: number | null;
+    actor_name: string;
+  } | null;
 };
 
 type UserProfileCache = Map<number, TdUserProfileCache>;
@@ -98,12 +106,104 @@ function messageContentKind(message: TdMessage): MessageContentKind {
   if (type === "messageText") return "text";
   if (type === "messagePhoto") return "photo";
   if (type === "messageVideo") return "video";
-  if (type === "messageDocument") return "document";
+  if (type === "messageDocument") {
+    const content = message.content;
+    if (content && typeof content === "object") {
+      const mime = (content as { document?: { mime_type?: string } }).document?.mime_type;
+      if (typeof mime === "string" && mime.trim().toLowerCase().startsWith("image/")) {
+        return "photo";
+      }
+    }
+    return "document";
+  }
   if (type === "messageAnimation") return "animation";
   if (type === "messageSticker") return "sticker";
   if (type === "messageAudio") return "audio";
   if (type === "messageCall") return "call";
+  if (
+    type === "messageChatAddMembers" ||
+    type === "messageChatJoinByLink" ||
+    type === "messageChatJoinByRequest" ||
+    type === "messageChatDeleteMember"
+  ) {
+    return "service";
+  }
   return "other";
+}
+
+function formatServiceActorNames(names: string[]): string {
+  const cleaned = names.map((n) => n.trim()).filter(Boolean);
+  if (cleaned.length === 0) return "";
+  if (cleaned.length === 1) return cleaned[0]!;
+  if (cleaned.length === 2) return `${cleaned[0]} and ${cleaned[1]}`;
+  return `${cleaned.slice(0, -1).join(", ")}, and ${cleaned[cleaned.length - 1]}`;
+}
+
+async function resolveServiceNotice(
+  client: Client,
+  message: TdMessage,
+  userCache: UserProfileCache,
+  fallbackSenderName: string,
+  fallbackSenderUserId: number | null,
+): Promise<{
+  kind: MessageServiceNoticeKind;
+  actor_user_id: number | null;
+  actor_name: string;
+  text: string;
+} | null> {
+  const content = message.content;
+  if (!content || typeof content !== "object") return null;
+  const type = (content as { _?: string })._;
+  if (
+    type !== "messageChatAddMembers" &&
+    type !== "messageChatJoinByLink" &&
+    type !== "messageChatJoinByRequest" &&
+    type !== "messageChatDeleteMember"
+  ) {
+    return null;
+  }
+
+  const leave = type === "messageChatDeleteMember";
+  let actorIds: number[] = [];
+  if (type === "messageChatAddMembers") {
+    const raw = (content as { member_user_ids?: unknown }).member_user_ids;
+    if (Array.isArray(raw)) {
+      actorIds = raw
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id !== 0)
+        .map((id) => Math.trunc(id));
+    }
+  } else if (type === "messageChatDeleteMember") {
+    const id = Number((content as { user_id?: unknown }).user_id);
+    if (Number.isFinite(id) && id !== 0) actorIds = [Math.trunc(id)];
+  } else {
+    const senderId = senderUserId(message);
+    if (senderId != null) actorIds = [senderId];
+  }
+  if (actorIds.length === 0 && fallbackSenderUserId != null) {
+    actorIds = [fallbackSenderUserId];
+  }
+
+  const names: string[] = [];
+  for (const userId of actorIds) {
+    const profile = await resolveTdUserProfile(client, userId, userCache);
+    if (profile.name.trim()) names.push(profile.name.trim());
+  }
+  const actorName =
+    formatServiceActorNames(names) ||
+    fallbackSenderName.trim() ||
+    (leave ? "Member" : "Member");
+  const actorUserId = actorIds[0] ?? fallbackSenderUserId;
+  const kind: MessageServiceNoticeKind = leave ? "chat_leave" : "chat_join";
+  const text = leave
+    ? `${actorName} left the group`
+    : `${actorName} joined the group`;
+  return {
+    kind,
+    actor_user_id: actorUserId,
+    actor_name: actorName,
+    text,
+  };
 }
 
 function isCallMessage(message: TdMessage): boolean {
@@ -148,12 +248,31 @@ function mediaDimensions(message: TdMessage): { width: number | null; height: nu
       return { width: w, height: h };
     }
   }
+  if (type === "messageDocument") {
+    const document = row.document as
+      | { thumbnail?: { width?: number; height?: number }; document?: { size?: number } }
+      | undefined;
+    const w = Number(document?.thumbnail?.width);
+    const h = Number(document?.thumbnail?.height);
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      return { width: w, height: h };
+    }
+  }
   return { width: null, height: null };
 }
 
 function hasDisplayableMedia(message: TdMessage): boolean {
   const kind = messageContentKind(message);
-  return kind === "photo" || kind === "video" || kind === "animation" || kind === "sticker";
+  if (kind === "photo" || kind === "video" || kind === "animation" || kind === "sticker") {
+    return true;
+  }
+  if (kind === "document") {
+    const content = message.content;
+    if (!content || typeof content !== "object") return false;
+    const mime = (content as { document?: { mime_type?: string } }).document?.mime_type;
+    return typeof mime === "string" && mime.trim().toLowerCase().startsWith("image/");
+  }
+  return false;
 }
 
 function captionText(message: TdMessage): string | null {
@@ -700,13 +819,14 @@ export async function mapHistoryMessage(
 
   const isCall = isCallMessage(resolved);
   const isAudio = messageContentKind(resolved) === "audio";
+  const isService = messageContentKind(resolved) === "service";
   const audioMeta = isAudio ? parseTdAudioMeta(resolved.content) : null;
   let text = bodyText(resolved).trim();
   const hasMedia = hasDisplayableMedia(resolved);
   // Keep non-media channel/group posts that only have a preview label (polls,
   // voice notes, locations, unpaid captions, etc.). Documents without captions
   // used to return "" from messageBodyText and were dropped entirely.
-  if (!text && !hasMedia && !isCall && !isAudio) {
+  if (!text && !hasMedia && !isCall && !isAudio && !isService) {
     const preview = previewFromMessage(resolved)?.trim() ?? "";
     if (!preview || isGenericMessagePreviewLabel(preview)) return null;
     text = preview;
@@ -721,8 +841,39 @@ export async function mapHistoryMessage(
       : null;
   const dimensions = mediaDimensions(resolved);
 
-  const textSegments = messageTextSegments(resolved, { enrichStandardEmojis: true });
-  const displaySenderName = authorSignature ?? sender.name;
+  let serviceNotice: MappedChatHistoryMessage["service_notice"] = null;
+  if (isService) {
+    const notice = await resolveServiceNotice(
+      client,
+      resolved,
+      userCache,
+      sender.name,
+      resolvedSenderUserId ?? senderUserId(resolved),
+    );
+    if (notice) {
+      serviceNotice = {
+        kind: notice.kind,
+        actor_user_id: notice.actor_user_id,
+        actor_name: notice.actor_name,
+      };
+      text = notice.text;
+    } else if (!text) {
+      const preview = previewFromMessage(resolved)?.trim() ?? "";
+      if (!preview || isGenericMessagePreviewLabel(preview)) return null;
+      text = preview;
+    }
+  }
+
+  const textSegments = isService
+    ? null
+    : messageTextSegments(resolved, {
+        enrichStandardEmojis: true,
+        serviceChatId: chat.id,
+        serviceSenderUserId: resolvedSenderUserId ?? senderUserId(resolved),
+        servicePlainText: text,
+      });
+  const displaySenderName =
+    serviceNotice?.actor_name ?? authorSignature ?? sender.name;
   let senderProfile = sender.profile;
   if (resolvedSenderUserId != null && resolvedSenderUserId !== senderUserId(resolved)) {
     senderProfile = await resolveTdUserProfile(client, resolvedSenderUserId, userCache);
@@ -736,7 +887,10 @@ export async function mapHistoryMessage(
     ...(textSegments ? { text_segments: textSegments } : {}),
     sent_at: messageSentAtIso(resolved),
     sender_name: displaySenderName,
-    sender_user_id: resolvedSenderUserId ?? senderUserId(resolved),
+    sender_user_id:
+      serviceNotice?.actor_user_id ??
+      resolvedSenderUserId ??
+      senderUserId(resolved),
     sender_chat_id: senderChatIdValue,
     sender_is_channel: sender.isChannel,
     ...(authorSignature ? { sender_author_signature: authorSignature } : {}),
@@ -746,11 +900,11 @@ export async function mapHistoryMessage(
     is_outgoing: messageIsOutgoing(resolved, myUserId),
     outgoing_status: resolveOutgoingStatusFromTdMessage(resolved, chat, myUserId),
     content_kind: messageContentKind(resolved),
-    has_media: hasMedia,
+    has_media: isService ? false : hasMedia,
     media_width: dimensions.width,
     media_height: dimensions.height,
-    reply_to: replyTo,
-    reply_to_message_id: replyToMessageId,
+    reply_to: isService ? null : replyTo,
+    reply_to_message_id: isService ? null : replyToMessageId,
     ...(isCall ? { call_success: parseCallSuccess(resolved) } : {}),
     ...(audioMeta
       ? {
@@ -763,5 +917,6 @@ export async function mapHistoryMessage(
           },
         }
       : {}),
+    ...(serviceNotice ? { service_notice: serviceNotice } : {}),
   };
 }

@@ -33,6 +33,7 @@ import {
 } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { FloatingDialogShell } from "../FloatingDialogShell";
+import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
 import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
@@ -122,8 +123,12 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
   const colors = useColors();
   const { t, tf } = useAppStrings();
   const ton = useTonConnectSession();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const showGetActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
+  const pickerDefaultSize = useMemo(
+    () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "picker"),
+    [windowHeight, windowWidth],
+  );
 
   const [showCopied, setShowCopied] = useState(false);
   const hideCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -657,10 +662,10 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
       <FloatingDialogShell
         visible={pickerOpen}
         zIndex={10070}
-        defaultSize={{ width: 380, height: 420 }}
+        defaultSize={pickerDefaultSize}
         minSize={{ width: 300, height: 240 }}
-        sizeStorageKey="hsp.getCurrencyPicker.size.v3"
-        offsetStorageKey="hsp.getCurrencyPicker.offset.v3"
+        sizeStorageKey="hsp.getCurrencyPicker.size.v4"
+        offsetStorageKey="hsp.getCurrencyPicker.offset.v4"
         onRequestClose={() => setPickerOpen(false)}
         testId="get-currency-picker"
       >

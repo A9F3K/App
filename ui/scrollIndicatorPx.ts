@@ -37,6 +37,12 @@ export const SCROLL_INDICATOR_SCROLL_EPS = 2;
 export const SCROLL_INDICATOR_DRAG_HIT_INSET_PX = 3;
 
 /**
+ * Right inset so the 1px scroll thumb sits on a 1px chrome border (floating dialogs, side menu).
+ * Negative = overhang into the border; pair with `scrollIndicatorOverlaySeam={false}`.
+ */
+export const SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX = -1;
+
+/**
  * Light-theme portaled thumb width (px) when flush with the viewport right edge.
  * Hairline thumbs clip against black letterboxing outside the app frame.
  */

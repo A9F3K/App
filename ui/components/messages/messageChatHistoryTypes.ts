@@ -14,7 +14,68 @@ export type MessageChatContentKind =
   | "sticker"
   | "audio"
   | "call"
+  | "service"
   | "other";
+
+export type MessageChatServiceNoticeKind = "chat_join" | "chat_leave";
+
+export type MessageChatServiceNotice = {
+  kind: MessageChatServiceNoticeKind;
+  actor_user_id: number | null;
+  actor_name: string;
+};
+
+const LEGACY_SERVICE_JOIN_LABELS = new Set([
+  "Members added",
+  "Joined via link",
+]);
+const LEGACY_SERVICE_LEAVE_LABELS = new Set(["Member left"]);
+
+/**
+ * Centered join/leave notice metadata — prefers explicit `service_notice`, then
+ * legacy gateway preview labels ("Members added") still painted as bubbles.
+ */
+export function resolveMessageChatServiceNotice(
+  item: Pick<
+    MessageChatHistoryItem,
+    "content_kind" | "text" | "sender_name" | "sender_user_id" | "service_notice"
+  >,
+): MessageChatServiceNotice | null {
+  if (item.service_notice?.actor_name?.trim()) {
+    return {
+      kind: item.service_notice.kind === "chat_leave" ? "chat_leave" : "chat_join",
+      actor_user_id: item.service_notice.actor_user_id ?? item.sender_user_id ?? null,
+      actor_name: item.service_notice.actor_name.trim(),
+    };
+  }
+  const trimmed = item.text.trim();
+  const actorName = item.sender_name.trim();
+  if (!actorName) return null;
+  if (LEGACY_SERVICE_LEAVE_LABELS.has(trimmed)) {
+    return {
+      kind: "chat_leave",
+      actor_user_id: item.sender_user_id ?? null,
+      actor_name: actorName,
+    };
+  }
+  if (item.content_kind === "service" || LEGACY_SERVICE_JOIN_LABELS.has(trimmed)) {
+    return {
+      kind: "chat_join",
+      actor_user_id: item.sender_user_id ?? null,
+      actor_name: actorName,
+    };
+  }
+  return null;
+}
+
+export function isMessageChatServiceNotice(
+  item: Pick<
+    MessageChatHistoryItem,
+    "content_kind" | "text" | "sender_name" | "sender_user_id" | "service_notice"
+  >,
+): boolean {
+  return resolveMessageChatServiceNotice(item) != null;
+}
 
 export type MessageChatKind =
   | "private"
@@ -94,6 +155,8 @@ export type MessageChatHistoryItem = {
   /** Ended call was answered / had duration (content_kind call). */
   call_success?: boolean | null;
   audio?: MessageChatAudioPayload | null;
+  /** Centered join/leave notice (content_kind service). */
+  service_notice?: MessageChatServiceNotice | null;
 };
 
 export type HistoryMessageContext = {
@@ -263,9 +326,14 @@ export function shouldShowMessageSenderHeader(
   chatKind: MessageChatKind | null | undefined,
   item: Pick<
     MessageChatHistoryItem,
-    "is_outgoing" | "sender_name" | "sender_user_id" | "sender_author_signature"
+    | "is_outgoing"
+    | "sender_name"
+    | "sender_user_id"
+    | "sender_author_signature"
+    | "content_kind"
   >,
 ): boolean {
+  if (item.content_kind === "service") return false;
   if (!isGroupLikeChatKind(chatKind) || item.is_outgoing) return false;
   if (chatKind === "channel") {
     if (item.sender_user_id != null) return true;
@@ -373,8 +441,20 @@ export function enrichHistoryMessageDisplay(item: MessageChatHistoryItem): Messa
   let contentKind = item.content_kind;
   let hasMedia = Boolean(item.has_media);
   let text = item.text;
+  let service_notice = item.service_notice ?? null;
 
-  if (!isDisplayableMediaContentKind(contentKind)) {
+  const legacyNotice = resolveMessageChatServiceNotice({
+    content_kind: contentKind,
+    text,
+    sender_name: item.sender_name,
+    sender_user_id: item.sender_user_id,
+    service_notice,
+  });
+  if (legacyNotice) {
+    contentKind = "service";
+    service_notice = legacyNotice;
+    hasMedia = false;
+  } else if (!isDisplayableMediaContentKind(contentKind)) {
     const trimmed = text.trim();
     const inferred = MEDIA_PREVIEW_LABEL_TO_KIND[trimmed];
     if (inferred) {
@@ -384,7 +464,7 @@ export function enrichHistoryMessageDisplay(item: MessageChatHistoryItem): Messa
     }
   }
 
-  if (isDisplayableMediaContentKind(contentKind)) {
+  if (contentKind !== "service" && isDisplayableMediaContentKind(contentKind)) {
     hasMedia = true;
     const placeholder = mediaPlaceholderLabel(contentKind);
     if (placeholder && text.trim() === placeholder) {
@@ -400,10 +480,16 @@ export function enrichHistoryMessageDisplay(item: MessageChatHistoryItem): Messa
     text = "";
   }
 
-  const resolvedTextSegments = resolveMessageDisplaySegments(text, item.text_segments);
-  const text_segments = formattedSegmentsEqual(resolvedTextSegments, item.text_segments)
-    ? item.text_segments
-    : resolvedTextSegments;
+  const resolvedTextSegments =
+    contentKind === "service"
+      ? null
+      : resolveMessageDisplaySegments(text, item.text_segments);
+  const text_segments =
+    contentKind === "service"
+      ? null
+      : formattedSegmentsEqual(resolvedTextSegments, item.text_segments)
+        ? item.text_segments
+        : resolvedTextSegments;
   let reply_to = item.reply_to;
   if (reply_to) {
     const resolvedReplySegments = resolveMessageDisplaySegments(
@@ -418,7 +504,8 @@ export function enrichHistoryMessageDisplay(item: MessageChatHistoryItem): Messa
   const mediaUnchanged =
     contentKind === item.content_kind &&
     hasMedia === Boolean(item.has_media) &&
-    text === item.text;
+    text === item.text &&
+    service_notice === item.service_notice;
   const segmentsUnchanged =
     text_segments === item.text_segments && reply_to === item.reply_to;
 
@@ -428,11 +515,12 @@ export function enrichHistoryMessageDisplay(item: MessageChatHistoryItem): Messa
 
   return {
     ...item,
-    content_kind: contentKind ?? item.content_kind,
-    has_media: hasMedia,
     text,
     text_segments,
     reply_to,
+    content_kind: contentKind ?? item.content_kind,
+    has_media: hasMedia,
+    service_notice,
   };
 }
 
@@ -541,5 +629,7 @@ export function mergeHistoryMessageRow(
     reply_to_message_id:
       incomingEnriched.reply_to_message_id ?? prevEnriched.reply_to_message_id ?? null,
     audio: incomingEnriched.audio ?? prevEnriched.audio ?? null,
+    service_notice:
+      incomingEnriched.service_notice ?? prevEnriched.service_notice ?? null,
   });
 }

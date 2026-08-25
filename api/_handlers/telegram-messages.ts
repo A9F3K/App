@@ -9,7 +9,7 @@ import { applyAuthApiCors, authApiPreflightResponse } from "../_lib/auth-cors.js
 import { telegramUsernameFromSessionCookie } from "../_lib/session-auth.js";
 import { appLog, safeTelegramUserIdForLog, telegramUserIdLogField } from "../../shared/appLog.js";
 import { normalizeTelegramGroupCallId } from "../../shared/telegramGroupCallSdp.js";
-import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayFetchUserAvatar, gatewayFetchUserProfile, gatewayFetchProfileAudioFile, gatewayFetchProfileAudioCover, gatewayBlockUser, gatewayUnblockUser, gatewaySearchChatLinks, gatewaySearchChatMedia, gatewayCreatePrivateCall, gatewayGetPrivateCall, gatewayDiscardPrivateCall, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayOpenChatMessagesStream, gatewayOpenVoiceParticipantsStream, gatewayOpenVoiceCallMessagesStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayDeleteChatMessages,   gatewayJoinChatVoice, gatewaySetChatVoiceMicMuted, gatewaySetChatVoiceParticipantVolume, gatewaySetChatVoiceParticipantSpeaking, gatewayStartChatVoice, gatewayLeaveChatVoice, gatewayStartChatVoiceScreenShare, gatewayEndChatVoiceScreenShare, gatewaySendChatVoiceCallMessage, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewaySearchChats, gatewaySearchRecentChats, gatewayAddRecentlyFoundChat, gatewayRemoveRecentlyFoundChat, gatewayClearRecentlyFoundChats, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages, gatewayToggleChatPinned, gatewaySetPinnedChatsOrder } from "../_lib/tdlib-gateway-client.js";
+import { gatewayDisconnect, gatewayFetchChatAvatar, gatewayFetchChatMessages, gatewayFetchTelegramEmoji, gatewayFetchLiveChats, gatewayFetchMessageMedia, gatewayOpenMessageMediaStream, gatewayFetchUserAvatar, gatewayFetchUserProfile, gatewayOpenProfileAudioStream, gatewayFetchProfileAudioCover, gatewayBlockUser, gatewayUnblockUser, gatewaySearchChatLinks, gatewaySearchChatMedia, gatewayCreatePrivateCall, gatewayGetPrivateCall, gatewayDiscardPrivateCall, gatewayFocusChat, gatewayLoadMoreChats, gatewayOpenLiveChatsStream, gatewayOpenChatMessagesStream, gatewayOpenVoiceParticipantsStream, gatewayOpenVoiceCallMessagesStream, gatewayResyncChats, gatewaySendChatMessage, gatewaySendChatPhoto, gatewayEditChatMessage, gatewayDeleteChatMessages,   gatewayJoinChatVoice, gatewaySetChatVoiceMicMuted, gatewaySetChatVoiceParticipantVolume, gatewaySetChatVoiceParticipantSpeaking, gatewayStartChatVoice, gatewayLeaveChatVoice, gatewayStartChatVoiceScreenShare, gatewayEndChatVoiceScreenShare, gatewaySendChatVoiceCallMessage, gatewayFetchChatVoiceParticipants, gatewayResolvePublicChat, gatewaySearchChats, gatewaySearchRecentChats, gatewayAddRecentlyFoundChat, gatewayRemoveRecentlyFoundChat, gatewayClearRecentlyFoundChats, gatewayUserHasPersistedSession, gatewayWarmupSession, gatewayViewChatInboxMessages, gatewayToggleChatPinned, gatewaySetPinnedChatsOrder, gatewayListContacts, gatewayAddContact, gatewayCreateGroup, gatewayCreateChannel, gatewayFetchCallsOverview } from "../_lib/tdlib-gateway-client.js";
 import { getGatewayPublicBaseUrl } from "../../telegram/tdlib/env.js";
 import {
   gatewayHttpToWebSocketUrl,
@@ -24,6 +24,7 @@ type NodeRes = {
   setHeader: (name: string, value: string) => void;
   end: (body?: string | Buffer) => void;
   write?: (body: string | Buffer) => boolean;
+  flushHeaders?: () => void;
 };
 
 type AnyRequest = Request | { method?: string; headers?: Record<string, string | string[] | undefined>; url?: string };
@@ -1076,6 +1077,18 @@ export async function telegramMessagesProfileHandler(
   return finishJson(request, res, { ok: true, profile: result.profile });
 }
 
+function requestHeader(request: AnyRequest, name: string): string | null {
+  const webHeaders = (request as Request).headers as Headers | undefined;
+  if (webHeaders && typeof webHeaders.get === "function") {
+    return webHeaders.get(name);
+  }
+  const nodeHeaders = (request as { headers?: Record<string, string | string[] | undefined> }).headers;
+  if (!nodeHeaders) return null;
+  const raw = nodeHeaders[name.toLowerCase()] ?? nodeHeaders[name];
+  if (Array.isArray(raw)) return raw[0] ?? null;
+  return typeof raw === "string" ? raw : null;
+}
+
 function finishBinary(
   request: AnyRequest,
   res: NodeRes | undefined,
@@ -1096,6 +1109,48 @@ function finishBinary(
     return;
   }
   return new Response(new Uint8Array(body), { status: 200, headers });
+}
+
+async function finishBinaryStream(
+  request: AnyRequest,
+  res: NodeRes | undefined,
+  upstream: Response,
+  cacheControl: string,
+): Promise<Response | void> {
+  const status = upstream.status || 200;
+  const mime = upstream.headers.get("Content-Type") || "audio/mpeg";
+  const headers = new Headers({
+    "Content-Type": mime,
+    "Cache-Control": cacheControl,
+    "Accept-Ranges": upstream.headers.get("Accept-Ranges") || "bytes",
+    "X-Accel-Buffering": "no",
+  });
+  const contentRange = upstream.headers.get("Content-Range");
+  if (contentRange) headers.set("Content-Range", contentRange);
+  const contentLength = upstream.headers.get("Content-Length");
+  if (contentLength) headers.set("Content-Length", contentLength);
+  applyAuthApiCors(request, headers);
+  if (res) {
+    res.status(status);
+    headers.forEach((v, k) => res.setHeader(k, v));
+    res.flushHeaders?.();
+    const body = upstream.body;
+    if (!body) {
+      res.end();
+      return;
+    }
+    const reader = body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.byteLength > 0) {
+        res.write?.(Buffer.from(value));
+      }
+    }
+    res.end();
+    return;
+  }
+  return new Response(upstream.body, { status, headers });
 }
 
 export async function telegramMessagesProfileAudioHandler(
@@ -1131,11 +1186,12 @@ export async function telegramMessagesProfileAudioHandler(
     return finishJson(request, res, { ok: false, error: "user_id_and_file_id_required" }, 400);
   }
 
-  const media = await gatewayFetchProfileAudioFile(userOrRes, userId, fileId);
-  if (!media) {
+  const rangeHeader = requestHeader(request, "range");
+  const upstream = await gatewayOpenProfileAudioStream(userOrRes, userId, fileId, rangeHeader);
+  if (!upstream) {
     return finishJson(request, res, { ok: false, error: "audio_unavailable" }, 404);
   }
-  return finishBinary(request, res, media.data, media.mime, "private, max-age=3600");
+  return finishBinaryStream(request, res, upstream, "private, max-age=60");
 }
 
 export async function telegramMessagesProfileAudioCoverHandler(
@@ -1346,6 +1402,7 @@ export async function telegramMessagesProfileMediaHandler(
 
   const url = requestUrl(request);
   const chatId = parseOptionalIdParam(url, "chat_id");
+  const userId = parseOptionalIdParam(url, "user_id");
   const kindRaw = (url.searchParams.get("kind") || "").trim();
   const kind =
     kindRaw === "marked" ||
@@ -1358,13 +1415,14 @@ export async function telegramMessagesProfileMediaHandler(
   const fromMessageId = parseOptionalIdParam(url, "from_message_id");
   const limitRaw = url.searchParams.get("limit");
   const limit = limitRaw != null && limitRaw.trim() !== "" ? Number(limitRaw) : 30;
-  if (chatId == null || !kind) {
+  if ((chatId == null && userId == null) || !kind) {
     return finishJson(request, res, { ok: false, error: "chat_id_and_kind_required" }, 400);
   }
 
-  const result = await gatewaySearchChatMedia(userOrRes, chatId, kind, {
+  const result = await gatewaySearchChatMedia(userOrRes, chatId ?? 0, kind, {
     fromMessageId,
     limit: Number.isFinite(limit) ? limit : 30,
+    userId,
   });
   if (!result.ok) {
     const status = result.error === "session_not_ready" ? 503 : 400;
@@ -1677,6 +1735,38 @@ export async function telegramMessagesMediaHandler(
   const preview = previewParam === "1" || previewParam === "true";
 
   const started = Date.now();
+  // Full media (incl. chat audio tracks) must be piped — buffering the body here
+  // forces the browser to wait for the entire Telegram download before playback.
+  if (!preview) {
+    const rangeHeader = requestHeader(request, "range");
+    const upstream = await gatewayOpenMessageMediaStream(
+      userOrRes,
+      chatId,
+      messageId,
+      false,
+      rangeHeader,
+    );
+    if (!upstream) {
+      logTelegramMessagesApi("messages_media_unavailable", {
+        telegramUsername: userOrRes,
+        chatId,
+        messageId,
+        preview,
+        elapsedMs: Date.now() - started,
+      });
+      return finishJson(request, res, { ok: false, error: "media_unavailable" }, 404);
+    }
+    logTelegramMessagesApi("messages_media_stream_ok", {
+      telegramUsername: userOrRes,
+      chatId,
+      messageId,
+      preview,
+      mime: upstream.headers.get("Content-Type") || null,
+      elapsedMs: Date.now() - started,
+    });
+    return finishBinaryStream(request, res, upstream, "public, max-age=86400");
+  }
+
   const media = await gatewayFetchMessageMedia(userOrRes, chatId, messageId, preview);
   if (!media) {
     logTelegramMessagesApi("messages_media_unavailable", {
@@ -1744,16 +1834,23 @@ export async function telegramMessagesCustomEmojiHandler(
   const url = requestUrl(request);
   const customEmojiId = (url.searchParams.get("custom_emoji_id") || "").trim();
   const emoji = (url.searchParams.get("emoji") || "").trim();
+  const preferStatic =
+    url.searchParams.get("static") === "1" || url.searchParams.get("prefer_static") === "1";
   if (!customEmojiId && !emoji) {
     return finishJson(request, res, { ok: false, error: "custom_emoji_id_or_emoji_required" }, 400);
   }
 
-  const sticker = await gatewayFetchTelegramEmoji(userOrRes, { customEmojiId, emoji });
+  const sticker = await gatewayFetchTelegramEmoji(userOrRes, {
+    customEmojiId,
+    emoji,
+    preferStatic,
+  });
   if (!sticker) {
     logTelegramMessagesApi("custom_emoji_unavailable", {
       telegramUsername: userOrRes,
       customEmojiId: customEmojiId || null,
       emoji: emoji || null,
+      preferStatic,
     });
     if (res) {
       res.status(404);
@@ -3592,6 +3689,189 @@ export async function telegramMessagesPinnedChatsOrderHandler(
   return finishJson(request, res, {
     ok: true,
     chat_ids: result.chat_ids,
+  });
+}
+
+async function requireConnectedUser(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<string | Response | null> {
+  const userOrRes = await requireUser(request);
+  if (userOrRes instanceof Response) {
+    if (res) {
+      res.status(userOrRes.status);
+      userOrRes.headers.forEach((v, k) => res.setHeader(k, v));
+      res.end(await userOrRes.text());
+      return null;
+    }
+    return userOrRes;
+  }
+  if (!(await isTelegramMessagesConnected(userOrRes))) {
+    await finishJson(request, res, { ok: false, error: "not_connected" }, 403);
+    return null;
+  }
+  return userOrRes;
+}
+
+export async function telegramMessagesContactsHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  const method = requestMethod(request);
+  if (method !== "GET" && method !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+  const userOrRes = await requireConnectedUser(request, res);
+  if (userOrRes instanceof Response) return userOrRes;
+  if (!userOrRes) return;
+
+  if (method === "GET") {
+    const result = await gatewayListContacts(userOrRes);
+    if (!result.ok) {
+      return finishJson(
+        request,
+        res,
+        { ok: false, error: result.error },
+        result.error === "session_not_ready" ? 503 : 502,
+      );
+    }
+    return finishJson(request, res, { ok: true, contacts: result.contacts });
+  }
+
+  const body = await parseRequestBody<{
+    phoneNumber?: unknown;
+    phone_number?: unknown;
+    firstName?: unknown;
+    first_name?: unknown;
+    lastName?: unknown;
+    last_name?: unknown;
+  }>(request);
+  const result = await gatewayAddContact(userOrRes, {
+    phoneNumber: String(body.phoneNumber ?? body.phone_number ?? ""),
+    firstName: String(body.firstName ?? body.first_name ?? ""),
+    lastName: String(body.lastName ?? body.last_name ?? ""),
+  });
+  if (!result.ok) {
+    return finishJson(
+      request,
+      res,
+      { ok: false, error: result.error },
+      result.error === "session_not_ready" ? 503 : 400,
+    );
+  }
+  return finishJson(request, res, {
+    ok: true,
+    user_id: result.userId,
+    chat_id: result.chatId,
+  });
+}
+
+export async function telegramMessagesCreateGroupHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+  const userOrRes = await requireConnectedUser(request, res);
+  if (userOrRes instanceof Response) return userOrRes;
+  if (!userOrRes) return;
+  const body = await parseRequestBody<{
+    title?: unknown;
+    userIds?: unknown;
+    user_ids?: unknown;
+  }>(request);
+  const rawIds = Array.isArray(body.userIds)
+    ? body.userIds
+    : Array.isArray(body.user_ids)
+      ? body.user_ids
+      : [];
+  const result = await gatewayCreateGroup(userOrRes, {
+    title: String(body.title ?? ""),
+    userIds: rawIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)),
+  });
+  if (!result.ok) {
+    return finishJson(
+      request,
+      res,
+      { ok: false, error: result.error },
+      result.error === "session_not_ready" ? 503 : 400,
+    );
+  }
+  return finishJson(request, res, {
+    ok: true,
+    chat: {
+      telegram_chat_id: result.chat.chatId,
+      title: result.chat.title,
+      chat_kind: result.chat.chatKind,
+    },
+  });
+}
+
+export async function telegramMessagesCreateChannelHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "POST") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+  const userOrRes = await requireConnectedUser(request, res);
+  if (userOrRes instanceof Response) return userOrRes;
+  if (!userOrRes) return;
+  const body = await parseRequestBody<{ title?: unknown; description?: unknown }>(request);
+  const result = await gatewayCreateChannel(userOrRes, {
+    title: String(body.title ?? ""),
+    description: String(body.description ?? ""),
+  });
+  if (!result.ok) {
+    return finishJson(
+      request,
+      res,
+      { ok: false, error: result.error },
+      result.error === "session_not_ready" ? 503 : 400,
+    );
+  }
+  return finishJson(request, res, {
+    ok: true,
+    chat: {
+      telegram_chat_id: result.chat.chatId,
+      title: result.chat.title,
+      chat_kind: result.chat.chatKind,
+    },
+  });
+}
+
+export async function telegramMessagesCallsHandler(
+  request: AnyRequest,
+  res?: NodeRes,
+): Promise<Response | void> {
+  const preflight = authApiPreflightResponse(request);
+  if (preflight) return finishPreflight(request, res, preflight);
+  if (requestMethod(request) !== "GET") {
+    return finishJson(request, res, { ok: false, error: "method_not_allowed" }, 405);
+  }
+  const userOrRes = await requireConnectedUser(request, res);
+  if (userOrRes instanceof Response) return userOrRes;
+  if (!userOrRes) return;
+  const result = await gatewayFetchCallsOverview(userOrRes);
+  if (!result.ok) {
+    return finishJson(
+      request,
+      res,
+      { ok: false, error: result.error },
+      result.error === "session_not_ready" ? 503 : 502,
+    );
+  }
+  return finishJson(request, res, {
+    ok: true,
+    active_voice_chats: result.activeVoiceChats,
+    history: result.history,
   });
 }
 

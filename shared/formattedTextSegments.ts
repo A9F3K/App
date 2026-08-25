@@ -5,7 +5,9 @@ export type FormattedTextSegment =
   | { kind: "link"; text: string; url: string }
   | { kind: "bot_command"; text: string; command: string }
   | { kind: "custom_emoji"; text: string; custom_emoji_id: string }
-  | { kind: "animated_emoji"; text: string; emoji: string };
+  | { kind: "animated_emoji"; text: string; emoji: string }
+  /** Login / verification code hidden until the user presses the white-noise overlay. */
+  | { kind: "spoiler_code"; text: string };
 
 export function segmentsPlainText(segments: FormattedTextSegment[]): string {
   return segments.map((segment) => segment.text).join("");
@@ -107,6 +109,10 @@ export function normalizeFormattedTextSegments(raw: unknown): FormattedTextSegme
       if (emoji) {
         segments.push({ kind: "animated_emoji", text: row.text, emoji });
       }
+      continue;
+    }
+    if (row.kind === "spoiler_code" && typeof row.text === "string" && row.text.length > 0) {
+      segments.push({ kind: "spoiler_code", text: row.text });
     }
   }
   return segments.length > 0 ? segments : null;

@@ -20,6 +20,7 @@ import { useAppStrings } from "../../../locales/AppStringsContext";
 import { appLocaleToBcp47 } from "../../../locales/appStrings";
 import { LiquidGlassShaderUndercover } from "../LiquidGlassShaderUndercover";
 import { HspScrollColumn } from "../HspScrollColumn";
+import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollIndicatorPx";
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
@@ -39,6 +40,7 @@ import { resolveTelegramUserAvatarUrl } from "./resolveTelegramUserAvatarUrl";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
 import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
 import { useProfileSheet } from "../../profile/ProfileContext";
+import { openAuthenticatedHomeChatHistory } from "../../authenticatedHomeSelectedChat";
 import {
   MESSAGE_AVATAR_PX,
   MESSAGE_CHAT_VOICE_VIDEO_MAX_HEIGHT_PX,
@@ -112,6 +114,18 @@ export function formatVoiceParticipantTitle(
     return `Chat ${Math.abs(Math.trunc(participant.chat_id))}`;
   }
   return "Participant";
+}
+
+/** Channel / anonymous-chat roster row (messageSenderChat) vs user. */
+export function isVoiceParticipantChannelDisplay(
+  participant: Pick<TelegramChatVoiceParticipant, "user_id" | "chat_id">,
+): boolean {
+  const userId = participant.user_id;
+  const hasUser =
+    userId != null && Number.isFinite(userId) && Math.trunc(userId) !== 0;
+  if (hasUser) return false;
+  const chatId = participant.chat_id;
+  return chatId != null && Number.isFinite(chatId) && Math.trunc(chatId) !== 0;
 }
 
 /**
@@ -522,13 +536,24 @@ const VoiceParticipantRow = memo(function VoiceParticipantRow({
   const micChromeRed = micAdminMuted || micLocallyMuted;
   const openParticipantProfile = () => {
     if (participant.is_self) return;
+    const title = formatVoiceParticipantTitle(participant);
+    if (isVoiceParticipantChannelDisplay(participant)) {
+      const chatId = Math.trunc(participant.chat_id!);
+      openProfileSheet({
+        telegram_chat_id: chatId,
+        title,
+        peer_user_id: null,
+        chat_kind: "channel",
+      });
+      return;
+    }
     const userId = participant.user_id;
     if (userId == null || !Number.isFinite(userId) || userId === 0) return;
     openProfileSheet({
       telegram_chat_id:
         participant.chat_id != null && Number.isFinite(participant.chat_id)
           ? Math.trunc(participant.chat_id)
-          : 0,
+          : Math.trunc(userId),
       title,
       peer_user_id: Math.trunc(userId),
       peer_emoji_status_custom_emoji_id: participant.emoji_status_custom_emoji_id,
@@ -1058,6 +1083,7 @@ export function MessageChatVoicePopover({
   wantedScreenPeerKeys = [],
 }: Props) {
   const { t, tf, locale } = useAppStrings();
+  const { openProfileSheet } = useProfileSheet();
   const deniedScreenKeySet = useMemo(
     () => new Set(deniedScreenPeerKeys),
     [deniedScreenPeerKeys],
@@ -2173,7 +2199,8 @@ export function MessageChatVoicePopover({
           flex: 1,
           minHeight: 0,
           zIndex: 1,
-          overflow: "hidden",
+          // Visible so the scroll thumb can paint onto the 1px chrome border.
+          overflow: "visible",
         }}
         pointerEvents="auto"
       >
@@ -2190,7 +2217,7 @@ export function MessageChatVoicePopover({
             paddingBottom: 16,
             flexGrow: 1,
           }}
-          scrollbarRightInsetPx={0}
+          scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
           scrollIndicatorOverlaySeam={false}
           containOverscroll
         >
@@ -2715,6 +2742,75 @@ export function MessageChatVoicePopover({
         const voiceOn = volumePercent > 0;
         const videoOn = !muteVideo;
         const screenOn = !muteScreen;
+        const peerIsChannel = isVoiceParticipantChannelDisplay(participantMenuTarget);
+        const closeParticipantMenu = () => {
+          setParticipantMenuAnchor(null);
+          setParticipantMenuTarget(null);
+        };
+        const openMenuPeerProfile = () => {
+          const peer = participantMenuTarget;
+          closeParticipantMenu();
+          const peerTitle = formatVoiceParticipantTitle(peer);
+          if (isVoiceParticipantChannelDisplay(peer)) {
+            const chatId = Math.trunc(peer.chat_id!);
+            openProfileSheet({
+              telegram_chat_id: chatId,
+              title: peerTitle,
+              peer_user_id: null,
+              chat_kind: "channel",
+            });
+            return;
+          }
+          const userId = peer.user_id;
+          if (userId == null || !Number.isFinite(userId) || userId === 0) return;
+          openProfileSheet({
+            telegram_chat_id:
+              peer.chat_id != null && Number.isFinite(peer.chat_id)
+                ? Math.trunc(peer.chat_id)
+                : Math.trunc(userId),
+            title: peerTitle,
+            peer_user_id: Math.trunc(userId),
+            peer_emoji_status_custom_emoji_id: peer.emoji_status_custom_emoji_id,
+            chat_kind: "private",
+          });
+        };
+        const openMenuPeerChat = () => {
+          const peer = participantMenuTarget;
+          closeParticipantMenu();
+          const peerTitle = formatVoiceParticipantTitle(peer);
+          if (isVoiceParticipantChannelDisplay(peer)) {
+            const chatId = Math.trunc(peer.chat_id!);
+            openAuthenticatedHomeChatHistory({
+              id: 0,
+              telegram_chat_id: chatId,
+              title: peerTitle,
+              subtitle: "",
+              avatar_url: resolveTelegramUserAvatarUrl(peer),
+              last_message_at: null,
+              unread_count: 0,
+              peer_user_id: null,
+              chat_kind: "channel",
+            });
+            return;
+          }
+          const userId = peer.user_id;
+          if (userId == null || !Number.isFinite(userId) || userId === 0) return;
+          const truncUser = Math.trunc(userId);
+          openAuthenticatedHomeChatHistory({
+            id: 0,
+            telegram_chat_id:
+              peer.chat_id != null && Number.isFinite(peer.chat_id) && peer.chat_id !== 0
+                ? Math.trunc(peer.chat_id)
+                : truncUser,
+            title: peerTitle,
+            subtitle: "",
+            avatar_url: resolveTelegramUserAvatarUrl(peer),
+            last_message_at: null,
+            unread_count: 0,
+            peer_user_id: truncUser,
+            chat_kind: "private",
+          });
+        };
         return (
           <MessageChatVoiceParticipantMenu
             visible={participantMenuAnchor != null}
@@ -2726,10 +2822,10 @@ export function MessageChatVoicePopover({
             screenOn={screenOn}
             videoAvailable={hasVideo}
             screenAvailable={hasScreen}
-            onClose={() => {
-              setParticipantMenuAnchor(null);
-              setParticipantMenuTarget(null);
-            }}
+            peerIsChannel={peerIsChannel}
+            onClose={closeParticipantMenu}
+            onViewProfile={openMenuPeerProfile}
+            onSendMessage={openMenuPeerChat}
             onVolumeChange={(percent) => {
               onParticipantVolumeChange?.(participantMenuTarget, percent);
             }}

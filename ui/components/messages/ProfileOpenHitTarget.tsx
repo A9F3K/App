@@ -31,6 +31,7 @@ export function ProfileOpenHitTarget({
         "aria-label": label,
         title: label,
         "data-profile-open": "1",
+        "data-floating-no-drag": "1",
         disabled: Boolean(disabled),
         onPointerDown: (e: {
           stopPropagation?: () => void;
@@ -62,7 +63,7 @@ export function ProfileOpenHitTarget({
           ...(style ?? {}),
         },
       },
-      createElement("span", { style: { pointerEvents: "none", display: "flex" } }, children),
+      createElement("span", { style: { pointerEvents: "none", display: "flex", width: "100%" } }, children),
     );
   }
 

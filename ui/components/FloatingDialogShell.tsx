@@ -32,6 +32,13 @@ import {
   type FloatingDialogResizeHandle,
   type FloatingDialogSize,
 } from "./floatingDialogGeometry";
+import {
+  allocateFloatingSurfaceId,
+  bringFloatingSurfaceToFront,
+  FLOATING_SURFACE_BASE_Z,
+  registerFloatingSurface,
+  unregisterFloatingSurface,
+} from "./floatingSurfaceStack";
 
 const AH = layout.authenticatedHome;
 const HIT = AH.splitPaneDividerHitWidthPx;
@@ -207,7 +214,7 @@ function ResizeEdgeHandle({
 export function FloatingDialogShell({
   visible,
   children,
-  zIndex = 10050,
+  zIndex = FLOATING_SURFACE_BASE_Z,
   defaultSize = { width: 380, height: 420 },
   minSize = { width: 280, height: 220 },
   sizeStorageKey,
@@ -222,6 +229,23 @@ export function FloatingDialogShell({
 }: FloatingDialogShellProps) {
   const colors = useColors();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const surfaceIdRef = useRef(allocateFloatingSurfaceId(testId));
+  const [stackZ, setStackZ] = useState(() =>
+    registerFloatingSurface(surfaceIdRef.current, zIndex),
+  );
+
+  const raiseToFront = useCallback(() => {
+    setStackZ(bringFloatingSurfaceToFront(surfaceIdRef.current, zIndex));
+  }, [zIndex]);
+
+  useEffect(() => {
+    const id = surfaceIdRef.current;
+    return () => unregisterFloatingSurface(id);
+  }, []);
+
+  useEffect(() => {
+    if (visible) raiseToFront();
+  }, [raiseToFront, visible]);
 
   const maxSize = useMemo(
     (): FloatingDialogSize => ({
@@ -497,8 +521,9 @@ export function FloatingDialogShell({
         host,
       };
       setDraggingHandle(handle);
+      raiseToFront();
     },
-    [],
+    [raiseToFront],
   );
 
   const beginMoveDrag = useCallback(
@@ -514,6 +539,7 @@ export function FloatingDialogShell({
       };
       currentTarget?: unknown;
     }) => {
+      raiseToFront();
       if (!movable || Platform.OS !== "web") return;
       if (e.nativeEvent.button != null && e.nativeEvent.button !== 0) return;
       const target = e.nativeEvent.target as Element | null;
@@ -539,7 +565,7 @@ export function FloatingDialogShell({
         host,
       };
     },
-    [movable, moveIgnoreSelector],
+    [movable, moveIgnoreSelector, raiseToFront],
   );
 
   const activeEdges = useMemo(() => {
@@ -651,7 +677,8 @@ export function FloatingDialogShell({
           flexShrink: 1,
           minHeight: contentSizing ? undefined : 0,
           minWidth: 0,
-          overflow: "hidden",
+          // Visible so the scroll thumb can paint onto the 1px chrome border (inset -1).
+          overflow: "visible",
           ...(Platform.OS === "web"
             ? ({ overscrollBehavior: "contain" } as object)
             : {}),
@@ -677,8 +704,8 @@ export function FloatingDialogShell({
           bottom: 0,
           width: "100%",
           height: windowHeight,
-          zIndex,
-          elevation: zIndex,
+          zIndex: stackZ,
+          elevation: stackZ,
           justifyContent: "center",
           alignItems: "center",
           ...(Platform.OS === "web"

@@ -23,6 +23,7 @@ type Props = {
   isActive?: boolean;
   colors: ThemeColors;
   onPress?: () => void;
+  onPressIn?: () => void;
   onLongPress?: (event: GestureResponderEvent) => void;
   onHoverIn?: () => void;
   onContextMenu?: (event: GestureResponderEvent) => void;
@@ -51,6 +52,7 @@ export function HomeListRowShell({
   isActive = false,
   colors,
   onPress,
+  onPressIn,
   onLongPress,
   onHoverIn,
   onContextMenu,
@@ -76,6 +78,7 @@ export function HomeListRowShell({
       accessibilityRole="button"
       accessibilityState={{ selected: isActive }}
       onPress={onPress}
+      onPressIn={onPressIn}
       onLongPress={onLongPress}
       delayLongPress={450}
       onHoverIn={onHoverIn}

@@ -5,7 +5,7 @@ import { telegramEmojiDebug } from "./telegramEmojiDebug";
 import { isVoiceDialogUiOpen } from "./voiceDialogUiGate";
 
 export type TelegramEmojiFetchRef =
-  | { kind: "custom"; customEmojiId: string }
+  | { kind: "custom"; customEmojiId: string; preferStatic?: boolean }
   | { kind: "animated"; emoji: string };
 
 export type TelegramEmojiAsset = {
@@ -41,7 +41,12 @@ function sleep(ms: number): Promise<void> {
 }
 
 function cacheKey(ref: TelegramEmojiFetchRef): string {
-  return ref.kind === "custom" ? `custom:${ref.customEmojiId}` : `animated:${ref.emoji}`;
+  if (ref.kind === "custom") {
+    return ref.preferStatic
+      ? `custom:static:${ref.customEmojiId}`
+      : `custom:${ref.customEmojiId}`;
+  }
+  return `animated:${ref.emoji}`;
 }
 
 function resolveMime(mime: string, bytes: Uint8Array): string {
@@ -64,6 +69,7 @@ async function fetchTelegramEmojiAssetOnce(
   const params = new URLSearchParams();
   if (ref.kind === "custom") {
     params.set("custom_emoji_id", ref.customEmojiId);
+    if (ref.preferStatic) params.set("static", "1");
   } else {
     params.set("emoji", ref.emoji);
   }

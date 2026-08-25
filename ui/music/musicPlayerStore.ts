@@ -285,18 +285,32 @@ export function setMusicMuted(muted: boolean): void {
 }
 
 export function seekMusicRatio(ratio: number): void {
-  const duration = snapshot.duration;
+  const track = snapshot.tracks[snapshot.index];
+  const duration =
+    snapshot.duration > 0
+      ? snapshot.duration
+      : Number(track?.duration_sec) > 0
+        ? Number(track?.duration_sec)
+        : 0;
   if (!(duration > 0)) return;
   const next = Math.max(0, Math.min(1, ratio)) * duration;
   setSnapshot({
     currentTime: next,
+    duration,
     seekTo: next,
     seekSeq: snapshot.seekSeq + 1,
+    playing: true,
   });
 }
 
 export function reportMusicTime(currentTime: number, duration: number): void {
-  const nextDuration = duration > 0 ? duration : snapshot.duration;
+  const nextDuration =
+    Number.isFinite(duration) && duration > 0 ? duration : snapshot.duration;
+  if (snapshot.seekTo != null) {
+    if (Math.abs(nextDuration - snapshot.duration) < 0.2) return;
+    setSnapshot({ duration: nextDuration });
+    return;
+  }
   if (
     Math.abs(currentTime - snapshot.currentTime) < 0.2 &&
     Math.abs(nextDuration - snapshot.duration) < 0.2

@@ -18,10 +18,24 @@ export type ChatListVirtualWindow = {
 
 export type ChatListTier = "pinned" | "positioned" | "unpositioned";
 
+/** Compare TDLib chat `order` strings (64-bit integers) descending — Telegram Desktop order. */
+function compareTdlibOrderDesc(a: string, b: string): number {
+  const left = a && a.trim() ? a.trim() : "0";
+  const right = b && b.trim() ? b.trim() : "0";
+  if (left === right) return 0;
+  try {
+    const bi = BigInt(left);
+    const bj = BigInt(right);
+    if (bi === bj) return 0;
+    return bi > bj ? -1 : 1;
+  } catch {
+    if (left.length !== right.length) return right.length - left.length;
+    return right.localeCompare(left);
+  }
+}
+
 function comparePinOrderDesc(a: string, b: string): number {
-  if (a === b) return 0;
-  if (a.length !== b.length) return b.length - a.length;
-  return b.localeCompare(a);
+  return compareTdlibOrderDesc(a, b);
 }
 
 function tierRank(tier: ChatListTier | null | undefined): number {
@@ -44,13 +58,15 @@ export function sortChatRowsTierAware(rows: MessageChatRowData[]): MessageChatRo
     const bTier = resolveChatListTier(b);
     const tierDiff = tierRank(aTier) - tierRank(bTier);
     if (tierDiff !== 0) return tierDiff;
+    // Pinned + positioned: TDLib main-list order (same as Telegram Desktop / WebK).
     if (aTier === "pinned" || aTier === "positioned") {
-      const byOrder = comparePinOrderDesc(a.pin_order ?? "0", b.pin_order ?? "0");
+      const byOrder = compareTdlibOrderDesc(a.pin_order ?? "0", b.pin_order ?? "0");
       if (byOrder !== 0) return byOrder;
     }
     const ta = a.last_message_at ? Date.parse(a.last_message_at) : 0;
     const tb = b.last_message_at ? Date.parse(b.last_message_at) : 0;
-    return tb - ta;
+    if (tb !== ta) return tb - ta;
+    return b.telegram_chat_id - a.telegram_chat_id;
   });
 }
 

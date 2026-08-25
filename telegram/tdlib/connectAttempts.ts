@@ -949,7 +949,8 @@ export async function ensureGatewayUserSession(
   return promise;
 }
 
-async function requireReadySession(
+/** Shared by gateway route helpers (side-menu dialogs, etc.) that need a ready TDLib client. */
+export async function requireReadySession(
   telegramUsername: string,
   timeoutMs: number,
 ): Promise<AttemptRecord | null> {
@@ -1770,6 +1771,27 @@ export async function getProfileAudioFileForUser(
   return readProfileAudioBytes(record.client, Math.trunc(userId), Math.trunc(fileId));
 }
 
+export async function streamProfileAudioForUser(
+  telegramUsername: string,
+  userId: number,
+  fileId: number,
+  res: import("http").ServerResponse,
+  rangeHeader?: string | null,
+): Promise<boolean> {
+  if (!Number.isFinite(userId) || userId === 0) return false;
+  if (!Number.isFinite(fileId) || fileId <= 0) return false;
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) return false;
+  const { streamProfileAudioToHttp } = await import("./profileMusic.js");
+  return streamProfileAudioToHttp(
+    record.client,
+    Math.trunc(userId),
+    Math.trunc(fileId),
+    res,
+    rangeHeader,
+  );
+}
+
 export async function getProfileAudioCoverForUser(
   telegramUsername: string,
   userId: number,
@@ -1824,7 +1846,7 @@ export async function searchChatMediaForUser(
   telegramUsername: string,
   chatId: number,
   kind: import("./userProfile.js").ProfileMediaKind,
-  options?: { fromMessageId?: number | null; limit?: number },
+  options?: { fromMessageId?: number | null; limit?: number; userId?: number | null },
 ): Promise<
   | {
       ok: true;
@@ -1833,15 +1855,34 @@ export async function searchChatMediaForUser(
     }
   | { ok: false; error: string }
 > {
-  if (!Number.isFinite(chatId) || chatId === 0) {
-    return { ok: false, error: "chat_id_required" };
-  }
+  let resolvedChatId =
+    Number.isFinite(chatId) && chatId !== 0 ? Math.trunc(chatId) : 0;
+  const peerUserId =
+    options?.userId != null && Number.isFinite(options.userId) && options.userId !== 0
+      ? Math.trunc(options.userId)
+      : null;
   const record = await requireReadySession(telegramUsername, 30_000);
   if (!record) {
     return { ok: false, error: "session_not_ready" };
   }
+  if (resolvedChatId === 0 && peerUserId != null) {
+    try {
+      const privateChat = (await record.client.invoke({
+        _: "createPrivateChat",
+        user_id: peerUserId,
+        force: false,
+      })) as { id?: number };
+      const id = Number(privateChat.id);
+      if (Number.isFinite(id) && id !== 0) resolvedChatId = Math.trunc(id);
+    } catch {
+      // fall through to chat_id_required
+    }
+  }
+  if (resolvedChatId === 0) {
+    return { ok: false, error: "chat_id_required" };
+  }
   const { searchChatMedia } = await import("./userProfile.js");
-  const result = await searchChatMedia(record.client, chatId, kind, options);
+  const result = await searchChatMedia(record.client, resolvedChatId, kind, options);
   return { ok: true, ...result };
 }
 
@@ -2439,9 +2480,29 @@ export async function getMessageMediaForUser(
   return readMessageMediaBytes(record.client, chatId, messageId, mode);
 }
 
+export async function streamMessageAudioForUser(
+  telegramUsername: string,
+  chatId: number,
+  messageId: number,
+  res: import("http").ServerResponse,
+  rangeHeader?: string | null,
+): Promise<boolean> {
+  if (!Number.isFinite(chatId) || !Number.isFinite(messageId)) return false;
+  const record = await requireReadySession(telegramUsername, 30_000);
+  if (!record) return false;
+  const { streamMessageAudioToHttp } = await import("./messageMedia.js");
+  return streamMessageAudioToHttp(
+    record.client,
+    Math.trunc(chatId),
+    Math.trunc(messageId),
+    res,
+    rangeHeader,
+  );
+}
+
 export async function getTelegramEmojiForUser(
   telegramUsername: string,
-  options: { customEmojiId?: string; emoji?: string },
+  options: { customEmojiId?: string; emoji?: string; preferStatic?: boolean },
 ): Promise<{ data: Buffer; mime: string } | null> {
   const record = await requireReadySessionFast(telegramUsername);
   if (!record) return null;

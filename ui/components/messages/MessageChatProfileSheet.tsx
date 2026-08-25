@@ -3,6 +3,7 @@ import {
   Platform,
   Pressable,
   Text,
+  useWindowDimensions,
   View,
   type TextStyle,
 } from "react-native";
@@ -11,7 +12,9 @@ import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { typographyRect15, useColors, type ThemeColors } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import { FloatingDialogShell } from "../FloatingDialogShell";
+import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
+import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollIndicatorPx";
 import { useTelegram } from "../Telegram";
 import { openAuthenticatedHomeChatHistory } from "../../authenticatedHomeSelectedChat";
 import { buildApiUrl } from "../../../api/_base";
@@ -19,6 +22,7 @@ import {
   blockTelegramUser,
   fetchTelegramUserProfile,
   unblockTelegramUser,
+  type TelegramChannelProfileRole,
   type TelegramUserProfile,
 } from "../../telegram/fetchTelegramUserProfile";
 import { HYPERLINKS_SPACE_LOGO_GREEN } from "../HyperlinksSpaceLogo";
@@ -28,16 +32,24 @@ import { formatMessageChatPresenceLabel } from "./formatMessageChatPresence";
 import { formatTelegramUsernameAt } from "./formatTelegramChatRowUsername";
 import type { MessageChatRowData } from "./MessageChatRow";
 import {
+  ProfileAdminsIcon,
   ProfileBlockIcon,
+  ProfileDiscussIcon,
   ProfileGiftIcon,
   ProfileGifIcon,
   ProfileImagesIcon,
+  ProfileLeaveIcon,
   ProfileLinksIcon,
+  ProfileManageIcon,
   ProfileMarkedIcon,
   ProfileMessagesIcon,
+  ProfileMoreIcon,
   ProfileMusicNoteIcon,
+  ProfileMuteIcon,
   ProfilePhoneIcon,
   ProfilePhotosIcon,
+  ProfileReportIcon,
+  ProfileSubscribersIcon,
 } from "./MessageChatProfileIcons";
 import { resolveTelegramThreadAvatarUrl } from "./resolveTelegramThreadAvatarUrl";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
@@ -51,9 +63,9 @@ import { MessageChatProfilePhotoViewer } from "./MessageChatProfilePhotoViewer";
 import type { ProfileMediaKind } from "../../telegram/fetchTelegramUserProfile";
 import { useProfileSheet } from "../../profile/ProfileContext";
 import { getMusicPlayer, subscribeMusicPlayer } from "../../music/musicPlayerStore";
+import { ProfileOpenHitTarget } from "./ProfileOpenHitTarget";
+import { openMessageLinkUrl } from "./openMessageLinkUrl";
 
-/** Thin default profile frame (matches previous UX feel). */
-const SHEET_MAX_WIDTH_PX = 320;
 const PAD_X_PX = 20;
 const PAD_TOP_PX = 20;
 const PAD_BOTTOM_PX = 24;
@@ -144,27 +156,120 @@ function ProfileActionButton({
   );
 }
 
+/** Rectangular action chip used for channel profile (Mute / Discuss / Manage / …). */
+function ChannelActionButton({
+  label,
+  onPress,
+  children,
+  colors,
+  disabled = false,
+}: {
+  label: string;
+  onPress: () => void;
+  children: ReactNode;
+  colors: ThemeColors;
+  disabled?: boolean;
+}) {
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      disabled={disabled}
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flex: 1,
+        minWidth: 0,
+        borderRadius: 12,
+        backgroundColor: colors.undercover,
+        paddingVertical: 10,
+        paddingHorizontal: 4,
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 6,
+        opacity: disabled ? 0.4 : pressed ? 0.7 : 1,
+      })}
+    >
+      {children}
+      <Text
+        numberOfLines={1}
+        style={textBase(colors.primary, { fontSize: 11, lineHeight: 14, textAlign: "center" })}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function formatChannelJoinedWhen(joinedUnix: number | null, locale: string): string | null {
+  if (joinedUnix == null || !Number.isFinite(joinedUnix) || joinedUnix <= 0) return null;
+  const d = new Date(joinedUnix * 1000);
+  if (Number.isNaN(d.getTime())) return null;
+  try {
+    const datePart = d.toLocaleString(locale, { month: "long", day: "numeric" });
+    const timePart = d.toLocaleString(locale, { hour: "numeric", minute: "2-digit" });
+    return `${datePart} at ${timePart}`;
+  } catch {
+    return d.toLocaleString();
+  }
+}
+
+function channelPublicLinkLabel(username: string | null, inviteLink: string | null): string | null {
+  const cleanUser = username?.trim().replace(/^@+/, "") || null;
+  if (cleanUser) return `t.me/${cleanUser}`;
+  if (inviteLink?.trim()) {
+    try {
+      const u = new URL(inviteLink.trim());
+      return `${u.host}${u.pathname}`.replace(/\/$/, "");
+    } catch {
+      return inviteLink.trim().replace(/^https?:\/\//i, "");
+    }
+  }
+  return null;
+}
+
+function roleShowsManage(role: TelegramChannelProfileRole | null | undefined): boolean {
+  return role === "creator" || role === "admin";
+}
+
+function roleShowsStaffRows(role: TelegramChannelProfileRole | null | undefined): boolean {
+  return role === "creator" || role === "admin" || role === "moderator";
+}
+
 function InfoField({
   label,
   value,
   colors,
+  onPress,
 }: {
   label: string;
   value: string;
   colors: ThemeColors;
+  onPress?: () => void;
 }) {
-  return (
+  const body = (
     <View style={{ marginBottom: INFO_BLOCK_GAP_PX }}>
       <Text style={textBase(colors.secondary, { fontSize: 13, lineHeight: 16 })}>{label}</Text>
       <Text
         style={textBase(colors.primary, {
           marginTop: INFO_LABEL_GAP_PX,
+          ...(onPress ? { color: "#3390ec" } : null),
         })}
         selectable
       >
         {value}
       </Text>
     </View>
+  );
+  if (!onPress) return body;
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={value}
+      onPress={onPress}
+      style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+    >
+      {body}
+    </Pressable>
   );
 }
 
@@ -173,11 +278,13 @@ function MediaRow({
   label,
   colors,
   onPress,
+  labelColor,
 }: {
   icon: ReactNode;
   label: string;
   colors: ThemeColors;
   onPress?: () => void;
+  labelColor?: string;
 }) {
   const body = (
     <View
@@ -197,18 +304,25 @@ function MediaRow({
       >
         {icon}
       </View>
-      <Text style={textBase(colors.primary, { marginLeft: MEDIA_ICON_GAP_PX })}>{label}</Text>
+      <Text style={textBase(labelColor ?? colors.primary, { marginLeft: MEDIA_ICON_GAP_PX })}>
+        {label}
+      </Text>
     </View>
   );
   if (!onPress) return body;
   return (
-    <Pressable
-      accessibilityRole="button"
+    <ProfileOpenHitTarget
+      label={label}
       onPress={onPress}
-      style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+      style={{
+        width: "100%",
+        alignItems: "stretch",
+        justifyContent: "flex-start",
+        cursor: "pointer",
+      }}
     >
       {body}
-    </Pressable>
+    </ProfileOpenHitTarget>
   );
 }
 
@@ -222,6 +336,11 @@ export function MessageChatProfileSheet({
   const colors = useColors();
   const { t, tf, locale } = useAppStrings();
   const { colorScheme } = useTelegram();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const defaultSize = useMemo(
+    () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "profile"),
+    [windowHeight, windowWidth],
+  );
   const { openMusicPlaylistSheet } = useProfileSheet();
   const [profile, setProfile] = useState<TelegramUserProfile | null>(null);
   const [blockPending, setBlockPending] = useState(false);
@@ -262,10 +381,31 @@ export function MessageChatProfileSheet({
   const usernameAt = formatTelegramUsernameAt(
     profile?.username ?? chat?.peer_username ?? chat?.chat_username,
   );
-  const statusText =
-    profile?.status_text?.trim() ||
-    (chat ? formatMessageChatPresenceLabel(chat, locale) : "") ||
-    "";
+  const membership = profile?.membership ?? null;
+  const isChannelProfile =
+    chat?.chat_kind === "channel" || Boolean(membership?.is_channel);
+  const channelRole = membership?.role ?? null;
+  const channelLinkLabel = channelPublicLinkLabel(
+    profile?.username ?? chat?.chat_username ?? chat?.peer_username ?? null,
+    membership?.invite_link ?? null,
+  );
+  const channelJoinedWhen = formatChannelJoinedWhen(membership?.joined_date ?? null, locale);
+  const channelSubscriberLabel = (() => {
+    const count =
+      membership?.member_count ??
+      (chat?.member_count != null && Number.isFinite(chat.member_count)
+        ? Math.trunc(chat.member_count)
+        : null);
+    if (count == null) return null;
+    return tf("messages.profile.channel.subscribers", { count: String(count) });
+  })();
+  const statusText = isChannelProfile
+    ? channelSubscriberLabel ||
+      profile?.status_text?.trim() ||
+      ""
+    : profile?.status_text?.trim() ||
+      (chat ? formatMessageChatPresenceLabel(chat, locale) : "") ||
+      "";
   const bio = profile?.bio?.trim() || null;
   const phone = profile?.phone_number?.trim() || null;
   const music = profile?.music ?? null;
@@ -368,6 +508,55 @@ export function MessageChatProfileSheet({
     onClose();
   };
 
+  const handleDiscuss = () => {
+    const linkedId = membership?.linked_chat_id;
+    if (linkedId == null || !Number.isFinite(linkedId) || linkedId === 0) return;
+    openAuthenticatedHomeChatHistory({
+      id: 0,
+      telegram_chat_id: Math.trunc(linkedId),
+      title: t("messages.profile.actions.discuss"),
+      subtitle: "",
+      avatar_url: null,
+      last_message_at: null,
+      unread_count: 0,
+      chat_kind: "supergroup",
+      peer_user_id: null,
+    });
+    onClose();
+  };
+
+  const handleViewChannel = () => {
+    if (chat) openAuthenticatedHomeChatHistory(chat);
+    onClose();
+  };
+
+  const handleChannelLinkPress = () => {
+    // Prefer the chat already open in this sheet — never bounce to Telegram.
+    if (chat) {
+      openAuthenticatedHomeChatHistory(chat);
+      onClose();
+      return;
+    }
+    if (!channelLinkLabel) return;
+    const href = channelLinkLabel.startsWith("http")
+      ? channelLinkLabel
+      : `https://${channelLinkLabel}`;
+    void openMessageLinkUrl(href);
+  };
+
+  const handleUsernamePress = () => {
+    if (chat) {
+      openAuthenticatedHomeChatHistory(chat);
+      onClose();
+      return;
+    }
+    const raw =
+      profile?.username ?? chat?.peer_username ?? chat?.chat_username ?? null;
+    const clean = typeof raw === "string" ? raw.trim().replace(/^@+/, "") : "";
+    if (!clean) return;
+    void openMessageLinkUrl(`@${clean}`);
+  };
+
   const handleBlockToggle = () => {
     const userId = profile?.user_id ?? chat?.peer_user_id ?? null;
     if (userId == null || blockPending) return;
@@ -465,6 +654,7 @@ export function MessageChatProfileSheet({
               null
             }
             emojiStatusPriority
+            emojiStatusStatic
             inlineEmojiFetchEnabled
             inlineEmojiFetchPriority
             inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
@@ -493,39 +683,94 @@ export function MessageChatProfileSheet({
         />
       </View>
 
-      <View
-        style={{
-          flexDirection: "row",
-          justifyContent: "center",
-          alignItems: "center",
-          gap: ACTION_GAP_PX,
-          marginTop: SECTION_GAP_PX + 4,
-        }}
-      >
-        <ProfileActionButton
-          label={t("messages.profile.actions.messages")}
-          onPress={handleMessages}
-          colors={colors}
+      {isChannelProfile ? (
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "stretch",
+            gap: 8,
+            marginTop: SECTION_GAP_PX + 4,
+          }}
         >
-          <ProfileMessagesIcon color={colors.primary} size={ACTION_BTN_PX} />
-        </ProfileActionButton>
-        <ProfileActionButton
-          label={t("messages.profile.actions.call")}
-          onPress={handleCall}
-          colors={colors}
+          <ChannelActionButton
+            label={t("messages.profile.actions.mute")}
+            onPress={() => undefined}
+            colors={colors}
+          >
+            <ProfileMuteIcon color={colors.primary} size={22} />
+          </ChannelActionButton>
+          <ChannelActionButton
+            label={t("messages.profile.actions.discuss")}
+            onPress={handleDiscuss}
+            colors={colors}
+            disabled={
+              membership?.linked_chat_id == null ||
+              !Number.isFinite(membership.linked_chat_id) ||
+              membership.linked_chat_id === 0
+            }
+          >
+            <ProfileDiscussIcon color={colors.primary} size={22} />
+          </ChannelActionButton>
+          {roleShowsManage(channelRole) ? (
+            <ChannelActionButton
+              label={t("messages.profile.actions.manage")}
+              onPress={() => undefined}
+              colors={colors}
+            >
+              <ProfileManageIcon color={colors.primary} size={22} />
+            </ChannelActionButton>
+          ) : channelRole === "member" || channelRole === "left" || channelRole == null ? (
+            <ChannelActionButton
+              label={t("messages.profile.actions.gift")}
+              onPress={() => undefined}
+              colors={colors}
+            >
+              <ProfileGiftIcon color={colors.primary} size={22} />
+            </ChannelActionButton>
+          ) : null}
+          <ChannelActionButton
+            label={t("messages.profile.actions.more")}
+            onPress={() => undefined}
+            colors={colors}
+          >
+            <ProfileMoreIcon color={colors.primary} size={22} />
+          </ChannelActionButton>
+        </View>
+      ) : (
+        <View
+          style={{
+            flexDirection: "row",
+            justifyContent: "center",
+            alignItems: "center",
+            gap: ACTION_GAP_PX,
+            marginTop: SECTION_GAP_PX + 4,
+          }}
         >
-          <ProfilePhoneIcon color={colors.primary} size={ACTION_BTN_PX} />
-        </ProfileActionButton>
-        <ProfileActionButton
-          label={t("messages.profile.actions.gift")}
-          onPress={() => undefined}
-          colors={colors}
-        >
-          <ProfileGiftIcon color={colors.primary} size={ACTION_BTN_PX} />
-        </ProfileActionButton>
-      </View>
+          <ProfileActionButton
+            label={t("messages.profile.actions.messages")}
+            onPress={handleMessages}
+            colors={colors}
+          >
+            <ProfileMessagesIcon color={colors.primary} size={ACTION_BTN_PX} />
+          </ProfileActionButton>
+          <ProfileActionButton
+            label={t("messages.profile.actions.call")}
+            onPress={handleCall}
+            colors={colors}
+          >
+            <ProfilePhoneIcon color={colors.primary} size={ACTION_BTN_PX} />
+          </ProfileActionButton>
+          <ProfileActionButton
+            label={t("messages.profile.actions.gift")}
+            onPress={() => undefined}
+            colors={colors}
+          >
+            <ProfileGiftIcon color={colors.primary} size={ACTION_BTN_PX} />
+          </ProfileActionButton>
+        </View>
+      )}
 
-      {displayedMusic ? (
+      {!isChannelProfile && displayedMusic ? (
         <>
           <ProfileDivider colors={colors} />
           <Pressable
@@ -556,7 +801,7 @@ export function MessageChatProfileSheet({
         </>
       ) : null}
 
-      {channel ? (
+      {!isChannelProfile && channel ? (
         <>
           {displayedMusic ? null : <ProfileDivider colors={colors} />}
           <Pressable
@@ -591,7 +836,71 @@ export function MessageChatProfileSheet({
         </>
       ) : null}
 
-      {usernameAt || bio || phone ? (
+      {isChannelProfile ? (
+        <>
+          <ProfileDivider colors={colors} />
+          <View>
+            {channelLinkLabel ? (
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel={channelLinkLabel}
+                onPress={handleChannelLinkPress}
+                style={({ pressed }) => ({
+                  marginBottom: INFO_BLOCK_GAP_PX,
+                  opacity: pressed ? 0.7 : 1,
+                })}
+              >
+                <Text style={textBase(colors.primary)} selectable>
+                  {channelLinkLabel}
+                </Text>
+                <Text style={textBase(colors.secondary, { fontSize: 13, lineHeight: 16, marginTop: INFO_LABEL_GAP_PX })}>
+                  {t("messages.profile.channel.link")}
+                </Text>
+              </Pressable>
+            ) : null}
+            {channelRole === "member" && channelJoinedWhen ? (
+              <Text
+                style={textBase(colors.secondary, {
+                  fontStyle: "italic",
+                  marginBottom: INFO_BLOCK_GAP_PX,
+                })}
+              >
+                {tf("messages.profile.channel.joined", { when: channelJoinedWhen })}
+              </Text>
+            ) : null}
+            {bio ? (
+              <InfoField
+                label={t("messages.profile.channel.description")}
+                value={bio}
+                colors={colors}
+              />
+            ) : (
+              <Text style={textBase(colors.secondary, { fontSize: 13, lineHeight: 16, marginBottom: INFO_BLOCK_GAP_PX })}>
+                {t("messages.profile.channel.description")}
+              </Text>
+            )}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("messages.profile.channel.viewChannel")}
+              onPress={handleViewChannel}
+              style={({ pressed }) => ({
+                alignSelf: "flex-start",
+                opacity: pressed ? 0.7 : 1,
+                marginTop: 4,
+              })}
+            >
+              <Text
+                style={textBase(colors.secondary, {
+                  letterSpacing: 0.6,
+                  textTransform: "uppercase",
+                })}
+              >
+                {t("messages.profile.channel.viewChannel")}
+              </Text>
+            </Pressable>
+          </View>
+        </>
+      ) : usernameAt || bio || phone ? (
         <>
           <ProfileDivider colors={colors} />
           <View>
@@ -600,6 +909,7 @@ export function MessageChatProfileSheet({
                 label={t("messages.profile.username")}
                 value={usernameAt}
                 colors={colors}
+                onPress={handleUsernamePress}
               />
             ) : null}
             {bio ? <InfoField label={t("messages.profile.bio")} value={bio} colors={colors} /> : null}
@@ -610,7 +920,67 @@ export function MessageChatProfileSheet({
         </>
       ) : null}
 
-      {mediaRows.length > 0 ? (
+      {isChannelProfile ? (
+        <>
+          <ProfileDivider colors={colors} />
+          <View style={{ marginBottom: -MEDIA_ROW_GAP_PX }}>
+            {(media?.links ?? 0) > 0 ? (
+              <MediaRow
+                icon={<ProfileLinksIcon color={colors.primary} size={MEDIA_ICON_PX} />}
+                label={
+                  (media?.links ?? 0) === 1
+                    ? tf("messages.profile.channel.sharedLinks", {
+                        count: String(media?.links ?? 0),
+                      })
+                    : tf("messages.profile.channel.sharedLinks_plural", {
+                        count: String(media?.links ?? 0),
+                      })
+                }
+                colors={colors}
+                onPress={() => setMediaKindOpen("links")}
+              />
+            ) : null}
+            {roleShowsStaffRows(channelRole) && channelSubscriberLabel ? (
+              <MediaRow
+                icon={<ProfileSubscribersIcon color={colors.primary} size={MEDIA_ICON_PX} />}
+                label={channelSubscriberLabel}
+                colors={colors}
+                onPress={() => undefined}
+              />
+            ) : null}
+            {roleShowsStaffRows(channelRole) &&
+            membership?.administrator_count != null &&
+            membership.administrator_count > 0 ? (
+              <MediaRow
+                icon={<ProfileAdminsIcon color={colors.primary} size={MEDIA_ICON_PX} />}
+                label={tf("messages.profile.channel.administrators", {
+                  count: String(membership.administrator_count),
+                })}
+                colors={colors}
+                onPress={() => undefined}
+              />
+            ) : null}
+            {channelRole !== "left" ? (
+              <MediaRow
+                icon={<ProfileLeaveIcon color={colors.primary} size={MEDIA_ICON_PX} />}
+                label={t("messages.profile.channel.leave")}
+                colors={colors}
+                onPress={() => undefined}
+              />
+            ) : null}
+            {(channelRole === "member" || channelRole === "left" || channelRole == null) &&
+            !roleShowsStaffRows(channelRole) ? (
+              <MediaRow
+                icon={<ProfileReportIcon color={BLOCK_COLOR} size={MEDIA_ICON_PX} />}
+                label={t("messages.profile.channel.report")}
+                colors={colors}
+                labelColor={BLOCK_COLOR}
+                onPress={() => undefined}
+              />
+            ) : null}
+          </View>
+        </>
+      ) : mediaRows.length > 0 ? (
         <>
           <ProfileDivider colors={colors} />
           <View style={{ marginBottom: -MEDIA_ROW_GAP_PX }}>
@@ -627,7 +997,9 @@ export function MessageChatProfileSheet({
         </>
       ) : null}
 
-      {(chat.peer_user_id != null || profile?.user_id != null) && !chat.peer_is_bot ? (
+      {!isChannelProfile &&
+      (chat.peer_user_id != null || profile?.user_id != null) &&
+      !chat.peer_is_bot ? (
         <>
           <ProfileDivider colors={colors} />
           <Pressable
@@ -668,12 +1040,13 @@ export function MessageChatProfileSheet({
       <FloatingDialogShell
         visible={Boolean(chat && visible)}
         zIndex={PROFILE_OVERLAY_Z}
-        defaultSize={{ width: SHEET_MAX_WIDTH_PX, height: 420 }}
-        minSize={{ width: 280, height: 280 }}
-        sizeStorageKey="hsp.profileSheet.size.v4"
-        offsetStorageKey="hsp.profileSheet.offset.v4"
+        defaultSize={defaultSize}
+        minSize={{ width: 300, height: 320 }}
+        sizeStorageKey="hsp.profileSheet.size.v5"
+        offsetStorageKey="hsp.profileSheet.offset.v5"
         onRequestClose={onClose}
         testId="profile-sheet"
+        moveIgnoreSelector="[data-floating-no-drag],button,[role='button'],a,input,textarea"
       >
         <ProfileSheetScrollBody>{sheetBody}</ProfileSheetScrollBody>
       </FloatingDialogShell>
@@ -681,6 +1054,7 @@ export function MessageChatProfileSheet({
         visible={mediaKindOpen != null}
         kind={mediaKindOpen}
         chat={chat}
+        resolvedChatId={profile?.chat_id ?? null}
         onClose={() => setMediaKindOpen(null)}
         onDismissAll={onClose}
         onNavigateToMessage={onClose}
@@ -707,7 +1081,7 @@ function ProfileSheetScrollBody({ children }: { children: ReactNode }) {
         paddingTop: PAD_TOP_PX,
         paddingBottom: PAD_BOTTOM_PX,
       }}
-      scrollbarRightInsetPx={0}
+      scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
       scrollIndicatorOverlaySeam={false}
       containOverscroll
     >

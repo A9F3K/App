@@ -53,6 +53,13 @@ export function voiceBarAvatarRowWidthPx(
   );
 }
 
+/** Approximate localized label width at 13px UI sans (overflow / count text). */
+export function voiceBarLabelTextWidthPx(labelText: string): number {
+  const text = labelText.trim();
+  if (!text) return 0;
+  return Math.ceil(text.length * 8.2) + 4;
+}
+
 /** Approximate localized "+N more" label width at 13px UI sans. */
 export function voiceBarOverflowLabelWidthPx(
   overflowCount: number,
@@ -61,7 +68,7 @@ export function voiceBarOverflowLabelWidthPx(
   const count = Math.max(0, Math.trunc(overflowCount));
   if (count === 0) return 0;
   if (labelText) {
-    return Math.ceil(labelText.length * 8.2) + 4;
+    return voiceBarLabelTextWidthPx(labelText);
   }
   const digits = String(count).length;
   return 18 + digits * 8;

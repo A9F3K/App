@@ -63,21 +63,36 @@ function pickTdlibFileId(value: unknown): number | null {
   return null;
 }
 
-function pickTdlibFileIds(value: unknown): number[] {
+function pickTdlibFileIds(value: unknown, preferStatic = false): number[] {
   const ids: number[] = [];
   const push = (id: number | null) => {
     if (id != null && id > 0 && !ids.includes(id)) ids.push(id);
   };
-  push(pickTdlibFileId(value));
-  if (!value || typeof value !== "object") return ids;
+  if (!value || typeof value !== "object") {
+    push(pickTdlibFileId(value));
+    return ids;
+  }
   const row = value as Record<string, unknown>;
   const thumbnail = row.thumbnail;
-  if (thumbnail && typeof thumbnail === "object") {
-    push(fileIdFromTdlibFile((thumbnail as { file?: unknown }).file));
-  }
+  const thumbId =
+    thumbnail && typeof thumbnail === "object"
+      ? fileIdFromTdlibFile((thumbnail as { file?: unknown }).file)
+      : null;
   const minithumbnail = row.minithumbnail;
-  if (minithumbnail && typeof minithumbnail === "object") {
-    push(fileIdFromTdlibFile((minithumbnail as { file?: unknown }).file));
+  const miniId =
+    minithumbnail && typeof minithumbnail === "object"
+      ? fileIdFromTdlibFile((minithumbnail as { file?: unknown }).file)
+      : null;
+
+  if (preferStatic) {
+    // Static WEBP/PNG thumbnail first; fall back to full sticker if no thumb.
+    push(thumbId);
+    push(miniId);
+    push(pickTdlibFileId(value));
+  } else {
+    push(pickTdlibFileId(value));
+    push(thumbId);
+    push(miniId);
   }
   return ids;
 }
@@ -195,8 +210,8 @@ async function readDownloadedFile(
 const bytesCache = new Map<string, { data: Buffer; mime: string }>();
 const unavailableCache = new Set<string>();
 
-function cacheKey(kind: "custom" | "animated", id: string): string {
-  return `${kind}:${id}`;
+function cacheKey(kind: "custom" | "animated", id: string, preferStatic = false): string {
+  return preferStatic ? `${kind}:static:${id}` : `${kind}:${id}`;
 }
 
 async function fetchCustomEmojiSticker(
@@ -226,11 +241,13 @@ async function fetchCustomEmojiSticker(
 export async function readCustomEmojiBytes(
   client: Client,
   customEmojiId: string,
+  options?: { preferStatic?: boolean },
 ): Promise<{ data: Buffer; mime: string } | null> {
   const id = customEmojiId.trim();
   if (!id) return null;
+  const preferStatic = Boolean(options?.preferStatic);
 
-  const key = cacheKey("custom", id);
+  const key = cacheKey("custom", id, preferStatic);
   if (unavailableCache.has(key)) return null;
   const cached = bytesCache.get(key);
   if (cached) return cached;
@@ -238,11 +255,12 @@ export async function readCustomEmojiBytes(
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
       const sticker = await fetchCustomEmojiSticker(client, id, attempt);
-      const fileIds = pickTdlibFileIds(sticker);
+      const fileIds = pickTdlibFileIds(sticker, preferStatic);
       if (fileIds.length === 0) {
         logGateway("custom_emoji_sticker_missing", {
           customEmojiId: id,
           attempt,
+          preferStatic,
           stickerCount: sticker ? 1 : 0,
           stickerKeys:
             sticker && typeof sticker === "object"
@@ -257,16 +275,25 @@ export async function readCustomEmojiBytes(
         return null;
       }
 
+      let firstResolved: { data: Buffer; mime: string } | null = null;
       for (const fileId of fileIds) {
         const resolved = await readDownloadedFile(client, fileId, {
           customEmojiId: id,
-          source: "custom",
+          source: preferStatic ? "custom_static" : "custom",
           attempt,
         });
-        if (resolved) {
+        if (!resolved) continue;
+        if (!firstResolved) firstResolved = resolved;
+        const isAnimatedMime =
+          resolved.mime === "application/x-tgsticker" || resolved.mime.startsWith("video/");
+        if (!preferStatic || !isAnimatedMime) {
           bytesCache.set(key, resolved);
           return resolved;
         }
+      }
+      if (firstResolved) {
+        bytesCache.set(key, firstResolved);
+        return firstResolved;
       }
       if (attempt < 3) {
         await sleep(500 * (attempt + 1));
@@ -276,7 +303,7 @@ export async function readCustomEmojiBytes(
       return null;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logGateway("custom_emoji_error", { customEmojiId: id, message, attempt });
+      logGateway("custom_emoji_error", { customEmojiId: id, message, attempt, preferStatic });
       if (attempt < 3) {
         await sleep(500 * (attempt + 1));
         continue;
@@ -341,10 +368,14 @@ export async function readAnimatedEmojiBytes(
 
 export async function readTelegramEmojiBytes(
   client: Client,
-  options: { customEmojiId?: string; emoji?: string },
+  options: { customEmojiId?: string; emoji?: string; preferStatic?: boolean },
 ): Promise<{ data: Buffer; mime: string } | null> {
   const customEmojiId = options.customEmojiId?.trim();
-  if (customEmojiId) return readCustomEmojiBytes(client, customEmojiId);
+  if (customEmojiId) {
+    return readCustomEmojiBytes(client, customEmojiId, {
+      preferStatic: Boolean(options.preferStatic),
+    });
+  }
   const emoji = options.emoji?.trim();
   if (emoji) return readAnimatedEmojiBytes(client, emoji);
   return null;

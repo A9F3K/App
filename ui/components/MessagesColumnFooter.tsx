@@ -322,6 +322,7 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
     setChatListSearchQuery,
     chatListSearchFocused,
     setChatListSearchFocused,
+    handleChatListSearchBlur,
     dismissChatListSearch,
     listSearchActive,
   } = useMessagesChatListSearch();
@@ -444,7 +445,7 @@ export function MessagesColumnFooter({ showSearch = true }: Props) {
         value={chatListSearchQuery}
         onChangeText={setChatListSearchQuery}
         onFocus={() => setChatListSearchFocused(true)}
-        onBlur={() => setChatListSearchFocused(false)}
+        onBlur={handleChatListSearchBlur}
         onDismiss={dismissChatListSearch}
         showClear={chatListSearchFocused || chatListSearchQuery.trim().length > 0}
         placeholder={t("messages.search.placeholder")}

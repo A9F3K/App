@@ -59,6 +59,60 @@ export function clampFloatingDialogSize(
   };
 }
 
+/** Largest size that still fits the viewport with side insets. */
+export function floatingDialogViewportMax(
+  windowWidth: number,
+  windowHeight: number,
+  insetPx = 15,
+): FloatingDialogSize {
+  return {
+    width: Math.max(280, Math.floor(windowWidth - 2 * insetPx)),
+    height: Math.max(220, Math.floor(windowHeight - 2 * insetPx)),
+  };
+}
+
+export type FloatingDialogSizeKind = "profile" | "profileList" | "modal" | "picker";
+
+/**
+ * Reasonable first-open size from viewport + dialog role.
+ * Always clamped to the screen; callers may still enable fitContentHeight.
+ */
+export function resolveFloatingDialogDefaultSize(
+  windowWidth: number,
+  windowHeight: number,
+  kind: FloatingDialogSizeKind,
+): FloatingDialogSize {
+  const max = floatingDialogViewportMax(windowWidth, windowHeight);
+  const prefer = (width: number, height: number) =>
+    clampFloatingDialogSize({ width, height }, { width: 280, height: 220 }, max);
+
+  switch (kind) {
+    case "profile":
+      // Wider/taller than the old 320×420, still inside the viewport.
+      return prefer(
+        Math.min(420, Math.max(360, Math.round(windowWidth * 0.34))),
+        Math.min(640, Math.max(520, Math.round(windowHeight * 0.78))),
+      );
+    case "profileList":
+      // Media / playlist: more vertical room for scrollable grids.
+      return prefer(
+        Math.min(440, Math.max(360, Math.round(windowWidth * 0.36))),
+        Math.min(720, Math.max(540, Math.round(windowHeight * 0.84))),
+      );
+    case "picker":
+      return prefer(
+        Math.min(400, Math.max(340, Math.round(windowWidth * 0.34))),
+        Math.min(560, Math.max(420, Math.round(windowHeight * 0.65))),
+      );
+    case "modal":
+    default:
+      return prefer(
+        Math.min(420, Math.max(340, Math.round(windowWidth * 0.32))),
+        Math.min(560, Math.max(400, Math.round(windowHeight * 0.62))),
+      );
+  }
+}
+
 /** Keep at least `minVisible` px of the sheet on-screen (center-anchored + offset). */
 export function clampFloatingDialogOffset(
   offset: FloatingDialogOffset,

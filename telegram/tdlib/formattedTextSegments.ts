@@ -4,14 +4,19 @@ import {
   segmentsContainTelegramEmoji,
   segmentsPlainText,
 } from "../../shared/formattedTextSegments.js";
+import {
+  enrichServiceChatMessageForCodeSpoilers,
+  isTelegramServiceNotificationsChat,
+} from "../../shared/serviceChatCodeSpoilers.js";
 import { readCustomEmojiIdField } from "../../shared/telegramCustomEmojiId.js";
+
 
 export type { FormattedTextSegment };
 
 type EntityRange = {
   offset: number;
   length: number;
-  kind: "custom_emoji" | "link" | "bot_command";
+  kind: "custom_emoji" | "link" | "bot_command" | "code";
   custom_emoji_id?: string;
   url?: string;
 };
@@ -53,11 +58,31 @@ function parseEntityRange(entity: unknown): EntityRange | null {
     return { offset, length, kind: "link" };
   }
   if (
+    type === "messageEntityMention" ||
+    type === "textEntityTypeMention" ||
+    type === "textEntityMention"
+  ) {
+    // Slice is "@username"; open as t.me link (handled in-app by openMessageLinkUrl).
+    return { offset, length, kind: "link" };
+  }
+  if (
     type === "messageEntityBotCommand" ||
     type === "textEntityTypeBotCommand" ||
     type === "textEntityBotCommand"
   ) {
     return { offset, length, kind: "bot_command" };
+  }
+  if (
+    type === "messageEntityCode" ||
+    type === "textEntityTypeCode" ||
+    type === "textEntityCode" ||
+    type === "messageEntityPre" ||
+    type === "textEntityTypePre" ||
+    type === "textEntityPre"
+  ) {
+    // Login codes from 777000 are marked as code entities — keep as text so the
+    // client spoiler enricher can hide digit runs (incl. hyphenated codes).
+    return { offset, length, kind: "code" };
   }
   return null;
 }
@@ -104,11 +129,19 @@ export function parseFormattedTextSegments(value: unknown): FormattedTextSegment
         text: slice,
         command: slice,
       });
+    } else if (range.kind === "code") {
+      segments.push({ kind: "text", text: slice });
     } else {
+      const rawUrl = range.url ?? slice;
+      const mentionUser = slice.startsWith("@") ? slice.slice(1).trim() : "";
+      const url =
+        !range.url && mentionUser && /^[A-Za-z0-9_]{3,}$/.test(mentionUser)
+          ? `https://t.me/${mentionUser}`
+          : rawUrl;
       segments.push({
         kind: "link",
         text: slice,
-        url: range.url ?? slice,
+        url,
       });
     }
     cursor = end;
@@ -171,8 +204,16 @@ export function animatedEmojiSegments(content: Record<string, unknown>): Formatt
 export function messageTextSegments(
   message: {
   content?: Record<string, unknown> | null;
+  chat_id?: number | null;
+  sender_id?: { _?: string; user_id?: number } | null;
 } | null | undefined,
-  options?: { enrichStandardEmojis?: boolean },
+  options?: {
+    enrichStandardEmojis?: boolean;
+    /** When set, spoil login codes for Telegram service notifications (777000). */
+    serviceChatId?: number | null;
+    serviceSenderUserId?: number | null;
+    servicePlainText?: string | null;
+  },
 ): FormattedTextSegment[] | null {
   if (!message) return null;
   const content = message.content;
@@ -182,11 +223,24 @@ export function messageTextSegments(
 
   const finalize = (segments: FormattedTextSegment[] | null): FormattedTextSegment[] | null => {
     if (!segments || segments.length === 0) return null;
+    let next = segments;
     if (options?.enrichStandardEmojis) {
-      const enriched = enrichSegmentsWithStandardEmojis(segments);
-      return enriched.length > 0 ? enriched : null;
+      next = enrichSegmentsWithStandardEmojis(next);
     }
-    return segments;
+    const senderUserId =
+      options?.serviceSenderUserId ??
+      (message.sender_id?._ === "messageSenderUser" && typeof message.sender_id.user_id === "number"
+        ? message.sender_id.user_id
+        : null);
+    const chatId = options?.serviceChatId ?? (typeof message.chat_id === "number" ? message.chat_id : null);
+    if (isTelegramServiceNotificationsChat(chatId, null, senderUserId)) {
+      const plain =
+        typeof options?.servicePlainText === "string" && options.servicePlainText
+          ? options.servicePlainText
+          : segmentsPlainText(next);
+      next = enrichServiceChatMessageForCodeSpoilers(plain, next);
+    }
+    return next.length > 0 ? next : null;
   };
 
   if (type === "messageText") {

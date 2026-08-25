@@ -66,17 +66,28 @@ export function GlobalMusicControlBar({ colors }: Props) {
   const volumeAnchorRef = useRef<View>(null);
   const [volumeBox, setVolumeBox] = useState<{ right: number; top: number } | null>(null);
   const seekRef = useRef<View>(null);
+  const seekWidthRef = useRef(0);
   const seekingRef = useRef(false);
 
   const track = snap.tracks[snap.index] ?? null;
+  const progressDuration =
+    snap.duration > 0 ? snap.duration : Number(track?.duration_sec) > 0 ? Number(track?.duration_sec) : 0;
   const progress =
-    snap.duration > 0 ? Math.max(0, Math.min(1, snap.currentTime / snap.duration)) : 0;
+    progressDuration > 0 ? Math.max(0, Math.min(1, snap.currentTime / progressDuration)) : 0;
 
   const applySeekFromClientX = useCallback((clientX: number) => {
     const node = seekRef.current as unknown as { getBoundingClientRect?: () => DOMRect } | null;
     const rect = node?.getBoundingClientRect?.();
-    if (!rect || rect.width <= 0) return;
-    seekMusicRatio((clientX - rect.left) / rect.width);
+    const width = rect?.width || seekWidthRef.current;
+    const left = rect?.left ?? 0;
+    if (!(width > 0)) return;
+    seekMusicRatio((clientX - left) / width);
+  }, []);
+
+  const applySeekFromLocationX = useCallback((locationX: number) => {
+    const width = seekWidthRef.current;
+    if (!(width > 0) || !Number.isFinite(locationX)) return;
+    seekMusicRatio(locationX / width);
   }, []);
 
   useEffect(() => {
@@ -85,39 +96,22 @@ export function GlobalMusicControlBar({ colors }: Props) {
 
   useEffect(() => {
     if (Platform.OS !== "web" || typeof document === "undefined") return;
-    const node = seekRef.current as unknown as HTMLElement | null;
-    if (!node) return;
-
-    const onDown = (event: PointerEvent) => {
-      event.preventDefault();
-      seekingRef.current = true;
-      node.setPointerCapture?.(event.pointerId);
-      applySeekFromClientX(event.clientX);
-    };
     const onMove = (event: PointerEvent) => {
       if (!seekingRef.current) return;
       applySeekFromClientX(event.clientX);
     };
-    const onUp = (event: PointerEvent) => {
-      if (!seekingRef.current) return;
+    const onUp = () => {
       seekingRef.current = false;
-      try {
-        node.releasePointerCapture?.(event.pointerId);
-      } catch {
-        // ignore
-      }
     };
-    node.addEventListener("pointerdown", onDown);
-    node.addEventListener("pointermove", onMove);
-    node.addEventListener("pointerup", onUp);
-    node.addEventListener("pointercancel", onUp);
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
     return () => {
-      node.removeEventListener("pointerdown", onDown);
-      node.removeEventListener("pointermove", onMove);
-      node.removeEventListener("pointerup", onUp);
-      node.removeEventListener("pointercancel", onUp);
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
     };
-  }, [applySeekFromClientX, snap.visible]);
+  }, [applySeekFromClientX]);
 
   const openVolume = useCallback(() => {
     const node = volumeAnchorRef.current as unknown as {
@@ -153,6 +147,7 @@ export function GlobalMusicControlBar({ colors }: Props) {
         height: FIXED_ROW_30_HEIGHT_PX,
         backgroundColor: colors.background,
         zIndex: 20,
+        position: "relative",
       }}
       {...({ "data-music-global-bar": "1" } as object)}
     >
@@ -318,21 +313,47 @@ export function GlobalMusicControlBar({ colors }: Props) {
           <MusicCloseIcon color={colors.primary} size={14} />
         </Pressable>
       </View>
-      <View
+      <Pressable
         ref={seekRef}
+        collapsable={false}
         accessibilityRole="adjustable"
         accessibilityLabel={t("messages.music.seek")}
+        onLayout={(event) => {
+          seekWidthRef.current = event.nativeEvent.layout.width;
+        }}
+        onPressIn={(event) => {
+          unlockMusicAutoplay();
+          seekingRef.current = true;
+          const locationX = event.nativeEvent.locationX;
+          if (Number.isFinite(locationX) && seekWidthRef.current > 0) {
+            applySeekFromLocationX(locationX);
+            return;
+          }
+          const pageX = (event.nativeEvent as unknown as { pageX?: number }).pageX;
+          if (typeof pageX === "number") applySeekFromClientX(pageX);
+        }}
+        onPress={(event) => {
+          const locationX = event.nativeEvent.locationX;
+          if (Number.isFinite(locationX) && seekWidthRef.current > 0) {
+            applySeekFromLocationX(locationX);
+            return;
+          }
+          const pageX = (event.nativeEvent as unknown as { pageX?: number }).pageX;
+          if (typeof pageX === "number") applySeekFromClientX(pageX);
+        }}
         style={{
           position: "absolute",
           left: 0,
           right: 0,
           bottom: 0,
-          height: 10,
+          height: 16,
           justifyContent: "flex-end",
+          zIndex: 30,
           cursor: Platform.OS === "web" ? ("pointer" as never) : undefined,
+          ...(Platform.OS === "web" ? ({ touchAction: "none" } as object) : {}),
         }}
       >
-        <View style={{ height: 1, backgroundColor: colors.highlight, width: "100%" }}>
+        <View pointerEvents="none" style={{ height: 1, backgroundColor: colors.highlight, width: "100%" }}>
           <View
             style={{
               height: 1,
@@ -341,7 +362,7 @@ export function GlobalMusicControlBar({ colors }: Props) {
             }}
           />
         </View>
-      </View>
+      </Pressable>
       {volumeOpen && volumeBox && Platform.OS === "web" && typeof document !== "undefined"
         ? createPortal(
             <View
@@ -405,6 +426,34 @@ function MusicVolumeSlider({
   onChange: (next: number) => void;
 }) {
   const trackRef = useRef<View>(null);
+  const targetRef = useRef(value);
+  const displayRef = useRef(value);
+  const [display, setDisplay] = useState(value);
+  const draggingRef = useRef(false);
+
+  targetRef.current = value;
+
+  useEffect(() => {
+    let raf = 0;
+    const tick = () => {
+      const target = draggingRef.current ? targetRef.current : targetRef.current;
+      const current = displayRef.current;
+      const next = draggingRef.current
+        ? target
+        : current + (target - current) * 0.28;
+      const settled = draggingRef.current || Math.abs(target - next) < 0.002;
+      const applied = settled ? target : next;
+      if (Math.abs(applied - displayRef.current) >= 0.001) {
+        displayRef.current = applied;
+        setDisplay(applied);
+      } else {
+        displayRef.current = applied;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   const applyFromClientY = useCallback(
     (clientY: number) => {
@@ -414,7 +463,11 @@ function MusicVolumeSlider({
       const rect = node?.getBoundingClientRect?.();
       if (!rect || rect.height <= 0) return;
       const ratio = 1 - (clientY - rect.top) / rect.height;
-      onChange(Math.max(0, Math.min(1, ratio)));
+      const next = Math.max(0, Math.min(1, ratio));
+      targetRef.current = next;
+      displayRef.current = next;
+      setDisplay(next);
+      onChange(next);
     },
     [onChange],
   );
@@ -423,20 +476,19 @@ function MusicVolumeSlider({
     if (Platform.OS !== "web") return;
     const node = trackRef.current as unknown as HTMLElement | null;
     if (!node) return;
-    let dragging = false;
     const onDown = (event: PointerEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      dragging = true;
+      draggingRef.current = true;
       node.setPointerCapture?.(event.pointerId);
       applyFromClientY(event.clientY);
     };
     const onMove = (event: PointerEvent) => {
-      if (!dragging) return;
+      if (!draggingRef.current) return;
       applyFromClientY(event.clientY);
     };
     const onUp = () => {
-      dragging = false;
+      draggingRef.current = false;
     };
     node.addEventListener("pointerdown", onDown);
     node.addEventListener("pointermove", onMove);
@@ -451,7 +503,9 @@ function MusicVolumeSlider({
   }, [applyFromClientY]);
 
   const TRACK_H = 80;
-  const thumbTop = (1 - Math.max(0, Math.min(1, value))) * TRACK_H - 6;
+  const clamped = Math.max(0, Math.min(1, display));
+  const fillH = clamped * TRACK_H;
+  const thumbTop = (1 - clamped) * TRACK_H - 6;
 
   return (
     <View
@@ -461,6 +515,7 @@ function MusicVolumeSlider({
         height: TRACK_H,
         marginTop: 8,
         alignItems: "center",
+        position: "relative",
         cursor: Platform.OS === "web" ? ("ns-resize" as never) : undefined,
       }}
     >
@@ -471,20 +526,33 @@ function MusicVolumeSlider({
           backgroundColor: colors.highlight,
           borderRadius: 1,
           position: "relative",
+          overflow: "hidden",
         }}
       >
         <View
           style={{
             position: "absolute",
-            left: -5,
-            width: 12,
-            height: 12,
-            borderRadius: 6,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: fillH,
             backgroundColor: colors.secondary,
-            top: thumbTop,
+            borderRadius: 1,
           }}
         />
       </View>
+      <View
+        pointerEvents="none"
+        style={{
+          position: "absolute",
+          left: 2,
+          width: 12,
+          height: 12,
+          borderRadius: 6,
+          backgroundColor: colors.secondary,
+          top: thumbTop,
+        }}
+      />
     </View>
   );
 }

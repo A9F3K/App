@@ -12,6 +12,23 @@ import {
 
 export type { TelegramProfileAudioTrack };
 
+/** Telegram Desktop–style role for channel/supergroup profile chrome. */
+export type TelegramChannelProfileRole = "creator" | "admin" | "moderator" | "member" | "left";
+
+export type TelegramChannelMembership = {
+  /** Raw TDLib chatMemberStatus.* id when known. */
+  status: string | null;
+  /** UI role used to branch profile actions/rows. */
+  role: TelegramChannelProfileRole;
+  is_channel: boolean;
+  member_count: number | null;
+  administrator_count: number | null;
+  linked_chat_id: number | null;
+  invite_link: string | null;
+  joined_date: number | null;
+  can_be_edited: boolean;
+};
+
 export type TelegramUserProfilePayload = {
   user_id: number | null;
   chat_id: number;
@@ -31,6 +48,8 @@ export type TelegramUserProfilePayload = {
     title: string;
     subtitle: string | null;
   } | null;
+  /** Present when the opened chat is a channel or supergroup. */
+  membership: TelegramChannelMembership | null;
   media: {
     marked: number;
     images: number;
@@ -118,6 +137,97 @@ function musicFromTdUser(user: Record<string, unknown>): { artist: string; title
     "";
   if (!artist && !title) return null;
   return { artist: artist || title, title: artist && title ? title : "" };
+}
+
+/**
+ * Map TDLib chatMemberStatus to Telegram Desktop–like profile roles.
+ * - creator → full owner chrome (Manage, administrators)
+ * - administrator with change_info / promote → admin (Manage)
+ * - other administrators → moderator (staff, no Manage)
+ * - member / restricted → subscriber/member chrome
+ * - left / banned → left
+ */
+function channelRoleFromMemberStatus(
+  status: Record<string, unknown> | null,
+): { statusId: string | null; role: TelegramChannelProfileRole; canBeEdited: boolean; joinedDate: number | null } {
+  if (!status) {
+    return { statusId: null, role: "member", canBeEdited: false, joinedDate: null };
+  }
+  const statusId = typeof status._ === "string" ? status._ : null;
+  const joinedRaw = Number(status.joined_chat_date ?? status.joinedChatDate ?? 0);
+  const joinedDate =
+    Number.isFinite(joinedRaw) && joinedRaw > 0 ? Math.trunc(joinedRaw) : null;
+
+  if (statusId === "chatMemberStatusCreator") {
+    return {
+      statusId,
+      role: "creator",
+      canBeEdited: status.is_anonymous !== true,
+      joinedDate,
+    };
+  }
+  if (statusId === "chatMemberStatusAdministrator") {
+    const rights = asRecord(status.rights) ?? status;
+    const canChangeInfo = rights.can_change_info === true;
+    const canPromote = rights.can_promote_members === true;
+    const canRestrict = rights.can_restrict_members === true;
+    const canDelete = rights.can_delete_messages === true;
+    const canBeEdited = status.can_be_edited === true;
+    // Broad management rights → admin Manage chrome; limited staff → moderator.
+    const role: TelegramChannelProfileRole =
+      canChangeInfo || canPromote ? "admin" : canRestrict || canDelete ? "moderator" : "moderator";
+    return { statusId, role, canBeEdited, joinedDate };
+  }
+  if (statusId === "chatMemberStatusLeft" || statusId === "chatMemberStatusBanned") {
+    return { statusId, role: "left", canBeEdited: false, joinedDate };
+  }
+  return { statusId, role: "member", canBeEdited: false, joinedDate };
+}
+
+async function loadChannelMembership(
+  client: Client,
+  input: {
+    chatId: number;
+    isChannel: boolean;
+    memberCount: number | null;
+    administratorCount: number | null;
+    linkedChatId: number | null;
+    inviteLink: string | null;
+  },
+): Promise<TelegramChannelMembership> {
+  let statusId: string | null = null;
+  let role: TelegramChannelProfileRole = "member";
+  let canBeEdited = false;
+  let joinedDate: number | null = null;
+  try {
+    const me = (await client.invoke({ _: "getMe" })) as { id?: number };
+    const myId = Number(me.id);
+    if (Number.isFinite(myId) && myId !== 0) {
+      const member = (await client.invoke({
+        _: "getChatMember",
+        chat_id: input.chatId,
+        member_id: { _: "messageSenderUser", user_id: Math.trunc(myId) },
+      })) as { status?: Record<string, unknown> };
+      const parsed = channelRoleFromMemberStatus(asRecord(member.status));
+      statusId = parsed.statusId;
+      role = parsed.role;
+      canBeEdited = parsed.canBeEdited;
+      joinedDate = parsed.joinedDate;
+    }
+  } catch {
+    // Treat unknown membership as regular member for safer UI.
+  }
+  return {
+    status: statusId,
+    role,
+    is_channel: input.isChannel,
+    member_count: input.memberCount,
+    administrator_count: input.administratorCount,
+    linked_chat_id: input.linkedChatId,
+    invite_link: input.inviteLink,
+    joined_date: joinedDate,
+    can_be_edited: canBeEdited,
+  };
 }
 
 type ChatMessageSearchFilter =
@@ -302,6 +412,7 @@ export async function fetchTelegramUserProfile(
     music: null,
     playlist: [],
     channel: null,
+    membership: null,
     media: emptyMedia,
   };
 
@@ -401,26 +512,61 @@ export async function fetchTelegramUserProfile(
       const type = asRecord(chat.type);
       if (type?._ === "chatTypeSupergroup" && Number(type.supergroup_id) > 0) {
         const supergroupId = Math.trunc(Number(type.supergroup_id));
+        let isChannel = false;
+        let memberCountFromSg: number | null = null;
         try {
           const sg = (await client.invoke({
             _: "getSupergroup",
             supergroup_id: supergroupId,
           })) as Record<string, unknown>;
           base.username = usernameFromTdUser(sg);
-        } catch {
-          // ignore
-        }
-        try {
-          const full = (await client.invoke({
-            _: "getSupergroupFullInfo",
-            supergroup_id: supergroupId,
-          })) as { description?: string };
-          if (typeof full.description === "string" && full.description.trim()) {
-            base.bio = full.description.trim();
+          isChannel = sg.is_channel === true;
+          const sgMembers = Number(sg.member_count);
+          if (Number.isFinite(sgMembers) && sgMembers >= 0) {
+            memberCountFromSg = Math.trunc(sgMembers);
           }
         } catch {
           // ignore
         }
+        let memberCount: number | null = memberCountFromSg;
+        let administratorCount: number | null = null;
+        let linkedChatId: number | null = null;
+        let inviteLink: string | null = null;
+        try {
+          const full = (await client.invoke({
+            _: "getSupergroupFullInfo",
+            supergroup_id: supergroupId,
+          })) as Record<string, unknown>;
+          if (typeof full.description === "string" && full.description.trim()) {
+            base.bio = full.description.trim();
+          }
+          const mc = Number(full.member_count);
+          if (Number.isFinite(mc) && mc >= 0) memberCount = Math.trunc(mc);
+          const ac = Number(full.administrator_count);
+          if (Number.isFinite(ac) && ac >= 0) administratorCount = Math.trunc(ac);
+          const linked = Number(full.linked_chat_id);
+          if (Number.isFinite(linked) && linked !== 0) linkedChatId = Math.trunc(linked);
+          if (typeof full.invite_link === "string" && full.invite_link.trim()) {
+            inviteLink = full.invite_link.trim();
+          } else {
+            const invite = asRecord(full.invite_link);
+            if (typeof invite?.invite_link === "string" && invite.invite_link.trim()) {
+              inviteLink = invite.invite_link.trim();
+            }
+          }
+        } catch {
+          // ignore
+        }
+        base.membership = await loadChannelMembership(client, {
+          chatId: resolvedChatId,
+          isChannel,
+          memberCount,
+          administratorCount,
+          linkedChatId,
+          inviteLink,
+        });
+        // Client formats subscriber/member count as the profile subheader.
+        base.status_text = null;
       }
     } catch {
       // keep defaults

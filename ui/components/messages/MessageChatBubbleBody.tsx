@@ -103,6 +103,9 @@ function MessageChatBubbleTextContent({
   callIndicator = null,
   emojiContentActive = true,
   chatId,
+  peerUserId = null,
+  senderUserId = null,
+  spoilerOverlayColor,
 }: {
   bodyText: string;
   bodyTextSegments?: FormattedTextSegment[] | null;
@@ -118,6 +121,9 @@ function MessageChatBubbleTextContent({
   callIndicator?: { outgoing: boolean; successful: boolean } | null;
   emojiContentActive?: boolean;
   chatId: number;
+  peerUserId?: number | null;
+  senderUserId?: number | null;
+  spoilerOverlayColor?: string;
 }) {
   if (!bodyText && !timeLabel) return null;
 
@@ -166,6 +172,9 @@ function MessageChatBubbleTextContent({
           emojiFetchEnabled={emojiContentActive}
           enrichStandardEmojis={emojiContentActive}
           chatId={chatId}
+          peerUserId={peerUserId}
+          senderUserId={senderUserId}
+          spoilerOverlayColor={spoilerOverlayColor}
         />
         <View
           style={{
@@ -204,6 +213,9 @@ function MessageChatBubbleTextContent({
           emojiFetchEnabled={emojiContentActive}
           enrichStandardEmojis={emojiContentActive}
           chatId={chatId}
+          peerUserId={peerUserId}
+          senderUserId={senderUserId}
+          spoilerOverlayColor={spoilerOverlayColor}
         />
         <View
           style={{
@@ -242,6 +254,9 @@ function MessageChatBubbleTextContent({
           emojiFetchEnabled={emojiContentActive}
           enrichStandardEmojis={emojiContentActive}
           chatId={chatId}
+          peerUserId={peerUserId}
+          senderUserId={senderUserId}
+          spoilerOverlayColor={spoilerOverlayColor}
         />
       ) : null}
       {timeRow ? (
@@ -362,12 +377,14 @@ function MessageChatReplyBlock({
   colors,
   maxWidthPx,
   telegramChatId,
+  peerUserId = null,
   emojiContentActive = true,
 }: {
   reply: MessageChatReplyPreview;
   colors: ThemeColors;
   maxWidthPx: number;
   telegramChatId: number;
+  peerUserId?: number | null;
   emojiContentActive?: boolean;
 }) {
   const { colorScheme } = useTelegram();
@@ -434,6 +451,9 @@ function MessageChatReplyBlock({
           segments={reply.text_segments}
           numberOfLines={2}
           chatId={telegramChatId}
+          peerUserId={peerUserId}
+          senderUserId={reply.sender_user_id}
+          spoilerOverlayColor={colors.undercover}
           emojiSizePx={MESSAGE_BUBBLE_INLINE_EMOJI_SIZE_PX}
           emojiFetchEnabled={emojiContentActive}
           enrichStandardEmojis={emojiContentActive}
@@ -604,6 +624,7 @@ export function MessageChatBubbleBody({
           colors={colors}
           maxWidthPx={maxWidthPx}
           telegramChatId={chatId}
+          peerUserId={peerUserId}
           emojiContentActive={emojiContentActive}
         />
       ) : null}
@@ -758,6 +779,9 @@ export function MessageChatBubbleBody({
             callIndicator={callIndicator}
             emojiContentActive={emojiContentActive}
             chatId={chatId}
+            peerUserId={peerUserId}
+            senderUserId={item.sender_user_id}
+            spoilerOverlayColor={colors.undercover}
           />
         </View>
       ) : null}

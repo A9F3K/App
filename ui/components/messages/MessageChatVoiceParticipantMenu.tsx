@@ -15,10 +15,15 @@ import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { typographyRect15, type ThemeColors } from "../../theme";
 import {
+  ChatMenuGroupInfoIcon,
+  ChatMenuProfileIcon,
+} from "./MessageChatListContextMenuIcons";
+import {
   VoiceCameraIcon,
   VoiceMicControlIcon,
   VoiceScreenShareIcon,
 } from "./MessageChatVoiceControlIcons";
+import { ProfileMessagesIcon } from "./MessageChatProfileIcons";
 
 export type VoiceParticipantMenuAnchor = {
   x: number;
@@ -46,7 +51,13 @@ type Props = {
   videoAvailable?: boolean;
   /** Peer currently publishing screencast. */
   screenAvailable?: boolean;
+  /**
+   * Channel/anonymous-chat display mode → "View channel"; otherwise "View profile".
+   */
+  peerIsChannel?: boolean;
   onClose: () => void;
+  onViewProfile: () => void;
+  onSendMessage: () => void;
   onVolumeChange: (percent: number) => void;
   onToggleVoice: () => void;
   onToggleVideo: () => void;
@@ -54,12 +65,12 @@ type Props = {
 };
 
 function menuHeightPx(): number {
-  // volume row + 3 actions + dividers between all 4 blocks
+  // view + send + volume + 3 media actions + dividers between all 6 blocks
   return (
     MENU_PADDING_PX * 2 +
     VOLUME_ROW_HEIGHT_PX +
-    MENU_ITEM_HEIGHT_PX * 3 +
-    MENU_ITEM_GAP_PX * 3
+    MENU_ITEM_HEIGHT_PX * 5 +
+    MENU_ITEM_GAP_PX * 5
   );
 }
 
@@ -296,7 +307,10 @@ function ParticipantMenuPanel({
   screenOn,
   videoAvailable,
   screenAvailable,
+  peerIsChannel,
   onLayout,
+  onViewProfile,
+  onSendMessage,
   onVolumeChange,
   onToggleVoice,
   onToggleVideo,
@@ -309,7 +323,10 @@ function ParticipantMenuPanel({
   screenOn: boolean;
   videoAvailable: boolean;
   screenAvailable: boolean;
+  peerIsChannel: boolean;
   onLayout?: (event: LayoutChangeEvent) => void;
+  onViewProfile: () => void;
+  onSendMessage: () => void;
   onVolumeChange: (percent: number) => void;
   onToggleVoice: () => void;
   onToggleVideo: () => void;
@@ -343,6 +360,30 @@ function ParticipantMenuPanel({
         }),
       }}
     >
+      <ActionRow
+        colors={colors}
+        label={
+          peerIsChannel
+            ? t("messages.voiceChat.participant.viewChannel")
+            : t("messages.voiceChat.participant.viewProfile")
+        }
+        onPress={onViewProfile}
+        icon={
+          peerIsChannel ? (
+            <ChatMenuGroupInfoIcon color={colors.primary} size={16} />
+          ) : (
+            <ChatMenuProfileIcon color={colors.primary} size={16} />
+          )
+        }
+      />
+      <ContextMenuDivider color={colors.highlight} />
+      <ActionRow
+        colors={colors}
+        label={t("messages.voiceChat.participant.sendMessage")}
+        onPress={onSendMessage}
+        icon={<ProfileMessagesIcon color={colors.primary} size={16} />}
+      />
+      <ContextMenuDivider color={colors.highlight} />
       <VolumeSlider colors={colors} value={volumePercent} onChange={onVolumeChange} />
       <ContextMenuDivider color={colors.highlight} />
       <ActionRow
@@ -435,6 +476,9 @@ function MessageChatVoiceParticipantMenuNative(props: Props) {
             screenOn={props.screenOn}
             videoAvailable={props.videoAvailable !== false}
             screenAvailable={props.screenAvailable !== false}
+            peerIsChannel={Boolean(props.peerIsChannel)}
+            onViewProfile={props.onViewProfile}
+            onSendMessage={props.onSendMessage}
             onVolumeChange={props.onVolumeChange}
             onToggleVoice={props.onToggleVoice}
             onToggleVideo={props.onToggleVideo}
@@ -512,6 +556,9 @@ function MessageChatVoiceParticipantMenuWeb(props: Props) {
           screenOn={props.screenOn}
           videoAvailable={props.videoAvailable !== false}
           screenAvailable={props.screenAvailable !== false}
+          peerIsChannel={Boolean(props.peerIsChannel)}
+          onViewProfile={props.onViewProfile}
+          onSendMessage={props.onSendMessage}
           onVolumeChange={props.onVolumeChange}
           onToggleVoice={props.onToggleVoice}
           onToggleVideo={props.onToggleVideo}

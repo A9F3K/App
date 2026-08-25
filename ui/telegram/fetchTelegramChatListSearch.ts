@@ -7,6 +7,8 @@ export type TelegramChatListSearchHit = {
   peerUsername: string | null;
   chatUsername: string | null;
   chatKind: "private" | "group" | "supergroup" | "channel" | null;
+  has_active_voice_chat?: boolean;
+  voice_chat_is_joined?: boolean;
 };
 
 export type TelegramChatListSearchResult = {
@@ -55,6 +57,12 @@ function parseSearchHitRows(rawRows: unknown): TelegramChatListSearchHit[] {
       peerUsername: typeof row.peerUsername === "string" ? row.peerUsername : null,
       chatUsername: typeof row.chatUsername === "string" ? row.chatUsername : null,
       chatKind: normalizeChatKind(row.chatKind),
+      has_active_voice_chat: Boolean(
+        row.has_active_voice_chat ?? row.hasActiveVoiceChat,
+      ),
+      voice_chat_is_joined: Boolean(
+        row.voice_chat_is_joined ?? row.voiceChatIsJoined,
+      ),
     });
   }
   return chats;

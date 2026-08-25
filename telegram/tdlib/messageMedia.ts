@@ -19,6 +19,7 @@ type TdFile = {
 
 const MEDIA_DOWNLOAD_TIMEOUT_MS = 45_000;
 const MEDIA_VIDEO_DOWNLOAD_TIMEOUT_MS = 60_000;
+const MEDIA_PREVIEW_DOWNLOAD_TIMEOUT_MS = 30_000;
 /** Reject minithumbnail-sized downloads masquerading as full photo.sizes files. */
 const PHOTO_MIN_FULL_DIMENSION_PX = 120;
 const PHOTO_MIN_FULL_BYTES = 12_000;
@@ -175,6 +176,41 @@ function mimeFromMessageContent(content: Record<string, unknown>): string | null
   return null;
 }
 
+function readNestedMinithumbnail(
+  nested: unknown,
+): { data: Buffer; width: number | null; height: number | null } | null {
+  if (!nested || typeof nested !== "object") return null;
+  const mini = (nested as { minithumbnail?: { data?: string; width?: number; height?: number } })
+    .minithumbnail;
+  const data = mini?.data;
+  if (typeof data !== "string" || data.length === 0) return null;
+  try {
+    const buffer = Buffer.from(data, "base64");
+    if (buffer.length === 0) return null;
+    const width = Number(mini?.width);
+    const height = Number(mini?.height);
+    return {
+      data: buffer,
+      width: Number.isFinite(width) && width > 0 ? width : null,
+      height: Number.isFinite(height) && height > 0 ? height : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function documentMimeType(content: Record<string, unknown>): string | null {
+  const doc = content.document as { mime_type?: string } | undefined;
+  const mime = doc?.mime_type;
+  return typeof mime === "string" && mime.trim() ? mime.trim().toLowerCase() : null;
+}
+
+function isImageDocumentContent(content: Record<string, unknown>): boolean {
+  if (content._ !== "messageDocument") return false;
+  const mime = documentMimeType(content);
+  return Boolean(mime?.startsWith("image/"));
+}
+
 function mediaFileIdFromMessage(message: TdMessage): number | null {
   const content = message.content;
   if (!content || typeof content !== "object") return null;
@@ -196,6 +232,10 @@ function mediaFileIdFromMessage(message: TdMessage): number | null {
   if (type === "messageAudio") {
     const audio = row.audio as { audio?: { id?: number }; thumbnail?: unknown } | undefined;
     return pickNestedFileId(audio);
+  }
+  if (type === "messageDocument" && isImageDocumentContent(row)) {
+    const document = row.document as { document?: { id?: number }; thumbnail?: unknown } | undefined;
+    return pickNestedFileId(document);
   }
   return null;
 }
@@ -247,8 +287,18 @@ function mediaPhotoCandidatesFromMessage(message: TdMessage): PhotoSizeCandidate
   const content = message.content;
   if (!content || typeof content !== "object") return [];
   const row = content as Record<string, unknown>;
-  if (row._ !== "messagePhoto") return [];
-  return listPhotoSizeCandidates(row);
+  if (row._ === "messagePhoto") return listPhotoSizeCandidates(row);
+  if (row._ === "messageDocument" && isImageDocumentContent(row)) {
+    const thumbId = pickThumbnailFileId(row.document);
+    if (thumbId != null) {
+      return [{ fileId: thumbId, width: null, height: null, type: "thumb", sortKey: 0 }];
+    }
+    const fileId = pickNestedFileId(row.document);
+    if (fileId != null) {
+      return [{ fileId, width: null, height: null, type: "document", sortKey: 0 }];
+    }
+  }
+  return [];
 }
 
 function mediaFileIdsFromMessage(message: TdMessage): number[] {
@@ -268,6 +318,9 @@ function mediaThumbnailFileIdFromMessage(message: TdMessage): number | null {
   if (type === "messageVideo") return pickThumbnailFileId(row.video);
   if (type === "messageAnimation") return pickThumbnailFileId(row.animation);
   if (type === "messageSticker") return pickThumbnailFileId(row.sticker);
+  if (type === "messageDocument" && isImageDocumentContent(row)) {
+    return pickThumbnailFileId(row.document);
+  }
   if (type === "messageAudio") {
     const audio = row.audio as
       | { thumbnail?: unknown; album_cover_thumbnail?: { file?: unknown } }
@@ -277,7 +330,85 @@ function mediaThumbnailFileIdFromMessage(message: TdMessage): number | null {
   return null;
 }
 
+async function resolveMessageForMedia(
+  client: Client,
+  chatId: number,
+  messageId: number,
+): Promise<TdMessage | null> {
+  try {
+    return (await client.invoke({
+      _: "getMessage",
+      chat_id: chatId,
+      message_id: messageId,
+    })) as TdMessage;
+  } catch (err) {
+    logGateway("message_media_get_message_miss", {
+      chatId,
+      messageId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  try {
+    const history = (await client.invoke({
+      _: "getChatHistory",
+      chat_id: chatId,
+      from_message_id: messageId,
+      offset: 0,
+      limit: 1,
+      only_local: false,
+    })) as { messages?: TdMessage[] };
+    const direct = history.messages?.[0];
+    if (direct && Number(direct.id) === messageId) return direct;
+
+    const nearby = (await client.invoke({
+      _: "getChatHistory",
+      chat_id: chatId,
+      from_message_id: messageId,
+      offset: -2,
+      limit: 5,
+      only_local: false,
+    })) as { messages?: TdMessage[] };
+    return nearby.messages?.find((row) => Number(row.id) === messageId) ?? null;
+  } catch (err) {
+    logGateway("message_media_history_lookup_failed", {
+      chatId,
+      messageId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 export type MessageMediaFetchMode = "full" | "preview";
+
+/** Progressive stream for chat messageAudio — returns false when the message is not audio. */
+export async function streamMessageAudioToHttp(
+  client: Client,
+  chatId: number,
+  messageId: number,
+  res: import("./profileMusic.js").AudioHttpResponse,
+  rangeHeader?: string | null,
+): Promise<boolean> {
+  let message: TdMessage;
+  try {
+    message = (await client.invoke({
+      _: "getMessage",
+      chat_id: chatId,
+      message_id: messageId,
+    })) as TdMessage;
+  } catch {
+    return false;
+  }
+  const content = message.content;
+  if (!content || typeof content !== "object") return false;
+  const contentRow = content as Record<string, unknown>;
+  if (contentRow._ !== "messageAudio") return false;
+  const fileId = mediaFileIdFromMessage(message);
+  if (fileId == null || fileId <= 0) return false;
+  const { streamLocalAudioFileToHttp } = await import("./profileMusic.js");
+  return streamLocalAudioFileToHttp(client, fileId, res, rangeHeader);
+}
 
 async function readMessageMediaPreviewBytes(
   client: Client,
@@ -289,9 +420,13 @@ async function readMessageMediaPreviewBytes(
     contentType === "messageVideo" || contentType === "messageAnimation";
 
   if (preferVideoMime) {
+    const nested = contentType === "messageVideo" ? contentRow.video : contentRow.animation;
+    const mini = readNestedMinithumbnail(nested);
+    if (mini) return { data: mini.data, mime: "image/jpeg" };
+
     const thumbnailId = mediaThumbnailFileIdFromMessage(message);
     if (thumbnailId != null) {
-      const local = await readLocalFileBytes(client, thumbnailId, 15_000);
+      const local = await readLocalFileBytes(client, thumbnailId, MEDIA_PREVIEW_DOWNLOAD_TIMEOUT_MS);
       if (local) {
         return { data: local.data, mime: mimeFromPath(local.path) };
       }
@@ -299,24 +434,72 @@ async function readMessageMediaPreviewBytes(
     return null;
   }
 
-  if (contentType === "messagePhoto") {
-    const mini = readPhotoMinithumbnail(contentRow);
+  if (contentType === "messagePhoto" || (contentType === "messageDocument" && isImageDocumentContent(contentRow))) {
+    const mini =
+      contentType === "messagePhoto"
+        ? readPhotoMinithumbnail(contentRow)
+        : readNestedMinithumbnail(contentRow.document);
     if (mini) return { data: mini.data, mime: "image/jpeg" };
     const candidates = listPhotoSizeCandidates(contentRow);
     const smallest = candidates[candidates.length - 1];
     if (smallest != null) {
-      const local = await readLocalFileBytes(client, smallest.fileId, 15_000);
+      const local = await readLocalFileBytes(client, smallest.fileId, MEDIA_PREVIEW_DOWNLOAD_TIMEOUT_MS);
       if (local) {
         return { data: local.data, mime: mimeFromPath(local.path) };
+      }
+    }
+    if (contentType === "messageDocument") {
+      const thumbnailId = mediaThumbnailFileIdFromMessage(message);
+      if (thumbnailId != null) {
+        const local = await readLocalFileBytes(client, thumbnailId, MEDIA_PREVIEW_DOWNLOAD_TIMEOUT_MS);
+        if (local) {
+          return { data: local.data, mime: mimeFromPath(local.path) };
+        }
       }
     }
   }
 
   const thumbnailId = mediaThumbnailFileIdFromMessage(message);
   if (thumbnailId != null) {
-    const local = await readLocalFileBytes(client, thumbnailId, 15_000);
+    const local = await readLocalFileBytes(client, thumbnailId, MEDIA_PREVIEW_DOWNLOAD_TIMEOUT_MS);
     if (local) {
       return { data: local.data, mime: mimeFromPath(local.path) };
+    }
+  }
+
+  return null;
+}
+
+async function readMessageMediaPreviewFallbackBytes(
+  client: Client,
+  message: TdMessage,
+  contentRow: Record<string, unknown>,
+  contentType: string | undefined,
+): Promise<{ data: Buffer; mime: string } | null> {
+  const photoCandidates = mediaPhotoCandidatesFromMessage(message);
+  if (photoCandidates.length > 0) {
+    const smallest = photoCandidates[photoCandidates.length - 1]!;
+    const local = await readLocalFileBytes(
+      client,
+      smallest.fileId,
+      MEDIA_PREVIEW_DOWNLOAD_TIMEOUT_MS,
+    );
+    if (local) {
+      return { data: local.data, mime: mimeFromPath(local.path) };
+    }
+  }
+
+  if (contentType === "messageVideo" || contentType === "messageAnimation") {
+    const thumbnailId = mediaThumbnailFileIdFromMessage(message);
+    if (thumbnailId != null) {
+      const local = await readLocalFileBytes(
+        client,
+        thumbnailId,
+        MEDIA_VIDEO_DOWNLOAD_TIMEOUT_MS,
+      );
+      if (local) {
+        return { data: local.data, mime: mimeFromPath(local.path) };
+      }
     }
   }
 
@@ -329,16 +512,8 @@ export async function readMessageMediaBytes(
   messageId: number,
   mode: MessageMediaFetchMode = "full",
 ): Promise<{ data: Buffer; mime: string } | null> {
-  let message: TdMessage;
-  try {
-    message = (await client.invoke({
-      _: "getMessage",
-      chat_id: chatId,
-      message_id: messageId,
-    })) as TdMessage;
-  } catch {
-    return null;
-  }
+  const message = await resolveMessageForMedia(client, chatId, messageId);
+  if (!message) return null;
 
   const content = message.content;
   if (!content || typeof content !== "object") return null;
@@ -352,15 +527,35 @@ export async function readMessageMediaBytes(
       contentRow,
       typeof contentType === "string" ? contentType : undefined,
     );
+    if (preview) {
+      logGateway("message_media_preview", {
+        chatId,
+        messageId,
+        contentType,
+        ok: true,
+        bytes: preview.data.length,
+        mime: preview.mime,
+        source: "primary",
+      });
+      return preview;
+    }
+
+    const fallback = await readMessageMediaPreviewFallbackBytes(
+      client,
+      message,
+      contentRow,
+      typeof contentType === "string" ? contentType : undefined,
+    );
     logGateway("message_media_preview", {
       chatId,
       messageId,
       contentType,
-      ok: preview != null,
-      bytes: preview?.data.length ?? 0,
-      mime: preview?.mime ?? null,
+      ok: fallback != null,
+      bytes: fallback?.data.length ?? 0,
+      mime: fallback?.mime ?? null,
+      source: fallback ? "fallback" : "none",
     });
-    return preview;
+    return fallback;
   }
 
   const photoCandidates = mediaPhotoCandidatesFromMessage(message);

@@ -83,12 +83,14 @@ export function normalizeHistoryMessage(
     contentKindRaw === "sticker" ||
     contentKindRaw === "audio" ||
     contentKindRaw === "call" ||
+    contentKindRaw === "service" ||
     contentKindRaw === "other"
       ? (contentKindRaw as MessageChatContentKind)
       : undefined;
   const isCall = contentKind === "call";
   const isAudio = contentKind === "audio";
-  if (!text.trim() && !hasMedia && !isCall && !isAudio) return null;
+  const isService = contentKind === "service";
+  if (!text.trim() && !hasMedia && !isCall && !isAudio && !isService) return null;
   const senderUserId = Number(row.sender_user_id);
   const senderChatId = Number(row.sender_chat_id);
   const safeSenderUserId = safeTelegramUserIdForLog(senderUserId) ?? null;
@@ -178,10 +180,50 @@ export function normalizeHistoryMessage(
     reply_to_message_id: replyToMessageId,
     call_success: isCall ? Boolean(row.call_success ?? row.callSuccess) : undefined,
     audio: parseHistoryAudio(row.audio),
+    service_notice: (() => {
+      const rawNotice = row.service_notice ?? row.serviceNotice;
+      if (!rawNotice || typeof rawNotice !== "object" || Array.isArray(rawNotice)) {
+        return null;
+      }
+      const notice = rawNotice as Record<string, unknown>;
+      const actorName =
+        typeof notice.actor_name === "string"
+          ? notice.actor_name.trim()
+          : typeof notice.actorName === "string"
+            ? notice.actorName.trim()
+            : "";
+      if (!actorName) return null;
+      const actorIdRaw = Number(notice.actor_user_id ?? notice.actorUserId);
+      return {
+        kind: notice.kind === "chat_leave" ? ("chat_leave" as const) : ("chat_join" as const),
+        actor_user_id:
+          Number.isFinite(actorIdRaw) && actorIdRaw !== 0 ? Math.trunc(actorIdRaw) : null,
+        actor_name: actorName,
+      };
+    })(),
   });
 }
 
-export async function fetchTelegramChatHistoryPage(
+export function isTransientHistoryFetchError(error: string | null | undefined): boolean {
+  if (!error) return false;
+  if (
+    error === "session_not_ready" ||
+    error === "history_unavailable" ||
+    error === "gateway_unreachable" ||
+    error === "history_failed" ||
+    error === "gateway_timeout_retry" ||
+    error === "not_found"
+  ) {
+    return true;
+  }
+  return /^HTTP_50[234]$/.test(error);
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchTelegramChatHistoryPageOnce(
   chatId: number,
   limit: number,
   peerUserId: number | null | undefined,
@@ -310,6 +352,61 @@ export async function fetchTelegramChatHistoryPage(
       Number.isFinite(memberRaw) && memberRaw > 0 ? Math.trunc(memberRaw) : null,
     selfUserId,
   };
+}
+
+const HISTORY_FETCH_MAX_ATTEMPTS = 3;
+const HISTORY_FETCH_RETRY_BASE_MS = 400;
+
+/** Fetch one history page, retrying transient gateway / API failures. */
+export async function fetchTelegramChatHistoryPage(
+  chatId: number,
+  limit: number,
+  peerUserId: number | null | undefined,
+  beforeMessageId?: number | null,
+  sinceMessageId?: number | null,
+  aroundUnread = false,
+  aroundMessageId?: number | null,
+  olderAbove?: number | null,
+  newerBelow?: number | null,
+  options?: { background?: boolean },
+): Promise<ChatHistoryPageResult> {
+  let lastResult: ChatHistoryPageResult | null = null;
+  for (let attempt = 0; attempt < HISTORY_FETCH_MAX_ATTEMPTS; attempt += 1) {
+    const result = await fetchTelegramChatHistoryPageOnce(
+      chatId,
+      limit,
+      peerUserId,
+      beforeMessageId,
+      sinceMessageId,
+      aroundUnread,
+      aroundMessageId,
+      olderAbove,
+      newerBelow,
+      options,
+    );
+    if (!result.error) return result;
+    lastResult = result;
+    if (
+      !isTransientHistoryFetchError(result.error) ||
+      attempt >= HISTORY_FETCH_MAX_ATTEMPTS - 1
+    ) {
+      return result;
+    }
+    await sleepMs(HISTORY_FETCH_RETRY_BASE_MS * (attempt + 1));
+  }
+  return (
+    lastResult ?? {
+      messages: [],
+      chatKind: null,
+      error: "history_unavailable",
+      hasMoreOlder: false,
+      nextBeforeMessageId: null,
+      lastReadOutboxMessageId: null,
+      lastReadInboxMessageId: null,
+      memberCount: null,
+      selfUserId: null,
+    }
+  );
 }
 
 /** First history page with optional gateway warmup retry. */

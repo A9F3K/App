@@ -166,3 +166,168 @@ export function ProfileGifIcon({ color = "#FFFFFF", size = 18 }: StrokeIconProps
     </Svg>
   );
 }
+
+/** Bell for mute / unmute channel notifications. */
+export function ProfileMuteIcon({ color = "#FFFFFF", size = 50 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 50 50" fill="none">
+      <Path
+        d="M25 14.5C21.9624 14.5 19.5 16.9624 19.5 20V24.2L17.2 28.5H32.8L30.5 24.2V20C30.5 16.9624 28.0376 14.5 25 14.5Z"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M22.5 32.5C23.1 33.7 24.0 34.5 25 34.5C26 34.5 26.9 33.7 27.5 32.5"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+      />
+      <Path d="M16 16L34 34" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+/** Speech bubble for linked discussion group. */
+export function ProfileDiscussIcon({ color = "#FFFFFF", size = 50 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 50 50" fill="none">
+      <Path
+        d="M16 17.5H34C35.3807 17.5 36.5 18.6193 36.5 20V29C36.5 30.3807 35.3807 31.5 34 31.5H24L19 35.5V31.5H16C14.6193 31.5 13.5 30.3807 13.5 29V20C13.5 18.6193 14.6193 17.5 16 17.5Z"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
+
+/** Sliders for channel Manage (admin/creator). */
+export function ProfileManageIcon({ color = "#FFFFFF", size = 50 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 50 50" fill="none">
+      <Path d="M15 20H35" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+      <Path d="M15 25H35" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+      <Path d="M15 30H35" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+      <Path
+        d="M21 20C21 21.1046 20.1046 22 19 22C17.8954 22 17 21.1046 17 20C17 18.8954 17.8954 18 19 18C20.1046 18 21 18.8954 21 20Z"
+        fill={color}
+      />
+      <Path
+        d="M29 25C29 26.1046 28.1046 27 27 27C25.8954 27 25 26.1046 25 25C25 23.8954 25.8954 23 27 23C28.1046 23 29 23.8954 29 25Z"
+        fill={color}
+      />
+      <Path
+        d="M23 30C23 31.1046 22.1046 32 21 32C19.8954 32 19 31.1046 19 30C19 28.8954 19.8954 28 21 28C22.1046 28 23 28.8954 23 30Z"
+        fill={color}
+      />
+    </Svg>
+  );
+}
+
+/** Ellipsis for More. */
+export function ProfileMoreIcon({ color = "#FFFFFF", size = 50 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 50 50" fill="none">
+      <Path
+        d="M17 25C17 25.8284 16.3284 26.5 15.5 26.5C14.6716 26.5 14 25.8284 14 25C14 24.1716 14.6716 23.5 15.5 23.5C16.3284 23.5 17 24.1716 17 25Z"
+        fill={color}
+      />
+      <Path
+        d="M27.5 25C27.5 25.8284 26.8284 26.5 26 26.5C25.1716 26.5 24.5 25.8284 24.5 25C24.5 24.1716 25.1716 23.5 26 23.5C26.8284 23.5 27.5 24.1716 27.5 25Z"
+        fill={color}
+      />
+      <Path
+        d="M38 25C38 25.8284 37.3284 26.5 36.5 26.5C35.6716 26.5 35 25.8284 35 25C35 24.1716 35.6716 23.5 36.5 23.5C37.3284 23.5 38 24.1716 38 25Z"
+        fill={color}
+      />
+    </Svg>
+  );
+}
+
+export function ProfileLeaveIcon({ color = "#FFFFFF", size = 18 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 18 18" fill="none">
+      <Path
+        d="M7 3.5H4.5C3.67157 3.5 3 4.17157 3 5V13C3 13.8284 3.67157 14.5 4.5 14.5H7"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+      />
+      <Path
+        d="M10.5 12.5L14 9L10.5 5.5"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Path d="M14 9H7" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+    </Svg>
+  );
+}
+
+export function ProfileReportIcon({ color = "#FF1111", size = 18 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 18 18" fill="none">
+      <Path
+        d="M9 2.5L15.5 14.5H2.5L9 2.5Z"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinejoin="round"
+      />
+      <Path d="M9 7V10.5" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+      <Path
+        d="M9 12.75C9.41421 12.75 9.75 13.0858 9.75 13.5C9.75 13.9142 9.41421 14.25 9 14.25C8.58579 14.25 8.25 13.9142 8.25 13.5C8.25 13.0858 8.58579 12.75 9 12.75Z"
+        fill={color}
+      />
+    </Svg>
+  );
+}
+
+export function ProfileSubscribersIcon({ color = "#FFFFFF", size = 18 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 18 18" fill="none">
+      <Path
+        d="M7 8C8.10457 8 9 7.10457 9 6C9 4.89543 8.10457 4 7 4C5.89543 4 5 4.89543 5 6C5 7.10457 5.89543 8 7 8Z"
+        stroke={color}
+        strokeWidth={1.2}
+      />
+      <Path
+        d="M11.5 8.5C12.3284 8.5 13 7.82843 13 7C13 6.17157 12.3284 5.5 11.5 5.5"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+      />
+      <Path
+        d="M3.5 13.5C3.5 11.567 5.067 10 7 10C8.933 10 10.5 11.567 10.5 13.5"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+      />
+      <Path
+        d="M12 10.5C13.3807 10.5 14.5 11.6193 14.5 13"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+export function ProfileAdminsIcon({ color = "#FFFFFF", size = 18 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 18 18" fill="none">
+      <Path
+        d="M9 2.5L11.2 4.1L13.8 3.9L14.1 6.5L16.2 8.1L14.8 10.3L15.2 12.9L12.6 13.4L11 15.5L9 14.2L7 15.5L5.4 13.4L2.8 12.9L3.2 10.3L1.8 8.1L3.9 6.5L4.2 3.9L6.8 4.1L9 2.5Z"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M9 6.5C9.82843 6.5 10.5 7.17157 10.5 8C10.5 8.82843 9.82843 9.5 9 9.5C8.17157 9.5 7.5 8.82843 7.5 8C7.5 7.17157 8.17157 6.5 9 6.5Z"
+        stroke={color}
+        strokeWidth={1.1}
+      />
+    </Svg>
+  );
+}

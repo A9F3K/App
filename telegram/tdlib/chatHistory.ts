@@ -13,6 +13,7 @@ import {
   type MappedChatHistoryMessage,
 } from "./messageHistoryMap.js";
 import { lastReadInboxMessageIdFromChat, lastReadOutboxMessageIdFromChat, memberCountFromChat, normalizeUnreadCount, type TdChat, type TdMessage } from "./chatPreview.js";
+import { logGateway } from "./gatewayLog.js";
 import type { TdUserProfileCache } from "./tdUserProfile.js";
 
 export type { ChatKind, MappedChatHistoryMessage };
@@ -132,11 +133,17 @@ export async function fetchChatHistory(
   let cursorMessageId: number | null = loadOlder ? beforeMessageId! : null;
   let lastBatchWasFull = false;
   let lastRawOldestId: number | null = null;
+  let hitEof = false;
   let batches = 0;
+  let totalRaw = 0;
+  let totalMapped = 0;
   const maxBatches = 20;
   const batchFullThreshold = loadOlder ? pageLimit : rawBatchLimit;
 
-  while (batches < maxBatches) {
+  // Keep paging until we fill pageLimit or TDLib returns an empty page.
+  // Short first pages are common after openChat and must NOT be treated as EOF
+  // (that left chats like channels stuck at 2–4 visible messages).
+  while (batches < maxBatches && mappedById.size < pageLimit) {
     let raw = await loadPage(cursorMessageId);
     // tdesktop/TDLib: first older page can briefly return empty while the
     // server slice is still warming after openChat — retry with backoff
@@ -156,26 +163,53 @@ export async function fetchChatHistory(
     }
     if (raw.length === 0) {
       lastBatchWasFull = false;
+      hitEof = true;
       break;
     }
 
     lastBatchWasFull = raw.length >= batchFullThreshold;
     lastRawOldestId = oldestRawMessageId(raw) ?? lastRawOldestId;
     const freshChat = (await client.invoke({ _: "getChat", chat_id: chatId })) as TdChat;
+    const sizeBefore = mappedById.size;
     const mapped = await mapHistoryBatch(client, raw, freshChat);
+    totalRaw += raw.length;
+    totalMapped += mapped.length;
     for (const row of mapped) {
       mappedById.set(row.telegram_message_id, row);
-    }
-
-    if (mappedById.size >= pageLimit || !lastBatchWasFull) {
-      break;
     }
 
     const oldestRawId = oldestRawMessageId(raw);
     if (oldestRawId == null) {
       lastBatchWasFull = false;
+      hitEof = true;
       break;
     }
+
+    if (mapped.length < raw.length) {
+      logGateway("chat_history_map_drop", {
+        chatId,
+        loadOlder,
+        batch: batches,
+        rawCount: raw.length,
+        mappedCount: mapped.length,
+        dropped: raw.length - mapped.length,
+        mappedTotal: mappedById.size,
+        pageLimit,
+      });
+    }
+
+    // Filled the requested page — stop; has_more_older stays open unless EOF.
+    if (mappedById.size >= pageLimit) {
+      break;
+    }
+
+    // No new mapped rows and cursor cannot advance — treat as EOF.
+    if (mappedById.size === sizeBefore && oldestRawId === cursorMessageId) {
+      hitEof = true;
+      break;
+    }
+
+    // Short batch is not EOF: walk older from the oldest raw id.
     cursorMessageId = oldestRawId;
     batches += 1;
   }
@@ -190,22 +224,32 @@ export async function fetchChatHistory(
     messages = applyCumulativeOutgoingReadStatuses(messages);
   }
   const oldestReturnedId = messages[0]?.telegram_message_id ?? null;
-  // tdesktop/TDLib: short pages are common and are not EOF. For older loads,
-  // keep pagination open whenever this page returned rows — the next request
-  // returning empty is what closes the edge.
-  const hasMoreOlder = loadOlder
-    ? messages.length > 0 ||
-      (lastBatchWasFull && lastRawOldestId != null)
-    : sorted.length > pageLimit || (lastBatchWasFull && oldestReturnedId != null);
-  const nextBeforeMessageId = loadOlder
-    ? messages.length > 0
-      ? oldestReturnedId
-      : lastBatchWasFull && lastRawOldestId != null
-        ? lastRawOldestId
-        : null
-    : hasMoreOlder && oldestReturnedId != null
-      ? oldestReturnedId
-      : null;
+  // Empty page closes the edge. Otherwise keep pagination open when we returned
+  // rows, hit the page budget, or only raw rows survived (all mapped null).
+  const hasMoreOlder =
+    !hitEof &&
+    (messages.length > 0 ||
+      mappedById.size >= pageLimit ||
+      lastBatchWasFull ||
+      (lastRawOldestId != null && totalRaw > totalMapped && totalRaw > 0));
+  const nextBeforeMessageId = hasMoreOlder
+    ? oldestReturnedId ?? lastRawOldestId
+    : null;
+
+  logGateway("chat_history_page", {
+    chatId,
+    loadOlder,
+    beforeMessageId: beforeMessageId ?? null,
+    pageLimit,
+    batches,
+    totalRaw,
+    totalMapped,
+    returned: messages.length,
+    hasMoreOlder,
+    hitEof,
+    lastBatchWasFull,
+    nextBeforeMessageId,
+  });
 
   const lastReadOutbox = effectiveReadOutboxMessageId(
     lastReadOutboxMessageIdFromChat(finalChat),

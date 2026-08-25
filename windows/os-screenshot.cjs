@@ -1,8 +1,6 @@
 const { spawnSync } = require("child_process");
 const path = require("path");
 
-const VK_SNAPSHOT = 0x2c;
-const KEYEVENTF_KEYUP = 0x0002;
 const WDA_NONE = 0;
 
 function isPrintScreenKey(input) {
@@ -33,7 +31,6 @@ const WIN32_USER_SCRIPT = [
   "using System;",
   "using System.Runtime.InteropServices;",
   "public class HspWinUser {",
-  "  [DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);",
   "  [DllImport(\"user32.dll\")] public static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);",
   "}",
   "\"@",
@@ -68,22 +65,10 @@ function clearWindowDisplayAffinity(hwnd, log) {
   );
 }
 
-let lastSyntheticPrintScreenAt = 0;
-
-/** Re-inject VK_SNAPSHOT when Chromium intercepts Print Screen on Windows. */
-function triggerWindowsPrintScreenOsCapture(log) {
-  const now = Date.now();
-  if (now - lastSyntheticPrintScreenAt < 350) return true;
-  lastSyntheticPrintScreenAt = now;
-
-  return runWindowsUserScript(
-    "[HspWinUser]::keybd_event(0x2C, 0, 0, [UIntPtr]::Zero); " +
-      "[HspWinUser]::keybd_event(0x2C, 0, 2, [UIntPtr]::Zero)",
-    log,
-    "keybd_event",
-  );
-}
-
+/**
+ * Sync: Electron maps this to SetWindowDisplayAffinity on Windows.
+ * Must run before OS Snipping Tool / PrtScn samples the frame.
+ */
 function ensureWebContentsAllowsOsCapture(contents, log) {
   try {
     if (typeof contents?.setContentProtection === "function") {
@@ -106,6 +91,7 @@ function ensureBrowserWindowAllowsOsCapture(browserWindow, log) {
   try {
     if (typeof browserWindow.getNativeWindowHandle === "function") {
       const hwnd = hwndFromNativeBuffer(browserWindow.getNativeWindowHandle());
+      // Best-effort; PowerShell is slow — contentProtection(false) above is the fast path.
       clearWindowDisplayAffinity(hwnd, log);
     }
   } catch (e) {
@@ -113,64 +99,48 @@ function ensureBrowserWindowAllowsOsCapture(browserWindow, log) {
   }
 }
 
-async function copyFocusedWindowToClipboard(BrowserWindow, clipboard, log) {
-  const win = BrowserWindow.getFocusedWindow();
-  if (!win || win.isDestroyed()) return false;
+function ensureAllWindowsAllowOsCapture(BrowserWindow, log) {
   try {
-    const image = await win.webContents.capturePage();
-    if (!image || image.isEmpty()) return false;
-    clipboard.writeImage(image);
-    return true;
+    for (const win of BrowserWindow.getAllWindows()) {
+      ensureBrowserWindowAllowsOsCapture(win, log);
+    }
   } catch (e) {
-    log?.(`capturePage clipboard: ${e?.message || e}`);
-    return false;
-  }
-}
-
-function handlePrintScreenKey(input, electron, log) {
-  const { BrowserWindow, clipboard } = electron;
-  const focused = BrowserWindow.getFocusedWindow();
-  if (focused && !focused.isDestroyed()) {
-    ensureBrowserWindowAllowsOsCapture(focused, log);
-  }
-
-  const altActiveWindowShot = Boolean(input?.alt);
-  if (altActiveWindowShot) {
-    void copyFocusedWindowToClipboard(BrowserWindow, clipboard, log);
-    return;
-  }
-
-  const reinjected = triggerWindowsPrintScreenOsCapture(log);
-  if (!reinjected) {
-    void copyFocusedWindowToClipboard(BrowserWindow, clipboard, log);
+    log?.(`ensureAllWindowsAllowOsCapture: ${e?.message || e}`);
   }
 }
 
 /**
- * Allow OS screenshot tools (Print Screen, Snipping Tool) across every BrowserWindow.
+ * Allow OS screenshot tools (Print Screen, Snipping Tool, Win+Shift+S).
+ *
+ * Important: do NOT preventDefault PrintScreen. On Windows 10/11 that key often
+ * opens Snipping Tool / screen capture — swallowing it left users unable to
+ * screenshot, and synthetic keybd_event(VK_SNAPSHOT) is ignored by modern Windows.
+ *
  * @param {import("electron").App} electronApp
- * @param {{ BrowserWindow: typeof import("electron").BrowserWindow, clipboard: import("electron").Clipboard }} electron
+ * @param {{ BrowserWindow: typeof import("electron").BrowserWindow, clipboard?: import("electron").Clipboard }} electron
  * @param {(msg: string) => void} [log]
  */
 function registerOsScreenshotPassthrough(electronApp, electron, log) {
+  const { BrowserWindow } = electron;
+
   electronApp.on("browser-window-created", (_event, browserWindow) => {
     ensureBrowserWindowAllowsOsCapture(browserWindow, log);
     browserWindow.on("show", () => ensureBrowserWindowAllowsOsCapture(browserWindow, log));
     browserWindow.on("focus", () => ensureBrowserWindowAllowsOsCapture(browserWindow, log));
+    browserWindow.on("restore", () => ensureBrowserWindowAllowsOsCapture(browserWindow, log));
   });
 
   electronApp.on("web-contents-created", (_event, contents) => {
     ensureWebContentsAllowsOsCapture(contents, log);
     contents.on("did-finish-load", () => ensureWebContentsAllowsOsCapture(contents, log));
+    contents.on("dom-ready", () => ensureWebContentsAllowsOsCapture(contents, log));
 
     if (process.platform !== "win32") return;
 
-    contents.on("before-input-event", (event, input) => {
+    contents.on("before-input-event", (_event, input) => {
       if (!input || input.type !== "keyDown" || !isPrintScreenKey(input)) return;
-      try {
-        event.preventDefault();
-      } catch (_) {}
-      handlePrintScreenKey(input, electron, log);
+      // Never preventDefault — pass PrintScreen through to the OS.
+      ensureAllWindowsAllowOsCapture(BrowserWindow, log);
     });
   });
 }

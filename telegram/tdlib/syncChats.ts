@@ -48,9 +48,12 @@ import {
   markTier3ChatSyncEnd,
   markTier3ChatSyncStart,
   resetChatListSyncMeta,
+  resetTier3ListCursor,
   setPositionedComplete,
   setTier3Available,
   getTier3ListCursor,
+  isPositionedComplete,
+  isTier3Available,
 } from "./chatListSyncState.js";
 import { userProfileFromTdUser } from "./tdUserProfile.js";
 import {
@@ -1019,6 +1022,11 @@ export async function syncChatThreads(
     }
   }
   setPositionedComplete(telegramUsername, positionedComplete);
+  // Full main/archive/folder sync: allow one supplementary (tier-3) pass, then
+  // syncUnpositionedChatBatch clears the flag when exhausted.
+  if (positionedComplete) {
+    resetTier3ListCursor(telegramUsername);
+  }
   setTier3Available(telegramUsername, true);
   await touchMtprotoSync(telegramUsername);
 
@@ -1191,12 +1199,17 @@ export async function syncRemainingChatsInBackground(
   }
 
   setPositionedComplete(telegramUsername, true);
-  setTier3Available(telegramUsername, true);
+  // Do not re-arm tier-3 after it already exhausted — that caused an endless
+  // client load-more storm (Vercel: POST /chats-load-more every ~2s at count=375).
+  if (!getTier3ListCursor(telegramUsername).exhausted) {
+    setTier3Available(telegramUsername, true);
+  }
   await touchMtprotoSync(telegramUsername);
   logGateway("sync_chat_background_done", {
     telegramUsername,
     mergedCount: merged,
     totalCached: getLiveChatList(telegramUsername)?.length ?? 0,
+    tier3Available: isTier3Available(telegramUsername),
   });
   return merged;
 }
@@ -1278,8 +1291,11 @@ export {
 
 export function scheduleBackgroundChatSync(client: Client, telegramUsername: string): void {
   if (!markBackgroundChatSyncStart(telegramUsername)) return;
-  // Allow UI auto load-more / status to show incomplete until this pass finishes.
-  setPositionedComplete(telegramUsername, false);
+  // Only flip incomplete while the first pass is unfinished. Re-running after
+  // complete must not briefly report positionedComplete=false (client storm).
+  if (!isPositionedComplete(telegramUsername)) {
+    setPositionedComplete(telegramUsername, false);
+  }
   void (async () => {
     try {
       await syncRemainingChatsInBackground(client, telegramUsername);

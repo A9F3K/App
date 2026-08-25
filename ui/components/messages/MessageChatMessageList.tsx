@@ -32,6 +32,7 @@ import { useTelegramMessagesConnection } from "../../telegram/TelegramMessagesCo
 import {
   fetchTelegramChatHistoryPage,
   fetchTelegramChatHistorySince,
+  isTransientHistoryFetchError,
 } from "../../telegram/fetchTelegramChatHistoryPage";
 import {
   fetchChatHistoryAroundCharBudget,
@@ -2136,6 +2137,11 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const expandDisplaySliceTowardOlder = useCallback((
     _options?: { chainLoadOlderWhenAtTop?: boolean },
   ) => {
+    // Never widen the display window during open settle — prepends race bottom
+    // scroll and can leave opacity:0 with no rescheduled force-reveal timer.
+    if (initialScrollInProgressRef.current || !chatScrollPaintReadyRef.current) {
+      return false;
+    }
     // Voice dialog owns the main thread — display expands remount dozens of
     // message rows and freeze Close / green-mic updates (logs: display_expand
     // interleaved with voice_dialog_longtask ≥400ms).
@@ -3831,6 +3837,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     }
   }, [
     displayMessages.length,
+    historyLoad.generation,
     lastDisplayMessageId,
     preserveScrollY,
     scheduleOpenScrollApply,
@@ -5339,6 +5346,13 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           return;
         }
         if (result.error) {
+          if (
+            isTransientHistoryFetchError(result.error) &&
+            attempt === 0
+          ) {
+            await warmupTelegramChatSession(chat.telegram_chat_id);
+            continue;
+          }
           logPageDisplay("messages_history_load_older_error", {
             ...chatLogFields({
               chatId: chat.telegram_chat_id,
@@ -5950,6 +5964,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   const runOlderEdgeAction = useCallback(() => {
     if (isVoiceDialogUiOpen()) return;
     if (pendingItemAnchorRef.current) return;
+    if (initialScrollInProgressRef.current) return;
     if (!chatScrollPaintReadyRef.current || loadingInitial) return;
     // One prepend at a time — stacking expand+API mid-keep races the viewport.
     if (

@@ -38,6 +38,7 @@ import {
   setOpenChatFocusHold,
 } from "../messageChatHistoryPrefetch";
 import { unlockVoiceAutoplay } from "../telegram/unlockVoiceAutoplay";
+import { publishTelegramChatDirectory } from "../telegram/telegramChatDirectory";
 import { getCachedChatHistory } from "../messageChatHistoryCache";
 import {
   clearQueuedNormalNetworkFetches,
@@ -45,7 +46,7 @@ import {
 } from "./messages/networkFetchQueue";
 import { MessageChatRow, type MessageChatRowData, type MessageChatKind } from "./messages/MessageChatRow";
 import { MessageChatListContextMenu } from "./messages/MessageChatListContextMenu";
-import { useMessagesChatListSearch } from "../messages/MessagesChatListSearchContext";
+import { useMessagesChatListSearch, markChatListSearchRowPressPending } from "../messages/MessagesChatListSearchContext";
 import { ChatListBottomSentinel } from "./messages/ChatListBottomSentinel";
 import {
   getChatListSyncStatus,
@@ -152,7 +153,26 @@ function remoteSearchHitToRow(hit: TelegramChatListSearchHit): MessageChatRowDat
     chat_username: hit.chatUsername,
     chat_kind: hit.chatKind,
     list_tier: "positioned",
+    has_active_voice_chat: Boolean(hit.has_active_voice_chat),
+    voice_chat_is_joined: Boolean(hit.has_active_voice_chat && hit.voice_chat_is_joined),
   };
+}
+
+/** Prefer the live chat-list row; keep search voice flags when the live row lags. */
+function resolveSearchHitRow(
+  hit: TelegramChatListSearchHit,
+  liveById: Map<number, MessageChatRowData>,
+): MessageChatRowData {
+  const live = liveById.get(hit.chatId);
+  if (!live) return remoteSearchHitToRow(hit);
+  if (hit.has_active_voice_chat && !live.has_active_voice_chat) {
+    return {
+      ...live,
+      has_active_voice_chat: true,
+      voice_chat_is_joined: Boolean(hit.voice_chat_is_joined),
+    };
+  }
+  return live;
 }
 
 type ChatListDisplayItem =
@@ -591,7 +611,8 @@ function mergeChatRows(
     const fresh = byId.get(row.telegram_chat_id);
     if (fresh) {
       merged.push(mergeChatRowFields(row, fresh));
-    } else if (resolveChatListTier(row) !== "unpositioned") {
+    } else {
+      // Keep prev rows (including unpositioned) when a mid-sync snapshot shrinks.
       merged.push(row);
     }
     mergedIds.add(row.telegram_chat_id);
@@ -679,6 +700,10 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const chatsCountRef = useRef(0);
   chatsCountRef.current = chats.length;
   const emptyUnchangedForceRef = useRef(false);
+
+  useEffect(() => {
+    publishTelegramChatDirectory(chats);
+  }, [chats]);
 
   useEffect(() => {
     if (selectedChatId == null || selectedChat == null) return;
@@ -781,13 +806,17 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
       });
       const json = (await response.json().catch(() => ({}))) as {
         ok?: boolean;
+        started?: boolean;
         chatListSync?: ChatListSyncStatus;
       };
       if (json.chatListSync) {
         applyChatListSync(json.chatListSync);
       }
-      // Gateway pages more into cache — pull the expanded snapshot into the UI.
-      if (!isVoiceDialogUiOpen()) {
+      // Only re-pull when the gateway actually grew the cache or is still paging.
+      const cached = json.chatListSync?.cachedCount ?? 0;
+      const grew = cached > chatsCountRef.current;
+      const stillPaging = json.chatListSync?.inProgress === true || json.started === true;
+      if ((grew || stillPaging) && !isVoiceDialogUiOpen()) {
         void loadChatsRef.current({ silent: true, forceFull: true });
       }
     } catch {
@@ -1560,41 +1589,62 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const handleChatPress = useCallback(
     (item: MessageChatRowData) => {
       if (!chatSelectionEnabled) return;
+      const hadSearchUi =
+        chatListSearchFocused || chatListSearchQuery.trim().length > 0;
+      if (hadSearchUi) {
+        markChatListSearchRowPressPending();
+      }
+      const liveRow = chats.find(
+        (row) => row.telegram_chat_id === item.telegram_chat_id,
+      );
+      const resolvedItem = liveRow ?? item;
+      const sameChatAlreadyOpen =
+        selectedChatRef.current?.telegram_chat_id === resolvedItem.telegram_chat_id;
       // Unlock autoplay in the same user gesture as chat selection so WebRTC
       // remote audio can play after auto listen-only join (useEffect is too late).
-      if (item.has_active_voice_chat) {
+      if (resolvedItem.has_active_voice_chat) {
         unlockVoiceAutoplay();
       }
       logPageDisplay("messages_chat_open", chatLogFields({
-        chatId: item.telegram_chat_id,
-        peerUserId: item.peer_user_id,
-        title: item.title,
+        chatId: resolvedItem.telegram_chat_id,
+        peerUserId: resolvedItem.peer_user_id,
+        title: resolvedItem.title,
       }));
       // Pause neighbor history + demote leftover media so voice strip / open
       // history win the gateway (prod: soft poll 4–5s timeouts while previews ran).
-      setOpenChatFocusHold(item.telegram_chat_id);
+      setOpenChatFocusHold(resolvedItem.telegram_chat_id);
       demoteQueuedNetworkFetches();
       clearQueuedNormalNetworkFetches();
       // tdesktop: start full history warm before the message list mounts.
-      prefetchChatHistoryPriority(item);
+      prefetchChatHistoryPriority(resolvedItem);
       void import("../telegram/warmupTelegramChatSession").then(({ warmupTelegramChatSession }) => {
-        void warmupTelegramChatSession(item.telegram_chat_id);
+        void warmupTelegramChatSession(resolvedItem.telegram_chat_id);
       });
-      openAuthenticatedHomeChatHistory(item);
-      if (chatListSearchFocused || chatListSearchQuery.trim()) {
-        void rememberTelegramFoundChat(item.telegram_chat_id);
+      openAuthenticatedHomeChatHistory(
+        resolvedItem,
+        hadSearchUi && sameChatAlreadyOpen ? { forceReload: true } : undefined,
+      );
+      if (hadSearchUi) {
+        void rememberTelegramFoundChat(resolvedItem.telegram_chat_id);
+        dismissChatListSearch();
       }
       void import("./messages/messageChatAvatarPrefetch").then(
         ({ prefetchOpenChatListAvatar, prefetchOpenChatAvatars }) => {
-          prefetchOpenChatListAvatar(item);
-          const cached = getCachedChatHistory(item.telegram_chat_id);
+          prefetchOpenChatListAvatar(resolvedItem);
+          const cached = getCachedChatHistory(resolvedItem.telegram_chat_id);
           if (cached != null && cached.messages.length > 0) {
-            prefetchOpenChatAvatars(item, cached.messages, cached.chatKind);
+            prefetchOpenChatAvatars(resolvedItem, cached.messages, cached.chatKind);
           }
         },
       );
     },
-    [chatListSearchFocused, chatListSearchQuery, chatSelectionEnabled],
+    [
+      chatListSearchFocused,
+      chatListSearchQuery,
+      chatSelectionEnabled,
+      chats,
+      dismissChatListSearch,
+    ],
   );
 
   const handleRowPrefetch = useCallback((item: MessageChatRowData) => {
@@ -1910,7 +1960,7 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
         items.push({
           kind: "chat",
           key: `chat-${hit.chatId}`,
-          row: liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit),
+          row: resolveSearchHitRow(hit, liveById),
         });
       }
       return items;
@@ -1968,17 +2018,17 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     for (const hit of remoteDirectHits) {
       if (directIds.has(hit.chatId)) continue;
       directIds.add(hit.chatId);
-      directRows.push(liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit));
+      directRows.push(resolveSearchHitRow(hit, liveById));
     }
 
     const globalRows = remoteGlobalHits
       .filter((hit) => !directIds.has(hit.chatId))
-      .map((hit) => liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit));
+      .map((hit) => resolveSearchHitRow(hit, liveById));
     const globalIdSet = new Set(globalRows.map((row) => row.telegram_chat_id));
 
     const messageRows = remoteMessageHits
       .filter((hit) => !directIds.has(hit.chatId) && !globalIdSet.has(hit.chatId))
-      .map((hit) => liveById.get(hit.chatId) ?? remoteSearchHitToRow(hit));
+      .map((hit) => resolveSearchHitRow(hit, liveById));
 
     const items: ChatListDisplayItem[] = [];
     // column-reverse: first item sits nearest the search field (visual bottom).
@@ -2146,15 +2196,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
   const tier3Available = chatListSync?.tier3Available === true;
   const tier3InProgress = chatListSync?.tier3InProgress === true;
   const syncInProgress = chatListSync?.inProgress === true;
-  const positionedChatCount = sortedChats.filter(
-    (row) => resolveChatListTier(row) !== "unpositioned",
-  ).length;
-  const needsPositionedPage =
-    cachedChatCount > positionedChatCount ||
-    (!positionedComplete && (syncInProgress || tier3InProgress));
-  const needsTier3Page =
-    (positionedComplete || (!syncInProgress && !needsPositionedPage)) && tier3Available;
-  const mayHaveMoreOnServer = needsPositionedPage || needsTier3Page;
+  // Telegram Desktop / WebK: page until the main list is complete, then optional
+  // supplementary tail. Do NOT use "unpositioned row count" as a missing-page signal.
+  const listBehindCache = chats.length < cachedChatCount;
+  const needsPositionedPage = !positionedComplete || (listBehindCache && syncInProgress);
+  const needsTier3Page = positionedComplete && !listBehindCache && tier3Available;
+  const mayHaveMoreOnServer =
+    needsPositionedPage || needsTier3Page || syncInProgress || tier3InProgress;
   const showBottomLoader =
     !searchNeedle &&
     !recentsMode &&
@@ -2228,6 +2276,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     }
     prevChatListSyncRef.current = inProgress;
   }, [chatListSync?.inProgress]);
+
+  useEffect(() => {
+    if (listSearchActive) return;
+    if (!listBehindCache) return;
+    if (isVoiceDialogUiOpen()) return;
+    void loadChatsRef.current({ silent: true, forceFull: true });
+  }, [listBehindCache, listSearchActive, cachedChatCount, chats.length]);
 
   useEffect(() => {
     if (listSearchActive) return;
@@ -2310,9 +2365,8 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     };
   }, [
     listSearchActive,
-    displayListItems.length,
-    chatListSearchQuery,
-    remoteMessageCount,
+    searchNeedle,
+    recentsMode,
     recentSearchLoaded,
   ]);
 
@@ -2458,6 +2512,15 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           <View
             key={item.key}
             {...(Platform.OS === "web" &&
+            listSearchActive
+              ? ({
+                  onPointerDown: (e: { button?: number; stopPropagation?: () => void }) => {
+                    if (e.button != null && e.button !== 0) return;
+                    if (pinnedDragMovedRef.current) return;
+                    markChatListSearchRowPressPending();
+                  },
+                } as object)
+              : Platform.OS === "web" &&
             !listSearchActive &&
             pinnedIndexByChatId.has(item.row.telegram_chat_id)
               ? ({
@@ -2500,6 +2563,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
                   ? () => {
                       if (pinnedDragMovedRef.current) return;
                       handleChatPress(item.row);
+                    }
+                  : undefined
+              }
+              onPressIn={
+                listSearchActive && chatSelectionEnabled
+                  ? () => {
+                      markChatListSearchRowPressPending();
                     }
                   : undefined
               }

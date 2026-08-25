@@ -23,10 +23,11 @@ import {
   getChatHistoryForUser,
   getTelegramEmojiForUser,
   getMessageMediaForUser,
+  streamMessageAudioForUser,
   getUserAvatarImageForUser,
   getUserAvatarAnimationForUser,
   getUserProfileForUser,
-  getProfileAudioFileForUser,
+  streamProfileAudioForUser,
   getProfileAudioCoverForUser,
   blockUserForUser,
   unblockUserForUser,
@@ -84,6 +85,14 @@ import {
   deleteChatMessagesForUser,
   resolvePublicChatForUser,
 } from "./connectAttempts.js";
+import {
+  addSideMenuContactForUser,
+  createSideMenuChannelForUser,
+  createSideMenuGroupForUser,
+  listActiveVoiceChatsForUser,
+  listSideMenuCallHistoryForUser,
+  listSideMenuContactsForUser,
+} from "./sideMenuDialogs.js";
 import {
   pinGatewayUserSession,
   startClientIdleSweeper,
@@ -188,6 +197,12 @@ export function startTdlibGatewayServer(): http.Server {
           return;
         }
 
+        // Browser EventSource / fetch: always emit ACAO when Origin is present,
+        // including 401/4xx so the console shows auth errors instead of opaque CORS.
+        if (typeof req.headers.origin === "string" && req.headers.origin.trim()) {
+          applyGatewayBrowserCors(req, res);
+        }
+
         if (req.method === "GET" && (pathname === "/" || pathname === "/v1/health")) {
           const persistedUsernames = listPersistedSessionUsernames();
           const persistedSessions = persistedUsernames.length;
@@ -212,9 +227,6 @@ export function startTdlibGatewayServer(): http.Server {
           logGateway("unauthorized", { method: req.method, path: pathname });
           sendJson(res, 401, { ok: false, error: "unauthorized" });
           return;
-        }
-        if (streamAuth.via === "ticket") {
-          applyGatewayBrowserCors(req, res);
         }
 
         if (req.method === "GET" && pathname === "/v1/connect/persisted") {
@@ -353,6 +365,8 @@ export function startTdlibGatewayServer(): http.Server {
             peerUsername: string | null;
             chatUsername: string | null;
             chatKind: string | null;
+            has_active_voice_chat?: boolean;
+            voice_chat_is_joined?: boolean;
           };
           const directByChatId = new Map<number, SearchChatRow>();
           const globalByChatId = new Map<number, SearchChatRow>();
@@ -428,17 +442,44 @@ export function startTdlibGatewayServer(): http.Server {
           const directChats = [...directByChatId.values()];
           const globalChats = [...globalByChatId.values()];
           const messageChats = [...messageByChatId.values()];
-          const chatRows = [...directChats, ...globalChats, ...messageChats];
+          const liveVoiceByChatId = new Map<number, { active: boolean; joined: boolean }>();
+          for (const live of getLiveChatList(telegramUsername) ?? []) {
+            if (!live.has_active_voice_chat) continue;
+            liveVoiceByChatId.set(Math.trunc(live.telegram_chat_id), {
+              active: true,
+              joined: Boolean(live.voice_chat_is_joined),
+            });
+          }
+          const withLiveVoice = (row: SearchChatRow): SearchChatRow => {
+            const voice = liveVoiceByChatId.get(Math.trunc(row.chatId));
+            if (!voice) {
+              return {
+                ...row,
+                has_active_voice_chat: false,
+                voice_chat_is_joined: false,
+              };
+            }
+            return {
+              ...row,
+              has_active_voice_chat: true,
+              voice_chat_is_joined: voice.joined,
+            };
+          };
+          const directChatsOut = directChats.map(withLiveVoice);
+          const globalChatsOut = globalChats.map(withLiveVoice);
+          const messageChatsOut = messageChats.map(withLiveVoice);
+          const chatRows = [...directChatsOut, ...globalChatsOut, ...messageChatsOut];
           logGateway("chats_search_served", {
             telegramUsername,
             query,
             contactCount: contacts.length,
-            directChatCount: directChats.length,
-            globalChatCount: globalChats.length,
-            messageChatCount: messageChats.length,
+            directChatCount: directChatsOut.length,
+            globalChatCount: globalChatsOut.length,
+            messageChatCount: messageChatsOut.length,
             messageCount: messageSearch.messageCount,
             chatIdCount: chatRows.length,
             peerUserIdCount: peerUserIds.size,
+            activeVoiceCount: liveVoiceByChatId.size,
             sampleTitles: chatRows
               .slice(0, 5)
               .map((row) => row.title)
@@ -449,9 +490,9 @@ export function startTdlibGatewayServer(): http.Server {
             chatIds: chatRows.map((row) => row.chatId),
             peerUserIds: [...peerUserIds],
             chats: chatRows,
-            directChats,
-            globalChats,
-            messageChats,
+            directChats: directChatsOut,
+            globalChats: globalChatsOut,
+            messageChats: messageChatsOut,
             messageChatIds: messageSearch.chatIds,
             messageCount: messageSearch.messageCount,
             contacts,
@@ -466,9 +507,25 @@ export function startTdlibGatewayServer(): http.Server {
             return;
           }
           const chats = await searchRecentlyFoundChatsForUser(telegramUsername);
+          const liveVoiceByChatId = new Map<number, { active: boolean; joined: boolean }>();
+          for (const live of getLiveChatList(telegramUsername) ?? []) {
+            if (!live.has_active_voice_chat) continue;
+            liveVoiceByChatId.set(Math.trunc(live.telegram_chat_id), {
+              active: true,
+              joined: Boolean(live.voice_chat_is_joined),
+            });
+          }
+          const chatsOut = chats.map((row) => {
+            const voice = liveVoiceByChatId.get(Math.trunc(row.chatId));
+            return {
+              ...row,
+              has_active_voice_chat: Boolean(voice?.active),
+              voice_chat_is_joined: Boolean(voice?.joined),
+            };
+          });
           const peerUserIds = [
             ...new Set(
-              chats
+              chatsOut
                 .map((row) => row.peerUserId)
                 .filter((id): id is number => id != null && Number.isFinite(id) && id !== 0)
                 .map((id) => Math.trunc(id)),
@@ -476,17 +533,18 @@ export function startTdlibGatewayServer(): http.Server {
           ];
           logGateway("chats_recent_served", {
             telegramUsername,
-            chatCount: chats.length,
-            sampleTitles: chats
+            chatCount: chatsOut.length,
+            activeVoiceCount: liveVoiceByChatId.size,
+            sampleTitles: chatsOut
               .slice(0, 5)
               .map((row) => row.title)
               .join(" | "),
           });
           sendJson(res, 200, {
             ok: true,
-            chatIds: chats.map((row) => row.chatId),
+            chatIds: chatsOut.map((row) => row.chatId),
             peerUserIds,
-            chats,
+            chats: chatsOut,
           });
           return;
         }
@@ -1604,6 +1662,26 @@ export function startTdlibGatewayServer(): http.Server {
           const started = Date.now();
           const previewParam = (url.searchParams.get("preview") || "").trim();
           const mode = previewParam === "1" || previewParam === "true" ? "preview" : "full";
+          if (mode === "full") {
+            const rangeRaw = req.headers.range;
+            const rangeHeader = Array.isArray(rangeRaw) ? rangeRaw[0] : rangeRaw;
+            const streamed = await streamMessageAudioForUser(
+              telegramUsername,
+              chatId,
+              messageId,
+              res,
+              typeof rangeHeader === "string" ? rangeHeader : null,
+            );
+            if (streamed) {
+              logGateway("message_audio_stream_ok", {
+                telegramUsername,
+                chatId,
+                messageId,
+                ms: Date.now() - started,
+              });
+              return;
+            }
+          }
           const media = await getMessageMediaForUser(telegramUsername, chatId, messageId, mode);
           if (!media) {
             logGateway("message_media_unavailable", {
@@ -1634,22 +1712,31 @@ export function startTdlibGatewayServer(): http.Server {
           const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
           const customEmojiId = (url.searchParams.get("customEmojiId") || "").trim();
           const emoji = (url.searchParams.get("emoji") || "").trim();
+          const preferStatic =
+            url.searchParams.get("static") === "1" ||
+            url.searchParams.get("preferStatic") === "1";
           logGateway("custom_emoji_request", {
             telegramUsername: telegramUsername || null,
             hasCustomEmojiId: Boolean(customEmojiId),
             hasEmoji: Boolean(emoji),
+            preferStatic,
           });
           if (!telegramUsername || (!customEmojiId && !emoji)) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
             return;
           }
           const started = Date.now();
-          const sticker = await getTelegramEmojiForUser(telegramUsername, { customEmojiId, emoji });
+          const sticker = await getTelegramEmojiForUser(telegramUsername, {
+            customEmojiId,
+            emoji,
+            preferStatic,
+          });
           if (!sticker) {
             logGateway("custom_emoji_unavailable", {
               telegramUsername,
               customEmojiId: customEmojiId || null,
               emoji: emoji || null,
+              preferStatic,
               ms: Date.now() - started,
             });
             sendJson(res, 404, { ok: false, error: "custom_emoji_unavailable" });
@@ -1659,6 +1746,7 @@ export function startTdlibGatewayServer(): http.Server {
             telegramUsername,
             customEmojiId: customEmojiId || null,
             emoji: emoji || null,
+            preferStatic,
             bytes: sticker.data.length,
             mime: sticker.mime,
             ms: Date.now() - started,
@@ -1809,33 +1897,36 @@ export function startTdlibGatewayServer(): http.Server {
             return;
           }
           const started = Date.now();
-          const media = await getProfileAudioFileForUser(
+          const rangeRaw = req.headers.range;
+          const rangeHeader = Array.isArray(rangeRaw) ? rangeRaw[0] : rangeRaw;
+          const streamed = await streamProfileAudioForUser(
             telegramUsername,
             peerUserId,
             fileId,
+            res,
+            typeof rangeHeader === "string" ? rangeHeader : null,
           );
-          if (!media) {
+          if (!streamed) {
             logGateway("profile_audio_unavailable", {
               telegramUsername,
               userId: safeTelegramUserIdForLog(peerUserId) ?? null,
               fileId,
               ms: Date.now() - started,
             });
-            sendJson(res, 404, { ok: false, error: "audio_unavailable" });
+            if (!res.headersSent) {
+              sendJson(res, 404, { ok: false, error: "audio_unavailable" });
+            } else {
+              res.end();
+            }
             return;
           }
           logGateway("profile_audio_ok", {
             telegramUsername,
             userId: safeTelegramUserIdForLog(peerUserId) ?? null,
             fileId,
-            bytes: media.data.length,
-            mime: media.mime,
+            streamed: true,
             ms: Date.now() - started,
           });
-          res.statusCode = 200;
-          res.setHeader("Content-Type", media.mime);
-          res.setHeader("Cache-Control", "private, max-age=3600");
-          res.end(media.data);
           return;
         }
 
@@ -1908,6 +1999,118 @@ export function startTdlibGatewayServer(): http.Server {
           return;
         }
 
+        if (req.method === "GET" && pathname === "/v1/contacts/list") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "username_required" });
+            return;
+          }
+          const contacts = await listSideMenuContactsForUser(telegramUsername);
+          sendJson(res, 200, { ok: true, contacts });
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/contacts/add") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            phoneNumber?: string;
+            firstName?: string;
+            lastName?: string;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "username_required" });
+            return;
+          }
+          const result = await addSideMenuContactForUser(telegramUsername, {
+            phoneNumber: typeof body.phoneNumber === "string" ? body.phoneNumber : "",
+            firstName: typeof body.firstName === "string" ? body.firstName : "",
+            lastName: typeof body.lastName === "string" ? body.lastName : "",
+          });
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, result);
+            return;
+          }
+          sendJson(res, 200, result);
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chats/create-group") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            title?: string;
+            userIds?: unknown;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          const userIds = Array.isArray(body.userIds)
+            ? body.userIds.map((id) => Number(id)).filter((id) => Number.isFinite(id))
+            : [];
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "username_required" });
+            return;
+          }
+          const result = await createSideMenuGroupForUser(telegramUsername, {
+            title: typeof body.title === "string" ? body.title : "",
+            userIds,
+          });
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, result);
+            return;
+          }
+          sendJson(res, 200, result);
+          return;
+        }
+
+        if (req.method === "POST" && pathname === "/v1/chats/create-channel") {
+          const body = (await readJson(req)) as {
+            telegramUsername?: string;
+            title?: string;
+            description?: string;
+          };
+          const telegramUsername =
+            typeof body.telegramUsername === "string" ? body.telegramUsername.trim() : "";
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "username_required" });
+            return;
+          }
+          const result = await createSideMenuChannelForUser(telegramUsername, {
+            title: typeof body.title === "string" ? body.title : "",
+            description: typeof body.description === "string" ? body.description : "",
+          });
+          if (!result.ok) {
+            sendJson(res, result.error === "session_not_ready" ? 503 : 400, result);
+            return;
+          }
+          sendJson(res, 200, result);
+          return;
+        }
+
+        if (req.method === "GET" && pathname === "/v1/calls/history") {
+          const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
+          if (!telegramUsername) {
+            sendJson(res, 400, { ok: false, error: "username_required" });
+            return;
+          }
+          const [activeVoiceChats, history] = await Promise.all([
+            Promise.resolve(listActiveVoiceChatsForUser(telegramUsername)),
+            listSideMenuCallHistoryForUser(telegramUsername),
+          ]);
+          sendJson(res, 200, {
+            ok: true,
+            activeVoiceChats: activeVoiceChats.map((row) => ({
+              chatId: row.telegram_chat_id,
+              title: row.title,
+              chatKind: row.chat_kind ?? null,
+              groupCallId: row.voice_chat_group_call_id,
+              isJoined: Boolean(row.voice_chat_is_joined),
+            })),
+            history,
+          });
+          return;
+        }
+
         if (req.method === "POST" && pathname === "/v1/user/unblock") {
           const body = (await readJson(req)) as {
             telegramUsername?: string;
@@ -1970,6 +2173,9 @@ export function startTdlibGatewayServer(): http.Server {
         if (req.method === "GET" && pathname === "/v1/chat/media") {
           const telegramUsername = (url.searchParams.get("telegramUsername") || "").trim();
           const chatId = Number(url.searchParams.get("chatId"));
+          const userIdRaw = url.searchParams.get("userId");
+          const userId =
+            userIdRaw != null && userIdRaw.trim() !== "" ? Number(userIdRaw) : null;
           const kindRaw = (url.searchParams.get("kind") || "").trim();
           const kind =
             kindRaw === "marked" ||
@@ -1987,15 +2193,23 @@ export function startTdlibGatewayServer(): http.Server {
           const limitRaw = url.searchParams.get("limit");
           const limit =
             limitRaw != null && limitRaw.trim() !== "" ? Number(limitRaw) : 30;
-          if (!telegramUsername || !Number.isFinite(chatId) || chatId === 0 || !kind) {
+          const hasChat = Number.isFinite(chatId) && chatId !== 0;
+          const hasUser = userId != null && Number.isFinite(userId) && userId !== 0;
+          if (!telegramUsername || (!hasChat && !hasUser) || !kind) {
             sendJson(res, 400, { ok: false, error: "invalid_params" });
             return;
           }
-          const result = await searchChatMediaForUser(telegramUsername, chatId, kind, {
-            fromMessageId:
-              fromMessageId != null && Number.isFinite(fromMessageId) ? fromMessageId : null,
-            limit: Number.isFinite(limit) ? limit : 30,
-          });
+          const result = await searchChatMediaForUser(
+            telegramUsername,
+            hasChat ? chatId : 0,
+            kind,
+            {
+              fromMessageId:
+                fromMessageId != null && Number.isFinite(fromMessageId) ? fromMessageId : null,
+              limit: Number.isFinite(limit) ? limit : 30,
+              userId: hasUser ? Math.trunc(userId!) : null,
+            },
+          );
           if (!result.ok) {
             sendJson(res, result.error === "session_not_ready" ? 503 : 400, {
               ok: false,
