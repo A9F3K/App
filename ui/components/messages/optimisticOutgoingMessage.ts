@@ -12,6 +12,39 @@ export function isOptimisticOutgoingMessageId(messageId: number): boolean {
   return Number.isFinite(messageId) && messageId < 0;
 }
 
+const OUTGOING_ECHO_WINDOW_MS = 60_000;
+
+/**
+ * Collapse a local pending bubble into the confirmed server row.
+ * Never match two real Telegram ids — consecutive outgoing stickers/photos
+ * share empty captions and would otherwise paint as a single message.
+ */
+export function shouldCollapseOutgoingEchoDuplicate(
+  row: {
+    telegram_message_id: number;
+    is_outgoing?: boolean;
+    text?: string;
+    sent_at?: string;
+  },
+  item: {
+    telegram_message_id: number;
+    is_outgoing?: boolean;
+    text?: string;
+    sent_at?: string;
+  },
+): boolean {
+  if (!row.is_outgoing || !item.is_outgoing) return false;
+  if (row.telegram_message_id === item.telegram_message_id) return false;
+  const rowOptimistic = isOptimisticOutgoingMessageId(row.telegram_message_id);
+  const itemOptimistic = isOptimisticOutgoingMessageId(item.telegram_message_id);
+  if (rowOptimistic === itemOptimistic) return false;
+  if ((row.text ?? "").trim() !== (item.text ?? "").trim()) return false;
+  const sentAt = Date.parse(item.sent_at ?? "");
+  const rowSent = Date.parse(row.sent_at ?? "");
+  if (!Number.isFinite(sentAt) || !Number.isFinite(rowSent)) return true;
+  return Math.abs(sentAt - rowSent) < OUTGOING_ECHO_WINDOW_MS;
+}
+
 export function buildOptimisticOutgoingMessage(params: {
   text: string;
   replyTarget?: MessageChatComposeReplyTarget | null;

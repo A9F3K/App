@@ -243,10 +243,26 @@ export function resolveDisplayWindow(
       ? anchorMessageId
       : loaded[loaded.length - 1]!.telegram_message_id;
 
-  // When the natural window already covers the full loaded buffer (short
-  // channel/bot threads, early history), never apply a narrowing override.
-  // Stale 1-row overrides after keepEnd trim / chat-switch races otherwise
-  // hide already-loaded stickers (logs: count=3, displayCount=1).
+  // Short threads (channel/bot with a handful of posts): the loaded buffer
+  // already fits in the display max — never slice. Stale 1-row overrides after
+  // chat-switch / prepend races otherwise hide fetched rows while cache logs
+  // still show count=3/4 (HyperlinkSpace Channel Chat).
+  if (loaded.length <= MESSAGE_LIST_DISPLAY_MAX) {
+    const full: CountSliceBounds = {
+      startIndex: 0,
+      endIndex: loaded.length - 1,
+    };
+    return {
+      bounds: full,
+      override: null,
+      anchorMessageId: resolvedAnchorId,
+      atLoadedTop: true,
+      atLoadedBottom: true,
+    };
+  }
+
+  // When the natural window already covers the full loaded buffer, never apply
+  // a narrowing override (same class of bug as the short-thread case above).
   if (base.startIndex === 0 && base.endIndex >= loaded.length - 1) {
     return {
       bounds: base,

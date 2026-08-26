@@ -786,6 +786,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       scrollTopBeforeUpdateRef.current = null;
       setPrependAnchorRestorePendingSynced(false);
       displaySliceBoundsOverrideRef.current = null;
+      // Reset settled bounds too — leaving {n,n} from the previous chat feeds
+      // afterOlderPrepend and can remount a 1-row slice on short histories.
+      displaySliceBoundsRef.current = { startIndex: 0, endIndex: -1 };
       setFrozenUnreadDividerBeforeId(null);
       setFrozenUnreadDividerCount(0);
       unreadDividerDismissedRef.current = false;
@@ -2814,20 +2817,26 @@ export function MessageChatMessageList({ chat, colors }: Props) {
   }, [loadedDisplayTailId, resolveScrollLayoutMap]);
 
   const applyCachedHistoryPage = useCallback(
-    (cached: NonNullable<ReturnType<typeof getCachedChatHistory>>, options?: { replace?: boolean }) => {
+    (cached: NonNullable<ReturnType<typeof getCachedChatHistory>>, options?: { replace?: boolean }): boolean => {
+      const stateLen = messagesCountRef.current;
+      const cacheLen = cached.messages.length;
+      // Cache holds more rows than the open list (short channel painted 1 while
+      // prefetch already has 3–4) — always absorb even mid-prepend/voice gate.
+      const cacheExtendsPaintedState = cacheLen > stateLen;
       // In-flight cache absorbs during Join remount the message list under the
       // sheet (same freeze class as prepend_merge_applied).
-      if (isVoiceDialogUiOpen() && messagesCountRef.current > 0) {
-        return;
+      if (isVoiceDialogUiOpen() && stateLen > 0 && !cacheExtendsPaintedState) {
+        return false;
       }
       if (
-        messagesCountRef.current > 0 &&
+        stateLen > 0 &&
+        !cacheExtendsPaintedState &&
         (loadingOlderRef.current ||
           loadingNewerRef.current ||
           olderLoadLockedAnchorIdRef.current > 0 ||
           olderPrependInProgressRef.current)
       ) {
-        return;
+        return false;
       }
       const replace = options?.replace !== false;
       const cachedMaxId =
@@ -2836,7 +2845,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           : 0;
       const cacheSignature = `${cached.fetchedAt}:${cached.messages.length}:${cachedMaxId}:${cached.previewOnly ? 1 : 0}:${cached.aroundUnread ? 1 : 0}:${cached.aroundMessageId ?? ""}`;
       if (!replace && cacheSignature === lastAppliedCacheSignatureRef.current) {
-        return;
+        return false;
       }
       const loadedHead =
         loadedMessagesRef.current[0]?.telegram_message_id ?? 0;
@@ -2863,8 +2872,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           ) {
             return prev;
           }
-          // Fresh replace must not keep a previous chat's 1-row display override.
+          // Fresh replace must not keep a previous chat's 1-row display window.
           displaySliceBoundsOverrideRef.current = null;
+          displaySliceBoundsRef.current = { startIndex: 0, endIndex: -1 };
           let nextMessages = cached.messages;
           // telegram-tt: first paint only the viewport around the oldest unread.
           if (
@@ -2909,8 +2919,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
               scrollAnchorMessageIdRef.current = paintAnchor;
             }
           }
+          // Never trim a cache paint — short channels must keep every fetched row.
           return mergeHistoryWithWindow([], nextMessages, true, {
-            skipTrim: !cached.previewOnly && !cached.hasMoreOlder,
+            skipTrim: true,
           });
         });
       } else {
@@ -2961,8 +2972,9 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
       setLoadingInitial(false);
       setError(null);
+      return true;
     },
-    [applyOlderPaginationCursor, bumpViewportSliceTick, chat.telegram_chat_id, applyLastReadInboxMessageId, historyMessageContext, mergeHistoryWithWindow],
+    [applyOlderPaginationCursor, bumpViewportSliceTick, chat.telegram_chat_id, applyLastReadInboxMessageId, historyMessageContext, mergeHistoryWithWindow, chat],
   );
 
   const readOutboxCursor = useMemo(
@@ -3128,12 +3140,42 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     if (bounds.endIndex < bounds.startIndex) return [];
     viewportAtLoadedTopRef.current = window.atLoadedTop;
     viewportAtLoadedBottomRef.current = window.atLoadedBottom;
-    return sliceDisplayMessages(loadedMessages, window);
+    const sliced = sliceDisplayMessages(loadedMessages, window);
+    // Belt-and-suspenders: short buffers must never mount a subset.
+    if (
+      loadedMessages.length > 1 &&
+      sliced.length < loadedMessages.length &&
+      loadedMessages.length <= MESSAGE_LIST_DISPLAY_MAX
+    ) {
+      displaySliceBoundsOverrideRef.current = null;
+      displaySliceBoundsRef.current = {
+        startIndex: 0,
+        endIndex: loadedMessages.length - 1,
+      };
+      viewportAtLoadedTopRef.current = true;
+      viewportAtLoadedBottomRef.current = true;
+      logPageDisplay("messages_history_display_window_healed", {
+        ...chatLogFields({
+          chatId: chat.telegram_chat_id,
+          peerUserId: chat.peer_user_id,
+          title: chat.title,
+        }),
+        stateCount: loadedMessages.length,
+        displayCountBefore: sliced.length,
+        startIndex: bounds.startIndex,
+        endIndex: bounds.endIndex,
+      });
+      return loadedMessages;
+    }
+    return sliced;
   }, [
     loadedMessages,
     viewportSliceTick,
     virtualScrollTick,
     userScrollInteractionTick,
+    chat.peer_user_id,
+    chat.telegram_chat_id,
+    chat.title,
   ]);
 
   const allLoadedMessagesAreFromToday = useMemo(() => {
@@ -4356,17 +4398,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       if (cacheSignature === lastAppliedCacheSignatureRef.current) return;
       if (cached.previewOnly && loadedTail > cachedMaxId) return;
       if (!cached.previewOnly && loadedTail > cachedMaxId) return;
-      applyCachedHistoryPage(cached, { replace: false });
-      logPageDisplay("messages_history_cache_hit", {
-        ...chatLogFields({
-          chatId: chat.telegram_chat_id,
-          peerUserId: chat.peer_user_id,
-          title: chat.title,
-        }),
-        count: cached.messages.length,
-        fresh: isChatHistoryCacheFresh(chat.telegram_chat_id),
-        source: "cache_listener",
-      });
+      const applied = applyCachedHistoryPage(cached, { replace: false });
+      logPageDisplay(
+        applied ? "messages_history_cache_hit" : "messages_history_cache_hit_skipped",
+        {
+          ...chatLogFields({
+            chatId: chat.telegram_chat_id,
+            peerUserId: chat.peer_user_id,
+            title: chat.title,
+          }),
+          count: cached.messages.length,
+          stateCount: messagesCountRef.current,
+          fresh: isChatHistoryCacheFresh(chat.telegram_chat_id),
+          source: "cache_listener",
+          applied,
+        },
+      );
     });
   }, [
     applyCachedHistoryPage,
@@ -4453,12 +4500,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       isChatHistoryCachePaintable(chat.telegram_chat_id);
 
     if (cacheHit || cachePaintable) {
-      applyCachedHistoryPage(cached!, { replace: true });
+      const applied = applyCachedHistoryPage(cached!, { replace: true });
       // applyCachedHistoryPage only setStates — messagesCountRef updates on the
       // next messages effect. Sync now so the deferred path does not treat a
       // successful cache paint as "unpainted" and flip loadingInitial (that
       // blocked history SSE for the whole revalidate window → lazy live stream).
-      if (cached!.messages.length > 0) {
+      if (applied && cached!.messages.length > 0) {
         messagesCountRef.current = Math.max(
           messagesCountRef.current,
           cached!.messages.length,
@@ -4466,17 +4513,23 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
       lastLiveSignatureRef.current = chatLiveSignature(chat);
       lastMessageTailSigRef.current = chatMessageTailSignature(chat);
-      logPageDisplay("messages_history_cache_hit", {
-        ...chatLogFields({
-          chatId: chat.telegram_chat_id,
-          peerUserId: chat.peer_user_id,
-          title: chat.title,
-        }),
-        count: cached!.messages.length,
-        fresh: isChatHistoryCacheFresh(chat.telegram_chat_id),
-        previewOnly: cached!.previewOnly === true,
-        paintOnly: cachePaintable,
-      });
+      logPageDisplay(
+        applied ? "messages_history_cache_hit" : "messages_history_cache_hit_skipped",
+        {
+          ...chatLogFields({
+            chatId: chat.telegram_chat_id,
+            peerUserId: chat.peer_user_id,
+            title: chat.title,
+          }),
+          count: cached!.messages.length,
+          stateCount: messagesCountRef.current,
+          fresh: isChatHistoryCacheFresh(chat.telegram_chat_id),
+          previewOnly: cached!.previewOnly === true,
+          paintOnly: cachePaintable,
+          source: "open_path",
+          applied,
+        },
+      );
     } else {
       setLoadingInitial(true);
       setMessages([]);

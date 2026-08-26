@@ -21,6 +21,7 @@ import {
   CHAT_HISTORY_WINDOW_N,
 } from "../ui/components/messages/chatHistoryWindowBudget.ts";
 import { sliceMessagesByCount } from "../ui/components/messages/messageChatViewportSlice.ts";
+import { shouldCollapseOutgoingEchoDuplicate } from "../ui/components/messages/optimisticOutgoingMessage.ts";
 
 const CHAT_SCROLL_INDICATOR_THUMB_MIN_PX = 20;
 const SCROLL_INDICATOR_THUMB_MAX_TRACK_FRAC = 0.32;
@@ -588,6 +589,54 @@ console.log("chat scroll-up smoke tests");
     nearHardTopAfterRestore,
     false,
     "after scrollTopItem restore, do not auto-chain from prefetch zone",
+  );
+}
+
+// Short channel history (e.g. HyperlinkSpace Channel Chat count≈3–4): a stale
+// display-window override must never collapse the painted rows to 1.
+{
+  const short = makeLoaded(3, 100);
+  const collapsedOverride = { startIndex: 2, endIndex: 2 };
+  const window = resolveDisplayWindow(
+    short,
+    short[2].telegram_message_id,
+    collapsedOverride,
+  );
+  assert.equal(window.override, null, "short buffer clears override");
+  assert.equal(window.bounds.startIndex, 0);
+  assert.equal(window.bounds.endIndex, 2);
+  const painted = sliceDisplayMessages(short, window);
+  assert.equal(painted.length, 3, "all short-history rows must paint");
+}
+
+{
+  const short = makeLoaded(4, 50);
+  const window = resolveDisplayWindow(short, 0, null);
+  assert.equal(window.bounds.startIndex, 0);
+  assert.equal(window.bounds.endIndex, 3);
+  assert.equal(sliceDisplayMessages(short, window).length, 4);
+}
+
+// Consecutive outgoing stickers share empty captions + timestamps. Echo
+// collapse must only pair an optimistic (negative) id with a server id —
+// otherwise HyperlinkSpace Channel Chat painted 1 of 3 stickers.
+{
+  const t0 = Date.parse("2026-08-24T10:16:00.000Z");
+  const sticker = (id) => ({
+    telegram_message_id: id,
+    is_outgoing: true,
+    text: "",
+    sent_at: new Date(t0 + id).toISOString(),
+  });
+  assert.equal(
+    shouldCollapseOutgoingEchoDuplicate(sticker(1), sticker(2)),
+    false,
+    "two real sticker ids must not collapse",
+  );
+  assert.equal(
+    shouldCollapseOutgoingEchoDuplicate(sticker(-2), sticker(3)),
+    true,
+    "pending sticker still merges into the confirmed row",
   );
 }
 

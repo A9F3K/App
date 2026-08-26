@@ -9,6 +9,7 @@ import {
   type HistoryMessageContext,
   type MessageChatHistoryItem,
 } from "./messageChatHistoryTypes";
+import { shouldCollapseOutgoingEchoDuplicate } from "./optimisticOutgoingMessage";
 import { trimMessagesAroundAnchorCount } from "./messageChatViewportSlice";
 import { estimateMessageListBlockTotalHeight } from "./messageListVirtualWindow";
 import type { MessageScrollLayoutEntry } from "./messageListLayout";
@@ -31,17 +32,9 @@ function collapseOutgoingEchoDuplicates(
       result.push(item);
       continue;
     }
-    const textKey = item.text.trim();
-    const sentAt = Date.parse(item.sent_at);
-    const dupIdx = result.findIndex((row) => {
-      if (!row.is_outgoing || row.telegram_message_id === item.telegram_message_id) {
-        return false;
-      }
-      if (row.text.trim() !== textKey) return false;
-      const rowSent = Date.parse(row.sent_at);
-      if (!Number.isFinite(sentAt) || !Number.isFinite(rowSent)) return true;
-      return Math.abs(sentAt - rowSent) < 60_000;
-    });
+    const dupIdx = result.findIndex((row) =>
+      shouldCollapseOutgoingEchoDuplicate(row, item),
+    );
     if (dupIdx >= 0) {
       const prev = result[dupIdx]!;
       result[dupIdx] =
