@@ -312,6 +312,15 @@ FunctionEnd
   !insertmacro HspInstallStepStatus 5
   !insertmacro HspInstallDetailPrint "[installer] customInstall start"
   !insertmacro HspInstallDetailPrint "[installer] files copied, waiting for Finish page"
+  ; Prefer current\exe so Start Menu / taskbar pins follow the version junction after updates.
+  ; Stamp AppUserModelID so pins group by app id (not versions\<semver>\ path) across updates.
+  IfFileExists "$INSTDIR\current\${PRODUCT_FILENAME}.exe" 0 hspSkipCurrentShortcuts
+  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}.lnk" "$INSTDIR\current\${PRODUCT_FILENAME}.exe" "" "$INSTDIR\current\${PRODUCT_FILENAME}.exe" 0
+  CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\current\${PRODUCT_FILENAME}.exe" "" "$INSTDIR\current\${PRODUCT_FILENAME}.exe" 0
+  WinShell::SetLnkAUMI "$SMPROGRAMS\${PRODUCT_NAME}.lnk" "${APP_ID}"
+  WinShell::SetLnkAUMI "$DESKTOP\${PRODUCT_NAME}.lnk" "${APP_ID}"
+  !insertmacro HspInstallDetailPrint "[installer] shortcuts pointed at current\\ + AUMID ${APP_ID}"
+hspSkipCurrentShortcuts:
   ; Trigger launch as soon as install work is complete.
   StrCmp $HspDidLaunchApp "1" hspCustomInstallAfterLaunch
   StrCpy $HspDidLaunchApp "1"

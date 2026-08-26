@@ -17,6 +17,11 @@ export function useObservedWidth(scope: string) {
     (width: number, source: WidthSource) => {
       const rounded = Math.round(width);
       setWidthPx((current) => {
+        // Split-pane remounts briefly report 0×0; keep the last real width so
+        // column layouts / scroll indicators do not collapse mid-resize.
+        if (rounded <= 0 && current > 0) {
+          return current;
+        }
         if (current === rounded) {
           return current;
         }

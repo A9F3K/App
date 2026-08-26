@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useState, type ReactNode, type RefObject 
 import { Platform, View, type StyleProp, type ViewStyle } from "react-native";
 import { createPortal } from "react-dom";
 
+import { resolveWebRefElement } from "../smart/resolveWebLayoutElement";
 import {
   isScrollIndicatorAtViewportRightEdge,
   scrollIndicatorHairlineBorderWidthPx,
@@ -13,6 +14,8 @@ import { ScrollIndicatorDragHandle } from "./ScrollIndicatorDragHandle";
 import { useTelegram } from "./Telegram";
 
 const SEAM_OVERLAY_Z = layout.authenticatedHome.scrollIndicatorOverlayZIndex;
+/** Split-pane remounts often leave shell height/width at 0 for several frames. */
+const SEAM_SYNC_RETRY_FRAMES = 24;
 
 type TrackBox = {
   /** Viewport X of the column’s right edge (thumb paints leftward from here). */
@@ -70,8 +73,8 @@ export function HspVerticalScrollIndicator({
 
   const [seamBox, setSeamBox] = useState<TrackBox | null>(null);
 
-  const applySeamBox = useCallback((x: number, y: number, w: number, h: number) => {
-    if (!(w > 0) || !(h > 0)) return;
+  const applySeamBox = useCallback((x: number, y: number, w: number, h: number): boolean => {
+    if (!(w > 0) || !(h > 0)) return false;
     const next: TrackBox = {
       rightPx: snapScrollIndicatorCoordPx(x + w),
       topPx: snapScrollIndicatorCoordPx(y),
@@ -85,23 +88,25 @@ export function HspVerticalScrollIndicator({
         ? prev
         : next,
     );
+    return true;
   }, [trackH, extendBottom]);
 
-  const syncSeamBox = useCallback(() => {
+  const syncSeamBox = useCallback((): boolean => {
     if (!overlaySeam || !show) {
       setSeamBox(null);
-      return;
+      return true;
     }
     // Prefer getBoundingClientRect — measureInWindow can miss the first paint at mid breakpoints.
     const dom = findDomNode(shellRef.current);
     if (dom) {
       const rect = dom.getBoundingClientRect();
-      applySeamBox(rect.left, rect.top, rect.width, rect.height);
-      return;
+      return applySeamBox(rect.left, rect.top, rect.width, rect.height);
     }
+    let measured = false;
     shellRef.current?.measureInWindow((x, y, w, h) => {
-      applySeamBox(x, y, w, h);
+      measured = applySeamBox(x, y, w, h);
     });
+    return measured;
   }, [overlaySeam, show, shellRef, applySeamBox]);
 
   useLayoutEffect(() => {
@@ -109,28 +114,41 @@ export function HspVerticalScrollIndicator({
       setSeamBox(null);
       return;
     }
-    const onWin = () => syncSeamBox();
+    const onWin = () => {
+      syncSeamBox();
+    };
     let ro: ResizeObserver | null = null;
     const observeShell = () => {
       const dom = findDomNode(shellRef.current);
-      if (!dom || typeof ResizeObserver === "undefined") return;
+      if (!dom || typeof ResizeObserver === "undefined") return false;
       if (ro) ro.disconnect();
       ro = new ResizeObserver(onWin);
       ro.observe(dom);
+      return true;
     };
 
     syncSeamBox();
     observeShell();
-    // Extra frames after column flex settles (common when loading already at 2 columns).
-    let raf2 = 0;
-    const raf1 = requestAnimationFrame(() => {
-      syncSeamBox();
+
+    // Extra frames after column flex settles (common when crossing the triple breakpoint).
+    let cancelled = false;
+    let frame = 0;
+    let rafId = 0;
+    let measuredOk = syncSeamBox();
+    const pump = () => {
+      if (cancelled) return;
+      measuredOk = syncSeamBox() || measuredOk;
       observeShell();
-      raf2 = requestAnimationFrame(() => {
-        syncSeamBox();
-        observeShell();
-      });
-    });
+      frame += 1;
+      // Keep retrying until measure succeeds, or budget expires (DOM may be 0×0 mid-resize).
+      if (frame < SEAM_SYNC_RETRY_FRAMES && !measuredOk) {
+        rafId = requestAnimationFrame(pump);
+      } else if (frame < 3) {
+        rafId = requestAnimationFrame(pump);
+      }
+    };
+    rafId = requestAnimationFrame(pump);
+
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
     const visualViewport = window.visualViewport;
@@ -138,8 +156,8 @@ export function HspVerticalScrollIndicator({
     visualViewport?.addEventListener("scroll", onWin);
 
     return () => {
-      cancelAnimationFrame(raf1);
-      cancelAnimationFrame(raf2);
+      cancelled = true;
+      cancelAnimationFrame(rafId);
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
       visualViewport?.removeEventListener("resize", onWin);
@@ -239,6 +257,8 @@ export function HspVerticalScrollIndicator({
 
 function findDomNode(ref: View | null): HTMLElement | null {
   if (!ref || Platform.OS !== "web") return null;
+  const fromResolver = resolveWebRefElement(ref);
+  if (fromResolver) return fromResolver;
   if (typeof HTMLElement !== "undefined" && ref instanceof HTMLElement) return ref;
   const anyRef = ref as unknown as {
     getNode?: () => unknown;

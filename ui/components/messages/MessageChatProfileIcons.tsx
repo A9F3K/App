@@ -97,9 +97,8 @@ export function ProfileImagesIcon({ color = "#FFFFFF", size = 18 }: StrokeIconPr
   return (
     <Svg width={size} height={size} viewBox="0 0 18 18" fill="none">
       <Rect x={2} y={4} width={14} height={10} rx={1} stroke={color} strokeWidth={1.2} />
-      <Path d="M2 12.5L6.5 8.5L9.5 11L12 9L16 12.5" stroke={color} strokeWidth={1.2} />
       <Path
-        d="M12.5 7.25C12.5 7.66421 12.1642 8 11.75 8C11.3358 8 11 7.66421 11 7.25C11 6.83579 11.3358 6.5 11.75 6.5C12.1642 6.5 12.5 6.83579 12.5 7.25Z"
+        d="M7.5 7.2V12.8L12.2 10L7.5 7.2Z"
         fill={color}
       />
     </Svg>

@@ -552,12 +552,27 @@ export function ChooseCurrencyTable({
       ro.observe(scrollEl);
       const inner = scrollEl.firstElementChild;
       if (inner) ro.observe(inner);
+      syncScrollMetricsFromDom();
     });
     return () => {
       cancelAnimationFrame(id);
       ro?.disconnect();
     };
-  }, [syncScrollMetricsFromDom, rows.length, visibleColumns]);
+  }, [syncScrollMetricsFromDom, rows.length, visibleColumns, widthPx, shellLayoutH]);
+
+  // After split 2↔3 remounts, FlatList may skip content-size events; re-pull DOM metrics.
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      syncScrollMetricsFromDom();
+      raf2 = requestAnimationFrame(syncScrollMetricsFromDom);
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [syncScrollMetricsFromDom, widthPx, shellLayoutH, visibleColumns]);
 
   const onScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {

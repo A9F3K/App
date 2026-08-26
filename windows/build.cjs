@@ -278,8 +278,15 @@ function compareSemverLike(a, b) {
  */
 function getWindowsAppRootFromExecPath(execPath) {
   const dir = path.dirname(execPath);
-  if (path.basename(dir).toLowerCase() === "current") {
+  const base = path.basename(dir).toLowerCase();
+  // Launched via INSTDIR\current\<exe> (junction path preserved).
+  if (base === "current") {
     return path.dirname(dir);
+  }
+  // Windows often resolves the junction → INSTDIR\versions\<semver>\<exe>.
+  const parent = path.dirname(dir);
+  if (path.basename(parent).toLowerCase() === "versions") {
+    return path.dirname(parent);
   }
   return dir;
 }
@@ -331,7 +338,23 @@ function clearAppliedVersionMarkerIfMatched() {
   } catch (_) {}
 }
 
-/** True when install-root `current` junction has newer app.asar than the running binary (flat shortcut after zip apply). */
+/** Read package.json version from an unpacked/versioned app dir (…/resources/app.asar). */
+function readWindowsPackagedVersion(appDir) {
+  try {
+    const pkgPath = path.join(appDir, "resources", "app.asar", "package.json");
+    const raw = fs.readFileSync(pkgPath, "utf8");
+    const ver = String(JSON.parse(raw)?.version || "").trim();
+    return ver || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * True when install-root `current` junction has a newer build than the running binary
+ * (flat Start Menu / taskbar shortcut after zip apply). Prefer semver over asar mtime —
+ * NSIS reinstalls can leave a newer mtime on an older flat tree.
+ */
 function windowsCurrentJunctionHasNewerBuild() {
   if (process.platform !== "win32" || !app.isPackaged) return false;
   const execDir = path.dirname(process.execPath);
@@ -340,6 +363,12 @@ function windowsCurrentJunctionHasNewerBuild() {
   const appRoot = getWindowsAppRootFromExecPath(process.execPath);
   const currentDir = path.join(appRoot, "current");
   if (!fs.existsSync(currentDir)) return false;
+
+  const currentVer = readWindowsPackagedVersion(currentDir);
+  const runningVer = readWindowsPackagedVersion(execDir) || app.getVersion();
+  if (currentVer && runningVer && compareSemverLike(currentVer, runningVer) > 0) {
+    return true;
+  }
 
   const relAsar = path.join("resources", "app.asar");
   const currentAsar = path.join(currentDir, relAsar);
@@ -352,6 +381,16 @@ function windowsCurrentJunctionHasNewerBuild() {
 
   const runningAsar = path.join(execDir, relAsar);
   if (!fs.existsSync(runningAsar)) return true;
+  // Same reported version: still hand off when asar payload differs (corrupt/partial flat).
+  if (currentVer && runningVer && compareSemverLike(currentVer, runningVer) === 0) {
+    try {
+      const c = fs.statSync(currentAsar);
+      const r = fs.statSync(runningAsar);
+      return c.size !== r.size;
+    } catch (_) {
+      return false;
+    }
+  }
   try {
     const c = fs.statSync(currentAsar);
     const r = fs.statSync(runningAsar);
@@ -375,6 +414,81 @@ function resolveWindowsCurrentLaunchExe() {
     } catch (_) {}
   }
   return null;
+}
+
+/** Path to retarget-windows-shortcuts.ps1 (works from asar via fs.readFileSync). */
+function getWindowsShortcutRetargetScriptSource() {
+  return path.join(__dirname, "retarget-windows-shortcuts.ps1");
+}
+
+/**
+ * Copy Start Menu / Desktop / Taskbar pins onto INSTDIR\current\<exe> and stamp AppUserModelID
+ * so the same pin survives versioned updates.
+ */
+function scheduleWindowsShortcutRetarget(reason) {
+  if (process.platform !== "win32" || !app.isPackaged || isDev) return false;
+  const exePath = resolveWindowsCurrentLaunchExe();
+  if (!exePath) return false;
+  const appRoot = getWindowsAppRootFromExecPath(process.execPath);
+  const src = getWindowsShortcutRetargetScriptSource();
+  let body;
+  try {
+    body = fs.readFileSync(src, "utf8");
+  } catch (e) {
+    try {
+      log(`[shortcut-retarget] missing script: ${e?.message || e}`);
+    } catch (_) {}
+    return false;
+  }
+  const ps1Path = path.join(app.getPath("temp"), `hsp-retarget-shortcuts-${Date.now()}.ps1`);
+  const logPath = path.join(app.getPath("userData"), "hsp-update-apply.log");
+  try {
+    fs.writeFileSync(ps1Path, body.charCodeAt(0) === 0xfeff ? body : `\uFEFF${body}`, "utf8");
+  } catch (e) {
+    try {
+      log(`[shortcut-retarget] write failed: ${e?.message || e}`);
+    } catch (_) {}
+    return false;
+  }
+  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows";
+  const psExe = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  try {
+    log(
+      `[shortcut-retarget] schedule reason=${reason || "startup"} exe=${exePath} appRoot=${appRoot}`,
+    );
+  } catch (_) {}
+  try {
+    const child = spawn(
+      psExe,
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-STA",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        ps1Path,
+        "-ExePath",
+        exePath,
+        "-WorkDir",
+        path.dirname(exePath),
+        "-AppId",
+        WIN_APP_USER_MODEL_ID,
+        "-AppRoot",
+        appRoot,
+        "-LogPath",
+        logPath,
+      ],
+      { detached: true, stdio: "ignore", windowsHide: true },
+    );
+    child.unref();
+    return true;
+  } catch (e) {
+    try {
+      log(`[shortcut-retarget] spawn failed: ${e?.message || e}`);
+    } catch (_) {}
+    return false;
+  }
 }
 
 /** Resolve INSTDIR\current junction target without following into the version tree. */
@@ -469,12 +583,23 @@ function tryRelaunchFromCurrentJunction() {
   } catch (_) {}
 
   try {
-    const child = spawn(currentExe, [], {
-      detached: true,
-      stdio: "ignore",
-      cwd: path.dirname(currentExe),
-      env: { ...process.env, [HSP_FROM_CURRENT_ENV]: "1" },
-    });
+    // Paths contain spaces (Program Files); PowerShell Start-Process is more reliable than
+    // child_process.spawn for detached GUI relaunch on Windows.
+    const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows";
+    const psExe = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const wd = path.dirname(currentExe);
+    const ps = [
+      "$ErrorActionPreference='Stop'",
+      `$exe=${JSON.stringify(currentExe)}`,
+      `$wd=${JSON.stringify(wd)}`,
+      `[Environment]::SetEnvironmentVariable('${HSP_FROM_CURRENT_ENV}','1','Process')`,
+      "Start-Process -FilePath $exe -WorkingDirectory $wd",
+    ].join("; ");
+    const child = spawn(
+      psExe,
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps],
+      { detached: true, stdio: "ignore", windowsHide: true },
+    );
     child.unref();
   } catch (e) {
     try {
@@ -2102,6 +2227,24 @@ function setupAutoUpdater() {
         useVersionedLayout && zipReadyVersion ? path.join(appRoot, "versions", zipReadyVersion) : null;
       const currentLink = useVersionedLayout ? path.join(appRoot, "current") : null;
       const appliedVersionMarker = getAppliedVersionMarkerPath();
+      let retargetScriptPath = null;
+      try {
+        const retargetSrc = getWindowsShortcutRetargetScriptSource();
+        if (fs.existsSync(retargetSrc)) {
+          retargetScriptPath = path.join(app.getPath("temp"), `hsp-retarget-shortcuts-${Date.now()}.ps1`);
+          const body = fs.readFileSync(retargetSrc, "utf8");
+          fs.writeFileSync(
+            retargetScriptPath,
+            body.charCodeAt(0) === 0xfeff ? body : `\uFEFF${body}`,
+            "utf8",
+          );
+        }
+      } catch (e) {
+        try {
+          logUpdater("apply", `retarget script copy failed: ${e?.message || e}`);
+        } catch (_) {}
+        retargetScriptPath = null;
+      }
       const plan = {
         stagingContent: zipStagingContentPath,
         installDir,
@@ -2118,6 +2261,8 @@ function setupAutoUpdater() {
         cleanupLegacyFlat,
         needsElevation,
         elevated: false,
+        retargetScriptPath,
+        appUserModelId: WIN_APP_USER_MODEL_ID,
       };
       fs.writeFileSync(planPath, JSON.stringify(plan), "utf8");
       logUpdater("apply", `wrote plan ${planPath} ${safeJson(plan)}`);
@@ -2286,6 +2431,23 @@ function setupAutoUpdater() {
         "    Start-Process -FilePath $env:ComSpec -ArgumentList '/c', $cmd -WorkingDirectory $workDir -WindowStyle Hidden",
         "  }",
         '  Write-ApplyLog "Start-Process returned (GUI may take a moment)"',
+        "  # Retarget Start Menu / Desktop / Taskbar pins to current\\exe + stamp AppUserModelID.",
+        "  if ($plan.useVersionedLayout -and $exePath -and $plan.retargetScriptPath -and [System.IO.File]::Exists([string]$plan.retargetScriptPath)) {",
+        "    try {",
+        "      $rtArgs = @(",
+        "        '-NoProfile','-STA','-ExecutionPolicy','Bypass','-File', [string]$plan.retargetScriptPath,",
+        "        '-ExePath', $exePath,",
+        "        '-WorkDir', $workDir,",
+        "        '-AppId', [string]$plan.appUserModelId,",
+        "        '-AppRoot', [string]$plan.appRoot,",
+        "        '-LogPath', $LogFile",
+        "      )",
+        "      $rt = Start-Process -FilePath $PSHOME\\powershell.exe -ArgumentList $rtArgs -Wait -PassThru -WindowStyle Hidden",
+        '      Write-ApplyLog ("shortcut retarget exit=" + $rt.ExitCode)',
+        "    } catch {",
+        '      Write-ApplyLog ("shortcut retarget failed: " + $_.Exception.Message)',
+        "    }",
+        "  }",
         "  # Flat-root refresh is best-effort and MUST NOT block relaunch. Never Remove-Item",
         "  # the Program Files tree (can hang forever on locked files).",
         "  if ($plan.cleanupLegacyFlat -and $plan.appRoot) {",
@@ -2293,9 +2455,19 @@ function setupAutoUpdater() {
         "    $flatSrc = $src",
         "    $flatDst = [string]$plan.appRoot",
         "    $flatLog = $LogFile",
-        "    Start-Process -FilePath $robocopyExe -ArgumentList @(",
+        "    $rcArgs = @(",
         "      $flatSrc, $flatDst, '/E', '/MT:8', '/J', '/R:0', '/W:0', '/XD', 'versions', 'current', '/NFL', '/NDL', '/NJH', '/NJS'",
-        "    ) -WindowStyle Hidden",
+        "    )",
+        "    # Elevated apply helper: child Start-Process without -Verb RunAs drops admin and cannot",
+        "    # write Program Files — flat tree stays stale and taskbar keeps launching the old build.",
+        "    if ($plan.needsElevation -or $plan.elevated) {",
+        "      $argLine = ($rcArgs | ForEach-Object {",
+        "        if ($_ -match '\\s') { '\"' + ($_ -replace '\"','\"\"') + '\"' } else { $_ }",
+        "      }) -join ' '",
+        "      Start-Process -FilePath $robocopyExe -ArgumentList $argLine -WindowStyle Hidden -Verb RunAs",
+        "    } else {",
+        "      Start-Process -FilePath $robocopyExe -ArgumentList $rcArgs -WindowStyle Hidden",
+        "    }",
         "    try {",
         "      $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')",
         '      Add-Content -LiteralPath $flatLog -Encoding UTF8 -Value ("[$ts] scheduled async legacy flat robocopy")',
@@ -3037,16 +3209,19 @@ function logWindowsIconProbeAlways(windowIcon) {
  */
 function resolveWindowsTaskbarDetailsIconPath() {
   if (process.platform !== "win32" || !app.isPackaged) return null;
-  const exe = process.execPath;
+  // Prefer a stable .ico over process.execPath: after updates execPath is under
+  // versions\<semver>\ and pointing setAppDetails at a new exe path can spawn a
+  // second taskbar button even when AppUserModelID is unchanged.
   const ico = ensureWindowsIcoFileOnDiskSync();
+  if (ico && fs.existsSync(ico)) return ico;
+  const exe = process.execPath;
   try {
     if (fs.existsSync(exe)) {
       const niFromExe = nativeImage.createFromPath(exe);
       if (!niFromExe.isEmpty()) return exe;
     }
   } catch (_) {}
-  if (ico && fs.existsSync(ico)) return ico;
-  return fs.existsSync(exe) ? exe : ico;
+  return fs.existsSync(exe) ? exe : null;
 }
 
 /** Logs once per main window: summary + probe(always); full dump when HSP_DEBUG_ICON=1. */
@@ -3463,6 +3638,7 @@ app.whenReady().then(async () => {
   if (tryFinishIncompleteWindowsVersionedApply()) return;
   if (tryRelaunchFromCurrentJunction()) return;
   clearAppliedVersionMarkerIfMatched();
+  scheduleWindowsShortcutRetarget("startup");
   setupAppMenu();
   await clearStaleClientCacheIfNeeded();
   if (!isDev) {

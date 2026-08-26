@@ -110,7 +110,7 @@ function textBase(color: string, extra?: TextStyle): TextStyle {
 
 function mediaPreviewUrl(chatId: number, messageId: number): string {
   return buildApiUrl(
-    `/api/telegram-messages-media?chat_id=${encodeURIComponent(String(chatId))}&message_id=${encodeURIComponent(String(messageId))}`,
+    `/api/telegram-messages-media?chat_id=${encodeURIComponent(String(chatId))}&message_id=${encodeURIComponent(String(messageId))}&preview=1`,
   );
 }
 
