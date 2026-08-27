@@ -712,7 +712,19 @@ export function AuthenticatedHomeSplitBody({
             minHeight: 0,
           }}
         >
-          <View style={{ flex: 1, minHeight: 0, paddingHorizontal: inset }}>{third}</View>
+          <View
+            style={{
+              flex: 1,
+              minHeight: 0,
+              width: "100%",
+              alignSelf: "stretch",
+              paddingHorizontal: inset,
+              // Match middle column: allow scroll-shell bleed to the seam / viewport edge.
+              overflow: "visible",
+            }}
+          >
+            {third}
+          </View>
           <View style={columnAiBarWrapStyle}>{thirdColumnFooter}</View>
         </View>
       );
@@ -804,15 +816,27 @@ export function AuthenticatedHomeSplitBody({
               {...(webPointerProps(1) ?? {})}
               {...(Platform.OS === "web" ? {} : panResponder1.panHandlers)}
             >
-              <View pointerEvents="none" style={dividerLineStyleFor(1)} />
-            </View>
+                <View
+                  pointerEvents="none"
+                  style={dividerLineStyleFor(1)}
+                  {...(Platform.OS === "web"
+                    ? ({ dataSet: { hspSplitDividerStroke: "1" } } as object)
+                    : {})}
+                />
+              </View>
             {isTriple ? (
               <View
                 style={overlayDividerHitStyle(secondDividerLeft)}
                 {...(webPointerProps(2) ?? {})}
                 {...(Platform.OS === "web" ? {} : panResponder2.panHandlers)}
               >
-                <View pointerEvents="none" style={dividerLineStyleFor(2)} />
+                <View
+                  pointerEvents="none"
+                  style={dividerLineStyleFor(2)}
+                  {...(Platform.OS === "web"
+                    ? ({ dataSet: { hspSplitDividerStroke: "2" } } as object)
+                    : {})}
+                />
               </View>
             ) : null}
           </View>

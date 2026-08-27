@@ -141,12 +141,13 @@ export function AiSearchColumnEmptyState() {
       </View>
       {showEmptyBody ? (
         <HspScrollColumn
-          style={{ flex: 1, ...scrollShellBleed }}
+          style={{ flex: 1, minHeight: 0, ...scrollShellBleed }}
           contentContainerStyle={{
             paddingHorizontal: contentInset,
             paddingBottom: contentInset,
           }}
           indicatorColor={colors.scrollIndicator}
+          scrollbarRightInsetPx={0}
         >
           {/* Remount body when switching tabs so each tab starts from the default empty state. */}
           <AiAgentTabEmptyBody

@@ -350,6 +350,16 @@ function readWindowsPackagedVersion(appDir) {
   }
 }
 
+/** True when this process cannot load the Expo web UI (corrupt/partial flat install). */
+function windowsRunningUiBundleMissing() {
+  if (process.platform !== "win32" || !app.isPackaged || isDev) return false;
+  try {
+    return !fs.existsSync(path.join(app.getAppPath(), "dist", "index.html"));
+  } catch (_) {
+    return true;
+  }
+}
+
 /**
  * True when install-root `current` junction has a newer build than the running binary
  * (flat Start Menu / taskbar shortcut after zip apply). Prefer semver over asar mtime —
@@ -363,6 +373,12 @@ function windowsCurrentJunctionHasNewerBuild() {
   const appRoot = getWindowsAppRootFromExecPath(process.execPath);
   const currentDir = path.join(appRoot, "current");
   if (!fs.existsSync(currentDir)) return false;
+
+  // Flat Program Files tree can lose dist/ after a failed async robocopy / partial NSIS
+  // while `current` still points at a good versions/<semver> build. Always hand off.
+  if (windowsRunningUiBundleMissing() && resolveWindowsCurrentLaunchExe()) {
+    return true;
+  }
 
   const currentVer = readWindowsPackagedVersion(currentDir);
   const runningVer = readWindowsPackagedVersion(execDir) || app.getVersion();
@@ -3273,6 +3289,14 @@ async function createWindow() {
   if (!isDev && !fs.existsSync(indexHtml)) {
     log(`ERROR: index.html not found at ${indexHtml}`);
     log(`appPath=${appPath}`);
+    // Last-chance handoff: Start Menu may still launch a broken flat root while
+    // `current` has a working build (logs: only Updater opens, no main window).
+    if (tryRelaunchFromCurrentJunction()) return;
+    try {
+      log(
+        "[startup] UI bundle missing and current-junction handoff failed — open Updates and install the staged build, or launch current\\Hyperlinks Space Program.exe",
+      );
+    } catch (_) {}
     return;
   }
   if (!isDev && fs.existsSync(indexHtml)) {

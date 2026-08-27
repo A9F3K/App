@@ -43,6 +43,8 @@ export type TelegramUserProfile = {
   chat_id: number;
   title: string;
   username: string | null;
+  /** All active usernames (primary first). */
+  usernames: string[];
   bio: string | null;
   phone_number: string | null;
   status_text: string | null;
@@ -58,6 +60,8 @@ export type TelegramUserProfile = {
     subtitle: string | null;
   } | null;
   membership: TelegramChannelMembership | null;
+  gift_count: number;
+  group_in_common_count: number;
   media: {
     marked: number;
     images: number;
@@ -117,6 +121,18 @@ export async function fetchTelegramUserProfile(
         profile: {
           ...json.profile,
           is_blocked: Boolean(json.profile.is_blocked),
+          usernames: Array.isArray(json.profile.usernames)
+            ? json.profile.usernames.filter(
+                (u): u is string => typeof u === "string" && Boolean(u.trim()),
+              )
+            : json.profile.username
+              ? [json.profile.username]
+              : [],
+          gift_count: Math.max(0, Math.trunc(Number(json.profile.gift_count) || 0)),
+          group_in_common_count: Math.max(
+            0,
+            Math.trunc(Number(json.profile.group_in_common_count) || 0),
+          ),
           playlist: Array.isArray(json.profile.playlist) ? json.profile.playlist : [],
           profile_photo: normalizeTelegramProfilePhotoMarkup(json.profile.profile_photo),
           membership:

@@ -25,8 +25,12 @@ import {
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { useObservedWidth } from "../../smart/useObservedWidth";
+import { resolveWebRefElement } from "../../smart/resolveWebLayoutElement";
+import { isBrowserZoomWheelEvent } from "../../browserZoom";
 import {
   SCROLL_INDICATOR_SCROLL_EPS,
+  readScrollportOverflowPx,
+  scrollContentOverflowsViewport,
   scrollIndicatorHairlineBorderWidthPx,
   scrollIndicatorThumbSpanAndOffset,
 } from "../../scrollIndicatorPx";
@@ -504,17 +508,16 @@ export function ChooseCurrencyTable({
       getScrollableNode?: () => HTMLElement | null | undefined;
     } | null;
     const el = instance?.getScrollableNode?.();
-    if (!el) return;
-    const layoutH = el.clientHeight;
-    const contentH = el.scrollHeight;
-    const scrollYRaw = el.scrollTop;
+    const shellDom = resolveWebRefElement(shellRef.current);
+    const live = readScrollportOverflowPx(el, shellDom);
+    if (!live) return;
+    const scrollYRaw = el!.scrollTop;
     const scrollY = scrollYRaw <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : scrollYRaw;
-    if (layoutH <= 0) return;
     setScroll((prev) => ({
       ...prev,
-      layoutH,
+      layoutH: live.layoutH,
       scrollY,
-      ...(contentH > 0 ? { contentH } : {}),
+      contentH: live.contentH > 0 ? live.contentH : prev.contentH,
     }));
   }, []);
 
@@ -542,20 +545,65 @@ export function ChooseCurrencyTable({
   useEffect(() => {
     if (Platform.OS !== "web" || typeof ResizeObserver === "undefined") return;
     let ro: ResizeObserver | null = null;
+    let scrollEl: HTMLElement | null = null;
+
+    const bindScrollportBox = (el: HTMLElement) => {
+      el.style.setProperty("min-height", "0");
+      el.style.setProperty("flex", "1 1 0px");
+      el.style.setProperty("height", "0px");
+      const shellDom = resolveWebRefElement(shellRef.current);
+      const shellH = shellDom?.clientHeight ?? 0;
+      if (shellH > 0) {
+        el.style.setProperty("max-height", `${shellH}px`);
+      } else {
+        el.style.setProperty("max-height", "100%");
+      }
+    };
+
+    const onResize = () => {
+      if (scrollEl) bindScrollportBox(scrollEl);
+      syncScrollMetricsFromDom();
+    };
+
+    const onZoomWheel = (e: WheelEvent) => {
+      if (!isBrowserZoomWheelEvent(e)) return;
+      requestAnimationFrame(() => {
+        onResize();
+        requestAnimationFrame(onResize);
+      });
+    };
+
     const id = requestAnimationFrame(() => {
       const instance = flatListRef.current as unknown as {
         getScrollableNode?: () => HTMLElement | null | undefined;
       } | null;
-      const scrollEl = instance?.getScrollableNode?.();
-      if (!scrollEl) return;
-      ro = new ResizeObserver(() => syncScrollMetricsFromDom());
-      ro.observe(scrollEl);
-      const inner = scrollEl.firstElementChild;
+      const next = instance?.getScrollableNode?.();
+      if (!next) return;
+      scrollEl = next;
+      bindScrollportBox(next);
+      ro = new ResizeObserver(onResize);
+      ro.observe(next);
+      const inner = next.firstElementChild;
       if (inner) ro.observe(inner);
-      syncScrollMetricsFromDom();
+      const shellDom = resolveWebRefElement(shellRef.current);
+      if (shellDom && shellDom !== next) {
+        ro.observe(shellDom);
+      }
+      onResize();
     });
+
+    window.addEventListener("resize", onResize);
+    window.addEventListener("wheel", onZoomWheel, { passive: true });
+    const visualViewport = window.visualViewport;
+    visualViewport?.addEventListener("resize", onResize);
+    visualViewport?.addEventListener("scroll", onResize);
+
     return () => {
       cancelAnimationFrame(id);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("wheel", onZoomWheel);
+      visualViewport?.removeEventListener("resize", onResize);
+      visualViewport?.removeEventListener("scroll", onResize);
       ro?.disconnect();
     };
   }, [syncScrollMetricsFromDom, rows.length, visibleColumns, widthPx, shellLayoutH]);
@@ -635,7 +683,7 @@ export function ChooseCurrencyTable({
     const viewH = scroll.layoutH;
     const contentH = scroll.contentH;
     const y = scroll.scrollY;
-    if (trackH <= 0 || viewH <= 0 || contentH <= 0 || contentH <= viewH + 0.5) {
+    if (trackH <= 0 || viewH <= 0 || contentH <= 0 || !scrollContentOverflowsViewport(contentH, viewH)) {
       return { show: false as const, thumbH: 0, thumbTop: 0, trackH: 0, trackTop };
     }
     const maxScroll = Math.max(1e-6, contentH - viewH);

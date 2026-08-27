@@ -88,10 +88,10 @@ export function resolveFloatingDialogDefaultSize(
 
   switch (kind) {
     case "profile":
-      // Wider/taller than the old 320×420, still inside the viewport.
+      // Width-first guess; fitContentHeight shrinks height to the sheet body.
       return prefer(
         Math.min(420, Math.max(360, Math.round(windowWidth * 0.34))),
-        Math.min(640, Math.max(520, Math.round(windowHeight * 0.78))),
+        Math.min(520, Math.max(280, Math.round(windowHeight * 0.55))),
       );
     case "profileList":
       // Media / playlist: more vertical room for scrollable grids.

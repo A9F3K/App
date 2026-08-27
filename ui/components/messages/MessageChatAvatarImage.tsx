@@ -172,14 +172,19 @@ export function MessageChatAvatarImage({
 
   useEffect(() => {
     const cached = readCachedDisplayUri(uri);
-    if (cached) {
-      setDisplayUri(cached);
-    }
+    // Always realign (or clear) when `uri` changes. Keeping the previous blob
+    // let React-recycled voice-strip slots paint peer A's face on peer B until
+    // B's fetch finished — and expo-image onLoad could flip opacity back on
+    // that stale blob mid-swap.
+    setDisplayUri(cached);
   }, [uri, cacheRevision]);
 
   useEffect(() => {
     if (!loadEnabled) return;
-    if (isMessageChatAvatarFetchFailed(uri)) return;
+    if (isMessageChatAvatarFetchFailed(uri)) {
+      setDisplayUri(null);
+      return;
+    }
     // Pause list/history avatar HTTP while the voice sheet is open. Voice roster
     // uses high/critical and stays allowed.
     if (isVoiceDialogUiOpen() && fetchPriority === "normal") return;
@@ -198,7 +203,10 @@ export function MessageChatAvatarImage({
       const next = await fetchAvatarBlob(uri);
       if (!cancelled) {
         if (next) setDisplayUri(next);
-        else onErrorRef.current?.(new Error("avatar_unavailable"));
+        else {
+          setDisplayUri(null);
+          onErrorRef.current?.(new Error("avatar_unavailable"));
+        }
       }
     }, { priority: fetchPriority });
 

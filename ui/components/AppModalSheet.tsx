@@ -10,8 +10,14 @@ import {
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { layout, typographyFixedRow40Label, typographyRect15, typographySansSemibold, useColors } from "../theme";
 import { FloatingDialogCloseButton } from "./FloatingDialogCloseButton";
-import { FloatingDialogShell } from "./FloatingDialogShell";
-import { resolveFloatingDialogDefaultSize } from "./floatingDialogGeometry";
+import {
+  FloatingDialogShell,
+  useFloatingDialogContentSizing,
+} from "./FloatingDialogShell";
+import {
+  resolveFloatingDialogDefaultSize,
+  type FloatingDialogSize,
+} from "./floatingDialogGeometry";
 import { HspScrollColumn } from "./HspScrollColumn";
 import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
 
@@ -116,7 +122,102 @@ type Props = {
   footer?: ReactNode;
   /** Stronger left-aligned heading for single-step dialogs (e.g. 2FA password). */
   titleEmphasis?: "default" | "primary";
+  /** Shrink sheet height to the form on first open (short auth / confirm dialogs). */
+  fitContentHeight?: boolean;
+  minSize?: FloatingDialogSize;
+  sizeStorageKey?: string;
+  offsetStorageKey?: string;
 };
+
+function AppModalSheetBody({
+  title,
+  children,
+  footer,
+  titleEmphasis,
+  onClose,
+  fitContentHeight,
+}: {
+  title: string;
+  children: ReactNode;
+  footer?: ReactNode;
+  titleEmphasis: "default" | "primary";
+  onClose: () => void;
+  fitContentHeight: boolean;
+}) {
+  const colors = useColors();
+  const { t } = useAppStrings();
+  // During the first fit-content measure pass the shell reports contentSizing;
+  // keep the same non-flex body after lock so the OTP field is not remounted.
+  const contentSizing = useFloatingDialogContentSizing();
+  const useIntrinsicBody = fitContentHeight || contentSizing;
+
+  const header = (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "flex-start",
+        marginBottom: title ? 8 : 0,
+        minHeight: 28,
+      }}
+    >
+      <Text
+        style={[
+          titleEmphasis === "primary"
+            ? [typographySansSemibold, appModalSheetStyles.titlePrimary]
+            : [typographyRect15, appModalSheetStyles.title],
+          {
+            color: colors.primary,
+            flex: 1,
+            minWidth: 0,
+            marginBottom: 0,
+            paddingRight: 8,
+          },
+        ]}
+      >
+        {title}
+      </Text>
+      <FloatingDialogCloseButton label={t("common.close")} onPress={onClose} />
+    </View>
+  );
+
+  // Intrinsic / fit-content sheets must not use HspScrollColumn (flex/height:0 collapses).
+  if (useIntrinsicBody) {
+    return (
+      <View
+        style={{
+          paddingHorizontal: 20,
+          paddingTop: 16,
+          paddingBottom: 20,
+          ...(fitContentHeight && !contentSizing
+            ? { flex: 1, minHeight: 0 }
+            : null),
+        }}
+      >
+        {header}
+        {children}
+        {footer}
+      </View>
+    );
+  }
+
+  return (
+    <HspScrollColumn
+      style={{ flex: 1, minHeight: 0 }}
+      contentContainerStyle={{
+        paddingHorizontal: 20,
+        paddingTop: 16,
+        paddingBottom: 20,
+      }}
+      scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+      scrollIndicatorOverlaySeam={false}
+      containOverscroll
+    >
+      {header}
+      {children}
+      {footer}
+    </HspScrollColumn>
+  );
+}
 
 export function AppModalSheet({
   visible,
@@ -125,9 +226,11 @@ export function AppModalSheet({
   children,
   footer,
   titleEmphasis = "default",
+  fitContentHeight = false,
+  minSize = { width: 300, height: 240 },
+  sizeStorageKey = "hsp.appModalSheet.size.v3",
+  offsetStorageKey = "hsp.appModalSheet.offset.v3",
 }: Props) {
-  const colors = useColors();
-  const { t } = useAppStrings();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const defaultSize = useMemo(
     () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "modal"),
@@ -139,52 +242,22 @@ export function AppModalSheet({
       visible={visible}
       zIndex={10070}
       defaultSize={defaultSize}
-      minSize={{ width: 300, height: 240 }}
-      sizeStorageKey="hsp.appModalSheet.size.v3"
-      offsetStorageKey="hsp.appModalSheet.offset.v3"
+      minSize={minSize}
+      sizeStorageKey={sizeStorageKey}
+      offsetStorageKey={offsetStorageKey}
+      fitContentHeight={fitContentHeight}
       onRequestClose={onClose}
       testId="app-modal"
     >
-      <HspScrollColumn
-        style={{ flex: 1, minHeight: 0 }}
-        contentContainerStyle={{
-          paddingHorizontal: 20,
-          paddingTop: 16,
-          paddingBottom: 20,
-        }}
-        scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
-        scrollIndicatorOverlaySeam={false}
-        containOverscroll
+      <AppModalSheetBody
+        title={title}
+        footer={footer}
+        titleEmphasis={titleEmphasis}
+        onClose={onClose}
+        fitContentHeight={fitContentHeight}
       >
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "flex-start",
-            marginBottom: title ? 8 : 0,
-            minHeight: 28,
-          }}
-        >
-          <Text
-            style={[
-              titleEmphasis === "primary"
-                ? [typographySansSemibold, appModalSheetStyles.titlePrimary]
-                : [typographyRect15, appModalSheetStyles.title],
-              {
-                color: colors.primary,
-                flex: 1,
-                minWidth: 0,
-                marginBottom: 0,
-                paddingRight: 8,
-              },
-            ]}
-          >
-            {title}
-          </Text>
-          <FloatingDialogCloseButton label={t("common.close")} onPress={onClose} />
-        </View>
         {children}
-        {footer}
-      </HspScrollColumn>
+      </AppModalSheetBody>
     </FloatingDialogShell>
   );
 }

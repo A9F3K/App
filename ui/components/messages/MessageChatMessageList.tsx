@@ -192,6 +192,8 @@ const LOAD_OLDER_PAGE_COOLDOWN_MS = 500;
 /** Empty older pages may be TDLib warmup; soft-fail before permanent EOF. */
 const OLDER_EMPTY_SOFT_FAIL_BUDGET = 3;
 const OLDER_EMPTY_SOFT_FAIL_COOLDOWN_MS = 1200;
+/** Absolute cap: never leave the open-chat spinner forever if a fetch chain stalls. */
+const HISTORY_OPEN_LOAD_WATCHDOG_MS = 45_000;
 /** telegram-tt FAB_THRESHOLD — hide scroll-down when within this distance of bottom (read chats). */
 const FAB_VISIBILITY_THRESHOLD_PX = 50;
 /** telegram-tt NOTCH_THRESHOLD — unread chats hide FAB only at exact bottom. */
@@ -1096,7 +1098,27 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     markUserScrollInteraction("down");
     dismissUnreadDivider();
     displaySliceBoundsOverrideRef.current = null;
+    isScrollTopJustUpdatedRef.current = true;
+    programmaticScrollRef.current = true;
     scrollControllerRef.current?.scrollToEnd();
+    {
+      const metrics = scrollControllerRef.current?.getMetrics();
+      const layoutH = metrics?.layoutH ?? pinnedLayoutHRef.current;
+      const contentH = metrics?.contentH ?? 0;
+      const targetY =
+        layoutH > 0 && contentH > 0 ? Math.max(0, contentH - layoutH) : 0;
+      pinnedScrollYRef.current = targetY;
+      lastScrollYRef.current = targetY;
+      if (contentH > 0) {
+        scrollOffsetRef.current = Math.max(contentH - targetY, layoutH);
+      }
+    }
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        isScrollTopJustUpdatedRef.current = false;
+        programmaticScrollRef.current = false;
+      });
+    });
     followingBottomRef.current = true;
     setIsFollowingBottom(true);
     allowUnreadResetAtBottomRef.current = true;
@@ -1485,21 +1507,78 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     }, lockMs);
   }, []);
 
+  /**
+   * Telegram Web/Desktop: open a fully-read chat on the live tail and keep the
+   * pin through media/sticker height inflation. Always sync MessageList's
+   * pinnedScrollYRef — HspScrollColumn.scrollToEnd alone used to leave it at 0,
+   * which looked like the older edge and started prepend/load-older races.
+   */
+  const pinScrollToEnd = useCallback((reason: string) => {
+    isScrollTopJustUpdatedRef.current = true;
+    programmaticScrollRef.current = true;
+    scrollControllerRef.current?.scrollToEnd();
+    const metrics = scrollControllerRef.current?.getMetrics();
+    const layoutH = metrics?.layoutH ?? pinnedLayoutHRef.current;
+    const contentH = metrics?.contentH ?? 0;
+    const targetY =
+      layoutH > 0 && contentH > 0 ? Math.max(0, contentH - layoutH) : 0;
+    pinnedScrollYRef.current = targetY;
+    lastScrollYRef.current = targetY;
+    openScrollSettledYRef.current = targetY;
+    if (contentH > 0) {
+      scrollOffsetRef.current = Math.max(contentH - targetY, layoutH);
+    }
+    followingBottomRef.current = true;
+    setIsFollowingBottom(true);
+    setAuthenticatedHomeOpenChatFollowingBottom(true);
+    allowUnreadResetAtBottomRef.current = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        isScrollTopJustUpdatedRef.current = false;
+        programmaticScrollRef.current = false;
+      });
+    });
+    logMessagesScrollAction("pin_scroll_to_end", {
+      reason,
+      scrollY: targetY,
+      layoutH,
+      contentH,
+    });
+    return targetY;
+  }, [logMessagesScrollAction]);
+
   const settleOpenBottomScroll = useCallback(() => {
     if (openScrollAnchorRef.current !== "bottom") return;
-    const metrics = scrollControllerRef.current?.getMetrics();
-    const contentFits =
-      metrics != null &&
-      metrics.layoutH > 0 &&
-      metrics.contentH > 0 &&
-      metrics.contentH <= metrics.layoutH + 0.5;
-    if (!contentFits) {
-      scrollControllerRef.current?.scrollToEnd();
-    }
+    // Always pin to the latest row — do not skip when content briefly "fits"
+    // before sticker/media layouts inflate (that left short read chats at top).
+    pinScrollToEnd("open_settle_bottom");
+    layoutSettlingUntilRef.current = Date.now() + 1200;
     initialScrollInProgressRef.current = false;
     setInitialScrollInProgress(false);
-    allowUnreadResetAtBottomRef.current = true;
-  }, []);
+    // Re-pin while sticker/media rows inflate past the first paint (telegram-tt
+    // keeps sticking to the live bottom until the open settle is stable).
+    let attempts = 0;
+    const rePin = () => {
+      if (userHasScrolledSinceOpenRef.current) return;
+      if (openScrollAnchorRef.current !== "bottom" && !followingBottomRef.current) {
+        return;
+      }
+      if (openingUnreadCountRef.current > 0) return;
+      const live = scrollControllerRef.current?.getMetrics();
+      if (
+        live &&
+        live.layoutH > 0 &&
+        live.contentH > live.layoutH + 0.5 &&
+        !isChatScrollNearBottom(live.scrollY, live.layoutH, live.contentH)
+      ) {
+        pinScrollToEnd("open_settle_bottom_repin");
+      }
+      if (++attempts < 24 && Date.now() < layoutSettlingUntilRef.current) {
+        requestAnimationFrame(rePin);
+      }
+    };
+    requestAnimationFrame(rePin);
+  }, [pinScrollToEnd]);
 
   const enableEdgeLoadingAfterOpen = useCallback(() => {
     scrollControllerRef.current?.clearNearTopLatch();
@@ -1534,8 +1613,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             );
       const anchorId = topViewportAnchorMessageId(display, layoutMap, metrics);
       const followingBottom =
-        followingBottomRef.current ||
-        isChatScrollNearBottom(metrics.scrollY, metrics.layoutH, metrics.contentH);
+        isChatScrollNearBottom(metrics.scrollY, metrics.layoutH, metrics.contentH) &&
+        (followingBottomRef.current ||
+          isAtLoadedChatTail(
+            lastDisplayMessageIdRef.current,
+            chatTailMessageIdRef.current,
+          ));
       const anchorEntry =
         anchorId != null && anchorId > 0 ? layoutMap.get(anchorId) : undefined;
       const anchorOffsetFromViewportTop =
@@ -2512,7 +2595,25 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         !initialScrollInProgressRef.current &&
         Date.now() >= openUnreadAnchorLockUntilRef.current
       ) {
-        if (userScrollingUpRef.current || nearTop) {
+        // Fully-read + following bottom: scrollY≈0 before media inflate must not
+        // start older history (Telegram opens at the live tail; user scroll-up
+        // is what unlocks the older edge).
+        const stickingToReadTail =
+          openingUnreadCountRef.current <= 0 &&
+          !userHasScrolledSinceOpenRef.current &&
+          !userScrollingUpRef.current &&
+          (followingBottomRef.current || openScrollAnchorRef.current === "bottom");
+        if (stickingToReadTail) {
+          followingBottomRef.current = true;
+          setIsFollowingBottom(true);
+          setAuthenticatedHomeOpenChatFollowingBottom(true);
+          if (
+            metrics.contentH > metrics.layoutH + 0.5 &&
+            !nearBottom
+          ) {
+            pinScrollToEnd("read_tail_stick_near_top");
+          }
+        } else if (userScrollingUpRef.current || nearTop) {
           loadOlderAdvanceChainRef.current = true;
           runOlderEdgeActionRef.current();
         }
@@ -2542,6 +2643,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     [
       chat.unread_count,
       logMessagesScrollAction,
+      pinScrollToEnd,
       scheduleVirtualScrollWindowUpdate,
       scrollAnchorRestorePending,
       settleOpenUnreadDividerScroll,
@@ -2622,20 +2724,31 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     if (!metrics || metrics.contentH <= 0 || metrics.layoutH <= 0) return false;
 
     if (state.followingBottom && openingUnreadCountRef.current <= 0) {
-      const contentFits = metrics.contentH <= metrics.layoutH + 0.5;
-      if (!contentFits) {
-        scrollControllerRef.current?.scrollToEnd();
-      }
-      const atTrueTail = isAtLoadedChatTail(
-        loadedDisplayTailId(),
-        chatTailMessageIdRef.current,
-      );
-      const follow = atTrueTail && openingUnreadCountRef.current <= 0;
-      followingBottomRef.current = follow;
-      setIsFollowingBottom(follow);
-      setAuthenticatedHomeOpenChatFollowingBottom(follow);
-      allowUnreadResetAtBottomRef.current = follow;
+      // Telegram Web/Desktop: a followingBottom restore is a bottom open. Keep
+      // sticking even when the first paint is a short/incomplete cache that does
+      // not yet include last_message — otherwise scrollY stays 0 and older-load
+      // races begin (read chats opening at the oldest rows).
+      pinScrollToEnd("restore_following_bottom");
+      layoutSettlingUntilRef.current = Date.now() + 1200;
       holdOlderEdgeAfterRestoreRef.current = false;
+      let attempts = 0;
+      const rePin = () => {
+        if (userHasScrolledSinceOpenRef.current) return;
+        if (openingUnreadCountRef.current > 0) return;
+        const live = scrollControllerRef.current?.getMetrics();
+        if (
+          live &&
+          live.layoutH > 0 &&
+          live.contentH > live.layoutH + 0.5 &&
+          !isChatScrollNearBottom(live.scrollY, live.layoutH, live.contentH)
+        ) {
+          pinScrollToEnd("restore_following_bottom_repin");
+        }
+        if (++attempts < 24 && Date.now() < layoutSettlingUntilRef.current) {
+          requestAnimationFrame(rePin);
+        }
+      };
+      requestAnimationFrame(rePin);
       return true;
     }
 
@@ -2814,7 +2927,7 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     allowUnreadResetAtBottomRef.current = follow;
     holdOlderEdgeAfterRestoreRef.current = !follow;
     return true;
-  }, [loadedDisplayTailId, resolveScrollLayoutMap]);
+  }, [loadedDisplayTailId, pinScrollToEnd, resolveScrollLayoutMap]);
 
   const applyCachedHistoryPage = useCallback(
     (cached: NonNullable<ReturnType<typeof getCachedChatHistory>>, options?: { replace?: boolean }): boolean => {
@@ -2972,9 +3085,33 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
       setLoadingInitial(false);
       setError(null);
+      // Cache can land after a premature empty settle — re-arm bottom pin for read chats.
+      if (
+        openScrollAnchorRef.current === "bottom" &&
+        openingUnreadCountRef.current <= 0 &&
+        !userHasScrolledSinceOpenRef.current &&
+        cached.messages.length > 0
+      ) {
+        followingBottomRef.current = true;
+        setIsFollowingBottom(true);
+        setAuthenticatedHomeOpenChatFollowingBottom(true);
+        if (!chatScrollPaintReadyRef.current) {
+          openScrollAppliedRef.current = false;
+          pendingInitialScrollRef.current = true;
+          initialScrollInProgressRef.current = true;
+          setInitialScrollInProgress(true);
+          requestAnimationFrame(() => {
+            openScrollSettleRef.current.scheduleRetry();
+          });
+        } else {
+          requestAnimationFrame(() => {
+            pinScrollToEnd("cache_paint_bottom_repin");
+          });
+        }
+      }
       return true;
     },
-    [applyOlderPaginationCursor, bumpViewportSliceTick, chat.telegram_chat_id, applyLastReadInboxMessageId, historyMessageContext, mergeHistoryWithWindow, chat],
+    [applyOlderPaginationCursor, bumpViewportSliceTick, chat.telegram_chat_id, applyLastReadInboxMessageId, historyMessageContext, mergeHistoryWithWindow, chat, pinScrollToEnd],
   );
 
   const readOutboxCursor = useMemo(
@@ -3444,14 +3581,23 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     }
     beginOpenSettlePhase(chatScrollStateRef.current);
     if (displayMessagesRef.current.length === 0) {
-      if (!loadingInitial) {
+      // Do not finalize a bottom/unread open on an empty paint — wait for cache
+      // or network rows, otherwise we reveal at scrollY=0 and never re-pin.
+      if (
+        !loadingInitial &&
+        !pendingInitialScrollRef.current &&
+        pendingScrollRestoreRef.current == null &&
+        openScrollAnchorRef.current !== "bottom" &&
+        !openScrollToUnreadDividerRef.current
+      ) {
         openScrollAppliedRef.current = true;
         initialScrollInProgressRef.current = false;
         setInitialScrollInProgress(false);
         endOpenSettlePhase(chatScrollStateRef.current, scrollControllerRef.current);
         revealChatScroll();
+        return true;
       }
-      return true;
+      return false;
     }
 
     const metrics = scrollControllerRef.current?.getMetrics();
@@ -3652,6 +3798,33 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         }
       }
       if (applyOpenScrollOnce()) return;
+      // Bottom open timeout: never reveal stuck at the oldest rows.
+      if (
+        openScrollAnchorRef.current === "bottom" &&
+        openingUnreadCountRef.current <= 0 &&
+        displayMessagesRef.current.length > 0
+      ) {
+        settleOpenBottomScroll();
+        pendingInitialScrollRef.current = false;
+        pendingScrollRestoreRef.current = null;
+        openScrollAppliedRef.current = true;
+        initialScrollInProgressRef.current = false;
+        setInitialScrollInProgress(false);
+        revealChatScroll();
+        enableEdgeLoadingAfterOpen();
+        logPageDisplay("messages_open_scroll_settle", {
+          ...chatLogFields({
+            chatId: chat.telegram_chat_id,
+            peerUserId: chat.peer_user_id,
+            title: chat.title,
+          }),
+          phase: "initial_bottom_force",
+          reason: reason ?? "unspecified",
+          scrollY: pinnedScrollYRef.current,
+          openingUnread: openingUnreadCountRef.current,
+        });
+        return;
+      }
       // Last-chance restore without the live row: pin by distance-from-bottom.
       const pendingRestore = pendingScrollRestoreRef.current;
       if (pendingRestore != null) {
@@ -3758,11 +3931,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       }
       if (chatScrollPaintReadyRef.current) return;
       if (metrics.layoutH <= 0) return;
-      if (displayMessages.length === 0 && !loadingInitial) {
-        revealChatScroll();
+      if (displayMessages.length === 0) {
+        // Keep opacity:0 until rows arrive for bottom/unread opens.
+        if (
+          !loadingInitial &&
+          openScrollAnchorRef.current !== "bottom" &&
+          !openScrollToUnreadDividerRef.current
+        ) {
+          revealChatScroll();
+        }
         return;
       }
-      if (displayMessages.length === 0) return;
       scheduleOpenScrollApply();
       scheduleOpenScrollForceReveal();
     },
@@ -3857,17 +4036,16 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       !olderPrependInProgressRef.current &&
       !loadingOlderRef.current &&
       isAtLoadedChatTail(lastDisplayMessageId, chatTailMessageIdRef.current) &&
-      (newerTail || lengthGrew) &&
-      Date.now() >= layoutSettlingUntilRef.current
+      (newerTail || lengthGrew)
     ) {
       const metrics = scrollControllerRef.current?.getMetrics();
       const layoutH = metrics?.layoutH ?? pinnedLayoutHRef.current;
       const contentH = metrics?.contentH ?? 0;
-      if (
-        layoutH > 0 &&
-        contentH > 0 &&
-        isChatScrollNearBottom(pinnedScrollYRef.current, layoutH, contentH)
-      ) {
+      if (layoutH > 0 && contentH > 0) {
+        // Stick even when still at scrollY=0 after under-measured first paint —
+        // requiring near-bottom first left read chats parked on the oldest rows.
+        isScrollTopJustUpdatedRef.current = true;
+        programmaticScrollRef.current = true;
         scrollControllerRef.current?.scrollToEnd();
         const nextY = Math.max(0, contentH - layoutH);
         pinnedScrollYRef.current = nextY;
@@ -3875,6 +4053,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
         followingBottomRef.current = true;
         setIsFollowingBottom(true);
         setAuthenticatedHomeOpenChatFollowingBottom(true);
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            isScrollTopJustUpdatedRef.current = false;
+            programmaticScrollRef.current = false;
+          });
+        });
       }
     }
   }, [
@@ -4852,6 +5036,36 @@ export function MessageChatMessageList({ chat, colors }: Props) {
     applyLastReadInboxMessageId,
   ]);
 
+  // Belt-and-suspenders: if the open fetch never settles (hung body, cancelled
+  // mid-flight without finally), drop the spinner and show the error state.
+  useEffect(() => {
+    if (!loadingInitial || messages.length > 0) return;
+    const chatId = chat.telegram_chat_id;
+    const timer = setTimeout(() => {
+      if (messagesCountRef.current > 0) {
+        setLoadingInitial(false);
+        return;
+      }
+      logPageDisplay("messages_history_load_watchdog_timeout", {
+        ...chatLogFields({
+          chatId,
+          peerUserId: chat.peer_user_id,
+          title: chat.title,
+        }),
+        timeoutMs: HISTORY_OPEN_LOAD_WATCHDOG_MS,
+      });
+      setError("gateway_timeout_retry");
+      setLoadingInitial(false);
+    }, HISTORY_OPEN_LOAD_WATCHDOG_MS);
+    return () => clearTimeout(timer);
+  }, [
+    loadingInitial,
+    messages.length,
+    chat.telegram_chat_id,
+    chat.peer_user_id,
+    chat.title,
+  ]);
+
   useEffect(() => {
     if (!shouldLoadHistory || !isAuthenticated || !isTelegramMessagesConnected || loadingInitial) {
       return;
@@ -5440,8 +5654,12 @@ export function MessageChatMessageList({ chat, colors }: Props) {
           // truncated, cache still warming). Soft-fail a few times before
           // treating the edge as true EOF — otherwise scroll-up permanently
           // stalls after messages_history_load_older_empty.
+          // When the API already reports EOF (`has_more_older=false`), do not
+          // soft-retry — that kept hasMoreOlder=true and spun load_older
+          // (HyperlinkSpace Channel Chat: softFail ×3 with apiHasMoreOlder=false).
           const softFailCount = olderEmptySoftFailCountRef.current;
-          if (softFailCount < OLDER_EMPTY_SOFT_FAIL_BUDGET) {
+          const apiSaysEof = result.hasMoreOlder === false;
+          if (!apiSaysEof && softFailCount < OLDER_EMPTY_SOFT_FAIL_BUDGET) {
             olderEmptySoftFailCountRef.current = softFailCount + 1;
             olderSoftFailCooldownUntilRef.current =
               Date.now() + OLDER_EMPTY_SOFT_FAIL_COOLDOWN_MS;
@@ -5477,7 +5695,8 @@ export function MessageChatMessageList({ chat, colors }: Props) {
             beforeMessageId: pageCursor,
             hasMoreOlder: false,
             nextBeforeMessageId: result.nextBeforeMessageId,
-            softFailExhausted: true,
+            softFailExhausted: !apiSaysEof,
+            apiHasMoreOlder: result.hasMoreOlder,
           });
           clearOlderLoadCaptureWithoutRestore({
             reason: "empty_page",
@@ -6076,6 +6295,17 @@ export function MessageChatMessageList({ chat, colors }: Props) {
       return;
     }
 
+    // telegram-tt / Desktop: at the live bottom of a read chat, do not treat a
+    // transient scrollY=0 (or short-list fit) as the older-history edge.
+    if (
+      followingBottomRef.current &&
+      !userHasScrolledSinceOpenRef.current &&
+      !userScrollingUpRef.current &&
+      openingUnreadCountRef.current <= 0
+    ) {
+      return;
+    }
+
     const canExpandInBuffer =
       displaySliceBoundsRef.current.startIndex > 0 ||
       (displayHeadId > 0 &&
@@ -6404,6 +6634,22 @@ export function MessageChatMessageList({ chat, colors }: Props) {
 
   /** Wheel at scrollY=0 cannot move scrollTop — HspScrollColumn fires onNearTop instead. */
   const handleNearTopForHistoryLoad = useCallback(() => {
+    // Programmatic open-at-bottom / short-list fit lands at scrollY=0 and must not
+    // count as older-edge intent (that started empty_page_soft load-older loops).
+    if (
+      programmaticScrollRef.current ||
+      isScrollTopJustUpdatedRef.current ||
+      initialScrollInProgressRef.current
+    ) {
+      return;
+    }
+    if (
+      followingBottomRef.current &&
+      !userHasScrolledSinceOpenRef.current &&
+      openingUnreadCountRef.current <= 0
+    ) {
+      return;
+    }
     markUserScrollInteraction("up");
     loadOlderAdvanceChainRef.current = true;
     invokeOlderEdgeLoad();

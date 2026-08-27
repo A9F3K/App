@@ -11,7 +11,10 @@ import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { typographyRect15, useColors, type ThemeColors } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
-import { FloatingDialogShell } from "../FloatingDialogShell";
+import {
+  FloatingDialogShell,
+  useFloatingDialogContentSizing,
+} from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
 import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollIndicatorPx";
@@ -36,7 +39,9 @@ import {
   ProfileBlockIcon,
   ProfileDiscussIcon,
   ProfileGiftIcon,
+  ProfileGiftsRowIcon,
   ProfileGifIcon,
+  ProfileGroupsIcon,
   ProfileImagesIcon,
   ProfileLeaveIcon,
   ProfileLinksIcon,
@@ -378,9 +383,33 @@ export function MessageChatProfileSheet({
   }, [visible, chat]);
 
   const title = (profile?.title || chat?.title || "").trim();
-  const usernameAt = formatTelegramUsernameAt(
-    profile?.username ?? chat?.peer_username ?? chat?.chat_username,
-  );
+  const usernameHandles = useMemo(() => {
+    const fromProfile = Array.isArray(profile?.usernames)
+      ? profile.usernames
+          .filter((u): u is string => typeof u === "string" && Boolean(u.trim()))
+          .map((u) => u.trim().replace(/^@+/, ""))
+      : [];
+    if (fromProfile.length > 0) return fromProfile;
+    const fallback = (
+      profile?.username ??
+      chat?.peer_username ??
+      chat?.chat_username ??
+      ""
+    )
+      .trim()
+      .replace(/^@+/, "");
+    return fallback ? [fallback] : [];
+  }, [chat?.chat_username, chat?.peer_username, profile?.username, profile?.usernames]);
+  const usernameAt = formatTelegramUsernameAt(usernameHandles[0] ?? null);
+  const alsoUsernamesLabel =
+    usernameHandles.length > 1
+      ? tf("messages.profile.alsoUsernames", {
+          list: usernameHandles
+            .slice(1)
+            .map((u) => `@${u}`)
+            .join(", "),
+        })
+      : null;
   const membership = profile?.membership ?? null;
   const isChannelProfile =
     chat?.chat_kind === "channel" || Boolean(membership?.is_channel);
@@ -432,55 +461,81 @@ export function MessageChatProfileSheet({
   );
 
   const mediaRows = useMemo(() => {
-    if (!media) return [];
+    if (!media && !(profile?.gift_count || profile?.group_in_common_count)) return [];
     const rows: Array<{
       key: string;
       icon: ReactNode;
       label: string;
       onPress?: () => void;
     }> = [];
-    if (media.marked > 0) {
+    const giftCount = profile?.gift_count ?? 0;
+    if (giftCount > 0) {
       rows.push({
-        key: "marked",
-        icon: <ProfileMarkedIcon color={colors.primary} size={MEDIA_ICON_PX} />,
-        label: tf("messages.profile.media.marked", { count: String(media.marked) }),
-        onPress: () => setMediaKindOpen("marked"),
+        key: "gifts",
+        icon: <ProfileGiftsRowIcon color={colors.primary} size={MEDIA_ICON_PX} />,
+        label:
+          giftCount === 1
+            ? tf("messages.profile.media.gifts", { count: String(giftCount) })
+            : tf("messages.profile.media.gifts_plural", { count: String(giftCount) }),
       });
     }
-    if (media.images > 0) {
-      rows.push({
-        key: "images",
-        icon: <ProfileImagesIcon color={colors.primary} size={MEDIA_ICON_PX} />,
-        label: tf("messages.profile.media.images", { count: String(media.images) }),
-        onPress: () => setMediaKindOpen("images"),
-      });
+    if (media) {
+      if (media.marked > 0) {
+        rows.push({
+          key: "marked",
+          icon: <ProfileMarkedIcon color={colors.primary} size={MEDIA_ICON_PX} />,
+          label: tf("messages.profile.media.marked", { count: String(media.marked) }),
+          onPress: () => setMediaKindOpen("marked"),
+        });
+      }
+      if (media.images > 0) {
+        rows.push({
+          key: "images",
+          icon: <ProfileImagesIcon color={colors.primary} size={MEDIA_ICON_PX} />,
+          label: tf("messages.profile.media.images", { count: String(media.images) }),
+          onPress: () => setMediaKindOpen("images"),
+        });
+      }
+      if (media.photos > 0) {
+        rows.push({
+          key: "photos",
+          icon: <ProfilePhotosIcon color={colors.primary} size={MEDIA_ICON_PX} />,
+          label: tf("messages.profile.media.photos", { count: String(media.photos) }),
+          onPress: () => setMediaKindOpen("photos"),
+        });
+      }
+      if (media.links > 0) {
+        rows.push({
+          key: "links",
+          icon: <ProfileLinksIcon color={colors.primary} size={MEDIA_ICON_PX} />,
+          label: tf("messages.profile.media.links", { count: String(media.links) }),
+          onPress: () => setMediaKindOpen("links"),
+        });
+      }
+      if (media.gifs > 0) {
+        rows.push({
+          key: "gifs",
+          icon: <ProfileGifIcon color={colors.primary} size={MEDIA_ICON_PX} />,
+          label: tf("messages.profile.media.gifs", { count: String(media.gifs) }),
+          onPress: () => setMediaKindOpen("gifs"),
+        });
+      }
     }
-    if (media.photos > 0) {
+    const groupsCount = profile?.group_in_common_count ?? 0;
+    if (groupsCount > 0) {
       rows.push({
-        key: "photos",
-        icon: <ProfilePhotosIcon color={colors.primary} size={MEDIA_ICON_PX} />,
-        label: tf("messages.profile.media.photos", { count: String(media.photos) }),
-        onPress: () => setMediaKindOpen("photos"),
-      });
-    }
-    if (media.links > 0) {
-      rows.push({
-        key: "links",
-        icon: <ProfileLinksIcon color={colors.primary} size={MEDIA_ICON_PX} />,
-        label: tf("messages.profile.media.links", { count: String(media.links) }),
-        onPress: () => setMediaKindOpen("links"),
-      });
-    }
-    if (media.gifs > 0) {
-      rows.push({
-        key: "gifs",
-        icon: <ProfileGifIcon color={colors.primary} size={MEDIA_ICON_PX} />,
-        label: tf("messages.profile.media.gifs", { count: String(media.gifs) }),
-        onPress: () => setMediaKindOpen("gifs"),
+        key: "groups",
+        icon: <ProfileGroupsIcon color={colors.primary} size={MEDIA_ICON_PX} />,
+        label:
+          groupsCount === 1
+            ? tf("messages.profile.media.groupsInCommon", { count: String(groupsCount) })
+            : tf("messages.profile.media.groupsInCommon_plural", {
+                count: String(groupsCount),
+              }),
       });
     }
     return rows;
-  }, [colors.primary, media, tf]);
+  }, [colors.primary, media, profile?.gift_count, profile?.group_in_common_count, tf]);
 
   const handleMessages = () => {
     if (chat) openAuthenticatedHomeChatHistory(chat);
@@ -905,12 +960,35 @@ export function MessageChatProfileSheet({
           <ProfileDivider colors={colors} />
           <View>
             {usernameAt ? (
-              <InfoField
-                label={t("messages.profile.username")}
-                value={usernameAt}
-                colors={colors}
-                onPress={handleUsernamePress}
-              />
+              <View style={{ marginBottom: INFO_BLOCK_GAP_PX }}>
+                <Pressable
+                  accessibilityRole="link"
+                  accessibilityLabel={usernameAt}
+                  onPress={handleUsernamePress}
+                  style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
+                >
+                  <Text style={textBase(colors.secondary, { fontSize: 13, lineHeight: 16 })}>
+                    {t("messages.profile.username")}
+                  </Text>
+                  <Text
+                    style={textBase("#3390ec", { marginTop: INFO_LABEL_GAP_PX })}
+                    selectable
+                  >
+                    {usernameAt}
+                  </Text>
+                </Pressable>
+                {alsoUsernamesLabel ? (
+                  <Text
+                    style={textBase(colors.secondary, {
+                      fontSize: 13,
+                      lineHeight: 16,
+                      marginTop: INFO_LABEL_GAP_PX,
+                    })}
+                  >
+                    {alsoUsernamesLabel}
+                  </Text>
+                ) : null}
+              </View>
             ) : null}
             {bio ? <InfoField label={t("messages.profile.bio")} value={bio} colors={colors} /> : null}
             {phone ? (
@@ -1041,9 +1119,14 @@ export function MessageChatProfileSheet({
         visible={Boolean(chat && visible)}
         zIndex={PROFILE_OVERLAY_Z}
         defaultSize={defaultSize}
-        minSize={{ width: 300, height: 320 }}
-        sizeStorageKey="hsp.profileSheet.size.v5"
-        offsetStorageKey="hsp.profileSheet.offset.v5"
+        minSize={{ width: 300, height: 240 }}
+        offsetStorageKey="hsp.profileSheet.offset.v6"
+        fitContentHeight
+        contentFitKey={
+          profile
+            ? `p:${profile.gift_count}:${profile.group_in_common_count}:${mediaRows.length}:${usernameHandles.length}:${bio ? 1 : 0}:${phone ? 1 : 0}`
+            : "loading"
+        }
         onRequestClose={onClose}
         testId="profile-sheet"
         moveIgnoreSelector="[data-floating-no-drag],button,[role='button'],a,input,textarea"
@@ -1073,14 +1156,22 @@ export function MessageChatProfileSheet({
 }
 
 function ProfileSheetScrollBody({ children }: { children: ReactNode }) {
+  const contentSizing = useFloatingDialogContentSizing();
+  const paddingStyle = {
+    paddingHorizontal: PAD_X_PX,
+    paddingTop: PAD_TOP_PX,
+    paddingBottom: PAD_BOTTOM_PX,
+  };
+
+  // Intrinsic fit must not use a flex scroll column (height collapses to 0).
+  if (contentSizing) {
+    return <View style={paddingStyle}>{children}</View>;
+  }
+
   return (
     <HspScrollColumn
       style={{ flex: 1, minHeight: 0 }}
-      contentContainerStyle={{
-        paddingHorizontal: PAD_X_PX,
-        paddingTop: PAD_TOP_PX,
-        paddingBottom: PAD_BOTTOM_PX,
-      }}
+      contentContainerStyle={paddingStyle}
       scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
       scrollIndicatorOverlaySeam={false}
       containOverscroll

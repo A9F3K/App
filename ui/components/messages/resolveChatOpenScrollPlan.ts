@@ -3,6 +3,7 @@
  */
 export {
   isMeaningfulCachedUnreadScroll,
+  isRestorableCachedScrollForReadChat,
   resolveChatOpenScrollPlan,
   resolveOpenHistoryFetchAnchor,
   type ChatOpenScrollPlan,

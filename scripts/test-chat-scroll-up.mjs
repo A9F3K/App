@@ -22,6 +22,15 @@ import {
 } from "../ui/components/messages/chatHistoryWindowBudget.ts";
 import { sliceMessagesByCount } from "../ui/components/messages/messageChatViewportSlice.ts";
 import { shouldCollapseOutgoingEchoDuplicate } from "../ui/components/messages/optimisticOutgoingMessage.ts";
+import {
+  isRestorableCachedScrollForReadChat,
+  resolveChatOpenSession,
+} from "../ui/components/messages/chatOpenSession.ts";
+import {
+  clearChatScrollPosition,
+  getChatScrollPosition,
+  saveChatScrollPosition,
+} from "../ui/messageChatScrollCache.ts";
 
 const CHAT_SCROLL_INDICATOR_THUMB_MIN_PX = 20;
 const SCROLL_INDICATOR_THUMB_MAX_TRACK_FRAC = 0.32;
@@ -638,6 +647,82 @@ console.log("chat scroll-up smoke tests");
     true,
     "pending sticker still merges into the confirmed row",
   );
+}
+
+// Fully-read chats: stale top cache (scrollY=0) must not reopen at the oldest
+// rows — open the bottom like Telegram.
+{
+  const chatId = -1003816023790;
+  clearChatScrollPosition(chatId);
+  saveChatScrollPosition(chatId, {
+    scrollY: 0,
+    contentH: 759,
+    distanceFromBottom: 759,
+    followingBottom: false,
+    anchorMessageId: 419430400,
+  });
+  assert.equal(
+    isRestorableCachedScrollForReadChat(getChatScrollPosition(chatId)),
+    false,
+    "stuck top paint is not restorable for a read chat",
+  );
+  const session = resolveChatOpenSession({
+    telegram_chat_id: chatId,
+    unread_count: 0,
+    last_message_telegram_id: 422576128,
+    last_read_inbox_message_id: 422576128,
+  });
+  assert.equal(session.mode, "bottom");
+  assert.equal(session.scroll.openAnchor, "bottom");
+  assert.equal(session.scroll.followingBottom, true);
+  assert.equal(session.scroll.restore, null);
+  clearChatScrollPosition(chatId);
+
+  saveChatScrollPosition(chatId, {
+    scrollY: 240,
+    contentH: 2000,
+    distanceFromBottom: 1760,
+    followingBottom: false,
+    anchorMessageId: 100,
+  });
+  const mid = resolveChatOpenSession({
+    telegram_chat_id: chatId,
+    unread_count: 0,
+    last_message_telegram_id: 422576128,
+    last_read_inbox_message_id: 422576128,
+  });
+  assert.ok(mid.mode === "restore" || mid.mode === "around_anchor");
+  assert.equal(mid.scroll.openAnchor, "top");
+  clearChatScrollPosition(chatId);
+
+  // Poisoned followingBottom+scrollY=0 still opens via bottom restore path.
+  saveChatScrollPosition(chatId, {
+    scrollY: 0,
+    contentH: 759,
+    distanceFromBottom: 759,
+    followingBottom: true,
+    anchorMessageId: 419430400,
+  });
+  assert.equal(
+    isRestorableCachedScrollForReadChat(getChatScrollPosition(chatId)),
+    true,
+    "followingBottom cache is restorable (bottom path)",
+  );
+  const poisoned = resolveChatOpenSession({
+    telegram_chat_id: chatId,
+    unread_count: 0,
+    last_message_telegram_id: 422576128,
+    last_read_inbox_message_id: 422576128,
+  });
+  assert.equal(poisoned.mode, "bottom");
+  assert.equal(poisoned.scroll.openAnchor, "bottom");
+  assert.equal(poisoned.scroll.followingBottom, true);
+  assert.equal(
+    poisoned.scroll.restore,
+    null,
+    "followingBottom open must pin to tail — not replay scrollY≈0 restore",
+  );
+  clearChatScrollPosition(chatId);
 }
 
 console.log("all chat scroll-up smoke tests passed");

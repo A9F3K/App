@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { deferRevokeObjectUrl } from "./deferRevokeObjectUrl";
 import {
   fetchTelegramEmojiAsset,
+  peekTelegramEmojiAsset,
   type TelegramEmojiFetchRef,
 } from "./fetchTelegramEmojiBytes";
 import { bytesLookLikeTgs } from "./loadTgsAnimation";
@@ -160,6 +161,29 @@ export function MessageChatInlineTgsEmoji(props: Props) {
     setFetchSettled(false);
   }, [fetchRef]);
 
+  // Paint from the in-memory cache before the first browser paint when possible
+  // (avoids a Unicode placeholder flash on status / preferStatic badges).
+  useLayoutEffect(() => {
+    if (!fetchRef || !shouldFetch) return;
+    const cached = peekTelegramEmojiAsset(fetchRef);
+    if (!cached) return;
+    let cancelled = false;
+    void decodeEmojiAsset(cached, fetchRef).then((decoded) => {
+      if (cancelled || !decoded) return;
+      if (decoded.kind === "tgs") {
+        setAnimationData(decoded.animationData);
+        setFetchSettled(true);
+        return;
+      }
+      setMediaUrl(decoded.url);
+      setMediaKind(decoded.kind);
+      setFetchSettled(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchRef, shouldFetch]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -174,6 +198,12 @@ export function MessageChatInlineTgsEmoji(props: Props) {
         lowPriority,
         visible,
       });
+      return;
+    }
+
+    // Cache hits are applied in useLayoutEffect; avoid a second blob URL / decode race.
+    if (peekTelegramEmojiAsset(fetchRef)) {
+      setFetchSettled(true);
       return;
     }
 

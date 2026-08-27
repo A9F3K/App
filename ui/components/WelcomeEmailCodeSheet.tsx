@@ -1,7 +1,7 @@
 import { Text } from "react-native";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { typographyRect15, useColors } from "../theme";
-import { AppModalSheet, AppModalSheetBackFooter, appModalSheetStyles } from "./AppModalSheet";
+import { AppModalSheet, appModalSheetStyles } from "./AppModalSheet";
 import { WelcomeAuthFormField } from "./WelcomeAuthFormField";
 
 type Props = {
@@ -37,7 +37,10 @@ export function WelcomeEmailCodeSheet({
       visible={visible}
       onClose={onClose}
       title={t("welcome.auth.emailCodeTitle")}
-      footer={<AppModalSheetBackFooter onClose={onClose} label={t("common.back")} />}
+      fitContentHeight
+      minSize={{ width: 300, height: 180 }}
+      sizeStorageKey="hsp.welcomeEmailCodeSheet.size.v1"
+      offsetStorageKey="hsp.welcomeEmailCodeSheet.offset.v1"
     >
       <Text style={[typographyRect15, appModalSheetStyles.body, { color: colors.secondary }]}>
         {tf("welcome.auth.emailCodeHint", { email })}

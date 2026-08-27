@@ -61,6 +61,8 @@ import {
   SUPPLEMENTARY_CONTACT_SEARCH_QUERIES,
 } from "../../shared/specialTelegramUsers.js";
 import { chatKindFromTdChat, lastMessageListRowMetaFromChat } from "./messageHistoryMap.js";
+import { resolveUserChatPhoto } from "./chatPhoto.js";
+import { listPhotoSizeCandidates } from "./photoParse.js";
 
 type TdFile = {
   id?: number;
@@ -635,6 +637,22 @@ function profilePhotoFileIds(user: TdUserProfile): number[] {
   );
 }
 
+/** File ids from getUserFullInfo / getUserProfilePhotos ChatPhoto (sizes or small/big). */
+function fileIdsFromResolvedChatPhoto(photo: Record<string, unknown>): number[] {
+  const fromSizes = listPhotoSizeCandidates({ photo }).map((row) => row.fileId);
+  if (fromSizes.length > 0) return fromSizes;
+  const ids: number[] = [];
+  for (const key of ["small", "big"] as const) {
+    const node = photo[key];
+    if (!node || typeof node !== "object") continue;
+    const rec = node as { id?: unknown; file?: { id?: unknown } };
+    const raw = rec.id ?? rec.file?.id;
+    const id = typeof raw === "bigint" ? Number(raw) : Number(raw);
+    if (Number.isFinite(id) && id > 0) ids.push(Math.trunc(id));
+  }
+  return ids;
+}
+
 async function downloadUserProfilePhotoBytes(
   client: Client,
   fileIds: number[],
@@ -706,6 +724,18 @@ export async function readUserAvatarBytes(
       }
     }
 
+    // Full-info / profile-photos path: cold voice peers often have ChatPhoto on
+    // getUserFullInfo while user.profile_photo is still empty → sticky 404s and
+    // letter tiles on the voice preview strip.
+    if (fileIds.length === 0) {
+      try {
+        const fullPhoto = await resolveUserChatPhoto(client, userId);
+        if (fullPhoto) fileIds = fileIdsFromResolvedChatPhoto(fullPhoto);
+      } catch {
+        /* keep empty fileIds */
+      }
+    }
+
     if (fileIds.length > 0) {
       const downloaded = await downloadUserProfilePhotoBytes(client, fileIds);
       if (downloaded) return downloaded;
@@ -717,6 +747,7 @@ export async function readUserAvatarBytes(
     const chatBytes = await readChatAvatarBytes(client, userId);
     if (chatBytes && chatBytes !== TELEGRAM_THREAD_NO_AVATAR) return chatBytes;
     if (chatBytes === TELEGRAM_THREAD_NO_AVATAR) return TELEGRAM_THREAD_NO_AVATAR;
+    // Undetermined (TDLib miss / race) — 503 so the client retries, not sticky 404.
     return null;
   } catch {
     // Transient TDLib / session errors should 503, not sticky 404.

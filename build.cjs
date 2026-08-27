@@ -316,6 +316,16 @@ function clearAppliedVersionMarkerIfMatched() {
   } catch (_) {}
 }
 
+/** True when this process cannot load the Expo web UI (corrupt/partial flat install). */
+function windowsRunningUiBundleMissing() {
+  if (process.platform !== "win32" || !app.isPackaged || isDev) return false;
+  try {
+    return !fs.existsSync(path.join(app.getAppPath(), "dist", "index.html"));
+  } catch (_) {
+    return true;
+  }
+}
+
 /** True when install-root `current` junction has newer app.asar than the running binary (flat shortcut after zip apply). */
 function windowsCurrentJunctionHasNewerBuild() {
   if (process.platform !== "win32" || !app.isPackaged) return false;
@@ -325,6 +335,11 @@ function windowsCurrentJunctionHasNewerBuild() {
   const appRoot = getWindowsAppRootFromExecPath(process.execPath);
   const currentDir = path.join(appRoot, "current");
   if (!fs.existsSync(currentDir)) return false;
+
+  // Broken flat tree (no dist/) while current has a launchable exe — hand off.
+  if (windowsRunningUiBundleMissing() && resolveWindowsCurrentLaunchExe()) {
+    return true;
+  }
 
   const relAsar = path.join("resources", "app.asar");
   const currentAsar = path.join(currentDir, relAsar);
@@ -2777,6 +2792,12 @@ async function createWindow() {
   if (!isDev && !fs.existsSync(indexHtml)) {
     log(`ERROR: index.html not found at ${indexHtml}`);
     log(`appPath=${appPath}`);
+    if (tryRelaunchFromCurrentJunction()) return;
+    try {
+      log(
+        "[startup] UI bundle missing and current-junction handoff failed — open Updates and install the staged build, or launch current\\Hyperlinks Space Program.exe",
+      );
+    } catch (_) {}
     return;
   }
   if (!isDev && fs.existsSync(indexHtml)) {

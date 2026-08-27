@@ -212,11 +212,30 @@ export function isTransientHistoryFetchError(error: string | null | undefined): 
     error === "gateway_unreachable" ||
     error === "history_failed" ||
     error === "gateway_timeout_retry" ||
+    error === "network_error" ||
     error === "not_found"
   ) {
     return true;
   }
   return /^HTTP_50[234]$/.test(error);
+}
+
+/** Per-attempt hard cap so a hung gateway never leaves the chat spinner forever. */
+const HISTORY_FETCH_TIMEOUT_MS = 12_000;
+const HISTORY_FETCH_BACKGROUND_TIMEOUT_MS = 8_000;
+
+function emptyHistoryError(error: string): ChatHistoryPageResult {
+  return {
+    messages: [],
+    chatKind: null,
+    error,
+    hasMoreOlder: false,
+    nextBeforeMessageId: null,
+    lastReadOutboxMessageId: null,
+    lastReadInboxMessageId: null,
+    memberCount: null,
+    selfUserId: null,
+  };
 }
 
 function sleepMs(ms: number): Promise<void> {
@@ -278,80 +297,81 @@ async function fetchTelegramChatHistoryPageOnce(
     params.set("newer_below", String(Math.trunc(newerBelow)));
   }
   const url = buildApiUrl(`/api/telegram-messages-history?${params.toString()}`);
-  const response = await fetch(url, { method: "GET", credentials: "include" });
-  const json = (await response.json().catch(() => ({}))) as {
-    ok?: boolean;
-    messages?: unknown[];
-    chat_kind?: unknown;
-    member_count?: unknown;
-    has_more_older?: boolean;
-    next_before_message_id?: number;
-    last_read_outbox_message_id?: number;
-    last_read_inbox_message_id?: number;
-    self_user_id?: number;
-    error?: string;
-  };
-  if (!response.ok || !json.ok) {
-    return {
-      messages: [],
-      chatKind: null,
-      error: json.error || `HTTP_${response.status}`,
-      hasMoreOlder: false,
-      nextBeforeMessageId: null,
-      lastReadOutboxMessageId: null,
-      lastReadInboxMessageId: null,
-      memberCount: null,
-      selfUserId: null,
+  const controller = new AbortController();
+  const timeoutMs = options?.background
+    ? HISTORY_FETCH_BACKGROUND_TIMEOUT_MS
+    : HISTORY_FETCH_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      credentials: "include",
+      signal: controller.signal,
+    });
+    const json = (await response.json().catch(() => ({}))) as {
+      ok?: boolean;
+      messages?: unknown[];
+      chat_kind?: unknown;
+      member_count?: unknown;
+      has_more_older?: boolean;
+      next_before_message_id?: number;
+      last_read_outbox_message_id?: number;
+      last_read_inbox_message_id?: number;
+      self_user_id?: number;
+      error?: string;
     };
-  }
-  // Neighbor history JSON can be huge — normalizing mid-Join freezes WebRTC/Close.
-  if (options?.background && isVoiceDialogUiOpen()) {
-    return {
-      messages: [],
-      chatKind: null,
-      error: "voice_dialog_open",
-      hasMoreOlder: false,
-      nextBeforeMessageId: null,
-      lastReadOutboxMessageId: null,
-      lastReadInboxMessageId: null,
-      memberCount: null,
-      selfUserId: null,
-    };
-  }
-  const rows: MessageChatHistoryItem[] = [];
-  const selfUserRaw = Number(json.self_user_id);
-  const selfUserId =
-    Number.isFinite(selfUserRaw) && selfUserRaw > 0
-      ? safeTelegramUserIdForLog(selfUserRaw) ?? null
-      : null;
-  if (Array.isArray(json.messages)) {
-    for (const raw of json.messages) {
-      const row = normalizeHistoryMessage(raw, peerUserId, selfUserId);
-      if (row) rows.push(row);
+    if (controller.signal.aborted) {
+      return emptyHistoryError("gateway_timeout_retry");
     }
+    if (!response.ok || !json.ok) {
+      return emptyHistoryError(json.error || `HTTP_${response.status}`);
+    }
+    // Neighbor history JSON can be huge — normalizing mid-Join freezes WebRTC/Close.
+    if (options?.background && isVoiceDialogUiOpen()) {
+      return emptyHistoryError("voice_dialog_open");
+    }
+    const rows: MessageChatHistoryItem[] = [];
+    const selfUserRaw = Number(json.self_user_id);
+    const selfUserId =
+      Number.isFinite(selfUserRaw) && selfUserRaw > 0
+        ? safeTelegramUserIdForLog(selfUserRaw) ?? null
+        : null;
+    if (Array.isArray(json.messages)) {
+      for (const raw of json.messages) {
+        const row = normalizeHistoryMessage(raw, peerUserId, selfUserId);
+        if (row) rows.push(row);
+      }
+    }
+    const lastReadRaw = Number(json.last_read_outbox_message_id);
+    const lastReadInboxRaw = Number(json.last_read_inbox_message_id);
+    const memberRaw = Number(json.member_count);
+    return {
+      messages: rows,
+      chatKind: normalizeChatKind(json.chat_kind),
+      error: null,
+      hasMoreOlder: Boolean(json.has_more_older),
+      nextBeforeMessageId:
+        typeof json.next_before_message_id === "number" &&
+        Number.isFinite(json.next_before_message_id) &&
+        json.next_before_message_id > 0
+          ? json.next_before_message_id
+          : null,
+      lastReadOutboxMessageId:
+        Number.isFinite(lastReadRaw) && lastReadRaw > 0 ? lastReadRaw : null,
+      lastReadInboxMessageId:
+        Number.isFinite(lastReadInboxRaw) && lastReadInboxRaw > 0
+          ? lastReadInboxRaw
+          : null,
+      memberCount:
+        Number.isFinite(memberRaw) && memberRaw > 0 ? Math.trunc(memberRaw) : null,
+      selfUserId,
+    };
+  } catch (err) {
+    const aborted = err instanceof DOMException && err.name === "AbortError";
+    return emptyHistoryError(aborted ? "gateway_timeout_retry" : "network_error");
+  } finally {
+    clearTimeout(timer);
   }
-  const lastReadRaw = Number(json.last_read_outbox_message_id);
-  const lastReadInboxRaw = Number(json.last_read_inbox_message_id);
-  const memberRaw = Number(json.member_count);
-  return {
-    messages: rows,
-    chatKind: normalizeChatKind(json.chat_kind),
-    error: null,
-    hasMoreOlder: Boolean(json.has_more_older),
-    nextBeforeMessageId:
-      typeof json.next_before_message_id === "number" &&
-      Number.isFinite(json.next_before_message_id) &&
-      json.next_before_message_id > 0
-        ? json.next_before_message_id
-        : null,
-    lastReadOutboxMessageId:
-      Number.isFinite(lastReadRaw) && lastReadRaw > 0 ? lastReadRaw : null,
-    lastReadInboxMessageId:
-      Number.isFinite(lastReadInboxRaw) && lastReadInboxRaw > 0 ? lastReadInboxRaw : null,
-    memberCount:
-      Number.isFinite(memberRaw) && memberRaw > 0 ? Math.trunc(memberRaw) : null,
-    selfUserId,
-  };
 }
 
 const HISTORY_FETCH_MAX_ATTEMPTS = 3;

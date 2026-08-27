@@ -42,7 +42,6 @@ import { MessageChatProfilePhotoViewer } from "./MessageChatProfilePhotoViewer";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { formatTelegramUsernameAt } from "./formatTelegramChatRowUsername";
 import { SpecialTelegramUserName } from "./SpecialTelegramUserName";
-import { MESSAGE_LIST_INLINE_EMOJI_SIZE_PX } from "./messageListLayout";
 import {
   SideMenuAddAccountIcon,
   SideMenuCallsIcon,
@@ -60,6 +59,7 @@ import {
   MessagesMenuDialogs,
   type MessagesMenuDialogKind,
 } from "./MessagesMenuDialogs";
+import { prefetchTelegramCustomEmoji } from "./fetchTelegramEmojiBytes";
 
 const SIDE_MENU_WIDTH_PX = 300;
 const SIDE_MENU_MIN_Z = FLOATING_SURFACE_BASE_Z + 10;
@@ -73,7 +73,6 @@ type MenuRow = {
   key: string;
   labelKey: AppStringKey;
   Icon: (p: { color: string; size?: number }) => ReactElement;
-  active?: boolean;
   onPress?: () => void;
 };
 
@@ -86,17 +85,17 @@ function SideMenuRow({
   label,
   Icon,
   colors,
-  active = false,
   onPress,
 }: {
   label: string;
   Icon: MenuRow["Icon"];
   colors: ReturnType<typeof useColors>;
-  active?: boolean;
   onPress?: () => void;
 }) {
-  const iconColor = active ? colors.primary : colors.secondary;
-  const labelColor = active ? colors.primary : colors.secondary;
+  // Interactive rows match Profile (primary); stubs stay secondary + muted.
+  const interactive = Boolean(onPress);
+  const iconColor = interactive ? colors.primary : colors.secondary;
+  const labelColor = interactive ? colors.primary : colors.secondary;
   const body = (
     <>
       <View style={{ width: 28, alignItems: "center", justifyContent: "center" }}>
@@ -308,6 +307,10 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       setTelegramProfileUsername(cached.username);
       setEmojiStatusCustomEmojiId(cached.emojiStatusCustomEmojiId);
       setProfilePhoto(cached.profilePhoto);
+      prefetchTelegramCustomEmoji(cached.emojiStatusCustomEmojiId, {
+        preferStatic: true,
+        priority: "high",
+      });
     }
 
     const controller = new AbortController();
@@ -323,6 +326,7 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
       if (username) setTelegramProfileUsername(username);
       setEmojiStatusCustomEmojiId(statusId);
       setProfilePhoto(nextPhoto);
+      prefetchTelegramCustomEmoji(statusId, { preferStatic: true, priority: "high" });
       if (title) {
         rememberSelfTelegramProfile(connectedTelegramUserId, {
           title,
@@ -430,7 +434,6 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
         key: "profile",
         labelKey: "messages.sideMenu.myProfile",
         Icon: SideMenuProfileIcon,
-        active: true,
         onPress: openMyProfile,
       },
       {
@@ -604,9 +607,10 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                   emojiStatusCustomEmojiId={emojiStatusCustomEmojiId}
                   emojiStatusPriority
                   emojiStatusStatic
-                  inlineEmojiFetchEnabled={visible}
+                  // Keep fetching while the drawer is mounted (incl. open animation),
+                  // not only when `visible` flips — avoids a cold Unicode flash.
+                  inlineEmojiFetchEnabled={mounted || visible}
                   inlineEmojiFetchPriority
-                  inlineEmojiSizePx={MESSAGE_LIST_INLINE_EMOJI_SIZE_PX}
                   textAlign="left"
                   numberOfLines={1}
                   textStyle={{
@@ -741,7 +745,6 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                 label={t(row.labelKey)}
                 Icon={row.Icon}
                 colors={colors}
-                active={row.active}
                 onPress={row.onPress}
               />
             ))}

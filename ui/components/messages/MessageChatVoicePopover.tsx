@@ -2153,9 +2153,11 @@ export function MessageChatVoicePopover({
       return (
         <VoiceParticipantRow
           key={
-            participant.user_id != null
+            participant.user_id != null && participant.user_id > 0
               ? `u:${participant.user_id}`
-              : `c:${participant.chat_id}:${index}`
+              : participant.chat_id != null && participant.chat_id !== 0
+                ? `c:${participant.chat_id}`
+                : `anon:${index}:${participant.title || "_"}`
           }
           participant={participant}
           isLast={index === displayParticipants.length - 1}

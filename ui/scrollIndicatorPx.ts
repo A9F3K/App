@@ -33,6 +33,131 @@ export const CHAT_SCROLL_INDICATOR_THUMB_MIN_PX = 20;
 /** Pin thumb to track ends when scroll offset is within this many px of 0 / max. */
 export const SCROLL_INDICATOR_SCROLL_EPS = 2;
 
+/**
+ * Minimum overflow (px) before the custom thumb is shown.
+ * ~1 CSS px swallows flex/subpixel phantoms; kept ≤2 so short real ranges still show.
+ * Recompute from DPR so browser zoom does not flip visibility on the same layout.
+ */
+export function scrollIndicatorOverflowEpsilonPx(): number {
+  if (typeof window === "undefined") return 1;
+  const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+  // One device pixel in CSS px, but never below 1 (phantom flex fill) or above 2.
+  return Math.min(2, Math.max(1, 1 / dpr));
+}
+
+/** True when content is tall enough to warrant a vertical scroll thumb. */
+export function scrollContentOverflowsViewport(contentH: number, viewH: number): boolean {
+  if (!(viewH > 0) || !(contentH > 0)) return false;
+  return contentH > viewH + scrollIndicatorOverflowEpsilonPx();
+}
+
+/**
+ * Remaining height (px) inside {@link shellEl}'s parent after sibling chrome (headers, etc.).
+ * Used when RN-web lets the shell grow with content (`overflow: visible`) so flex `minHeight: 0`
+ * alone does not produce a real scrollport — common in the AI third column.
+ */
+export function readShellFlexAvailableHeightPx(shellEl: HTMLElement | null | undefined): number {
+  if (!shellEl?.parentElement) return 0;
+  const parent = shellEl.parentElement;
+  const parentH = parent.clientHeight;
+  if (!(parentH > 0)) return 0;
+  let siblingsH = 0;
+  for (let i = 0; i < parent.children.length; i += 1) {
+    const child = parent.children[i] as HTMLElement | null;
+    if (!child || child === shellEl) continue;
+    siblingsH += child.getBoundingClientRect().height;
+  }
+  return Math.max(0, parentH - siblingsH);
+}
+
+/**
+ * Live DOM overflow for a scrollport. Prefer this over React layout/content events —
+ * under browser zoom those can disagree by a few CSS px and flicker the thumb.
+ *
+ * When {@link shellEl} is provided and the scroll node has grown to its content height
+ * (clientHeight ≈ scrollHeight) while the shell / flex parent is shorter, use that capped
+ * height so the thumb still appears for clipped overflow (common in the AI third column).
+ */
+export function readScrollportOverflowPx(
+  el: HTMLElement | null | undefined,
+  shellEl?: HTMLElement | null,
+): {
+  layoutH: number;
+  contentH: number;
+  overflowPx: number;
+  overflows: boolean;
+} | null {
+  if (!el) return null;
+  const contentH = el.scrollHeight;
+  let layoutH = el.clientHeight;
+  const parentAvail = shellEl ? readShellFlexAvailableHeightPx(shellEl) : 0;
+  const shellH = shellEl?.clientHeight ?? 0;
+  // Prefer the flex allocation over a shell that has already grown to content height.
+  const capH =
+    parentAvail > 0 && shellH > 0
+      ? Math.min(shellH, parentAvail)
+      : parentAvail > 0
+        ? parentAvail
+        : shellH;
+  if (!(layoutH > 0) && !(capH > 0)) return null;
+  const eps = scrollIndicatorOverflowEpsilonPx();
+  if (capH > 0) {
+    const scrollGrewToContent = layoutH <= 0 || contentH <= layoutH + eps;
+    if (scrollGrewToContent && contentH > capH + eps) {
+      layoutH = capH;
+    } else if (layoutH > 0 && capH + 0.5 < layoutH) {
+      layoutH = capH;
+    } else if (!(layoutH > 0)) {
+      layoutH = capH;
+    }
+  }
+  if (!(layoutH > 0)) return null;
+  const overflowPx = Math.max(0, contentH - layoutH);
+  return {
+    layoutH,
+    contentH,
+    overflowPx,
+    overflows: overflowPx > eps,
+  };
+}
+
+/**
+ * Portal `left` from the painted split-pane divider stroke nearest to this column’s right edge.
+ * Falls back to geometry when no stroke node is mounted yet.
+ */
+export function measureNearestSplitDividerPortalLeftPx(columnRightPx: number): number | null {
+  if (typeof document === "undefined") return null;
+  const hairline = scrollIndicatorHairlineBorderWidthPx();
+  const nodes = document.querySelectorAll<HTMLElement>("[data-hsp-split-divider-stroke]");
+  let best: { dist: number; portalLeft: number } | null = null;
+  for (let i = 0; i < nodes.length; i += 1) {
+    const rect = nodes[i]!.getBoundingClientRect();
+    // Width-0 + borderLeft: some engines report width 0, others include the border.
+    const strokeRight = rect.width > 0.05 ? rect.left + rect.width : rect.left + hairline;
+    const dist = Math.abs(strokeRight - columnRightPx);
+    if (!best || dist < best.dist) {
+      best = { dist, portalLeft: strokeRight };
+    }
+  }
+  // Seam thumbs sit on the column’s right edge; ignore strokes more than ~½ hit strip away.
+  if (!best || best.dist > 8) return null;
+  return snapScrollIndicatorCoordPx(best.portalLeft);
+}
+
+/**
+ * Portal `left` for a flush column-seam thumb so a right-anchored hairline lands on the
+ * same device pixels as {@link AuthenticatedHomeSplitBody}'s divider stroke.
+ *
+ * Prefers a live measure of `[data-hsp-split-divider-stroke]`. If no stroke sits on this
+ * column’s right edge (rightmost / viewport-flush column), stay on `columnRightPx` —
+ * applying divider geometry there shifts the thumb left of the edge.
+ */
+export function scrollIndicatorSplitSeamPortalLeftPx(columnRightPx: number): number {
+  const measured = measureNearestSplitDividerPortalLeftPx(columnRightPx);
+  if (measured != null) return measured;
+  return snapScrollIndicatorCoordPx(columnRightPx);
+}
+
 /** Extra hit area (px) perpendicular to the scroll axis for dragging hairline thumbs. */
 export const SCROLL_INDICATOR_DRAG_HIT_INSET_PX = 3;
 
@@ -43,8 +168,8 @@ export const SCROLL_INDICATOR_DRAG_HIT_INSET_PX = 3;
 export const SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX = -1;
 
 /**
- * Light-theme portaled thumb width (px) when flush with the viewport right edge.
- * Hairline thumbs clip against black letterboxing outside the app frame.
+ * Portaled thumb width (px) when flush with the viewport right edge on **light** theme.
+ * Dark theme keeps the hairline; light hairlines clip against letterboxing / subpixels.
  */
 export const SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX = 3;
 
@@ -53,7 +178,8 @@ export function isScrollIndicatorAtViewportRightEdge(rightPx: number): boolean {
   if (typeof window === "undefined") return false;
   const viewportW = window.visualViewport?.width ?? window.innerWidth;
   if (!(viewportW > 0)) return false;
-  return Math.abs(rightPx - viewportW) <= 1.5;
+  // DPR 1.25 / zoom often leaves 1–2 CSS px of slack between shell right and visualViewport.
+  return Math.abs(rightPx - viewportW) <= 2.5;
 }
 
 /** Map thumb position on track (px) to scroll offset (px). Inverse of thumb offset math. */

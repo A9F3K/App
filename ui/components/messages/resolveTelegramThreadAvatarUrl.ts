@@ -21,8 +21,17 @@ function avatarProxyUrl(params: { userId?: number | null; chatId?: number | null
   const query = new URLSearchParams();
   const chatId = validChatIdForAvatar(params.chatId);
   const userId = safeTelegramUserIdForLog(params.userId);
-  if (chatId != null) query.set("chat_id", String(chatId));
-  if (userId != null) query.set("user_id", String(userId));
+  // Prefer user_id alone so the API never falls back to an unrelated chat photo
+  // (voice group / channel) when the peer profile is still cold in TDLib.
+  if (userId != null) {
+    query.set("user_id", String(userId));
+    // Private peer chats use chat_id === user_id; keep that for the safe fallback.
+    if (chatId != null && chatId === userId) {
+      query.set("chat_id", String(chatId));
+    }
+  } else if (chatId != null) {
+    query.set("chat_id", String(chatId));
+  }
   if (!query.toString()) return null;
   return buildApiUrl(`/api/telegram-messages-avatar?${query.toString()}`);
 }

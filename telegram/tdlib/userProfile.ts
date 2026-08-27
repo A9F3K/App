@@ -34,6 +34,8 @@ export type TelegramUserProfilePayload = {
   chat_id: number;
   title: string;
   username: string | null;
+  /** All active usernames (primary first). Extra ones show as “also @x, @y”. */
+  usernames: string[];
   bio: string | null;
   phone_number: string | null;
   status_text: string | null;
@@ -50,6 +52,10 @@ export type TelegramUserProfilePayload = {
   } | null;
   /** Present when the opened chat is a channel or supergroup. */
   membership: TelegramChannelMembership | null;
+  /** Saved/received gifts shown on the profile (from userFullInfo.gift_count). */
+  gift_count: number;
+  /** Shared groups with the current user (from userFullInfo.group_in_common_count). */
+  group_in_common_count: number;
   media: {
     marked: number;
     images: number;
@@ -64,19 +70,32 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
-function usernameFromTdUser(user: Record<string, unknown>): string | null {
+function normalizeUsernameHandle(raw: string): string {
+  return raw.trim().replace(/^@+/, "");
+}
+
+/** Active usernames first (TDLib order), then editable/legacy if missing from active. */
+function usernamesFromTdUser(user: Record<string, unknown>): string[] {
   const usernames = asRecord(user.usernames);
-  const active = Array.isArray(usernames?.active_usernames)
-    ? usernames.active_usernames.find((u) => typeof u === "string" && u.trim())
-    : null;
-  const editable =
-    typeof usernames?.editable_username === "string" && usernames.editable_username.trim()
-      ? usernames.editable_username.trim()
-      : null;
-  const legacy =
-    typeof user.username === "string" && user.username.trim() ? user.username.trim() : null;
-  const raw = (typeof active === "string" ? active.trim() : null) || editable || legacy;
-  return raw ? raw.replace(/^@+/, "") : null;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: unknown) => {
+    if (typeof value !== "string" || !value.trim()) return;
+    const handle = normalizeUsernameHandle(value);
+    if (!handle || seen.has(handle.toLowerCase())) return;
+    seen.add(handle.toLowerCase());
+    out.push(handle);
+  };
+  if (Array.isArray(usernames?.active_usernames)) {
+    for (const u of usernames.active_usernames) push(u);
+  }
+  push(usernames?.editable_username);
+  push(user.username);
+  return out;
+}
+
+function usernameFromTdUser(user: Record<string, unknown>): string | null {
+  return usernamesFromTdUser(user)[0] ?? null;
 }
 
 function phoneFromTdUser(user: Record<string, unknown>): string | null {
@@ -402,6 +421,7 @@ export async function fetchTelegramUserProfile(
     chat_id: resolvedChatId,
     title: "",
     username: null,
+    usernames: [],
     bio: null,
     phone_number: null,
     status_text: null,
@@ -413,6 +433,8 @@ export async function fetchTelegramUserProfile(
     playlist: [],
     channel: null,
     membership: null,
+    gift_count: 0,
+    group_in_common_count: 0,
     media: emptyMedia,
   };
 
@@ -434,7 +456,8 @@ export async function fetchTelegramUserProfile(
       })) as Record<string, unknown>;
       userRow = user;
       base.title = userDisplayNameFromTdUser(user);
-      base.username = usernameFromTdUser(user);
+      base.usernames = usernamesFromTdUser(user);
+      base.username = base.usernames[0] ?? null;
       base.phone_number = formatPhoneDisplay(phoneFromTdUser(user));
       base.status_text = statusTextFromTdUser(user);
       base.is_bot = isBotFromTdUser(user);
@@ -455,6 +478,10 @@ export async function fetchTelegramUserProfile(
         personalChatId?: number;
         first_profile_audio?: unknown;
         firstProfileAudio?: unknown;
+        gift_count?: number;
+        giftCount?: number;
+        group_in_common_count?: number;
+        groupInCommonCount?: number;
       };
       base.profile_photo = await resolveUserProfilePhotoMarkup(
         client,
@@ -466,6 +493,16 @@ export async function fetchTelegramUserProfile(
       if (bio) base.bio = bio;
       else if (typeof full.bot_info?.description === "string" && full.bot_info.description.trim()) {
         base.bio = full.bot_info.description.trim();
+      }
+      const giftCount = Number(full.gift_count ?? full.giftCount ?? 0);
+      if (Number.isFinite(giftCount) && giftCount > 0) {
+        base.gift_count = Math.trunc(giftCount);
+      }
+      const groupsInCommon = Number(
+        full.group_in_common_count ?? full.groupInCommonCount ?? 0,
+      );
+      if (Number.isFinite(groupsInCommon) && groupsInCommon > 0) {
+        base.group_in_common_count = Math.trunc(groupsInCommon);
       }
       const firstAudio = parseTdProfileAudio(
         full.first_profile_audio ?? full.firstProfileAudio,
@@ -519,7 +556,8 @@ export async function fetchTelegramUserProfile(
             _: "getSupergroup",
             supergroup_id: supergroupId,
           })) as Record<string, unknown>;
-          base.username = usernameFromTdUser(sg);
+          base.usernames = usernamesFromTdUser(sg);
+          base.username = base.usernames[0] ?? null;
           isChannel = sg.is_channel === true;
           const sgMembers = Number(sg.member_count);
           if (Number.isFinite(sgMembers) && sgMembers >= 0) {

@@ -148,6 +148,28 @@ export async function fetchTelegramEmojiAsset(
   return promise;
 }
 
+/** Sync peek at the in-memory emoji byte cache (no network). */
+export function peekTelegramEmojiAsset(ref: TelegramEmojiFetchRef): TelegramEmojiAsset | null {
+  return bytesCache.get(cacheKey(ref)) ?? null;
+}
+
+/** Warm a custom emoji (static preferred) so status badges can paint without a Unicode flash. */
+export function prefetchTelegramCustomEmoji(
+  customEmojiId: string | null | undefined,
+  options?: { preferStatic?: boolean; priority?: NetworkFetchPriority },
+): void {
+  const id = customEmojiId?.trim();
+  if (!id) return;
+  void fetchTelegramEmojiAsset(
+    {
+      kind: "custom",
+      customEmojiId: id,
+      ...(options?.preferStatic ? { preferStatic: true } : {}),
+    },
+    { priority: options?.priority ?? "high" },
+  );
+}
+
 /** @deprecated Use {@link fetchTelegramEmojiAsset}. */
 export async function fetchCustomEmojiBytes(customEmojiId: string): Promise<Uint8Array | null> {
   const asset = await fetchTelegramEmojiAsset({ kind: "custom", customEmojiId });

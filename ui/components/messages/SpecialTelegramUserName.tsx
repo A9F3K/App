@@ -212,6 +212,9 @@ export function SpecialTelegramUserName({
             priority={emojiStatusPriority}
             fetchEnabled={inlineEmojiFetchEnabled}
             preferStatic={emojiStatusStatic}
+            // Never flash the Unicode 🎭 stand-in while the custom status loads —
+            // leave the badge slot empty until static/animated bytes paint.
+            suppressFallback
           />
         ) : null}
       </View>

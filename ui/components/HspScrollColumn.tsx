@@ -24,13 +24,31 @@ import {
   scrollIndicatorHairlineBorderWidthPx,
   scrollIndicatorThumbSpanAndOffset,
   SCROLL_INDICATOR_THUMB_MIN_PX,
+  SCROLL_INDICATOR_SCROLL_EPS,
+  readScrollportOverflowPx,
+  readShellFlexAvailableHeightPx,
+  scrollContentOverflowsViewport,
 } from "../scrollIndicatorPx";
 import { isBrowserZoomWheelEvent } from "../browserZoom";
 import { layout, useColors } from "../theme";
-import { SCROLL_INDICATOR_SCROLL_EPS } from "../scrollIndicatorPx";
+import { resolveWebRefElement } from "../smart/resolveWebLayoutElement";
 import { HspVerticalScrollIndicator } from "./HspVerticalScrollIndicator";
 
 const DEFAULT_SCROLLBAR_RIGHT_INSET = layout.scrollIndicatorRightInsetPx;
+
+function findShellDomNode(ref: View | null): HTMLElement | null {
+  if (!ref || Platform.OS !== "web") return null;
+  const fromResolver = resolveWebRefElement(ref);
+  if (fromResolver) return fromResolver;
+  if (typeof HTMLElement !== "undefined" && ref instanceof HTMLElement) return ref;
+  const anyRef = ref as unknown as {
+    getNode?: () => unknown;
+    _touchableNode?: HTMLElement;
+    _nativeNode?: HTMLElement;
+  };
+  const node = anyRef.getNode?.() ?? anyRef._touchableNode ?? anyRef._nativeNode ?? null;
+  return node instanceof HTMLElement ? node : null;
+}
 
 export type HspScrollMetrics = {
   layoutH: number;
@@ -260,19 +278,20 @@ export function HspScrollColumn({
     if (Platform.OS !== "web") return;
     const el = getScrollElement();
     if (!el) return;
-    const layoutH = el.clientHeight;
-    const contentH = el.scrollHeight;
+    const shellDom = findShellDomNode(shellRef.current);
+    const live = readScrollportOverflowPx(el, shellDom);
+    if (!live) return;
     const scrollYRaw = el.scrollTop;
     const scrollY = scrollYRaw <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : scrollYRaw;
-    if (layoutH <= 0) return;
     syncNearTopLatch(scrollY);
-    syncNearBottomLatch(scrollY, layoutH, contentH);
+    syncNearBottomLatch(scrollY, live.layoutH, live.contentH);
     setScroll((prev) => {
       const next = {
         ...prev,
-        layoutH,
+        layoutH: live.layoutH,
         scrollY,
-        ...(contentH > 0 ? { contentH } : {}),
+        // Always take live contentH (including when it shrinks after zoom-out).
+        contentH: live.contentH > 0 ? live.contentH : prev.contentH,
       };
       scrollMetricsRef.current = next;
       emitScrollPosition(next);
@@ -462,25 +481,128 @@ export function HspScrollColumn({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   useEffect(() => {
     if (Platform.OS !== "web" || typeof ResizeObserver === "undefined") return;
-    const t = requestAnimationFrame(() => {
+    let cancelled = false;
+    let attempts = 0;
+    let rafId = 0;
+    let scrollEl: HTMLElement | null = null;
+
+    const bindShellBox = (shellDom: HTMLElement) => {
+      // Cap the shell to its flex parent’s remaining height. With overflow:visible,
+      // RN-web often sizes the shell to content (AI third column) so neither the
+      // scrollport nor the custom thumb ever sees overflow.
+      shellDom.style.setProperty("min-height", "0");
+      shellDom.style.setProperty("flex", "1 1 0px");
+      shellDom.style.setProperty("align-self", "stretch");
+      const avail = readShellFlexAvailableHeightPx(shellDom);
+      const portalsSeam =
+        scrollIndicatorOverlaySeam ??
+        (Platform.OS === "web" && scrollbarRightInsetPx <= 0);
+      if (avail > 0) {
+        shellDom.style.setProperty("height", `${avail}px`);
+        shellDom.style.setProperty("max-height", `${avail}px`);
+        // Hidden only when the thumb is portaled — in-shell thumbs may overhang a chrome border.
+        if (portalsSeam) {
+          shellDom.style.setProperty("overflow", "hidden");
+        }
+      } else {
+        shellDom.style.removeProperty("height");
+        shellDom.style.setProperty("max-height", "100%");
+      }
+    };
+
+    const bindScrollportBox = (el: HTMLElement) => {
+      // Keep the scrollport bounded to the shell even when RN-web flex min-height
+      // would otherwise size the node to its content (no overflow → no indicator).
+      // Prefer an explicit max-height from the shell’s clientHeight — under zoom,
+      // max-height:100% can resolve to content height and hide the thumb.
+      el.style.setProperty("min-height", "0");
+      el.style.setProperty("flex", "1 1 0px");
+      el.style.setProperty("align-self", "stretch");
+      el.style.setProperty("height", "0px");
+      const shellDom = findShellDomNode(shellRef.current);
+      if (shellDom) bindShellBox(shellDom);
+      const shellH = shellDom?.clientHeight ?? 0;
+      if (shellH > 0) {
+        el.style.setProperty("max-height", `${shellH}px`);
+      } else {
+        el.style.setProperty("max-height", "100%");
+      }
+    };
+
+    const onResize = () => {
+      const shellDom = findShellDomNode(shellRef.current);
+      if (shellDom) bindShellBox(shellDom);
+      if (scrollEl) bindScrollportBox(scrollEl);
+      resizeHandlerRef.current();
+    };
+
+    /** Ctrl/Cmd+wheel zoom does not always fire window.resize in the same frame. */
+    const onZoomWheel = (e: WheelEvent) => {
+      if (!isBrowserZoomWheelEvent(e)) return;
+      requestAnimationFrame(() => {
+        onResize();
+        requestAnimationFrame(onResize);
+      });
+    };
+
+    const attach = (): boolean => {
       resizeObserverRef.current?.disconnect();
+      resizeObserverRef.current = null;
       const instance = scrollRef.current as unknown as {
         getScrollableNode?: () => HTMLElement | null | undefined;
       } | null;
-      const scrollEl = instance?.getScrollableNode?.();
-      if (!scrollEl) return;
-      const ro = new ResizeObserver(() => resizeHandlerRef.current());
+      const next = instance?.getScrollableNode?.() ?? null;
+      if (!next) return false;
+      scrollEl = next;
+      bindScrollportBox(next);
+
+      const ro = new ResizeObserver(onResize);
       resizeObserverRef.current = ro;
-      ro.observe(scrollEl);
-      const inner = scrollEl.firstElementChild;
+      ro.observe(next);
+      const inner = next.firstElementChild;
       if (inner) ro.observe(inner);
-    });
+      const shellDom = findShellDomNode(shellRef.current);
+      if (shellDom && shellDom !== next) {
+        ro.observe(shellDom);
+        const shellParent = shellDom.parentElement;
+        if (shellParent && shellParent !== next && shellParent !== shellDom) {
+          ro.observe(shellParent);
+        }
+      }
+      onResize();
+      return true;
+    };
+
+    const pump = () => {
+      if (cancelled) return;
+      if (attach()) return;
+      attempts += 1;
+      if (attempts < 24) rafId = requestAnimationFrame(pump);
+    };
+    rafId = requestAnimationFrame(pump);
+
+    window.addEventListener("resize", onResize);
+    window.addEventListener("wheel", onZoomWheel, { passive: true });
+    const visualViewport = window.visualViewport;
+    visualViewport?.addEventListener("resize", onResize);
+    visualViewport?.addEventListener("scroll", onResize);
+
     return () => {
-      cancelAnimationFrame(t);
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("wheel", onZoomWheel);
+      visualViewport?.removeEventListener("resize", onResize);
+      visualViewport?.removeEventListener("scroll", onResize);
       resizeObserverRef.current?.disconnect();
       resizeObserverRef.current = null;
     };
-  }, [syncScrollMetricsFromDom, children]);
+  }, [
+    children,
+    scrollbarRightInsetPx,
+    scrollIndicatorOverlaySeam,
+    syncScrollMetricsFromDom,
+  ]);
 
   const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const ne = e.nativeEvent;
@@ -619,6 +741,9 @@ export function HspScrollColumn({
         const y = Math.max(0, contentH - layoutH);
         el.scrollTop = y;
         commitScrollMetrics({ layoutH, contentH, scrollY: y });
+        // Parents (MessageList pinnedScrollYRef) only learn the pin via this emit —
+        // without it, open-at-bottom left scrollY=0 and falsely triggered load-older.
+        emitScrollPosition({ layoutH, contentH, scrollY: y });
         syncNearTopLatch(y);
         syncNearBottomLatch(y, layoutH, contentH);
         recordStableAnchor();
@@ -626,7 +751,14 @@ export function HspScrollColumn({
       }
     }
     scrollRef.current?.scrollToEnd({ animated: false });
-  }, [commitScrollMetrics, getScrollElement, recordStableAnchor, syncNearBottomLatch, syncNearTopLatch]);
+  }, [
+    commitScrollMetrics,
+    emitScrollPosition,
+    getScrollElement,
+    recordStableAnchor,
+    syncNearBottomLatch,
+    syncNearTopLatch,
+  ]);
 
   const messageRowNativeId = (messageId: number) => `message-row-${messageId}`;
 
@@ -917,7 +1049,7 @@ export function HspScrollColumn({
     const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
     const trackH = viewH + extendBottom;
     // Subpixel / flexGrow fill often reports 1px phantom overflow; hide until real scroll range.
-    if (viewH <= 0 || contentH <= 0 || contentH <= viewH + SCROLL_INDICATOR_SCROLL_EPS) {
+    if (viewH <= 0 || contentH <= 0 || !scrollContentOverflowsViewport(contentH, viewH)) {
       return { show: false as const, thumbH: 0, thumbTop: 0, trackH: 0 };
     }
     const maxScroll = Math.max(1e-6, contentH - viewH);
@@ -946,7 +1078,28 @@ export function HspScrollColumn({
   }, [scroll, indicatorContentSpanPx, indicatorThumbMinPx, scrollIndicatorExtendBottomPx]);
 
   return (
-    <View ref={shellRef} style={[styles.shell, style]} collapsable={false}>
+    <View
+      ref={shellRef}
+      style={[styles.shell, style]}
+      collapsable={false}
+      onLayout={(e) => {
+        // Shell resize often fires when ScrollView onLayout is quiet (window / column drag).
+        // On web, prefer live scrollport clientHeight — using shell height here can inflate
+        // layoutH to the content size (overflow:visible) and hide the indicator.
+        if (Platform.OS === "web") {
+          requestAnimationFrame(() => resizeHandlerRef.current());
+          return;
+        }
+        const lh = e.nativeEvent.layout.height;
+        if (!(lh > 0)) return;
+        setScroll((prev) => {
+          if (Math.abs(prev.layoutH - lh) < 0.5) return prev;
+          const next = { ...prev, layoutH: lh };
+          scrollMetricsRef.current = next;
+          return next;
+        });
+      }}
+    >
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
@@ -988,10 +1141,18 @@ const styles = StyleSheet.create({
     minHeight: 0,
     position: "relative",
     alignSelf: "stretch",
+    // Visible so the 1px thumb can overhang onto a chrome border; scrolling
+    // clips inside the ScrollView node (overflow:auto via web style hooks).
     overflow: "visible",
   },
   scroll: {
     flex: 1,
+    // Flex-basis 0: bound the scrollport to the shell on height resize. Without
+    // this, RN-web sizes the node to content (clientHeight === scrollHeight),
+    // ancestors clip the overflow, and the custom indicator never shows.
+    height: 0,
+    minHeight: 0,
+    alignSelf: "stretch",
   },
   scrollContent: {
     flexGrow: 0,

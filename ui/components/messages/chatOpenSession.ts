@@ -19,6 +19,12 @@ const OPEN_WINDOW_2N = CHAT_HISTORY_WINDOW_N * 2;
 /** Ignore stale cache at scroll top — that is not a deliberate mid-read position. */
 const RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX = 48;
 
+/**
+ * Fully-read chats must open at the latest messages (Telegram). Only restore a
+ * mid-thread viewport when the saved Y is clearly not a stuck/open-at-top paint.
+ */
+const RESTORE_READ_CHAT_MIN_SCROLL_Y_PX = 48;
+
 export type ChatOpenSessionMode =
   | "bottom"
   | "unread_divider"
@@ -90,6 +96,34 @@ export function isMeaningfulCachedUnreadScroll(cached: CachedChatScrollPosition)
   return scrollY > RESTORE_CACHED_UNREAD_MIN_SCROLL_Y_PX;
 }
 
+/**
+ * For chats with no unreads: restore only a deliberate mid-list read.
+ * Stale top paints (scrollY≈0 after a bad open / short-history head) must not
+ * reopen the oldest rows — Telegram shows the bottom when everything is read.
+ * `followingBottom: true` with scrollY≈0 is still a bottom open (not mid-list).
+ */
+export function isRestorableCachedScrollForReadChat(
+  cached: CachedChatScrollPosition,
+): boolean {
+  if (cached.followingBottom) {
+    // Poisoned saves claimed followingBottom while parked at the oldest rows —
+    // still restore as a bottom open (caller uses followingBottom path), not mid-list.
+    return true;
+  }
+  const scrollY = cachedScrollY(cached);
+  if (scrollY > RESTORE_READ_CHAT_MIN_SCROLL_Y_PX) {
+    // Near-bottom saves should reopen as bottom, not a fragile mid restore.
+    if (
+      Number.isFinite(cached.distanceFromBottom) &&
+      cached.distanceFromBottom <= 80
+    ) {
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+
 function positiveId(raw: unknown): number {
   const id = Number(raw);
   if (!Number.isFinite(id) || id <= 0) return 0;
@@ -159,11 +193,15 @@ export function resolveChatOpenSession(chat: MessageChatRowData): ChatOpenSessio
   const tailId = positiveId(chat.last_message_telegram_id);
   const readId = positiveId(chat.last_read_inbox_message_id);
 
-  // Restore mid-read (including while unreads remain).
-  if (
+  const canRestoreCached =
     cachedScroll != null &&
-    (openingUnreadCount <= 0 || isMeaningfulCachedUnreadScroll(cachedScroll))
-  ) {
+    (openingUnreadCount <= 0
+      ? isRestorableCachedScrollForReadChat(cachedScroll)
+      : isMeaningfulCachedUnreadScroll(cachedScroll));
+
+  // Restore mid-read (including while unreads remain). Fully-read chats only
+  // restore a real mid-list Y — never a stuck top open (scrollY≈0).
+  if (canRestoreCached && cachedScroll != null) {
     const restoreAtBottom = cachedScroll.followingBottom;
     const cachedAnchor = positiveId(cachedScroll.anchorMessageId);
     const followingBottom = restoreAtBottom && openingUnreadCount <= 0;
@@ -193,7 +231,9 @@ export function resolveChatOpenSession(chat: MessageChatRowData): ChatOpenSessio
       scroll: {
         followingBottom,
         pinToBottom: restoreAtBottom,
-        restore: cachedScroll,
+        // Bottom opens must pin to the live tail — never replay a saved scrollY≈0
+        // (poisoned followingBottom caches used to restore the oldest rows).
+        restore: restoreAtBottom ? null : cachedScroll,
         alignUnreadDivider: false,
         openAnchor: restoreAtBottom ? "bottom" : "top",
         // Wait for history + layouts before revealing — same settle path as unread/bottom.

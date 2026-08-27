@@ -970,7 +970,16 @@ export async function telegramMessagesAvatarHandler(
     : animated
       ? "no_avatar"
       : await gatewayFetchChatAvatar(userOrRes, chatId!);
-  if (avatar === "no_avatar" && hasUserId && chatId != null && !animated) {
+  // Only fall back to chat photo when the ids match a private peer chat
+  // (telegram chat_id === user_id). Falling back to an arbitrary chat_id
+  // (e.g. the voice group) painted that group's avatar on every cold user.
+  if (
+    avatar === "no_avatar" &&
+    hasUserId &&
+    chatId != null &&
+    !animated &&
+    Math.trunc(chatId) === Math.trunc(userId!)
+  ) {
     avatar = await gatewayFetchChatAvatar(userOrRes, chatId);
   }
   if (avatar === "no_avatar" && !hasUserId && userId != null) {

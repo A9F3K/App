@@ -25,6 +25,7 @@ import {
 } from "./MessageChatAvatarSlot";
 import { extractChatAvatarInitials } from "./chatAvatarInitials";
 import { resolveTelegramUserAvatarUrl } from "./resolveTelegramUserAvatarUrl";
+import { prefetchMessageChatAvatar } from "./MessageChatAvatarImage";
 import {
   MessageChatLeaveVoiceIcon,
   MessageChatMicIcon,
@@ -430,6 +431,23 @@ export function MessageChatVoiceBar({
       overflowLabelWidthPx: overflowLabelWidthForCount,
     });
   const stackedParticipants = previewParticipants.slice(0, stackedLimit);
+  const stackedAvatarPrefetchKey = stackedParticipants
+    .map((row) => `${row.user_id ?? "x"}:${row.chat_id ?? "x"}`)
+    .join("|");
+
+  useEffect(() => {
+    if (!stackedAvatarPrefetchKey) return;
+    for (const token of stackedAvatarPrefetchKey.split("|")) {
+      const [userRaw, chatRaw] = token.split(":");
+      const userId = userRaw === "x" ? null : Number(userRaw);
+      const chatId = chatRaw === "x" ? null : Number(chatRaw);
+      const url = resolveTelegramUserAvatarUrl({
+        user_id: Number.isFinite(userId) && (userId as number) > 0 ? userId : null,
+        chat_id: Number.isFinite(chatId) && chatId !== 0 ? chatId : null,
+      });
+      if (url) prefetchMessageChatAvatar(url, { priority: "high" });
+    }
+  }, [stackedAvatarPrefetchKey]);
 
   const voiceJoinedRef = useRef(false);
   voiceJoinedRef.current = Boolean(joined);
@@ -907,8 +925,11 @@ export function MessageChatVoiceBar({
       "";
     if (endpoint) return `e:${endpoint}`;
     const title = row.title.trim();
-    // Never key multiple untitled stubs as `t:` — Map merge swapped names onto "?".
-    if (title) return `t:${title}`;
+    // Never key multiple untitled / same-title stubs as a bare `t:` — Map merge
+    // swapped names and avatar user_ids onto "?" / emoji-only peers.
+    if (title) {
+      return `t:${title}:u:${row.user_id ?? "x"}:c:${row.chat_id ?? "x"}:o:${order || "_"}:e:${endpoint || "_"}`;
+    }
     return `anon:${row.user_id ?? "x"}:${row.chat_id ?? "x"}:${endpoint || "_"}`;
   }, []);
 
@@ -1806,6 +1827,22 @@ export function MessageChatVoiceBar({
           ).length,
           popoverOpen: popoverOpenRef.current,
           titles: next.slice(0, 6).map((row) => formatVoiceParticipantTitle(row)),
+          avatarUrls: next.slice(0, 6).map((row) => {
+            const url = resolveTelegramUserAvatarUrl(row);
+            return {
+              title: formatVoiceParticipantTitle(row),
+              userId: row.user_id,
+              chatId: row.chat_id,
+              hasUrl: Boolean(url),
+              urlKind: url
+                ? url.includes("user_id=")
+                  ? "user"
+                  : url.includes("chat_id=")
+                    ? "chat"
+                    : "other"
+                : "none",
+            };
+          }),
           volumes: next
             .filter((row) => !row.is_self)
             .slice(0, 6)
@@ -5266,20 +5303,17 @@ export function MessageChatVoiceBar({
                   gap: MESSAGE_CHAT_VOICE_BAR_AVATAR_GAP_PX,
                 }}
               >
-                {stackedParticipants.map((participant) => {
+                {stackedParticipants.map((participant, index) => {
                   const avatarUrl = resolveTelegramUserAvatarUrl(participant);
                   const participantTitle = formatVoiceParticipantTitle(participant);
                   const speaking = Boolean(
                     rowSpeakKeys(participant).some((k) => speakingByKey[k]),
                   );
                   const avatarPx = MESSAGE_CHAT_VOICE_BAR_AVATAR_PX;
+                  const speakKey = participantSpeakKey(participant);
                   return (
                     <View
-                      key={
-                        participant.user_id != null
-                          ? `u:${participant.user_id}`
-                          : `c:${participant.chat_id}`
-                      }
+                      key={`${speakKey}:${index}`}
                       style={{
                         width: avatarPx,
                         height: avatarPx,

@@ -166,6 +166,64 @@ export function ProfileGifIcon({ color = "#FFFFFF", size = 18 }: StrokeIconProps
   );
 }
 
+/** Two-person glyph for “groups in common”. */
+export function ProfileGroupsIcon({ color = "#FFFFFF", size = 18 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 18 18" fill="none">
+      <Path
+        d="M6.5 7.25C7.4665 7.25 8.25 6.4665 8.25 5.5C8.25 4.5335 7.4665 3.75 6.5 3.75C5.5335 3.75 4.75 4.5335 4.75 5.5C4.75 6.4665 5.5335 7.25 6.5 7.25Z"
+        stroke={color}
+        strokeWidth={1.2}
+      />
+      <Path
+        d="M11.75 8C12.4404 8 13 7.44036 13 6.75C13 6.05964 12.4404 5.5 11.75 5.5C11.0596 5.5 10.5 6.05964 10.5 6.75C10.5 7.44036 11.0596 8 11.75 8Z"
+        stroke={color}
+        strokeWidth={1.2}
+      />
+      <Path
+        d="M2.5 14.25C2.5 12.1789 4.17893 10.5 6.25 10.5H6.75C8.82107 10.5 10.5 12.1789 10.5 14.25"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+      />
+      <Path
+        d="M10.75 14.25C10.75 12.6789 12.0539 11.5 13.625 11.5H13.75C14.8546 11.5 15.5 12.1789 15.5 13.25"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
+/** Compact gift glyph for media list rows (bow icon scales poorly at 18px). */
+export function ProfileGiftsRowIcon({ color = "#FFFFFF", size = 18 }: StrokeIconProps) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 18 18" fill="none">
+      <Path
+        d="M3.5 7.5H14.5V14C14.5 14.5523 14.0523 15 13.5 15H4.5C3.94772 15 3.5 14.5523 3.5 14V7.5Z"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinejoin="round"
+      />
+      <Path d="M2.5 7.5H15.5V5.5H2.5V7.5Z" stroke={color} strokeWidth={1.2} strokeLinejoin="round" />
+      <Path d="M9 5.5V15" stroke={color} strokeWidth={1.2} strokeLinecap="round" />
+      <Path
+        d="M9 5.5C9 5.5 9 3.5 7.25 3.5C5.5 3.5 5.5 5.5 7 6.25"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+      />
+      <Path
+        d="M9 5.5C9 5.5 9 3.5 10.75 3.5C12.5 3.5 12.5 5.5 11 6.25"
+        stroke={color}
+        strokeWidth={1.2}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
 /** Bell for mute / unmute channel notifications. */
 export function ProfileMuteIcon({ color = "#FFFFFF", size = 50 }: StrokeIconProps) {
   return (

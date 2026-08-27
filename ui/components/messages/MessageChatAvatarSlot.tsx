@@ -304,6 +304,7 @@ export function MessageChatAvatarSlot({
           ]}
         >
           <MessageChatAvatarImage
+            key={iconUrl ?? "no-avatar"}
             uri={iconUrl!}
             sizePx={faceContentSizePx}
             fill

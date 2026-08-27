@@ -69,6 +69,11 @@ export type FloatingDialogShellProps = {
    * instead of a fixed default tall frame — matches the old profile card.
    */
   fitContentHeight?: boolean;
+  /**
+   * When this value changes while visible, re-run intrinsic height measurement
+   * (e.g. after async profile fields arrive). Ignored when a stored size exists.
+   */
+  contentFitKey?: string | number;
   /** Web-only edge resize. Default true. */
   resizable?: boolean;
   /** Drag the sheet body to move (web). Default true. */
@@ -220,6 +225,7 @@ export function FloatingDialogShell({
   sizeStorageKey,
   offsetStorageKey,
   fitContentHeight = false,
+  contentFitKey,
   resizable = true,
   movable = true,
   moveIgnoreSelector = "button, a, input, textarea, [role='button'], [role='radio'], [role='checkbox'], [data-floating-no-drag]",
@@ -358,6 +364,13 @@ export function FloatingDialogShell({
     windowHeight,
     windowWidth,
   ]);
+
+  // Remeasure after async content settles (profile fields, etc.).
+  useEffect(() => {
+    if (!visible || !fitContentHeight) return;
+    if (sizeStorageKey && readFloatingDialogStoredSize(sizeStorageKey)) return;
+    setContentSizing(true);
+  }, [contentFitKey, fitContentHeight, sizeStorageKey, visible]);
 
   useEffect(() => {
     setSheetSize((prev) => clampSize(prev));

@@ -6,6 +6,7 @@ import { resolveWebRefElement } from "../smart/resolveWebLayoutElement";
 import {
   isScrollIndicatorAtViewportRightEdge,
   scrollIndicatorHairlineBorderWidthPx,
+  scrollIndicatorSplitSeamPortalLeftPx,
   SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX,
   snapScrollIndicatorCoordPx,
 } from "../scrollIndicatorPx";
@@ -130,7 +131,8 @@ export function HspVerticalScrollIndicator({
     syncSeamBox();
     observeShell();
 
-    // Extra frames after column flex settles (common when crossing the triple breakpoint).
+    // Extra frames after column flex settles (common when crossing the triple breakpoint
+    // or after a window resize that remounts / reflows split panes).
     let cancelled = false;
     let frame = 0;
     let rafId = 0;
@@ -140,10 +142,10 @@ export function HspVerticalScrollIndicator({
       measuredOk = syncSeamBox() || measuredOk;
       observeShell();
       frame += 1;
-      // Keep retrying until measure succeeds, or budget expires (DOM may be 0×0 mid-resize).
       if (frame < SEAM_SYNC_RETRY_FRAMES && !measuredOk) {
         rafId = requestAnimationFrame(pump);
-      } else if (frame < 3) {
+      } else if (frame < SEAM_SYNC_RETRY_FRAMES) {
+        // Keep sampling briefly even after a successful measure — resize can settle late.
         rafId = requestAnimationFrame(pump);
       }
     };
@@ -174,8 +176,10 @@ export function HspVerticalScrollIndicator({
 
   const atViewportRightEdge =
     overlaySeam && seamBox != null && isScrollIndicatorAtViewportRightEdge(seamBox.rightPx);
+  // Light theme only: 3px fill at the viewport edge (hairline clips against letterboxing).
+  // Dark theme keeps the 1px hairline — the wide thumb is intentionally light-only.
   const useViewportEdgeWideThumb =
-    overlaySeam && colorScheme === "light" && atViewportRightEdge;
+    overlaySeam && atViewportRightEdge && colorScheme === "light";
   const crossAxisVisualSpan = useViewportEdgeWideThumb
     ? SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX
     : hairline;
@@ -215,13 +219,18 @@ export function HspVerticalScrollIndicator({
 
   if (overlaySeam && typeof document !== "undefined") {
     if (!seamBox) return null;
+    // Viewport-right columns have no seam stroke; keep flush with the column edge.
+    // Interior seams: shift onto the divider so thumb and stroke share one hairline.
+    const portalLeft = atViewportRightEdge
+      ? seamBox.rightPx
+      : scrollIndicatorSplitSeamPortalLeftPx(seamBox.rightPx);
     const portal: ReactNode = (
       <View
         pointerEvents="box-none"
         style={{
           position: "fixed" as unknown as "absolute",
           top: seamBox.topPx,
-          left: seamBox.rightPx,
+          left: portalLeft,
           width: 0,
           height: seamBox.heightPx,
           zIndex: SEAM_OVERLAY_Z,
