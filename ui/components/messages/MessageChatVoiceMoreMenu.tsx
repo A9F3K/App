@@ -17,6 +17,10 @@ import { typographyRect15, type ThemeColors } from "../../theme";
 export type VoiceMoreMenuAnchor = {
   x: number;
   y: number;
+  /**
+   * `above` keeps the menu from being pushed down into the viewport over its trigger.
+   */
+  side?: "below" | "above";
 };
 
 export type VoiceMoreMenuItem = {
@@ -61,12 +65,15 @@ function clampMenuPosition(
   if (left + menuWidth > windowWidth - MENU_VIEWPORT_MARGIN_PX) {
     left = Math.max(MENU_VIEWPORT_MARGIN_PX, windowWidth - menuWidth - MENU_VIEWPORT_MARGIN_PX);
   }
-  if (top + menuHeight > windowHeight - MENU_VIEWPORT_MARGIN_PX) {
-    top = Math.max(MENU_VIEWPORT_MARGIN_PX, windowHeight - menuHeight - MENU_VIEWPORT_MARGIN_PX);
+  if (anchor.side !== "above") {
+    if (top + menuHeight > windowHeight - MENU_VIEWPORT_MARGIN_PX) {
+      top = Math.max(MENU_VIEWPORT_MARGIN_PX, windowHeight - menuHeight - MENU_VIEWPORT_MARGIN_PX);
+    }
+    top = Math.max(MENU_VIEWPORT_MARGIN_PX, top);
   }
   return {
     left: Math.max(MENU_VIEWPORT_MARGIN_PX, left),
-    top: Math.max(MENU_VIEWPORT_MARGIN_PX, top),
+    top,
   };
 }
 

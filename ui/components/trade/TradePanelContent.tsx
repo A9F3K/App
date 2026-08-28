@@ -12,6 +12,7 @@ import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
 import { TradeActionRow } from "./TradeActionRow";
 import { TradeCollectionCarousel } from "./TradeCollectionCarousel";
 import { TradeFeedRow } from "./TradeFeedRow";
+import { resolveTradeFilterMenuAnchor } from "./tradeFilterMenuPosition";
 import { tradeApIcon, tradeFeedItemImages } from "../../trade/tradeAssets";
 import { resolveTradeCollectionColumnCount } from "../../trade/tradeCollectionLayout";
 import { TRADE_SAMPLE_COLLECTIONS, TRADE_SAMPLE_FEED_ITEMS } from "../../trade/tradeSampleData";
@@ -28,7 +29,7 @@ const TABS_AFTER_DOTS_GAP_PX = 33;
 const TABS_TO_FILTERS_GAP_PX = 19;
 const COLLECTION_AUTO_SLIDE_MS = 5000;
 const COLLECTION_ITEMS_PER_SLIDE = 4;
-const MENU_BELOW_CHIP_GAP_PX = 6;
+const FILTER_CHIP_FALLBACK_HEIGHT_PX = 21;
 
 type TradeFeedTab = "trending" | "cap" | "reach";
 type TradeFilterMenuKind = "period" | "chain";
@@ -135,7 +136,7 @@ function TradeFilterChip({
 /** Trade panel body (prev-main `TradePage`): collections, tabs, filters, and sample feed rows. */
 export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
   const colors = useColors();
-  const { width: windowWidth } = useWindowDimensions();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const showTradeActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
   const contentInset = layout.contentSideInsetPx;
   const [collectionsRowWidth, setCollectionsRowWidth] = useState(0);
@@ -179,22 +180,29 @@ export function TradePanelContent({ isActive = true }: { isActive?: boolean }) {
           cb: (x: number, y: number, width: number, height: number) => void,
         ) => void;
       } | null;
-      const show = (anchor: VoiceMoreMenuAnchor) => {
-        setMenuAnchor(anchor);
+      const itemCount =
+        kind === "chain" ? TRADE_CHAIN_OPTIONS.length : TRADE_PERIOD_OPTIONS.length;
+      const show = (chipX: number, chipY: number, chipHeight: number) => {
+        setMenuAnchor(
+          resolveTradeFilterMenuAnchor({
+            chipX,
+            chipY,
+            chipHeight,
+            itemCount,
+            windowHeight,
+          }),
+        );
         setOpenMenu(kind);
       };
       if (node && typeof node.measureInWindow === "function") {
         node.measureInWindow((x, y, _width, height) => {
-          show({
-            x: Math.round(x),
-            y: Math.round(y + height + MENU_BELOW_CHIP_GAP_PX),
-          });
+          show(x, y, height);
         });
         return;
       }
-      show({ x: contentInset, y: 120 });
+      show(contentInset, 120, FILTER_CHIP_FALLBACK_HEIGHT_PX);
     },
-    [contentInset],
+    [contentInset, windowHeight],
   );
 
   const periodMenuItems = useMemo((): VoiceMoreMenuItem[] => {
