@@ -953,41 +953,16 @@ function ResizeEdgeHandle({
       : {}),
   };
 
-  // South edge: two side strips so the bottom control chips stay clickable.
-  if (handle === "s") {
-    const sideWidth = Math.max(HIT * 2, 48);
-    return (
-      <>
-        <View
-          style={[
-            base,
-            {
-              bottom: -half,
-              left: HIT,
-              width: sideWidth,
-              height: HIT,
-            },
-          ]}
-          {...webPointerProps}
-        />
-        <View
-          style={[
-            base,
-            {
-              bottom: -half,
-              right: HIT,
-              width: sideWidth,
-              height: HIT,
-            },
-          ]}
-          {...webPointerProps}
-        />
-      </>
-    );
-  }
-
   let geometry: ViewStyle;
   switch (handle) {
+    case "s":
+      geometry = {
+        bottom: -half,
+        left: HIT,
+        right: HIT,
+        height: HIT,
+      };
+      break;
     case "n":
       // Leave the top-right window controls (close / size / tray) clickable.
       geometry = {
@@ -1015,15 +990,11 @@ function ResizeEdgeHandle({
       };
       break;
     case "ne":
-      // Keep NE away from the close cluster — NW still covers the true corner.
       geometry = {
         top: -half,
         right: -half,
         width: HIT,
         height: HIT,
-        // Invisible and non-interactive; N + E edges still resize this corner.
-        pointerEvents: "none",
-        opacity: 0,
       };
       break;
     case "nw":

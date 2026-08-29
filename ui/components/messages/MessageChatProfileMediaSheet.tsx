@@ -14,7 +14,11 @@ import type { AppStringKey } from "../../../locales/appStrings";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useColors, type ThemeColors } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
-import { FloatingDialogShell } from "../FloatingDialogShell";
+import {
+  FloatingDialogShell,
+  floatingDialogDragHandleDomProps,
+  floatingDialogDragHandleWebStyle,
+} from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
 import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollIndicatorPx";
@@ -195,7 +199,9 @@ function ProfileMediaSheetHeader({
           paddingHorizontal: PAD_X_PX,
           paddingTop: PAD_TOP_PX,
           paddingBottom: 10,
+          ...floatingDialogDragHandleWebStyle,
         }}
+        {...floatingDialogDragHandleDomProps}
       >
         <ProfileOpenHitTarget
           label={backLabel}

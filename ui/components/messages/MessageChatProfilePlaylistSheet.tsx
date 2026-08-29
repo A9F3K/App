@@ -11,7 +11,11 @@ import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useColors, layout, type ThemeColors } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
-import { FloatingDialogShell } from "../FloatingDialogShell";
+import {
+  FloatingDialogShell,
+  floatingDialogDragHandleDomProps,
+  floatingDialogDragHandleWebStyle,
+} from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
 import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollIndicatorPx";
@@ -287,7 +291,15 @@ export function MessageChatProfilePlaylistSheet({
           setScrollLayoutH(metrics.layoutH);
         }}
       >
-        <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 8 }}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            marginBottom: 8,
+            ...floatingDialogDragHandleWebStyle,
+          }}
+          {...floatingDialogDragHandleDomProps}
+        >
           <ProfileOpenHitTarget
             label={t("common.back")}
             onPress={onBack}

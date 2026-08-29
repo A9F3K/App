@@ -46,6 +46,26 @@ const STROKE = AH.splitPaneDividerStrokePx;
 /** Pointer must travel this far before the sheet starts moving — otherwise clicks (theme radios, etc.) never fire. */
 const MOVE_DRAG_THRESHOLD_PX = 5;
 
+/** Title / chrome that starts a move-drag. Close buttons stay on `[data-floating-no-drag]`. */
+export const FLOATING_DIALOG_DRAG_HANDLE_SELECTOR = "[data-floating-drag-handle]";
+
+/** Web props for a dialog header that should move the sheet. */
+export const floatingDialogDragHandleDomProps =
+  Platform.OS === "web"
+    ? ({
+        "data-floating-drag-handle": "1",
+      } as object)
+    : {};
+
+export const floatingDialogDragHandleWebStyle =
+  Platform.OS === "web"
+    ? ({
+        cursor: "grab",
+        userSelect: "none",
+        touchAction: "none",
+      } as object)
+    : {};
+
 const FloatingDialogSizingContext = createContext({ contentSizing: false });
 
 /** True while the shell is measuring intrinsic content height (fit-content open). */
@@ -146,24 +166,16 @@ function ResizeEdgeHandle({
       : {}),
   };
 
-  if (handle === "s") {
-    const sideWidth = Math.max(HIT * 2, 48);
-    return (
-      <>
-        <View
-          style={[base, { bottom: -half, left: HIT, width: sideWidth, height: HIT }]}
-          {...webPointerProps}
-        />
-        <View
-          style={[base, { bottom: -half, right: HIT, width: sideWidth, height: HIT }]}
-          {...webPointerProps}
-        />
-      </>
-    );
-  }
-
   let geometry: ViewStyle;
   switch (handle) {
+    case "s":
+      geometry = {
+        bottom: -half,
+        left: HIT,
+        right: HIT,
+        height: HIT,
+      };
+      break;
     case "n":
       geometry = {
         top: -half,
@@ -194,8 +206,6 @@ function ResizeEdgeHandle({
         right: -half,
         width: HIT,
         height: HIT,
-        pointerEvents: "none",
-        opacity: 0,
       };
       break;
     case "nw":
@@ -556,13 +566,9 @@ export function FloatingDialogShell({
       if (!movable || Platform.OS !== "web") return;
       if (e.nativeEvent.button != null && e.nativeEvent.button !== 0) return;
       const target = e.nativeEvent.target as Element | null;
-      if (
-        target &&
-        typeof target.closest === "function" &&
-        target.closest(moveIgnoreSelector)
-      ) {
-        return;
-      }
+      if (!target || typeof target.closest !== "function") return;
+      if (target.closest(moveIgnoreSelector)) return;
+      if (!target.closest(FLOATING_DIALOG_DRAG_HANDLE_SELECTOR)) return;
       dragRef.current = null;
       setDraggingHandle(null);
       const host = e.currentTarget as {
@@ -635,7 +641,7 @@ export function FloatingDialogShell({
                 display: "flex",
                 flexDirection: "column",
                 transform: `translate(${sheetOffset.x}px, ${sheetOffset.y}px)`,
-                cursor: movingSheet ? "grabbing" : movable ? "grab" : undefined,
+                cursor: movingSheet ? "grabbing" : undefined,
                 // Keep scroll inside the dialog when the pointer is over it.
                 overscrollBehavior: "contain",
                 boxSizing: "border-box",

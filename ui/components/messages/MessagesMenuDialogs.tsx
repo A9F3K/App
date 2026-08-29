@@ -25,7 +25,11 @@ import {
   type SideMenuContact,
   type SideMenuCreatedChat,
 } from "../../telegram/fetchTelegramSideMenuDialogs";
-import { FloatingDialogShell } from "../FloatingDialogShell";
+import {
+  FloatingDialogShell,
+  floatingDialogDragHandleDomProps,
+  floatingDialogDragHandleWebStyle,
+} from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
 import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollIndicatorPx";
@@ -331,7 +335,15 @@ function MenuDialogShell({
       sheetStyle={{ backgroundColor: colors.background }}
     >
       <View style={{ flex: 1, minHeight: 0, backgroundColor: colors.background }}>
-        {hideTitle ? null : (
+        {hideTitle ? (
+          <View
+            style={{
+              height: 28,
+              ...floatingDialogDragHandleWebStyle,
+            }}
+            {...floatingDialogDragHandleDomProps}
+          />
+        ) : (
           <View
             style={{
               paddingHorizontal: PAD_X,
@@ -339,7 +351,9 @@ function MenuDialogShell({
               paddingBottom: 10,
               borderBottomWidth: 1,
               borderBottomColor: colors.highlight,
+              ...floatingDialogDragHandleWebStyle,
             }}
+            {...floatingDialogDragHandleDomProps}
           >
             <Text
               style={[

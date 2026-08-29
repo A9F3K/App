@@ -71,7 +71,7 @@ export function floatingDialogViewportMax(
   };
 }
 
-export type FloatingDialogSizeKind = "profile" | "profileList" | "modal" | "picker";
+export type FloatingDialogSizeKind = "profile" | "profileList" | "modal" | "picker" | "connect";
 
 /**
  * Reasonable first-open size from viewport + dialog role.
@@ -103,6 +103,12 @@ export function resolveFloatingDialogDefaultSize(
       return prefer(
         Math.min(400, Math.max(340, Math.round(windowWidth * 0.34))),
         Math.min(560, Math.max(420, Math.round(windowHeight * 0.65))),
+      );
+    case "connect":
+      // QR + extra connect methods need a tall first-open frame.
+      return prefer(
+        Math.min(420, Math.max(360, Math.round(windowWidth * 0.34))),
+        Math.min(760, Math.max(560, Math.round(windowHeight * 0.82))),
       );
     case "modal":
     default:

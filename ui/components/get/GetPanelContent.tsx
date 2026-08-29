@@ -32,7 +32,11 @@ import {
   useColors,
 } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
-import { FloatingDialogShell } from "../FloatingDialogShell";
+import {
+  FloatingDialogShell,
+  floatingDialogDragHandleDomProps,
+  floatingDialogDragHandleWebStyle,
+} from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
@@ -676,7 +680,9 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
             paddingBottom: 12,
             flexDirection: "row",
             alignItems: "center",
+            ...floatingDialogDragHandleWebStyle,
           }}
+          {...floatingDialogDragHandleDomProps}
         >
           <Text
             style={[

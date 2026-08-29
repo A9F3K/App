@@ -234,6 +234,10 @@ export function TelegramConnectSheet() {
       onClose={onClose}
       title={sheetTitle}
       titleEmphasis={showPassword || showCode ? "primary" : "default"}
+      sizeKind="connect"
+      minSize={{ width: 300, height: 480 }}
+      sizeStorageKey="hsp.telegramConnectSheet.size.v1"
+      offsetStorageKey="hsp.telegramConnectSheet.offset.v1"
       footer={
         <AppModalSheetBackFooter
           onClose={onClose}

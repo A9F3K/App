@@ -13,6 +13,8 @@ import { typographyRect15, useColors, type ThemeColors } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import {
   FloatingDialogShell,
+  floatingDialogDragHandleDomProps,
+  floatingDialogDragHandleWebStyle,
   useFloatingDialogContentSizing,
 } from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
@@ -668,7 +670,14 @@ export function MessageChatProfileSheet({
         : {})}
       onStartShouldSetResponder={() => true}
     >
-      <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "flex-start",
+          ...floatingDialogDragHandleWebStyle,
+        }}
+        {...floatingDialogDragHandleDomProps}
+      >
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t("messages.profile.photoOpenA11y")}

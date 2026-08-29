@@ -12,11 +12,14 @@ import { layout, typographyFixedRow40Label, typographyRect15, typographySansSemi
 import { FloatingDialogCloseButton } from "./FloatingDialogCloseButton";
 import {
   FloatingDialogShell,
+  floatingDialogDragHandleDomProps,
+  floatingDialogDragHandleWebStyle,
   useFloatingDialogContentSizing,
 } from "./FloatingDialogShell";
 import {
   resolveFloatingDialogDefaultSize,
   type FloatingDialogSize,
+  type FloatingDialogSizeKind,
 } from "./floatingDialogGeometry";
 import { HspScrollColumn } from "./HspScrollColumn";
 import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
@@ -127,6 +130,7 @@ type Props = {
   minSize?: FloatingDialogSize;
   sizeStorageKey?: string;
   offsetStorageKey?: string;
+  sizeKind?: FloatingDialogSizeKind;
 };
 
 function AppModalSheetBody({
@@ -158,7 +162,9 @@ function AppModalSheetBody({
         alignItems: "flex-start",
         marginBottom: title ? 8 : 0,
         minHeight: 28,
+        ...floatingDialogDragHandleWebStyle,
       }}
+      {...floatingDialogDragHandleDomProps}
     >
       <Text
         style={[
@@ -230,11 +236,12 @@ export function AppModalSheet({
   minSize = { width: 300, height: 240 },
   sizeStorageKey = "hsp.appModalSheet.size.v3",
   offsetStorageKey = "hsp.appModalSheet.offset.v3",
+  sizeKind = "modal",
 }: Props) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const defaultSize = useMemo(
-    () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "modal"),
-    [windowHeight, windowWidth],
+    () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, sizeKind),
+    [sizeKind, windowHeight, windowWidth],
   );
 
   return (
