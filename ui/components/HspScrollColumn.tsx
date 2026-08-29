@@ -32,6 +32,7 @@ import {
 import { isBrowserZoomWheelEvent } from "../browserZoom";
 import { layout, useColors } from "../theme";
 import { resolveWebRefElement } from "../smart/resolveWebLayoutElement";
+import { useFloatingDialogScrollChrome } from "./floatingDialogScrollChrome";
 import { HspVerticalScrollIndicator } from "./HspVerticalScrollIndicator";
 
 const DEFAULT_SCROLLBAR_RIGHT_INSET = layout.scrollIndicatorRightInsetPx;
@@ -113,6 +114,11 @@ type Props = {
    * through a pinned gradient CTA row that sits under the scroller.
    */
   scrollIndicatorExtendBottomPx?: number;
+  /**
+   * Extend the scroll-thumb track above the scroll viewport (px) through a sticky dialog header
+   * so the indicator spans the full right chrome height.
+   */
+  scrollIndicatorExtendTopPx?: number;
   /** Min thumb height (px). Chat panes pass ~20 to match tdesktop. */
   indicatorThumbMinPx?: number;
   /**
@@ -170,6 +176,7 @@ export function HspScrollColumn({
   scrollbarRightInsetPx = DEFAULT_SCROLLBAR_RIGHT_INSET,
   scrollIndicatorOverlaySeam,
   scrollIndicatorExtendBottomPx = 0,
+  scrollIndicatorExtendTopPx,
   indicatorThumbMinPx = SCROLL_INDICATOR_THUMB_MIN_PX,
   indicatorContentSpanPx = null,
   containOverscroll = true,
@@ -186,6 +193,11 @@ export function HspScrollColumn({
   stickToBottomOnResize = true,
 }: Props) {
   const colors = useColors();
+  const dialogScrollChrome = useFloatingDialogScrollChrome();
+  const resolvedExtendTopPx = Math.max(
+    0,
+    scrollIndicatorExtendTopPx ?? dialogScrollChrome.headerExtendPx ?? 0,
+  );
   const thumbColor = indicatorColor ?? colors.scrollIndicator;
   const scrollRef = useRef<ComponentRef<typeof ScrollView>>(null);
   const shellRef = useRef<View>(null);
@@ -1047,7 +1059,8 @@ export function HspScrollColumn({
     const contentH = scroll.contentH;
     const y = scroll.scrollY;
     const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
-    const trackH = viewH + extendBottom;
+    const extendTop = resolvedExtendTopPx;
+    const trackH = viewH + extendTop + extendBottom;
     // Subpixel / flexGrow fill often reports 1px phantom overflow; hide until real scroll range.
     if (viewH <= 0 || contentH <= 0 || !scrollContentOverflowsViewport(contentH, viewH)) {
       return { show: false as const, thumbH: 0, thumbTop: 0, trackH: 0 };
@@ -1074,8 +1087,14 @@ export function HspScrollColumn({
         ? 0
         : Math.min(maxTravel, thumbOffset);
     if (scrollClamped >= maxScroll - SCROLL_INDICATOR_SCROLL_EPS) thumbTop = maxTravel;
-    return { show: true as const, thumbH, thumbTop, maxScroll, trackH };
-  }, [scroll, indicatorContentSpanPx, indicatorThumbMinPx, scrollIndicatorExtendBottomPx]);
+    return { show: true as const, thumbH, thumbTop, maxScroll, trackH, extendTop };
+  }, [
+    scroll,
+    indicatorContentSpanPx,
+    indicatorThumbMinPx,
+    scrollIndicatorExtendBottomPx,
+    resolvedExtendTopPx,
+  ]);
 
   return (
     <View
@@ -1126,6 +1145,7 @@ export function HspScrollColumn({
         scrollbarRightInsetPx={scrollbarRightInsetPx}
         overlaySeam={scrollIndicatorOverlaySeam}
         scrollIndicatorExtendBottomPx={scrollIndicatorExtendBottomPx}
+        scrollIndicatorExtendTopPx={resolvedExtendTopPx}
         onScrollTo={(y) => {
           onUserScrollIntent?.();
           scrollToY(y);

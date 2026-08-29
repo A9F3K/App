@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import {
   Platform,
   Pressable,
@@ -8,12 +8,18 @@ import {
   View,
 } from "react-native";
 import { useAppStrings } from "../../locales/AppStringsContext";
-import { layout, typographyFixedRow40Label, typographyRect15, typographySansSemibold, useColors } from "../theme";
-import { FloatingDialogCloseButton } from "./FloatingDialogCloseButton";
+import { layout, typographyFixedRow40Label, useColors } from "../theme";
+import {
+  floatingDialogBodyTextStyle,
+  floatingDialogSectionTextStyle,
+  floatingDialogSubtitleTextStyle,
+  floatingDialogTitleTextStyle,
+  resolveFloatingDialogInsets,
+} from "./floatingDialogChrome";
+import { FloatingDialogScrollChromeProvider } from "./floatingDialogScrollChrome";
+import { FloatingDialogStickyHeader } from "./FloatingDialogStickyHeader";
 import {
   FloatingDialogShell,
-  floatingDialogDragHandleDomProps,
-  floatingDialogDragHandleWebStyle,
   useFloatingDialogContentSizing,
 } from "./FloatingDialogShell";
 import {
@@ -52,25 +58,29 @@ export const appModalSheetStyles = StyleSheet.create({
     paddingVertical: 20,
   },
   title: {
-    marginBottom: 10,
-    textAlign: "left",
+    ...floatingDialogTitleTextStyle,
+    marginBottom: 0,
   },
-  /** Primary sheet heading — semibold, left-aligned hierarchy. */
   titlePrimary: {
-    marginBottom: 8,
-    textAlign: "left",
-    fontSize: 17,
-    lineHeight: 22,
+    ...floatingDialogTitleTextStyle,
+    marginBottom: 0,
+  },
+  section: {
+    ...floatingDialogSectionTextStyle,
+    marginBottom: 14,
+    marginTop: 8,
+  },
+  subtitle: {
+    ...floatingDialogSubtitleTextStyle,
+    marginBottom: 5,
   },
   body: {
+    ...floatingDialogBodyTextStyle,
     marginBottom: 12,
-    textAlign: "left",
   },
   bodySupporting: {
+    ...floatingDialogBodyTextStyle,
     marginBottom: 16,
-    textAlign: "left",
-    fontSize: 14,
-    lineHeight: 20,
   },
   hint: {
     marginTop: 12,
@@ -125,7 +135,6 @@ type Props = {
   footer?: ReactNode;
   /** Stronger left-aligned heading for single-step dialogs (e.g. 2FA password). */
   titleEmphasis?: "default" | "primary";
-  /** Shrink sheet height to the form on first open (short auth / confirm dialogs). */
   fitContentHeight?: boolean;
   minSize?: FloatingDialogSize;
   sizeStorageKey?: string;
@@ -137,91 +146,74 @@ function AppModalSheetBody({
   title,
   children,
   footer,
-  titleEmphasis,
   onClose,
   fitContentHeight,
 }: {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
-  titleEmphasis: "default" | "primary";
   onClose: () => void;
   fitContentHeight: boolean;
 }) {
-  const colors = useColors();
   const { t } = useAppStrings();
-  // During the first fit-content measure pass the shell reports contentSizing;
-  // keep the same non-flex body after lock so the OTP field is not remounted.
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = resolveFloatingDialogInsets(windowHeight);
   const contentSizing = useFloatingDialogContentSizing();
   const useIntrinsicBody = fitContentHeight || contentSizing;
+  const [headerExtendPx, setHeaderExtendPx] = useState(0);
 
   const header = (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "flex-start",
-        marginBottom: title ? 8 : 0,
-        minHeight: 28,
-        ...floatingDialogDragHandleWebStyle,
-      }}
-      {...floatingDialogDragHandleDomProps}
-    >
-      <Text
-        style={[
-          titleEmphasis === "primary"
-            ? [typographySansSemibold, appModalSheetStyles.titlePrimary]
-            : [typographyRect15, appModalSheetStyles.title],
-          {
-            color: colors.primary,
-            flex: 1,
-            minWidth: 0,
-            marginBottom: 0,
-            paddingRight: 8,
-          },
-        ]}
-      >
-        {title}
-      </Text>
-      <FloatingDialogCloseButton label={t("common.close")} onPress={onClose} />
-    </View>
+    <FloatingDialogStickyHeader
+      insets={insets}
+      title={title}
+      onClose={onClose}
+      closeLabel={t("common.close")}
+      onHeightChange={setHeaderExtendPx}
+    />
   );
 
-  // Intrinsic / fit-content sheets must not use HspScrollColumn (flex/height:0 collapses).
+  const bodyPadding = {
+    paddingHorizontal: insets.padX,
+    paddingTop: insets.bodyPadTop,
+    paddingBottom: insets.bodyPadBottom,
+  };
+
+  const chrome = (body: ReactNode) => (
+    <FloatingDialogScrollChromeProvider headerExtendPx={headerExtendPx}>
+      {body}
+    </FloatingDialogScrollChromeProvider>
+  );
+
   if (useIntrinsicBody) {
-    return (
+    return chrome(
       <View
         style={{
-          paddingHorizontal: 20,
-          paddingTop: 16,
-          paddingBottom: 20,
-          ...(fitContentHeight && !contentSizing
-            ? { flex: 1, minHeight: 0 }
-            : null),
+          ...(fitContentHeight && !contentSizing ? { flex: 1, minHeight: 0 } : null),
         }}
       >
         {header}
-        {children}
-        {footer}
-      </View>
+        <View style={bodyPadding}>
+          {children}
+          {footer}
+        </View>
+      </View>,
     );
   }
 
-  return (
-    <HspScrollColumn
-      style={{ flex: 1, minHeight: 0 }}
-      contentContainerStyle={{
-        paddingHorizontal: 20,
-        paddingTop: 16,
-        paddingBottom: 20,
-      }}
-      scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
-      scrollIndicatorOverlaySeam={false}
-      containOverscroll
-    >
+  return chrome(
+    <View style={{ flex: 1, minHeight: 0 }}>
       {header}
-      {children}
-      {footer}
-    </HspScrollColumn>
+      <HspScrollColumn
+        style={{ flex: 1, minHeight: 0 }}
+        contentContainerStyle={bodyPadding}
+        scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+        scrollIndicatorOverlaySeam={false}
+        containOverscroll
+      >
+        {children}
+        {footer}
+      </HspScrollColumn>
+    </View>,
   );
 }
 
@@ -231,7 +223,7 @@ export function AppModalSheet({
   title,
   children,
   footer,
-  titleEmphasis = "default",
+  titleEmphasis: _titleEmphasis = "default",
   fitContentHeight = false,
   minSize = { width: 300, height: 240 },
   sizeStorageKey = "hsp.appModalSheet.size.v3",
@@ -259,7 +251,6 @@ export function AppModalSheet({
       <AppModalSheetBody
         title={title}
         footer={footer}
-        titleEmphasis={titleEmphasis}
         onClose={onClose}
         fitContentHeight={fitContentHeight}
       >

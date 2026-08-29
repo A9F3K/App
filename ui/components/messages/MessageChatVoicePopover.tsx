@@ -13,6 +13,7 @@ import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import {
   layout,
   typographyRect15,
+  typographySansSemibold,
   type ThemeColors,
   type ThemeName,
 } from "../../theme";
@@ -2000,12 +2001,21 @@ export function MessageChatVoicePopover({
           } as object)
         : {})}
     >
-      <View style={{ flex: 1, minWidth: 0 }} pointerEvents="none">
+      <View
+        style={{ flex: 1, minWidth: 0 }}
+        pointerEvents="auto"
+        {...(Platform.OS === "web"
+          ? ({
+              "data-voice-chrome": "title",
+              "data-floating-no-drag": "1",
+            } as object)
+          : {})}
+      >
         <Text
           numberOfLines={1}
           style={[
-            typographyRect15,
-            { color: colors.primary, marginBottom: 0 },
+            typographySansSemibold,
+            { color: colors.primary, marginBottom: 0, fontSize: 16, lineHeight: 22 },
           ]}
         >
           {chatTitle}

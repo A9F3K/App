@@ -64,6 +64,7 @@ export function WelcomeEmailCodeSheet({
         onSubmit={onSubmit}
         submitting={submitting}
         submitDisabled={submitting}
+        layout="fill"
       />
     </AppModalSheet>
   );

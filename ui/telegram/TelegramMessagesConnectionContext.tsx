@@ -132,6 +132,16 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   const connectSheetVisibleRef = useRef(false);
   /** After status confirms DB link is gone, back off silent warmup (avoids 403 spam loops). */
   const notConnectedBackoffUntilRef = useRef(0);
+  /** Blocks silent resume until auth session reflects logout. */
+  const explicitDisconnectRef = useRef(false);
+  const sessionTelegramMessagesConnectedRef = useRef(sessionTelegramMessagesConnected);
+
+  useEffect(() => {
+    sessionTelegramMessagesConnectedRef.current = sessionTelegramMessagesConnected;
+    if (sessionTelegramMessagesConnected === false) {
+      explicitDisconnectRef.current = false;
+    }
+  }, [sessionTelegramMessagesConnected]);
 
   const bumpEmojiFetchEpoch = useCallback(() => {
     resetTelegramEmojiFetchCaches();
@@ -190,9 +200,12 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
         setConnectedTelegramUserId(nextUserId);
       } else if (linked) {
         setConnectedTelegramUserId(lastKnownTelegramUserIdRef.current);
-      } else {
+      } else if (sessionTelegramMessagesConnectedRef.current === true) {
         // Keep last known id for side-menu avatar while silent resume runs.
         setConnectedTelegramUserId(lastKnownTelegramUserIdRef.current);
+      } else {
+        lastKnownTelegramUserIdRef.current = null;
+        setConnectedTelegramUserId(null);
       }
       logTelegramConnect("refresh_status_ok", { connected: linked, status: response.status, url: statusUrl });
       logPageDisplay("telegram_messages_status", { connected: linked, status: response.status });
@@ -215,6 +228,9 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
 
   const silentWarmupSession = useCallback(async (): Promise<boolean> => {
     if (warmupInFlightRef.current) return connectedRef.current;
+    if (explicitDisconnectRef.current || sessionTelegramMessagesConnectedRef.current !== true) {
+      return false;
+    }
     if (Date.now() < notConnectedBackoffUntilRef.current) return connectedRef.current;
     // Do not fight an open QR/password sheet — resume/warmup restarts hide Connect.
     if (connectSheetVisibleRef.current || isMidConnectAuth(connectAuthStateRef.current)) {
@@ -418,7 +434,17 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       setConnectError(json.error ?? (json.ok === false ? "connect_failed" : null));
 
       if (state === "ready") {
+        if (explicitDisconnectRef.current || sessionTelegramMessagesConnectedRef.current !== true) {
+          logTelegramConnect("connect_success_ignored_after_disconnect");
+          stopPolling();
+          attemptIdRef.current = null;
+          clearStoredMtprotoConnect();
+          connectAuthStateRef.current = "idle";
+          setConnectAuthState("idle");
+          return;
+        }
         notConnectedBackoffUntilRef.current = 0;
+        explicitDisconnectRef.current = false;
         connectedRef.current = true;
         setConnected(true);
         setConnectSheetVisible(false);
@@ -427,6 +453,9 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
         setConnectCodeDelivery(null);
         logTelegramConnect("connect_success", { chatCount: json.chatCount ?? null });
         logPageDisplay("telegram_messages_connected");
+        if (typeof document !== "undefined") {
+          document.dispatchEvent(new CustomEvent("hsp-auth-session-updated"));
+        }
         void refreshStatusInner();
       } else if (state === "failed") {
         stopPolling();
@@ -513,7 +542,14 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   }, [stopPolling]);
 
   const attemptSilentMtprotoResume = useCallback(async (): Promise<boolean> => {
-    if (reconnectInFlightRef.current || !isAuthenticated) return false;
+    if (
+      reconnectInFlightRef.current ||
+      !isAuthenticated ||
+      explicitDisconnectRef.current ||
+      sessionTelegramMessagesConnectedRef.current !== true
+    ) {
+      return false;
+    }
     reconnectInFlightRef.current = true;
     logTelegramConnect("silent_resume_start");
     try {
@@ -697,10 +733,12 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     soft?: boolean;
   }) => {
     const authMethod: MtprotoAuthMethod = options?.authMethod === "phone" ? "phone" : "qr";
+    const useFresh =
+      Boolean(options?.fresh) || sessionTelegramMessagesConnectedRef.current !== true;
     const softPhoneStart = Boolean(options?.soft) && authMethod === "phone";
     const current = connectAuthStateRef.current;
     if (
-      !options?.fresh &&
+      !useFresh &&
       authMethod === "qr" &&
       connectAuthMethodRef.current === "phone" &&
       (current === "wait_code" || current === "wait_phone" || current === "wait_password")
@@ -721,26 +759,26 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     logTelegramConnect("connect_start", {
       url: startUrl,
       isAuthenticated,
-      fresh: Boolean(options?.fresh),
+      fresh: useFresh,
       authMethod,
-      resume: !options?.fresh,
+      resume: !useFresh,
     });
     setConnectPending(true);
     setConnectError(null);
     if (softPhoneStart) {
       setConnectQrLink(null);
-    } else if (!options?.fresh && attemptIdRef.current && isMidConnectAuth(current)) {
+    } else if (!useFresh && attemptIdRef.current && isMidConnectAuth(current)) {
       setConnectQrLink(null);
     } else {
       setConnectAuthState("initializing");
       connectAuthStateRef.current = "initializing";
       setConnectQrLink(null);
     }
-    if (options?.fresh) {
+    if (useFresh) {
       attemptIdRef.current = null;
     }
     try {
-      const body: Record<string, unknown> = options?.fresh
+      const body: Record<string, unknown> = useFresh
         ? { fresh: true, authMethod }
         : { resume: true, authMethod };
       const response = await fetch(startUrl, {
@@ -1062,20 +1100,48 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   const closeConnectSheet = useCallback(() => {
     logTelegramConnect("close_connect_sheet");
     stopPolling();
+    connectStartAbortRef.current?.abort();
+    connectStartGenerationRef.current += 1;
+    pollGenerationRef.current += 1;
     setConnectSheetVisible(false);
-    const current = connectAuthStateRef.current;
-    if (!isMidConnectAuth(current)) {
-      setConnectAuthState("idle");
-      connectAuthStateRef.current = "idle";
-      setConnectAuthMethod("qr");
-      connectAuthMethodRef.current = "qr";
-      setConnectError(null);
-      setConnectQrLink(null);
-      attemptIdRef.current = null;
-    }
+    setConnectPending(false);
+    setConnectAuthState("idle");
+    connectAuthStateRef.current = "idle";
+    setConnectAuthMethod("qr");
+    connectAuthMethodRef.current = "qr";
+    setConnectError(null);
+    setConnectQrLink(null);
+    setConnectCodeDelivery(null);
+    attemptIdRef.current = null;
+    clearStoredMtprotoConnect();
   }, [stopPolling]);
 
   const disconnectTelegramMessages = useCallback(async () => {
+    logTelegramConnect("disconnect_start");
+    explicitDisconnectRef.current = true;
+    notConnectedBackoffUntilRef.current = Date.now() + 120_000;
+    warmupInFlightRef.current = false;
+    reconnectInFlightRef.current = false;
+    stopPolling();
+    connectStartAbortRef.current?.abort();
+    connectStartGenerationRef.current += 1;
+    pollGenerationRef.current += 1;
+    setConnectSheetVisible(false);
+    setConnectPending(false);
+    attemptIdRef.current = null;
+    clearStoredMtprotoConnect();
+    connectAuthStateRef.current = "idle";
+    setConnectAuthState("idle");
+    setConnectAuthMethod("qr");
+    connectAuthMethodRef.current = "qr";
+    setConnectQrLink(null);
+    setConnectError(null);
+    setConnectCodeDelivery(null);
+    lastKnownTelegramUserIdRef.current = null;
+    connectedRef.current = false;
+    setConnected(false);
+    setConnectedTelegramUserId(null);
+
     try {
       await fetch(buildApiUrl("/api/telegram-messages-disconnect"), {
         method: "POST",
@@ -1086,11 +1152,13 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     } catch {
       /* ignore */
     }
-    lastKnownTelegramUserIdRef.current = null;
-    setConnected(false);
-    setConnectedTelegramUserId(null);
+
+    if (typeof document !== "undefined") {
+      document.dispatchEvent(new CustomEvent("hsp-auth-session-updated"));
+    }
     await refreshStatusInner();
-  }, [refreshStatusInner]);
+    logTelegramConnect("disconnect_done");
+  }, [refreshStatusInner, stopPolling]);
 
   const value = useMemo(
     (): TelegramMessagesConnectionCtx => ({

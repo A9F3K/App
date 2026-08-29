@@ -707,6 +707,7 @@ export function MessageChatProfileSheet({
             paddingTop: 4,
             paddingRight: 36,
           }}
+          {...(Platform.OS === "web" ? ({ "data-floating-no-drag": "1" } as object) : {})}
         >
           <SpecialTelegramUserName
             name={title}

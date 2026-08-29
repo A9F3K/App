@@ -15,6 +15,7 @@ import {
   logTdlibGatewayApi,
 } from "../_lib/tdlib-gateway-debug.js";
 import { getTelegramApiCredentials } from "../../telegram/tdlib/env.js";
+import { isTelegramMessagesLinkRevoked } from "../../database/telegramMessages.js";
 
 type NodeRes = {
   status: (code: number) => void;
@@ -205,9 +206,16 @@ export async function telegramMtprotoConnectStartHandler(
     fresh?: boolean;
     authMethod?: "qr" | "phone";
   }>(request);
-  const resume = Boolean(startBody.resume);
-  const fresh = Boolean(startBody.fresh);
+  let resume = Boolean(startBody.resume);
+  let fresh = Boolean(startBody.fresh);
   const authMethod = startBody.authMethod === "phone" ? "phone" : "qr";
+
+  // After explicit logout, never silently resume from on-disk TDLib — start fresh.
+  if (resume && !fresh && (await isTelegramMessagesLinkRevoked(userOrRes))) {
+    logTdlibGatewayApi("connect_start_revoked_force_fresh", { telegramUsername: userOrRes });
+    resume = false;
+    fresh = true;
+  }
 
   try {
     const snap = await gatewayConnectStart(userOrRes, { resume, fresh, authMethod });

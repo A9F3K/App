@@ -2,6 +2,7 @@ import {
   disconnectTelegramMessages,
   getConnection,
   isTelegramMessagesConnected,
+  isTelegramMessagesLinkRevoked,
 } from "../../database/telegramMessages.js";
 import { getMtprotoSession } from "../../database/telegramMtproto.js";
 import { revokeMtprotoSession } from "../../database/telegramMtproto.js";
@@ -36,6 +37,18 @@ function logTelegramMessagesApi(event: string, details?: Record<string, unknown>
   appLog(TELEGRAM_MESSAGES_API_LOG_PREFIX, event, details);
 }
 
+/** Heal idle gateway unload — never after explicit user logout (revoked link). */
+async function canHealFromPersistedGatewaySession(telegramUsername: string): Promise<boolean> {
+  if (await isTelegramMessagesLinkRevoked(telegramUsername)) return false;
+  const existing = await getMtprotoSession(telegramUsername);
+  const hadAuthorizedUser =
+    existing?.telegram_user_id != null &&
+    Number.isFinite(existing.telegram_user_id) &&
+    existing.telegram_user_id > 0;
+  if (!hadAuthorizedUser) return false;
+  return gatewayUserHasPersistedSession(telegramUsername);
+}
+
 function isGatewaySessionWarmingError(error: string | undefined | null): boolean {
   return (
     error === "session_not_ready" ||
@@ -52,6 +65,7 @@ const GATEWAY_SESSION_RESTORE_RESYNC_MS = 25_000;
 async function gatewaySessionRestoringOrRevoke(
   telegramUsername: string,
 ): Promise<"restoring" | "revoke"> {
+  if (await isTelegramMessagesLinkRevoked(telegramUsername)) return "revoke";
   const persistedOnGateway = await gatewayUserHasPersistedSession(telegramUsername);
   return persistedOnGateway ? "restoring" : "revoke";
 }
@@ -290,34 +304,21 @@ export async function telegramMessagesStatusHandler(
 
   const connected = await isTelegramMessagesConnected(userOrRes);
   let effectivelyConnected = connected;
-  if (!effectivelyConnected) {
-    // DB link can briefly disagree with on-disk TDLib auth after gateway idle
-    // unload / race. Only heal when we already recorded an authorized Telegram
-    // user id — a fresh QR attempt also creates a `db` folder and must not look
-    // "connected" (that hides the Connect footer).
+  if (!effectivelyConnected && (await canHealFromPersistedGatewaySession(userOrRes))) {
     const existing = await getMtprotoSession(userOrRes);
-    const hadAuthorizedUser =
-      existing?.telegram_user_id != null &&
-      Number.isFinite(existing.telegram_user_id) &&
-      existing.telegram_user_id > 0;
-    if (hadAuthorizedUser) {
-      const persistedOnGateway = await gatewayUserHasPersistedSession(userOrRes);
-      if (persistedOnGateway) {
-        const { markTelegramMessagesConnected } = await import("../../database/telegramMessages.js");
-        const { upsertMtprotoSession } = await import("../../database/telegramMtproto.js");
-        await upsertMtprotoSession({
-          telegramUsername: userOrRes,
-          telegramUserId: existing?.telegram_user_id ?? null,
-          tdlibDbPath: existing?.tdlib_db_path?.trim() || `gateway:${userOrRes}`,
-          status: "active",
-        });
-        await markTelegramMessagesConnected(userOrRes);
-        effectivelyConnected = true;
-        logTelegramMessagesApi("messages_status_healed_from_persisted_session", {
-          telegramUsername: userOrRes,
-        });
-      }
-    }
+    const { markTelegramMessagesConnected } = await import("../../database/telegramMessages.js");
+    const { upsertMtprotoSession } = await import("../../database/telegramMtproto.js");
+    await upsertMtprotoSession({
+      telegramUsername: userOrRes,
+      telegramUserId: existing?.telegram_user_id ?? null,
+      tdlibDbPath: existing?.tdlib_db_path?.trim() || `gateway:${userOrRes}`,
+      status: "active",
+    });
+    await markTelegramMessagesConnected(userOrRes);
+    effectivelyConnected = true;
+    logTelegramMessagesApi("messages_status_healed_from_persisted_session", {
+      telegramUsername: userOrRes,
+    });
   }
   const conn = effectivelyConnected ? await getConnection(userOrRes) : null;
   const session = effectivelyConnected ? await getMtprotoSession(userOrRes) : null;
@@ -3426,30 +3427,21 @@ export async function telegramMessagesWarmupHandler(
   }
 
   let connected = await isTelegramMessagesConnected(userOrRes);
-  if (!connected) {
+  if (!connected && (await canHealFromPersistedGatewaySession(userOrRes))) {
     const existing = await getMtprotoSession(userOrRes);
-    const hadAuthorizedUser =
-      existing?.telegram_user_id != null &&
-      Number.isFinite(existing.telegram_user_id) &&
-      existing.telegram_user_id > 0;
-    if (hadAuthorizedUser) {
-      const persistedOnGateway = await gatewayUserHasPersistedSession(userOrRes);
-      if (persistedOnGateway) {
-        const { markTelegramMessagesConnected } = await import("../../database/telegramMessages.js");
-        const { upsertMtprotoSession } = await import("../../database/telegramMtproto.js");
-        await upsertMtprotoSession({
-          telegramUsername: userOrRes,
-          telegramUserId: existing?.telegram_user_id ?? null,
-          tdlibDbPath: existing?.tdlib_db_path?.trim() || `gateway:${userOrRes}`,
-          status: "active",
-        });
-        await markTelegramMessagesConnected(userOrRes);
-        connected = true;
-        logTelegramMessagesApi("messages_warmup_healed_from_persisted_session", {
-          telegramUsername: userOrRes,
-        });
-      }
-    }
+    const { markTelegramMessagesConnected } = await import("../../database/telegramMessages.js");
+    const { upsertMtprotoSession } = await import("../../database/telegramMtproto.js");
+    await upsertMtprotoSession({
+      telegramUsername: userOrRes,
+      telegramUserId: existing?.telegram_user_id ?? null,
+      tdlibDbPath: existing?.tdlib_db_path?.trim() || `gateway:${userOrRes}`,
+      status: "active",
+    });
+    await markTelegramMessagesConnected(userOrRes);
+    connected = true;
+    logTelegramMessagesApi("messages_warmup_healed_from_persisted_session", {
+      telegramUsername: userOrRes,
+    });
   }
   if (!connected) {
     return finishJson(request, res, { ok: false, connected: false, error: "not_connected" }, 403);
@@ -3460,6 +3452,9 @@ export async function telegramMessagesWarmupHandler(
 
   const warm = await gatewayWarmupSession(userOrRes, { maxPollMs: 25_000 });
   if (warm.error === "no_session") {
+    if (await isTelegramMessagesLinkRevoked(userOrRes)) {
+      return finishJson(request, res, { ok: false, connected: false, error: "not_connected" }, 403);
+    }
     const persistedOnGateway = await gatewayUserHasPersistedSession(userOrRes);
     if (persistedOnGateway) {
       return finishJson(request, res, {

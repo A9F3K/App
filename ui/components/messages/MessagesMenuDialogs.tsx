@@ -13,7 +13,7 @@ import { useAppStrings } from "../../../locales/AppStringsContext";
 import type { AppLocale, AppStringKey } from "../../../locales/appStrings";
 import { openAuthenticatedHomeChatHistory } from "../../authenticatedHomeSelectedChat";
 import { useProfileSheet } from "../../profile/ProfileContext";
-import { typographyFixedRow30Label, typographySansSemibold, useColors } from "../../theme";
+import { typographyFixedRow30Label, useColors } from "../../theme";
 import {
   addTelegramContact,
   createTelegramChannel,
@@ -26,9 +26,12 @@ import {
   type SideMenuCreatedChat,
 } from "../../telegram/fetchTelegramSideMenuDialogs";
 import {
+  resolveFloatingDialogInsets,
+} from "../floatingDialogChrome";
+import { FloatingDialogScrollChromeProvider } from "../floatingDialogScrollChrome";
+import { FloatingDialogStickyHeader } from "../FloatingDialogStickyHeader";
+import {
   FloatingDialogShell,
-  floatingDialogDragHandleDomProps,
-  floatingDialogDragHandleWebStyle,
 } from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
@@ -315,7 +318,10 @@ function MenuDialogShell({
   hideTitle?: boolean;
 }) {
   const colors = useColors();
+  const { t } = useAppStrings();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const insets = resolveFloatingDialogInsets(windowHeight);
+  const [headerExtendPx, setHeaderExtendPx] = useState(0);
   const defaultSize = useMemo(
     () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, sizeKind),
     [sizeKind, windowHeight, windowWidth],
@@ -334,45 +340,30 @@ function MenuDialogShell({
       testId={`messages-menu-${storageKey}`}
       sheetStyle={{ backgroundColor: colors.background }}
     >
-      <View style={{ flex: 1, minHeight: 0, backgroundColor: colors.background }}>
-        {hideTitle ? (
-          <View
-            style={{
-              height: 28,
-              ...floatingDialogDragHandleWebStyle,
-            }}
-            {...floatingDialogDragHandleDomProps}
+      <FloatingDialogScrollChromeProvider headerExtendPx={headerExtendPx}>
+        <View style={{ flex: 1, minHeight: 0, backgroundColor: colors.background }}>
+          <FloatingDialogStickyHeader
+            insets={insets}
+            title={title}
+            onClose={onClose}
+            closeLabel={t("common.close")}
+            hideTitle={hideTitle}
+            onHeightChange={setHeaderExtendPx}
           />
-        ) : (
-          <View
-            style={{
-              paddingHorizontal: PAD_X,
-              paddingTop: 16,
-              paddingBottom: 10,
-              borderBottomWidth: 1,
-              borderBottomColor: colors.highlight,
-              ...floatingDialogDragHandleWebStyle,
-            }}
-            {...floatingDialogDragHandleDomProps}
-          >
-            <Text
-              style={[
-                typographySansSemibold,
-                { color: colors.primary, fontSize: 17, lineHeight: 22 },
-              ]}
-              numberOfLines={1}
+          <View style={{ flex: 1, minHeight: 0 }}>{children}</View>
+          {footer ? (
+            <View
+              style={{
+                paddingHorizontal: insets.padX,
+                paddingBottom: insets.bodyPadBottom,
+                backgroundColor: colors.background,
+              }}
             >
-              {title}
-            </Text>
-          </View>
-        )}
-        <View style={{ flex: 1, minHeight: 0 }}>{children}</View>
-        {footer ? (
-          <View style={{ paddingHorizontal: PAD_X, paddingBottom: 12, backgroundColor: colors.background }}>
-            {footer}
-          </View>
-        ) : null}
-      </View>
+              {footer}
+            </View>
+          ) : null}
+        </View>
+      </FloatingDialogScrollChromeProvider>
     </FloatingDialogShell>
   );
 }
@@ -452,7 +443,6 @@ function NewGroupDialog({ onClose }: { onClose: () => void }) {
         hideTitle
         footer={
           <DialogFooterActions>
-            <DialogTextAction label={t("common.cancel")} onPress={onClose} />
             <DialogTextAction
               label={t("common.next")}
               emphasized
@@ -489,7 +479,6 @@ function NewGroupDialog({ onClose }: { onClose: () => void }) {
       storageKey="newGroupMembers"
       footer={
         <DialogFooterActions>
-          <DialogTextAction label={t("common.cancel")} onPress={onClose} />
           <DialogTextAction
             label={t("common.create")}
             emphasized
@@ -619,7 +608,6 @@ function NewChannelDialog({ onClose }: { onClose: () => void }) {
       hideTitle
       footer={
         <DialogFooterActions>
-          <DialogTextAction label={t("common.cancel")} onPress={onClose} />
           <DialogTextAction
             label={t("common.create")}
             emphasized
@@ -757,7 +745,6 @@ function ContactsDialog({ onClose }: { onClose: () => void }) {
         fitContentHeight
         footer={
           <DialogFooterActions>
-            <DialogTextAction label={t("common.cancel")} onPress={() => setMode("list")} />
             <DialogTextAction
               label={t("common.add")}
               emphasized
@@ -810,7 +797,6 @@ function ContactsDialog({ onClose }: { onClose: () => void }) {
             emphasized
             onPress={() => setMode("add")}
           />
-          <DialogTextAction label={t("common.close")} onPress={onClose} />
         </DialogFooterActions>
       }
     >
@@ -942,14 +928,7 @@ function CallsDialog({ onClose }: { onClose: () => void }) {
       onClose={onClose}
       sizeKind="picker"
       storageKey="calls"
-      footer={
-        <DialogFooterActions>
-          {pickingContact ? (
-            <DialogTextAction label={t("common.cancel")} onPress={() => setPickingContact(false)} />
-          ) : null}
-          <DialogTextAction label={t("common.close")} onPress={onClose} />
-        </DialogFooterActions>
-      }
+      footer={undefined}
     >
       {loading ? (
         <View style={{ padding: 24, alignItems: "center" }}>
@@ -1249,11 +1228,7 @@ function SettingsDialog({
       onClose={onClose}
       sizeKind="picker"
       storageKey="settings"
-      footer={
-        <DialogFooterActions>
-          <DialogTextAction label={t("common.close")} onPress={onClose} />
-        </DialogFooterActions>
-      }
+      footer={undefined}
     >
       <HspScrollColumn
         style={{ flex: 1, minHeight: 0 }}

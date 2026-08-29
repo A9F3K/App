@@ -40,8 +40,8 @@ export function MessageChatPublicGroupsBanModal({ visible, onClose }: Props) {
     >
       <Text
         style={[
-          typographyRect15,
-          { color: colors.primary, marginBottom: 12, textAlign: "left" },
+          appModalSheetStyles.body,
+          { color: colors.primary, marginBottom: 12 },
         ]}
       >
         {t("messages.publicGroupsBan.body")}

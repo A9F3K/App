@@ -4,7 +4,7 @@ import { useAppStrings } from "../../locales/AppStringsContext";
 import { typographyRect15, useColors, type ThemeName } from "../theme";
 import { getDeployVersion, getVercelDeploymentId } from "../vercelDeployId";
 import { useTelegram } from "./Telegram";
-import { AppModalSheet, AppModalSheetBackFooter, appModalSheetStyles } from "./AppModalSheet";
+import { AppModalSheet, appModalSheetStyles } from "./AppModalSheet";
 import { useSettingsSheet } from "../settings/SettingsContext";
 
 type ThemeChoice = "auto" | ThemeName;
@@ -84,9 +84,6 @@ export function SettingsSheet() {
       visible={settingsSheetVisible}
       onClose={closeSettingsSheet}
       title={t("settings.sheetTitle")}
-      footer={
-        <AppModalSheetBackFooter onClose={closeSettingsSheet} label={t("common.back")} />
-      }
     >
       {telegramUsername ? (
         <Text
@@ -101,10 +98,7 @@ export function SettingsSheet() {
       ) : null}
 
       <Text
-        style={[
-          typographyRect15,
-          { color: colors.primary, textAlign: "left", marginBottom: 10, marginTop: 4 },
-        ]}
+        style={[appModalSheetStyles.section, { color: colors.primary, marginTop: 4 }]}
         accessibilityRole="header"
       >
         {t("settings.theme")}

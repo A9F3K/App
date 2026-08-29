@@ -10,11 +10,13 @@ import {
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useColors, layout, type ThemeColors } from "../../theme";
-import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
+import {
+  resolveFloatingDialogInsets,
+} from "../floatingDialogChrome";
+import { FloatingDialogScrollChromeProvider } from "../floatingDialogScrollChrome";
+import { FloatingDialogStickyHeader } from "../FloatingDialogStickyHeader";
 import {
   FloatingDialogShell,
-  floatingDialogDragHandleDomProps,
-  floatingDialogDragHandleWebStyle,
 } from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
@@ -49,8 +51,6 @@ import {
 } from "./messageListLayout";
 
 const PAD_X_PX = 20;
-const PAD_TOP_PX = 20;
-const SCROLL_PAD_BOTTOM_PX = 24;
 /** Above profile sheet (10100) so playlist opens on top when launched from profile. */
 const PROFILE_OVERLAY_Z = 10150;
 const COVER_PX = 40;
@@ -119,11 +119,13 @@ export function MessageChatProfilePlaylistSheet({
     () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "profileList"),
     [windowHeight, windowWidth],
   );
+  const dialogInsets = resolveFloatingDialogInsets(windowHeight);
   const player = useSyncExternalStore(subscribeMusicPlayer, getMusicPlayer, getMusicPlayer);
   const safeTracks = Array.isArray(tracks) ? tracks : [];
   const [localTracks, setLocalTracks] = useState<TelegramProfileAudioTrack[]>(safeTracks);
   const [scrollY, setScrollY] = useState(0);
   const [scrollLayoutH, setScrollLayoutH] = useState(0);
+  const [headerExtendPx, setHeaderExtendPx] = useState(0);
   const dragFromRef = useRef<number | null>(null);
   const playlistRefreshGenRef = useRef(0);
 
@@ -192,11 +194,6 @@ export function MessageChatProfilePlaylistSheet({
     }
   }, [coverFetchWindow.end, coverFetchWindow.start, localTracks, visible]);
 
-  const hairline =
-    Platform.OS === "web"
-      ? 1 / (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1)
-      : 1;
-
   const moveTrack = useCallback((from: number, to: number) => {
     if (from === to || from < 0 || to < 0) return;
     setLocalTracks((prev) => {
@@ -262,24 +259,42 @@ export function MessageChatProfilePlaylistSheet({
   const activeTrack = player.tracks[player.index] ?? null;
 
   const sheetBody = (
-    <View
-      style={{
-        flex: 1,
-        minHeight: 0,
-        flexDirection: "column",
-        overflow: "hidden",
-      }}
-      {...(Platform.OS === "web"
-        ? ({ "data-profile-playlist-sheet": "1" } as object)
-        : {})}
-    >
-      <HspScrollColumn
-        style={{ flex: 1, minHeight: 0 }}
-        contentContainerStyle={{
-          paddingTop: PAD_TOP_PX,
-          paddingHorizontal: PAD_X_PX,
-          paddingBottom: SCROLL_PAD_BOTTOM_PX,
+    <FloatingDialogScrollChromeProvider headerExtendPx={headerExtendPx}>
+      <View
+        style={{
+          flex: 1,
+          minHeight: 0,
+          flexDirection: "column",
+          overflow: "hidden",
         }}
+        {...(Platform.OS === "web"
+          ? ({ "data-profile-playlist-sheet": "1" } as object)
+          : {})}
+      >
+        <FloatingDialogStickyHeader
+          insets={dialogInsets}
+          title={t("messages.profile.playlistTitle")}
+          titleAlign="center"
+          onClose={onClose}
+          closeLabel={t("common.close")}
+          onHeightChange={setHeaderExtendPx}
+          leading={
+            <ProfileOpenHitTarget
+              label={t("common.back")}
+              onPress={onBack}
+              style={{ width: 32, height: 32 }}
+            >
+              <MusicBackChevronIcon color={colors.primary} size={16} />
+            </ProfileOpenHitTarget>
+          }
+        />
+        <HspScrollColumn
+          style={{ flex: 1, minHeight: 0 }}
+          contentContainerStyle={{
+            paddingTop: dialogInsets.bodyPadTop,
+            paddingHorizontal: PAD_X_PX,
+            paddingBottom: dialogInsets.bodyPadBottom,
+          }}
         scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
         scrollIndicatorOverlaySeam={false}
         containOverscroll
@@ -291,43 +306,6 @@ export function MessageChatProfilePlaylistSheet({
           setScrollLayoutH(metrics.layoutH);
         }}
       >
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            marginBottom: 8,
-            ...floatingDialogDragHandleWebStyle,
-          }}
-          {...floatingDialogDragHandleDomProps}
-        >
-          <ProfileOpenHitTarget
-            label={t("common.back")}
-            onPress={onBack}
-            style={{ width: 32, height: 32 }}
-          >
-            <MusicBackChevronIcon color={colors.primary} size={16} />
-          </ProfileOpenHitTarget>
-          <Text
-            style={[
-              textBase(colors.primary, { textAlign: "center", flex: 1, fontWeight: "600" as const }),
-            ]}
-          >
-            {t("messages.profile.playlistTitle")}
-          </Text>
-          <FloatingDialogCloseButton
-            label={t("common.close")}
-            onPress={onClose}
-          />
-        </View>
-        <View
-          style={{
-            height: hairline,
-            width: "100%",
-            alignSelf: "stretch",
-            backgroundColor: colors.accent,
-            marginBottom: 4,
-          }}
-        />
         {localTracks.length === 0 ? (
           <Text style={[textBase(colors.secondary), { paddingTop: 8 }]}>
             {t("messages.profile.playlistEmpty")}
@@ -453,7 +431,8 @@ export function MessageChatProfilePlaylistSheet({
           })
         )}
       </HspScrollColumn>
-    </View>
+      </View>
+    </FloatingDialogScrollChromeProvider>
   );
 
   return (

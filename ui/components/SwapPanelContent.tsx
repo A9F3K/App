@@ -83,7 +83,8 @@ export function SwapPanelContent() {
   /** `null` = one-time intrinsic measure; `false` = flex-fill chart; `true` = panel scroll. */
   const [needsScroll, setNeedsScroll] = useState<boolean | null>(null);
   const [ctaHeightPx, setCtaHeightPx] = useState(0);
-  const fixedMinContentHRef = useRef(0);
+  /** Peak intrinsic content height (never shrink on flex-fill equalization). */
+  const intrinsicContentHRef = useRef(0);
   const measureMetricsRef = useRef<Omit<HspScrollMetrics, "scrollY">>({ layoutH: 0, contentH: 0 });
   const flexFillMode = needsScroll === false;
 
@@ -96,7 +97,7 @@ export function SwapPanelContent() {
   }, []);
 
   useEffect(() => {
-    fixedMinContentHRef.current = 0;
+    intrinsicContentHRef.current = 0;
     measureMetricsRef.current = { layoutH: 0, contentH: 0 };
     setScrollViewportH(0);
     setNeedsScroll(null);
@@ -105,13 +106,16 @@ export function SwapPanelContent() {
   const effectiveViewportH = scrollViewportH > 0 ? scrollViewportH : viewportH;
 
   useEffect(() => {
-    if (effectiveViewportH <= 0 || fixedMinContentHRef.current <= 0 || needsScroll === null) return;
-    const next = swapPanelNeedsScroll(fixedMinContentHRef.current, effectiveViewportH);
+    if (effectiveViewportH <= 0 || needsScroll === null) return;
+    const contentH = intrinsicContentHRef.current;
+    if (contentH <= 0) return;
+    const next = swapPanelNeedsScroll(contentH, effectiveViewportH);
+    if (next === needsScroll) return;
     setNeedsScroll(next);
     swapChartLog("panel_scroll_state", {
       viewportH: effectiveViewportH,
       layoutH: effectiveViewportH,
-      contentH: fixedMinContentHRef.current,
+      contentH,
       needsScroll: next,
       reason: "viewport_resize",
     });
@@ -131,7 +135,7 @@ export function SwapPanelContent() {
       swapChartLog("panel_scroll_state", {
         viewportH,
         layoutH: measureMetricsRef.current.layoutH || viewportH,
-        contentH: fixedMinContentHRef.current,
+        contentH: intrinsicContentHRef.current,
         needsScroll: next,
         reason,
       });
@@ -139,19 +143,38 @@ export function SwapPanelContent() {
     [viewportH],
   );
 
-  const onScrollMetrics = useCallback((metrics: Omit<HspScrollMetrics, "scrollY">) => {
-    measureMetricsRef.current = metrics;
-    if (metrics.layoutH > 0) {
-      setScrollViewportH((h) => (h === metrics.layoutH ? h : metrics.layoutH));
-    }
-    if (needsScroll !== null) return;
-    if (metrics.layoutH <= 0 || metrics.contentH <= 0) return;
+  const onScrollMetrics = useCallback(
+    (metrics: Omit<HspScrollMetrics, "scrollY">) => {
+      measureMetricsRef.current = metrics;
+      if (metrics.layoutH > 0) {
+        setScrollViewportH((h) => (h === metrics.layoutH ? h : metrics.layoutH));
+      }
+      if (metrics.layoutH > 0 && metrics.contentH > 0) {
+        const liveOverflow =
+          metrics.contentH > metrics.layoutH + SCROLL_OVERFLOW_EPSILON_PX;
+        if (liveOverflow) {
+          intrinsicContentHRef.current = Math.max(
+            intrinsicContentHRef.current,
+            metrics.contentH,
+          );
+          if (needsScroll !== true) {
+            commitScrollMode(true, "live_overflow");
+            return;
+          }
+        } else if (intrinsicContentHRef.current <= 0) {
+          intrinsicContentHRef.current = metrics.contentH;
+        }
+      }
+      if (needsScroll !== null) return;
+      if (metrics.layoutH <= 0 || metrics.contentH <= 0) return;
 
-    fixedMinContentHRef.current =
-      fixedMinContentHRef.current <= 0
-        ? metrics.contentH
-        : Math.min(fixedMinContentHRef.current, metrics.contentH);
-  }, [needsScroll]);
+      intrinsicContentHRef.current = Math.max(
+        intrinsicContentHRef.current,
+        metrics.contentH,
+      );
+    },
+    [commitScrollMode, needsScroll],
+  );
 
   useLayoutEffect(() => {
     if (needsScroll !== null || effectiveViewportH <= 0) return;
@@ -162,9 +185,9 @@ export function SwapPanelContent() {
     let stableStreak = 0;
 
     const finish = () => {
-      if (cancelled || fixedMinContentHRef.current <= 0) return;
+      if (cancelled || intrinsicContentHRef.current <= 0) return;
       commitScrollMode(
-        swapPanelNeedsScroll(fixedMinContentHRef.current, effectiveViewportH),
+        swapPanelNeedsScroll(intrinsicContentHRef.current, effectiveViewportH),
         "intrinsic_measure",
       );
     };
@@ -172,7 +195,7 @@ export function SwapPanelContent() {
     const tick = () => {
       if (cancelled || needsScroll !== null) return;
       frame += 1;
-      const contentH = fixedMinContentHRef.current;
+      const contentH = intrinsicContentHRef.current;
       if (contentH <= 0) {
         if (frame < 12) requestAnimationFrame(tick);
         return;
@@ -205,7 +228,7 @@ export function SwapPanelContent() {
       requestAnimationFrame(tick);
     };
 
-    lastContentH = fixedMinContentHRef.current;
+    lastContentH = intrinsicContentHRef.current;
     const id = requestAnimationFrame(tick);
     return () => {
       cancelled = true;
@@ -246,7 +269,7 @@ export function SwapPanelContent() {
       </View>
       <HspScrollColumn
         style={{ flex: 1, ...scrollShellBleed }}
-        scrollEnabled={needsScroll === true}
+        scrollEnabled={needsScroll !== false}
         onMetricsChange={onScrollMetrics}
         scrollIndicatorExtendBottomPx={showSwapActionBlock ? ctaHeightPx : 0}
         contentContainerStyle={

@@ -31,11 +31,12 @@ import {
   typographyFixedRow30Label,
   useColors,
 } from "../../theme";
-import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
+import {
+  resolveFloatingDialogInsets,
+} from "../floatingDialogChrome";
+import { FloatingDialogStickyHeader } from "../FloatingDialogStickyHeader";
 import {
   FloatingDialogShell,
-  floatingDialogDragHandleDomProps,
-  floatingDialogDragHandleWebStyle,
 } from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
@@ -133,6 +134,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "picker"),
     [windowHeight, windowWidth],
   );
+  const dialogInsets = resolveFloatingDialogInsets(windowHeight);
 
   const [showCopied, setShowCopied] = useState(false);
   const hideCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -673,36 +675,14 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         onRequestClose={() => setPickerOpen(false)}
         testId="get-currency-picker"
       >
-        <View style={{ flex: 1, minHeight: 0, paddingTop: 20, paddingBottom: 12 }}>
-        <View
-          style={{
-            paddingHorizontal: 20,
-            paddingBottom: 12,
-            flexDirection: "row",
-            alignItems: "center",
-            ...floatingDialogDragHandleWebStyle,
-          }}
-          {...floatingDialogDragHandleDomProps}
-        >
-          <Text
-            style={[
-              typographyAeroport20,
-              { color: colors.primary, fontWeight: "400", flex: 1, minWidth: 0, paddingRight: 36 },
-            ]}
-          >
-            {t("get.chooseCurrencyTitle")}
-          </Text>
-          <FloatingDialogCloseButton
-            label={t("common.close")}
-            onPress={() => setPickerOpen(false)}
-            style={{
-              position: "absolute",
-              top: 0,
-              right: 12,
-            }}
+        <View style={{ flex: 1, minHeight: 0 }}>
+          <FloatingDialogStickyHeader
+            insets={dialogInsets}
+            title={t("get.chooseCurrencyTitle")}
+            onClose={() => setPickerOpen(false)}
+            closeLabel={t("common.close")}
           />
-        </View>
-        <FlatList
+          <FlatList
           data={options.length > 0 ? options : [selected]}
           keyExtractor={(item) => item.token.address}
           keyboardShouldPersistTaps="handled"

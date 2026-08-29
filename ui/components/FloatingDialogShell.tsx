@@ -68,6 +68,34 @@ export const floatingDialogDragHandleWebStyle =
 
 const FloatingDialogSizingContext = createContext({ contentSizing: false });
 
+export type FloatingDialogPointerDownEvent = {
+  nativeEvent: {
+    clientX: number;
+    clientY: number;
+    pointerId: number;
+    button?: number;
+    target?: EventTarget | null;
+    preventDefault?: () => void;
+    stopPropagation?: () => void;
+  };
+  currentTarget?: unknown;
+};
+
+const FloatingDialogMoveContext = createContext<{
+  onDragHandlePointerDown: (e: FloatingDialogPointerDownEvent) => void;
+  movingSheet: boolean;
+} | null>(null);
+
+/** Wire {@link onPointerDown} on sticky dialog headers — RN Web does not reliably bubble to the shell. */
+export function useFloatingDialogDragHandle():
+  | {
+      onDragHandlePointerDown: (e: FloatingDialogPointerDownEvent) => void;
+      movingSheet: boolean;
+    }
+  | null {
+  return useContext(FloatingDialogMoveContext);
+}
+
 /** True while the shell is measuring intrinsic content height (fit-content open). */
 export function useFloatingDialogContentSizing(): boolean {
   return useContext(FloatingDialogSizingContext).contentSizing;
@@ -549,26 +577,15 @@ export function FloatingDialogShell({
     [raiseToFront],
   );
 
-  const beginMoveDrag = useCallback(
-    (e: {
-      nativeEvent: {
-        clientX: number;
-        clientY: number;
-        pointerId: number;
-        button?: number;
-        target?: EventTarget | null;
-        preventDefault?: () => void;
-        stopPropagation?: () => void;
-      };
-      currentTarget?: unknown;
-    }) => {
+  const beginMoveDragFromHandle = useCallback(
+    (e: FloatingDialogPointerDownEvent) => {
       raiseToFront();
       if (!movable || Platform.OS !== "web") return;
       if (e.nativeEvent.button != null && e.nativeEvent.button !== 0) return;
       const target = e.nativeEvent.target as Element | null;
       if (!target || typeof target.closest !== "function") return;
       if (target.closest(moveIgnoreSelector)) return;
-      if (!target.closest(FLOATING_DIALOG_DRAG_HANDLE_SELECTOR)) return;
+      e.nativeEvent.stopPropagation?.();
       dragRef.current = null;
       setDraggingHandle(null);
       const host = e.currentTarget as {
@@ -585,6 +602,28 @@ export function FloatingDialogShell({
       };
     },
     [movable, moveIgnoreSelector, raiseToFront],
+  );
+
+  const beginMoveDrag = useCallback(
+    (e: FloatingDialogPointerDownEvent) => {
+      raiseToFront();
+      if (!movable || Platform.OS !== "web") return;
+      if (e.nativeEvent.button != null && e.nativeEvent.button !== 0) return;
+      const target = e.nativeEvent.target as Element | null;
+      if (!target || typeof target.closest !== "function") return;
+      if (target.closest(moveIgnoreSelector)) return;
+      if (!target.closest(FLOATING_DIALOG_DRAG_HANDLE_SELECTOR)) return;
+      beginMoveDragFromHandle(e);
+    },
+    [beginMoveDragFromHandle, movable, moveIgnoreSelector, raiseToFront],
+  );
+
+  const moveContextValue = useMemo(
+    () => ({
+      onDragHandlePointerDown: beginMoveDragFromHandle,
+      movingSheet,
+    }),
+    [beginMoveDragFromHandle, movingSheet],
   );
 
   const activeEdges = useMemo(() => {
@@ -645,10 +684,10 @@ export function FloatingDialogShell({
                 // Keep scroll inside the dialog when the pointer is over it.
                 overscrollBehavior: "contain",
                 boxSizing: "border-box",
-                // Outline survives child backgrounds covering the border box.
+                // Neutral frame; per-edge hover uses border*Color below.
                 outlineStyle: "solid",
                 outlineWidth: Math.max(1, STROKE),
-                outlineColor: activeEdges.size > 0 ? colors.primary : colors.highlight,
+                outlineColor: colors.highlight,
                 outlineOffset: 0,
               } as object)
             : {
@@ -704,9 +743,11 @@ export function FloatingDialogShell({
         }}
         pointerEvents="box-none"
       >
-        <FloatingDialogSizingContext.Provider value={{ contentSizing }}>
-          {children}
-        </FloatingDialogSizingContext.Provider>
+        <FloatingDialogMoveContext.Provider value={moveContextValue}>
+          <FloatingDialogSizingContext.Provider value={{ contentSizing }}>
+            {children}
+          </FloatingDialogSizingContext.Provider>
+        </FloatingDialogMoveContext.Provider>
       </View>
     </View>
   );

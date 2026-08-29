@@ -1,5 +1,5 @@
 import { sql } from "./start.js";
-import { isMtprotoSessionActive } from "./telegramMtproto.js";
+import { getMtprotoSession, isMtprotoSessionActive } from "./telegramMtproto.js";
 
 type ConnectionRow = {
   telegram_username: string;
@@ -7,7 +7,17 @@ type ConnectionRow = {
   connected_at: string;
 };
 
+export async function isTelegramMessagesLinkRevoked(telegramUsername: string): Promise<boolean> {
+  const session = await getMtprotoSession(telegramUsername);
+  if (session?.status === "revoked") return true;
+  const conn = await getConnection(telegramUsername);
+  return conn?.status === "revoked";
+}
+
 export async function isTelegramMessagesConnected(telegramUsername: string): Promise<boolean> {
+  if (await isTelegramMessagesLinkRevoked(telegramUsername)) {
+    return false;
+  }
   if (await isMtprotoSessionActive(telegramUsername)) {
     return true;
   }

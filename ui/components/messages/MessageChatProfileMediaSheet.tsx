@@ -13,11 +13,13 @@ import { useAppStrings } from "../../../locales/AppStringsContext";
 import type { AppStringKey } from "../../../locales/appStrings";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { useColors, type ThemeColors } from "../../theme";
-import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
+import {
+  resolveFloatingDialogInsets,
+} from "../floatingDialogChrome";
+import { FloatingDialogScrollChromeProvider } from "../floatingDialogScrollChrome";
+import { FloatingDialogStickyHeader } from "../FloatingDialogStickyHeader";
 import {
   FloatingDialogShell,
-  floatingDialogDragHandleDomProps,
-  floatingDialogDragHandleWebStyle,
 } from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn } from "../HspScrollColumn";
@@ -38,7 +40,6 @@ import {
 } from "./messageListLayout";
 
 const PAD_X_PX = 20;
-const PAD_TOP_PX = 20;
 const HEADER_ROW_H_PX = 32;
 /** Above profile sheet (10100). */
 const PROFILE_OVERLAY_Z = 10120;
@@ -177,6 +178,8 @@ function ProfileMediaSheetHeader({
   onCloseAll,
   backLabel,
   closeLabel,
+  insets,
+  onHeightChange,
 }: {
   title: string;
   colors: ThemeColors;
@@ -184,25 +187,18 @@ function ProfileMediaSheetHeader({
   onCloseAll: () => void;
   backLabel: string;
   closeLabel: string;
+  insets: ReturnType<typeof resolveFloatingDialogInsets>;
+  onHeightChange?: (heightPx: number) => void;
 }) {
-  const hairline =
-    Platform.OS === "web"
-      ? 1 / (typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1)
-      : 1;
   return (
-    <View>
-      <View
-        style={{
-          flexDirection: "row",
-          alignItems: "center",
-          minHeight: HEADER_ROW_H_PX,
-          paddingHorizontal: PAD_X_PX,
-          paddingTop: PAD_TOP_PX,
-          paddingBottom: 10,
-          ...floatingDialogDragHandleWebStyle,
-        }}
-        {...floatingDialogDragHandleDomProps}
-      >
+    <FloatingDialogStickyHeader
+      insets={insets}
+      title={title}
+      titleAlign="center"
+      onClose={onCloseAll}
+      closeLabel={closeLabel}
+      onHeightChange={onHeightChange}
+      leading={
         <ProfileOpenHitTarget
           label={backLabel}
           onPress={onBack}
@@ -210,29 +206,8 @@ function ProfileMediaSheetHeader({
         >
           <MusicBackChevronIcon color={colors.primary} size={16} />
         </ProfileOpenHitTarget>
-        <Text
-          style={[
-            textBase(colors.primary, {
-              flex: 1,
-              textAlign: "center",
-              fontWeight: "600",
-              paddingHorizontal: 8,
-            }),
-          ]}
-          numberOfLines={1}
-        >
-          {title}
-        </Text>
-        <FloatingDialogCloseButton label={closeLabel} onPress={onCloseAll} />
-      </View>
-      <View
-        style={{
-          height: hairline,
-          backgroundColor: colors.accent,
-          alignSelf: "stretch",
-        }}
-      />
-    </View>
+      }
+    />
   );
 }
 
@@ -427,6 +402,7 @@ export function MessageChatProfileMediaSheet({
     () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "profileList"),
     [windowHeight, windowWidth],
   );
+  const dialogInsets = resolveFloatingDialogInsets(windowHeight);
   const mediaChatId = useMemo(
     () => resolveProfileMediaChatId(chat, resolvedChatId, chat?.peer_user_id),
     [chat, resolvedChatId],
@@ -442,6 +418,7 @@ export function MessageChatProfileMediaSheet({
   const [error, setError] = useState<string | null>(null);
   const [linkQuery, setLinkQuery] = useState("");
   const [sheetWidthPx, setSheetWidthPx] = useState(defaultSize.width);
+  const [headerExtendPx, setHeaderExtendPx] = useState(0);
 
   useEffect(() => {
     if (!visible || !kind || mediaChatId === 0) {
@@ -607,24 +584,16 @@ export function MessageChatProfileMediaSheet({
   })();
 
   const sheetBody = (
-    <View
-      style={{ flex: 1, minHeight: 0 }}
-      onLayout={(e) => {
-        const w = e.nativeEvent.layout.width;
-        if (w > 0 && Math.abs(w - sheetWidthPx) > 0.5) setSheetWidthPx(w);
-      }}
-      {...(Platform.OS === "web"
-        ? ({ "data-profile-media-sheet": kind ?? undefined } as object)
-        : {})}
-    >
-      <HspScrollColumn
+    <FloatingDialogScrollChromeProvider headerExtendPx={headerExtendPx}>
+      <View
         style={{ flex: 1, minHeight: 0 }}
-        contentContainerStyle={{ paddingBottom: 24 }}
-        scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
-        scrollIndicatorOverlaySeam={false}
-        containOverscroll
-        onNearBottom={hasMore && !loading ? loadMore : undefined}
-        nearBottomThresholdPx={120}
+        onLayout={(e) => {
+          const w = e.nativeEvent.layout.width;
+          if (w > 0 && Math.abs(w - sheetWidthPx) > 0.5) setSheetWidthPx(w);
+        }}
+        {...(Platform.OS === "web"
+          ? ({ "data-profile-media-sheet": kind ?? undefined } as object)
+          : {})}
       >
         <ProfileMediaSheetHeader
           title={title}
@@ -633,7 +602,21 @@ export function MessageChatProfileMediaSheet({
           onCloseAll={closeAll}
           backLabel={t("common.back")}
           closeLabel={t("common.close")}
+          insets={dialogInsets}
+          onHeightChange={setHeaderExtendPx}
         />
+        <HspScrollColumn
+          style={{ flex: 1, minHeight: 0 }}
+          contentContainerStyle={{
+            paddingTop: dialogInsets.bodyPadTop,
+            paddingBottom: dialogInsets.bodyPadBottom,
+          }}
+          scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+          scrollIndicatorOverlaySeam={false}
+          containOverscroll
+          onNearBottom={hasMore && !loading ? loadMore : undefined}
+          nearBottomThresholdPx={120}
+        >
 
         {kind === "links" ? (
           <View style={{ paddingHorizontal: PAD_X_PX, paddingTop: 10, paddingBottom: 4 }}>
@@ -669,7 +652,8 @@ export function MessageChatProfileMediaSheet({
           </Text>
         ) : null}
       </HspScrollColumn>
-    </View>
+      </View>
+    </FloatingDialogScrollChromeProvider>
   );
 
   return (

@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   ActivityIndicator,
@@ -30,6 +31,7 @@ import { isBrowserZoomWheelEvent } from "../../browserZoom";
 import {
   SCROLL_INDICATOR_SCROLL_EPS,
   readScrollportOverflowPx,
+  readShellFlexAvailableHeightPx,
   scrollContentOverflowsViewport,
   scrollIndicatorHairlineBorderWidthPx,
   scrollIndicatorThumbSpanAndOffset,
@@ -81,10 +83,35 @@ const CONTENT_INSET_PX = layout.bottomBar.horizontalPadding;
 const SCROLLBAR_RIGHT_INSET_PX = layout.scrollIndicatorRightInsetPx;
 const HEADER_DIVIDER_HEIGHT_PX = scrollIndicatorHairlineBorderWidthPx();
 const HEADER_BLOCK_HEIGHT_PX = CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX + HEADER_DIVIDER_HEIGHT_PX;
+const SCROLL_ATTACH_RETRY_FRAMES = 24;
 const SPARKLINE_ROW_STRIDE_PX =
   CHOOSE_CURRENCY_TABLE_ROW_HEIGHT_PX +
   2 * LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX +
   LIST_ROW_GAP_PX;
+
+/** RN-web FlatList scroll node — API first, then DOM walk inside the shell. */
+function findFlatListScrollElement(
+  flatListRef: RefObject<FlatList<ChooseCurrencyRow> | null>,
+  shellRef: RefObject<View | null>,
+): HTMLElement | null {
+  if (Platform.OS !== "web") return null;
+  const instance = flatListRef.current as unknown as {
+    getScrollableNode?: () => HTMLElement | null | undefined;
+  } | null;
+  const fromApi = instance?.getScrollableNode?.();
+  if (fromApi) return fromApi;
+
+  const shellDom = resolveWebRefElement(shellRef.current);
+  if (!shellDom) return null;
+
+  const all = shellDom.querySelectorAll<HTMLElement>("div");
+  for (let i = 0; i < all.length; i += 1) {
+    const el = all[i]!;
+    const oy = window.getComputedStyle(el).overflowY;
+    if (oy === "auto" || oy === "scroll") return el;
+  }
+  return null;
+}
 
 function CurrencyIcon({ row }: { row: ChooseCurrencyRow }) {
   const colors = useColors();
@@ -459,13 +486,32 @@ export function ChooseCurrencyTable({
     return resolveChooseCurrencyColumnLayout(contentWidthPx, metrics);
   }, [columnShellWidthPx, headers, layoutReferenceRows, widthPx]);
 
+  const syncScrollMetricsFromDom = useCallback(() => {
+    if (Platform.OS !== "web") return;
+    const el = findFlatListScrollElement(flatListRef, shellRef);
+    const shellDom = resolveWebRefElement(shellRef.current);
+    const live = readScrollportOverflowPx(el, shellDom);
+    if (!live) return;
+    const scrollYRaw = el!.scrollTop;
+    const scrollY = scrollYRaw <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : scrollYRaw;
+    setScroll((prev) => ({
+      ...prev,
+      layoutH: live.layoutH,
+      scrollY,
+      contentH: live.contentH > 0 ? live.contentH : prev.contentH,
+    }));
+  }, []);
+
   const onShellLayout = useCallback(
     (e: LayoutChangeEvent) => {
       onLayout(e);
       const lh = e.nativeEvent.layout.height;
       setShellLayoutH((current) => (current === lh ? current : lh));
+      if (Platform.OS === "web") {
+        requestAnimationFrame(syncScrollMetricsFromDom);
+      }
     },
-    [onLayout],
+    [onLayout, syncScrollMetricsFromDom],
   );
 
   const sparklineViewStart = Math.max(
@@ -502,66 +548,79 @@ export function ChooseCurrencyTable({
     clearChooseCurrencyYearChartVisibleWindow();
   }, [prefetchCharts]);
 
-  const syncScrollMetricsFromDom = useCallback(() => {
-    if (Platform.OS !== "web") return;
-    const instance = flatListRef.current as unknown as {
-      getScrollableNode?: () => HTMLElement | null | undefined;
-    } | null;
-    const el = instance?.getScrollableNode?.();
-    const shellDom = resolveWebRefElement(shellRef.current);
-    const live = readScrollportOverflowPx(el, shellDom);
-    if (!live) return;
-    const scrollYRaw = el!.scrollTop;
-    const scrollY = scrollYRaw <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : scrollYRaw;
-    setScroll((prev) => ({
-      ...prev,
-      layoutH: live.layoutH,
-      scrollY,
-      contentH: live.contentH > 0 ? live.contentH : prev.contentH,
-    }));
-  }, []);
-
   useLayoutEffect(() => {
     if (Platform.OS !== "web") return;
     const run = () => {
-      const instance = flatListRef.current as unknown as {
-        getScrollableNode?: () => HTMLElement | null | undefined;
-      } | null;
-      const el = instance?.getScrollableNode?.();
+      const el = findFlatListScrollElement(flatListRef, shellRef);
       if (!el?.style) return;
       el.classList.add("hsp-main-scroll-hide-native-scrollbar");
       el.classList.add("hsp-scroll-column-overscroll-contain");
       el.style.setProperty("scrollbar-width", "none");
       el.style.setProperty("-ms-overflow-style", "none");
       el.style.setProperty("overscroll-behavior", "contain");
+      el.style.setProperty("overflow", "auto");
     };
-    const id = requestAnimationFrame(() => {
+    let frame = 0;
+    let cancelled = false;
+    const pump = () => {
+      if (cancelled) return;
       run();
-      requestAnimationFrame(run);
-    });
-    return () => cancelAnimationFrame(id);
-  }, [rows.length, visibleColumns]);
+      frame += 1;
+      if (frame < SCROLL_ATTACH_RETRY_FRAMES) requestAnimationFrame(pump);
+    };
+    pump();
+    return () => {
+      cancelled = true;
+    };
+  }, [rows.length, visibleColumns, shellLayoutH, widthPx]);
 
   useEffect(() => {
     if (Platform.OS !== "web" || typeof ResizeObserver === "undefined") return;
+    let cancelled = false;
+    let attempts = 0;
+    let rafId = 0;
     let ro: ResizeObserver | null = null;
     let scrollEl: HTMLElement | null = null;
+
+    const bindShellBox = (shellDom: HTMLElement) => {
+      shellDom.style.setProperty("min-height", "0");
+      shellDom.style.setProperty("flex", "1 1 0px");
+      shellDom.style.setProperty("align-self", "stretch");
+      const avail = readShellFlexAvailableHeightPx(shellDom);
+      if (avail > 0) {
+        shellDom.style.setProperty("height", `${avail}px`);
+        shellDom.style.setProperty("max-height", `${avail}px`);
+        shellDom.style.setProperty("overflow", "hidden");
+      } else {
+        shellDom.style.removeProperty("height");
+        shellDom.style.setProperty("max-height", "100%");
+      }
+    };
 
     const bindScrollportBox = (el: HTMLElement) => {
       el.style.setProperty("min-height", "0");
       el.style.setProperty("flex", "1 1 0px");
+      el.style.setProperty("align-self", "stretch");
       el.style.setProperty("height", "0px");
       const shellDom = resolveWebRefElement(shellRef.current);
+      if (shellDom) bindShellBox(shellDom);
       const shellH = shellDom?.clientHeight ?? 0;
       if (shellH > 0) {
         el.style.setProperty("max-height", `${shellH}px`);
       } else {
         el.style.setProperty("max-height", "100%");
       }
+      el.style.setProperty("overflow", "auto");
     };
 
     const onResize = () => {
-      if (scrollEl) bindScrollportBox(scrollEl);
+      const shellDom = resolveWebRefElement(shellRef.current);
+      if (shellDom) bindShellBox(shellDom);
+      const nextScroll = findFlatListScrollElement(flatListRef, shellRef);
+      if (nextScroll) {
+        scrollEl = nextScroll;
+        bindScrollportBox(nextScroll);
+      }
       syncScrollMetricsFromDom();
     };
 
@@ -573,12 +632,11 @@ export function ChooseCurrencyTable({
       });
     };
 
-    const id = requestAnimationFrame(() => {
-      const instance = flatListRef.current as unknown as {
-        getScrollableNode?: () => HTMLElement | null | undefined;
-      } | null;
-      const next = instance?.getScrollableNode?.();
-      if (!next) return;
+    const attach = (): boolean => {
+      ro?.disconnect();
+      ro = null;
+      const next = findFlatListScrollElement(flatListRef, shellRef);
+      if (!next) return false;
       scrollEl = next;
       bindScrollportBox(next);
       ro = new ResizeObserver(onResize);
@@ -588,9 +646,22 @@ export function ChooseCurrencyTable({
       const shellDom = resolveWebRefElement(shellRef.current);
       if (shellDom && shellDom !== next) {
         ro.observe(shellDom);
+        const shellParent = shellDom.parentElement;
+        if (shellParent && shellParent !== next && shellParent !== shellDom) {
+          ro.observe(shellParent);
+        }
       }
       onResize();
-    });
+      return true;
+    };
+
+    const pump = () => {
+      if (cancelled) return;
+      if (attach()) return;
+      attempts += 1;
+      if (attempts < SCROLL_ATTACH_RETRY_FRAMES) rafId = requestAnimationFrame(pump);
+    };
+    rafId = requestAnimationFrame(pump);
 
     window.addEventListener("resize", onResize);
     window.addEventListener("wheel", onZoomWheel, { passive: true });
@@ -599,7 +670,8 @@ export function ChooseCurrencyTable({
     visualViewport?.addEventListener("scroll", onResize);
 
     return () => {
-      cancelAnimationFrame(id);
+      cancelled = true;
+      cancelAnimationFrame(rafId);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("wheel", onZoomWheel);
       visualViewport?.removeEventListener("resize", onResize);
@@ -642,11 +714,12 @@ export function ChooseCurrencyTable({
 
   const onListLayout = useCallback(
     (e: LayoutChangeEvent) => {
-      const lh = e.nativeEvent.layout.height;
-      setScroll((prev) => ({ ...prev, layoutH: lh }));
       if (Platform.OS === "web") {
         requestAnimationFrame(syncScrollMetricsFromDom);
+        return;
       }
+      const lh = e.nativeEvent.layout.height;
+      setScroll((prev) => ({ ...prev, layoutH: lh }));
     },
     [syncScrollMetricsFromDom],
   );
@@ -664,10 +737,7 @@ export function ChooseCurrencyTable({
   const scrollToY = useCallback((y: number) => {
     const clamped = Math.max(0, y);
     if (Platform.OS === "web") {
-      const instance = flatListRef.current as unknown as {
-        getScrollableNode?: () => HTMLElement | null | undefined;
-      } | null;
-      const el = instance?.getScrollableNode?.();
+      const el = findFlatListScrollElement(flatListRef, shellRef);
       if (el) el.scrollTop = clamped;
     }
     flatListRef.current?.scrollToOffset({ offset: clamped, animated: false });
@@ -680,7 +750,7 @@ export function ChooseCurrencyTable({
     const trackTop = 0;
     const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
     const trackH = Math.max(0, shellH + extendBottom);
-    const viewH = scroll.layoutH;
+    const viewH = scroll.layoutH > 0 ? scroll.layoutH : shellH;
     const contentH = scroll.contentH;
     const y = scroll.scrollY;
     if (trackH <= 0 || viewH <= 0 || contentH <= 0 || !scrollContentOverflowsViewport(contentH, viewH)) {
@@ -844,6 +914,8 @@ const styles = StyleSheet.create({
     flex: 1,
     width: "100%",
     minHeight: 0,
+    height: 0,
+    alignSelf: "stretch",
   },
   listContent: {
     flexGrow: 0,

@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { getApiBaseUrl } from "../../api/_base";
 import { useAppStrings } from "../../locales/AppStringsContext";
-import { typographyFixedRow40Label, typographyRect15, useColors } from "../theme";
+import { typographyFixedRow40Label, useColors } from "../theme";
 import { openTelegramDeepLink } from "../telegram/openTelegramDeepLink";
 import { useTelegramMessagesConnection } from "../telegram/TelegramMessagesConnectionContext";
 import { formatConnectCodeDeliveryHint } from "../telegram/formatConnectCodeDelivery";
 import { logTelegramConnect } from "../telegram/telegramConnectDebug";
 import { isActuallyInTelegram } from "./telegramWebApp";
-import { AppModalSheet, AppModalSheetBackFooter, appModalSheetStyles } from "./AppModalSheet";
+import { AppModalSheet, appModalSheetStyles } from "./AppModalSheet";
 import { WelcomeAuthFormField } from "./WelcomeAuthFormField";
 import { TelegramConnectQrImage } from "./TelegramConnectQrImage";
 
@@ -79,19 +79,8 @@ function ConnectMethodSection({
 }) {
   const colors = useColors();
   return (
-    <View style={{ width: "100%", marginBottom: 18 }}>
-      <Text
-        style={[
-          typographyRect15,
-          {
-            color: colors.primary,
-            marginBottom: 8,
-            fontWeight: Platform.OS === "web" ? ("600" as const) : "600",
-          },
-        ]}
-      >
-        {title}
-      </Text>
+    <View style={{ width: "100%", marginBottom: 22 }}>
+      <Text style={[appModalSheetStyles.subtitle, { color: colors.primary }]}>{title}</Text>
       {children}
     </View>
   );
@@ -233,63 +222,23 @@ export function TelegramConnectSheet() {
       visible={connectSheetVisible}
       onClose={onClose}
       title={sheetTitle}
-      titleEmphasis={showPassword || showCode ? "primary" : "default"}
       sizeKind="connect"
       minSize={{ width: 300, height: 480 }}
-      sizeStorageKey="hsp.telegramConnectSheet.size.v1"
-      offsetStorageKey="hsp.telegramConnectSheet.offset.v1"
-      footer={
-        <AppModalSheetBackFooter
-          onClose={onClose}
-          label={t("common.back")}
-          disabled={connectPending && connectAuthState !== "wait_qr" && connectAuthState !== "wait_phone"}
-          extraActions={
-            connectAuthState === "failed" ? (
-              <Pressable
-                accessibilityRole="button"
-                onPress={onRetry}
-                style={[
-                  appModalSheetStyles.button,
-                  appModalSheetStyles.primaryButton,
-                  { backgroundColor: colors.undercover },
-                ]}
-                disabled={connectPending}
-              >
-                <Text style={[typographyFixedRow40Label, { color: colors.primary }]}>
-                  {t("messages.connectRetry")}
-                </Text>
-              </Pressable>
-            ) : null
-          }
-        />
-      }
+      sizeStorageKey="hsp.telegramConnectSheet.size.v2"
+      offsetStorageKey="hsp.telegramConnectSheet.offset.v2"
     >
       {showMethods ? (
         <>
-          <Text style={[typographyRect15, appModalSheetStyles.body, { color: colors.secondary }]}>
+          <Text style={[appModalSheetStyles.body, { color: colors.secondary }]}>
             {t("messages.connectSheetBody")}
           </Text>
 
-          <Text
-            style={[
-              typographyRect15,
-              {
-                color: colors.primary,
-                marginBottom: 12,
-                fontWeight: Platform.OS === "web" ? ("600" as const) : "600",
-              },
-            ]}
-          >
+          <Text style={[appModalSheetStyles.section, { color: colors.primary, marginTop: 14 }]}>
             {t("messages.connectSheetMethodsTitle")}
           </Text>
 
           <ConnectMethodSection title={t("messages.connectSheetScanQr")}>
-            <Text
-              style={[
-                typographyRect15,
-                { color: colors.secondary, marginBottom: 8, textAlign: "left" },
-              ]}
-            >
+            <Text style={[appModalSheetStyles.body, { color: colors.secondary, marginBottom: 12 }]}>
               {t("messages.connectSheetQrBody")}
             </Text>
             <View style={{ alignItems: "center", width: "100%" }}>
@@ -338,6 +287,7 @@ export function TelegramConnectSheet() {
               onSubmit={onSubmitPhone}
               submitDisabled={!phoneNumber.trim()}
               submitting={connectPending && (connectAuthState === "wait_phone" || connectAuthState === "wait_qr")}
+              layout="fill"
             />
           </ConnectMethodSection>
         </>
@@ -345,13 +295,7 @@ export function TelegramConnectSheet() {
 
       {showCode ? (
         <View style={appModalSheetStyles.passwordBlock}>
-          <Text
-            style={[
-              typographyRect15,
-              appModalSheetStyles.bodySupporting,
-              { color: colors.secondary },
-            ]}
-          >
+          <Text style={[appModalSheetStyles.bodySupporting, { color: colors.secondary }]}>
             {codeDeliveryHint}
           </Text>
           <WelcomeAuthFormField
@@ -370,6 +314,7 @@ export function TelegramConnectSheet() {
             onSubmit={onSubmitCode}
             submitDisabled={!loginCode.trim()}
             submitting={connectPending}
+            layout="fill"
           />
           {canResendCode ? (
             <Pressable
@@ -398,13 +343,7 @@ export function TelegramConnectSheet() {
 
       {showPassword ? (
         <View style={appModalSheetStyles.passwordBlock}>
-          <Text
-            style={[
-              typographyRect15,
-              appModalSheetStyles.bodySupporting,
-              { color: colors.secondary },
-            ]}
-          >
+          <Text style={[appModalSheetStyles.bodySupporting, { color: colors.secondary }]}>
             {t("messages.connectSheetPasswordBody")}
           </Text>
           <WelcomeAuthFormField
@@ -422,23 +361,38 @@ export function TelegramConnectSheet() {
             onSubmit={onSubmitPassword}
             submitDisabled={!password.trim()}
             submitting={connectPending}
+            layout="fill"
           />
         </View>
       ) : null}
 
       {connectAuthState === "failed" ? (
         <View style={appModalSheetStyles.centerBlock}>
-          <Text style={[typographyRect15, appModalSheetStyles.error, { color: "#b00020" }]}>
+          <Text style={[appModalSheetStyles.error, { color: "#b00020" }]}>
             {connectErrorMessage(connectError, t)}
           </Text>
           {connectPending ? (
             <ActivityIndicator size="small" color={colors.primary} style={{ marginTop: 8 }} />
-          ) : null}
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              onPress={onRetry}
+              style={[
+                appModalSheetStyles.button,
+                appModalSheetStyles.primaryButton,
+                { backgroundColor: colors.undercover, alignSelf: "stretch" },
+              ]}
+            >
+              <Text style={[typographyFixedRow40Label, { color: colors.primary }]}>
+                {t("messages.connectRetry")}
+              </Text>
+            </Pressable>
+          )}
         </View>
       ) : null}
 
       {showMethods && connectError && connectError !== "invalid_phone_number" ? (
-        <Text style={[typographyRect15, appModalSheetStyles.error, { color: "#b00020" }]}>
+        <Text style={[appModalSheetStyles.error, { color: "#b00020" }]}>
           {connectErrorMessage(connectError, t)}
         </Text>
       ) : null}

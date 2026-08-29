@@ -38,6 +38,7 @@ type Props = {
   submitDisabled?: boolean;
   submitting?: boolean;
   inputId?: string;
+  layout?: "welcome" | "fill";
 };
 
 export function WelcomeAuthFormField({
@@ -55,6 +56,7 @@ export function WelcomeAuthFormField({
   submitDisabled,
   submitting,
   inputId,
+  layout = "welcome",
 }: Props) {
   const colors = useColors();
   const { colorScheme } = useTelegram();
@@ -89,13 +91,14 @@ export function WelcomeAuthFormField({
   }, [errorPulseKey, errorShakeX, errorText]);
 
   return (
-    <View style={styles.block}>
+    <View style={[styles.block, layout === "fill" ? styles.blockFill : null]}>
       {label ? (
         <Text style={[styles.label, { color: colors.primary }]}>{label}</Text>
       ) : null}
       <View
         style={[
           styles.inputShell,
+          layout === "fill" ? styles.inputShellFill : null,
           {
             backgroundColor: colors.undercover,
             borderColor: colors.accent,
@@ -148,6 +151,7 @@ export function WelcomeAuthFormField({
           }
           return [
             styles.submitButton,
+            layout === "fill" ? styles.submitButtonFill : null,
             {
               backgroundColor,
               marginTop: errorText ? INPUT_TO_BUTTON_GAP_WITH_ERROR : INPUT_TO_BUTTON_GAP,
@@ -173,6 +177,10 @@ const styles = StyleSheet.create({
     maxWidth: WELCOME_AUTH_MAX_WIDTH,
     alignSelf: "center",
   },
+  blockFill: {
+    maxWidth: "100%",
+    alignSelf: "stretch",
+  },
   label: {
     fontSize: 15,
     lineHeight: 30,
@@ -194,6 +202,9 @@ const styles = StyleSheet.create({
       },
       default: {},
     }),
+  },
+  inputShellFill: {
+    maxWidth: "100%",
   },
   inputInner: {
     ...typographyRect15,
@@ -237,6 +248,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: BUTTON_H_PADDING,
     alignItems: "center",
     justifyContent: "center",
+  },
+  submitButtonFill: {
+    maxWidth: "100%",
   },
   submitLabel: {
     ...typographyFixedRow40Label,

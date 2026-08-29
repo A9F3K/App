@@ -41,6 +41,7 @@ type Props = {
    */
   overlaySeam?: boolean;
   scrollIndicatorExtendBottomPx?: number;
+  scrollIndicatorExtendTopPx?: number;
   onScrollTo: (y: number) => void;
   style?: StyleProp<ViewStyle>;
 };
@@ -63,12 +64,14 @@ export function HspVerticalScrollIndicator({
   scrollbarRightInsetPx,
   overlaySeam: overlaySeamProp,
   scrollIndicatorExtendBottomPx = 0,
+  scrollIndicatorExtendTopPx = 0,
   onScrollTo,
   style,
 }: Props) {
   const { colorScheme } = useTelegram();
   const hairline = scrollIndicatorHairlineBorderWidthPx();
   const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
+  const extendTop = Math.max(0, scrollIndicatorExtendTopPx);
   const overlaySeam =
     overlaySeamProp ?? (Platform.OS === "web" && scrollbarRightInsetPx <= 0);
 
@@ -174,8 +177,20 @@ export function HspVerticalScrollIndicator({
 
   if (!show || trackH <= 0 || thumbH <= 0) return null;
 
+  const viewportRightPx =
+    typeof window !== "undefined"
+      ? snapScrollIndicatorCoordPx(window.visualViewport?.width ?? window.innerWidth)
+      : null;
+
+  const shellDom = findDomNode(shellRef.current);
+  const shellRightPx =
+    shellDom != null ? snapScrollIndicatorCoordPx(shellDom.getBoundingClientRect().right) : null;
+  const columnRightPx = seamBox?.rightPx ?? shellRightPx ?? viewportRightPx ?? 0;
   const atViewportRightEdge =
-    overlaySeam && seamBox != null && isScrollIndicatorAtViewportRightEdge(seamBox.rightPx);
+    overlaySeam &&
+    (seamBox != null || shellRightPx != null) &&
+    (isScrollIndicatorAtViewportRightEdge(columnRightPx) ||
+      (viewportRightPx != null && columnRightPx >= viewportRightPx - 2.5));
   // Light theme only: 3px fill at the viewport edge (hairline clips against letterboxing).
   // Dark theme keeps the 1px hairline — the wide thumb is intentionally light-only.
   const useViewportEdgeWideThumb =
@@ -218,38 +233,41 @@ export function HspVerticalScrollIndicator({
   );
 
   if (overlaySeam && typeof document !== "undefined") {
-    if (!seamBox) return null;
-    // Viewport-right columns have no seam stroke; keep flush with the column edge.
-    // Interior seams: shift onto the divider so thumb and stroke share one hairline.
-    const portalLeft = atViewportRightEdge
-      ? seamBox.rightPx
-      : scrollIndicatorSplitSeamPortalLeftPx(seamBox.rightPx);
-    const portal: ReactNode = (
-      <View
-        pointerEvents="box-none"
-        style={{
-          position: "fixed" as unknown as "absolute",
-          top: seamBox.topPx,
-          left: portalLeft,
-          width: 0,
-          height: seamBox.heightPx,
-          zIndex: SEAM_OVERLAY_Z,
-          overflow: "visible",
-        }}
-      >
-        {thumb}
-      </View>
-    );
-    return createPortal(portal, document.body);
+    if (seamBox) {
+      // Viewport-right columns have no seam stroke; pin flush to the visual viewport edge
+      // so a column that extends past innerWidth (subpixel / zoom) does not portal off-screen.
+      const portalLeft =
+        atViewportRightEdge && viewportRightPx != null
+          ? viewportRightPx
+          : scrollIndicatorSplitSeamPortalLeftPx(seamBox.rightPx);
+      const portal: ReactNode = (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "fixed" as unknown as "absolute",
+            top: seamBox.topPx,
+            left: portalLeft,
+            width: 0,
+            height: seamBox.heightPx,
+            zIndex: SEAM_OVERLAY_Z,
+            overflow: "visible",
+          }}
+        >
+          {thumb}
+        </View>
+      );
+      return createPortal(portal, document.body);
+    }
+    // Seam sync can lag after column resize; keep the thumb in-column until portal metrics land.
   }
 
   return (
     <View
-      pointerEvents="box-none"
+      pointerEvents="none"
       style={[
         {
           position: "absolute",
-          top: 0,
+          top: -extendTop,
           bottom: -extendBottom,
           right: snapScrollIndicatorCoordPx(scrollbarRightInsetPx),
           width: 0,
