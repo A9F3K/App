@@ -28,6 +28,7 @@ import {
   readFloatingDialogStoredSize,
   writeFloatingDialogStoredOffset,
   writeFloatingDialogStoredSize,
+  type FloatingDialogEdge,
   type FloatingDialogOffset,
   type FloatingDialogResizeHandle,
   type FloatingDialogSize,
@@ -248,6 +249,46 @@ function ResizeEdgeHandle({
   }
 
   return <View style={[base, geometry]} {...webPointerProps} />;
+}
+
+/** Web-only frame strokes — RN Web does not reliably honor per-side border*Color. */
+function FloatingDialogEdgeBorders({
+  stroke,
+  activeEdges,
+  idleColor,
+  activeColor,
+}: {
+  stroke: number;
+  activeEdges: ReadonlySet<FloatingDialogEdge>;
+  idleColor: string;
+  activeColor: string;
+}) {
+  const color = (edge: FloatingDialogEdge) => (activeEdges.has(edge) ? activeColor : idleColor);
+  const base: ViewStyle = {
+    position: "absolute",
+    pointerEvents: "none",
+    zIndex: 1,
+  };
+
+  return (
+    <>
+      <View
+        style={[base, { top: 0, left: 0, right: 0, height: stroke, backgroundColor: color("n") }]}
+      />
+      <View
+        style={[
+          base,
+          { bottom: 0, left: 0, right: 0, height: stroke, backgroundColor: color("s") },
+        ]}
+      />
+      <View
+        style={[base, { top: 0, bottom: 0, left: 0, width: stroke, backgroundColor: color("w") }]}
+      />
+      <View
+        style={[base, { top: 0, bottom: 0, right: 0, width: stroke, backgroundColor: color("e") }]}
+      />
+    </>
+  );
 }
 
 /**
@@ -637,12 +678,7 @@ export function FloatingDialogShell({
     return edges;
   }, [draggingHandle, hoveredHandle]);
 
-  const borderColors = {
-    borderTopColor: activeEdges.has("n") ? colors.primary : colors.highlight,
-    borderRightColor: activeEdges.has("e") ? colors.primary : colors.highlight,
-    borderBottomColor: activeEdges.has("s") ? colors.primary : colors.highlight,
-    borderLeftColor: activeEdges.has("w") ? colors.primary : colors.highlight,
-  };
+  const frameStroke = Math.max(1, STROKE);
 
   if (!visible) return null;
 
@@ -684,11 +720,6 @@ export function FloatingDialogShell({
                 // Keep scroll inside the dialog when the pointer is over it.
                 overscrollBehavior: "contain",
                 boxSizing: "border-box",
-                // Neutral frame; per-edge hover uses border*Color below.
-                outlineStyle: "solid",
-                outlineWidth: Math.max(1, STROKE),
-                outlineColor: colors.highlight,
-                outlineOffset: 0,
               } as object)
             : {
                 flexDirection: "column",
@@ -696,13 +727,13 @@ export function FloatingDialogShell({
               }),
         },
         sheetStyle,
-        // Always paint dialog chrome last so callers cannot strip the border.
-        {
-          borderWidth: Math.max(1, STROKE),
-          borderStyle: "solid" as const,
-          borderColor: colors.highlight,
-          ...borderColors,
-        },
+        Platform.OS !== "web"
+          ? {
+              borderWidth: frameStroke,
+              borderStyle: "solid" as const,
+              borderColor: colors.highlight,
+            }
+          : null,
       ]}
       {...(Platform.OS === "web"
         ? ({
@@ -713,6 +744,14 @@ export function FloatingDialogShell({
           } as object)
         : { onStartShouldSetResponder: () => true })}
     >
+      {Platform.OS === "web" ? (
+        <FloatingDialogEdgeBorders
+          stroke={frameStroke}
+          activeEdges={activeEdges}
+          idleColor={colors.highlight}
+          activeColor={colors.primary}
+        />
+      ) : null}
       {Platform.OS === "web" && resizable
         ? FLOATING_DIALOG_HANDLES.map((handle) => (
             <ResizeEdgeHandle
@@ -738,7 +777,11 @@ export function FloatingDialogShell({
           // Visible so the scroll thumb can paint onto the 1px chrome border (inset -1).
           overflow: "visible",
           ...(Platform.OS === "web"
-            ? ({ overscrollBehavior: "contain" } as object)
+            ? ({
+                overscrollBehavior: "contain",
+                // Match former border-box inset so scrollbarRightInsetPx -1 lands on the edge strip.
+                padding: frameStroke,
+              } as object)
             : {}),
         }}
         pointerEvents="box-none"

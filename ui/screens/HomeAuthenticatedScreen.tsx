@@ -19,6 +19,7 @@ import { SendColumnFooter } from "../components/send/SendColumnFooter";
 import { GetColumnFooter } from "../components/get/GetColumnFooter";
 import { TradeColumnFooter } from "../components/trade/TradeColumnFooter";
 import { HomeAuthenticatedHeaderRow } from "../components/HomeAuthenticatedHeaderRow";
+import { WalletCurrenciesDialog } from "../components/wallet/WalletCurrenciesDialog";
 import { AuthenticatedHomeLeftNavStrip } from "../components/AuthenticatedHomeLeftNavStrip";
 import { AuthenticatedHomeFeedPanel } from "../components/AuthenticatedHomeFeedPanel";
 import { AuthenticatedHomeMessagesPanel } from "../components/AuthenticatedHomeMessagesPanel";
@@ -759,6 +760,8 @@ function HomeAuthenticatedScreenMain() {
   const [masterKeyStorageTier, setMasterKeyStorageTier] = useState<WalletMasterKeyStorageTier | null>(null);
   /** After a provisional address + server error, offer "Retry server registration" (same keys) instead of a new mnemonic. */
   const [serverOnlyRetry, setServerOnlyRetry] = useState(false);
+  const [walletCurrenciesOpen, setWalletCurrenciesOpen] = useState(false);
+  const [walletCurrenciesSession, setWalletCurrenciesSession] = useState(0);
   const provisionalWalletVisibleRef = useRef(false);
   const pendingServerRegRef = useRef<PendingServerWalletRegPayload | null>(null);
   const homeBootstrapVersion = useSyncExternalStore(
@@ -778,6 +781,14 @@ function HomeAuthenticatedScreenMain() {
   const hasDisplayAddress = Boolean(effectiveWalletAddress);
   const effectiveHasWallet = hasWallet || hasDisplayAddress;
   const headerDisplayName = displayName?.trim() || t("common.emDash");
+  const onHeaderBalancePress = useCallback(() => {
+    setWalletCurrenciesOpen((open) => {
+      if (!open) {
+        setWalletCurrenciesSession((current) => current + 1);
+      }
+      return !open;
+    });
+  }, []);
   const isBrowserSessionHydrating = status === "dev" && !browserSessionChecked && !initData;
   const homePhase =
     status === "idle" || status === "loading" || isBrowserSessionHydrating
@@ -1349,6 +1360,8 @@ function HomeAuthenticatedScreenMain() {
         <HomeAuthenticatedHeaderRow
           walletAddress={effectiveWalletAddress ?? ""}
           displayName={headerDisplayName}
+          onBalancePress={onHeaderBalancePress}
+          walletCurrenciesOpen={walletCurrenciesOpen}
         />
         <AuthenticatedHomePaddedBody>
           <Text style={{ marginBottom: 12, color: colors.primary }}>{t("common.loading")}</Text>
@@ -1408,6 +1421,8 @@ function HomeAuthenticatedScreenMain() {
         <HomeAuthenticatedHeaderRow
           walletAddress={effectiveWalletAddress ?? ""}
           displayName={headerDisplayName}
+          onBalancePress={onHeaderBalancePress}
+          walletCurrenciesOpen={walletCurrenciesOpen}
         />
         <AuthenticatedHomePaddedBody>
         <Text style={[typographySansSemibold, { marginBottom: 8, color: colors.primary }]}>
@@ -1463,6 +1478,8 @@ function HomeAuthenticatedScreenMain() {
         <HomeAuthenticatedHeaderRow
           walletAddress={effectiveWalletAddress ?? ""}
           displayName={headerDisplayName}
+          onBalancePress={onHeaderBalancePress}
+          walletCurrenciesOpen={walletCurrenciesOpen}
         />
         <AuthenticatedHomePaddedBody>
         <Text style={[typographySansSemibold, { marginBottom: 8, color: colors.primary }]}>
@@ -1641,6 +1658,8 @@ function HomeAuthenticatedScreenMain() {
     <HomeAuthenticatedHeaderRow
       walletAddress={effectiveWalletAddress ?? ""}
       displayName={headerDisplayName}
+      onBalancePress={onHeaderBalancePress}
+      walletCurrenciesOpen={walletCurrenciesOpen}
       layoutIsWide={isWideHome}
         activeHeaderMenuKey={
           messagesChatOpen
@@ -1857,6 +1876,15 @@ function HomeAuthenticatedScreenMain() {
         >
           {mainColumnFooter}
         </View>
+      ) : null}
+      {walletCurrenciesOpen ? (
+        <WalletCurrenciesDialog
+          key={walletCurrenciesSession}
+          visible
+          onClose={() => setWalletCurrenciesOpen(false)}
+          walletAddress={effectiveWalletAddress ?? ""}
+          displayName={headerDisplayName}
+        />
       ) : null}
     </>
   );

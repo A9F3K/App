@@ -250,7 +250,33 @@ export function TelegramConnectSheet() {
             </View>
           </ConnectMethodSection>
 
+          <ConnectMethodSection title={t("messages.connectSheetEnterNumber")}>
+            <Text style={[appModalSheetStyles.body, { color: colors.secondary, marginBottom: 12 }]}>
+              {t("messages.connectSheetPhoneCloudWarning")}
+            </Text>
+            <WelcomeAuthFormField
+              value={phoneNumber}
+              onChangeText={(next) => {
+                setPhoneNumber(next);
+                if (phoneInvalid) setPhoneInvalid(false);
+              }}
+              placeholder={t("messages.connectSheetPhonePlaceholder")}
+              keyboardType="phone-pad"
+              textContentType="telephoneNumber"
+              inputId="telegram-connect-phone-input"
+              errorText={phoneErrorText}
+              submitLabel={t("messages.connectSheetPhoneSubmit")}
+              onSubmit={onSubmitPhone}
+              submitDisabled={!phoneNumber.trim()}
+              submitting={connectPending && (connectAuthState === "wait_phone" || connectAuthState === "wait_qr")}
+              layout="fill"
+            />
+          </ConnectMethodSection>
+
           <ConnectMethodSection title={t("messages.connectSheetOneTouchConnect")}>
+            <Text style={[appModalSheetStyles.body, { color: colors.secondary, marginBottom: 12 }]}>
+              {t("messages.connectSheetOneTouchBody")}
+            </Text>
             <Pressable
               accessibilityRole="button"
               onPress={onOpenInTelegram}
@@ -269,26 +295,6 @@ export function TelegramConnectSheet() {
                 {t("messages.connectSheetPassToTelegramApp")}
               </Text>
             </Pressable>
-          </ConnectMethodSection>
-
-          <ConnectMethodSection title={t("messages.connectSheetEnterNumber")}>
-            <WelcomeAuthFormField
-              value={phoneNumber}
-              onChangeText={(next) => {
-                setPhoneNumber(next);
-                if (phoneInvalid) setPhoneInvalid(false);
-              }}
-              placeholder={t("messages.connectSheetPhonePlaceholder")}
-              keyboardType="phone-pad"
-              textContentType="telephoneNumber"
-              inputId="telegram-connect-phone-input"
-              errorText={phoneErrorText}
-              submitLabel={t("messages.connectSheetPhoneSubmit")}
-              onSubmit={onSubmitPhone}
-              submitDisabled={!phoneNumber.trim()}
-              submitting={connectPending && (connectAuthState === "wait_phone" || connectAuthState === "wait_qr")}
-              layout="fill"
-            />
           </ConnectMethodSection>
         </>
       ) : null}

@@ -14,6 +14,22 @@ import {
   rememberTonWallet,
   type RememberedTonWallet,
 } from "./rememberedTonWallets";
+import { resolveTonConnectActionsConfiguration } from "./resolveTonConnectActionsConfiguration";
+
+export type TonConnectTransactionRequest = {
+  validUntil: number;
+  network: string;
+  messages: Array<{
+    address: string;
+    amount: string;
+    payload?: string;
+    stateInit?: string;
+  }>;
+};
+
+export type TonConnectSendTransactionResult = {
+  boc: string;
+};
 
 export type TonConnectSession = {
   ready: boolean;
@@ -28,6 +44,8 @@ export type TonConnectSession = {
   refreshRememberedWallets: () => void;
   openConnectModal: () => Promise<void>;
   disconnect: () => Promise<void>;
+  /** Opens the connected wallet for confirmation; resolves with signed BOC on success. */
+  sendTransaction: (request: TonConnectTransactionRequest) => Promise<TonConnectSendTransactionResult>;
 };
 
 const EMPTY_SESSION: TonConnectSession = {
@@ -41,6 +59,7 @@ const EMPTY_SESSION: TonConnectSession = {
   refreshRememberedWallets: () => {},
   openConnectModal: async () => {},
   disconnect: async () => {},
+  sendTransaction: async () => ({ boc: "" }),
 };
 
 const TonConnectSessionContext = createContext<TonConnectSession>(EMPTY_SESSION);
@@ -76,6 +95,7 @@ function WebTonConnectTree({ children }: { children: ReactNode }) {
   const { TonConnectUIProvider } = require("@tonconnect/ui-react") as {
     TonConnectUIProvider: ComponentType<{
       manifestUrl: string;
+      actionsConfiguration?: ReturnType<typeof resolveTonConnectActionsConfiguration>;
       children: ReactNode;
     }>;
   };
@@ -84,9 +104,13 @@ function WebTonConnectTree({ children }: { children: ReactNode }) {
     typeof window !== "undefined" && window.location?.origin
       ? window.location.origin
       : "https://program.hyperlinks.space";
+  const actionsConfiguration = resolveTonConnectActionsConfiguration();
 
   return (
-    <TonConnectUIProvider manifestUrl={`${origin}/tonconnect-manifest.json`}>
+    <TonConnectUIProvider
+      manifestUrl={`${origin}/tonconnect-manifest.json`}
+      actionsConfiguration={actionsConfiguration}
+    >
       <WebTonConnectSessionBridge>{children}</WebTonConnectSessionBridge>
     </TonConnectUIProvider>
   );
@@ -99,6 +123,10 @@ function WebTonConnectSessionBridge({ children }: { children: ReactNode }) {
       {
         openModal: () => Promise<void>;
         disconnect: () => Promise<void>;
+        sendTransaction: (
+          request: TonConnectTransactionRequest,
+          options?: ReturnType<typeof resolveTonConnectActionsConfiguration>,
+        ) => Promise<{ boc: string }>;
       },
     ];
     useTonAddress: (friendly?: boolean) => string;
@@ -145,6 +173,14 @@ function WebTonConnectSessionBridge({ children }: { children: ReactNode }) {
     refreshRememberedWallets();
   }, [refreshRememberedWallets, tonConnectUI]);
 
+  const sendTransaction = useCallback(
+    async (request: TonConnectTransactionRequest) => {
+      const actionsConfiguration = resolveTonConnectActionsConfiguration();
+      return tonConnectUI.sendTransaction(request, actionsConfiguration);
+    },
+    [tonConnectUI],
+  );
+
   const address = (friendlyAddress || rawAddress || "").trim() || null;
 
   const value = useMemo<TonConnectSession>(
@@ -159,6 +195,7 @@ function WebTonConnectSessionBridge({ children }: { children: ReactNode }) {
       refreshRememberedWallets,
       openConnectModal,
       disconnect,
+      sendTransaction,
     }),
     [
       address,
@@ -167,6 +204,7 @@ function WebTonConnectSessionBridge({ children }: { children: ReactNode }) {
       openConnectModal,
       refreshRememberedWallets,
       rememberedWallets,
+      sendTransaction,
       wallet?.imageUrl,
       wallet?.name,
     ],

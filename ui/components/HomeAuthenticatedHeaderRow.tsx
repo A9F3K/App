@@ -31,6 +31,7 @@ import type { AppStringKey } from "../../locales/appStrings";
 import { openAuthenticatedHomeRightPanel } from "../authenticatedHomeRightPanel";
 import { openSwapCurrenciesBrowse } from "../swap/swapCurrencyPicker";
 import { focusAuthenticatedHomeMiddleColumnOnHeaderPanel } from "../authenticatedHomeSelectedChat";
+import { UndercoverWalletButton } from "./swap/SwapFormIcons";
 import {
   HeaderIconCopy,
   HeaderIconEdit,
@@ -236,6 +237,10 @@ type Props = {
   walletAddress: string;
   /** Profile label from `users.display_name`. */
   displayName: string;
+  /** Opens the built-in wallet currencies dialog. */
+  onBalancePress?: () => void;
+  /** Wallet currencies dialog is open — inverts chip colors on the wallet control. */
+  walletCurrenciesOpen?: boolean;
   /** Wide layout: highlight this header menu item; others use secondary (inactive) styling. */
   activeHeaderMenuKey?: HeaderMenuKey | null;
   /** When set, overrides width breakpoint inference (split-pane column count is authoritative). */
@@ -250,6 +255,8 @@ type Props = {
 export function HomeAuthenticatedHeaderRow({
   walletAddress,
   displayName,
+  onBalancePress,
+  walletCurrenciesOpen = false,
   activeHeaderMenuKey,
   layoutIsWide,
 }: Props) {
@@ -274,6 +281,23 @@ export function HomeAuthenticatedHeaderRow({
     if (!trimmed) return;
     await Clipboard.setStringAsync(trimmed);
   }, [trimmed]);
+
+  const balanceButton = (extraTextStyle?: object) => (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+      <Text
+        {...displayAmountTextProps}
+        style={[homeWalletBalanceHeaderText, { color: colors.primary }, extraTextStyle]}
+      >
+        1$
+      </Text>
+      <UndercoverWalletButton
+        accessibilityLabel={t("home.header.balanceExpandHint")}
+        active={walletCurrenciesOpen}
+        disabled={!onBalancePress}
+        onPress={onBalancePress}
+      />
+    </View>
+  );
 
   const handleMenuKeyPress = useCallback(
     (key: (typeof WIDE_MENU_ITEM_KEYS)[number]["key"]) => {
@@ -436,13 +460,7 @@ export function HomeAuthenticatedHeaderRow({
               </Pressable>
             </View>
             <View style={wideHeaderBottomBandStyle}>
-              <Text
-                {...displayAmountTextProps}
-                style={[homeWalletBalanceHeaderText, { color: colors.primary }]}
-                accessibilityLabel={t("home.header.balanceA11y")}
-              >
-                1$
-              </Text>
+              {balanceButton()}
             </View>
           </>
         ) : (
@@ -462,19 +480,7 @@ export function HomeAuthenticatedHeaderRow({
                 {displaySnippet}
               </Text>
             </Pressable>
-            <Text
-              {...displayAmountTextProps}
-              style={[
-                homeWalletBalanceHeaderText,
-                {
-                  marginTop: AH.walletBalanceBelowAddressGap,
-                  color: colors.primary,
-                },
-              ]}
-              accessibilityLabel={t("home.header.balanceA11y")}
-            >
-              1$
-            </Text>
+            {balanceButton({ marginTop: AH.walletBalanceBelowAddressGap })}
           </View>
         )}
       </View>

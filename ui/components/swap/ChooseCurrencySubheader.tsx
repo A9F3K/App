@@ -9,6 +9,7 @@ import {
   welcomeAuthButtonActiveBackground,
   welcomeAuthButtonHoverBackground,
 } from "../../theme";
+import { floatingDialogSubtitleTextStyle } from "../floatingDialogChrome";
 import { useTelegram } from "../Telegram";
 import { SwapFilterButton } from "../icons/SwapFilterButton";
 
@@ -91,6 +92,8 @@ type Props = {
   titleAlign?: "left" | "center";
   /** Overrides default `swap.chooseCurrency.title`. */
   title?: string;
+  /** Wallet name or address snippet under the title. */
+  subtitle?: string;
 };
 
 export function ChooseCurrencySubheader({
@@ -100,6 +103,7 @@ export function ChooseCurrencySubheader({
   showFilter = true,
   titleAlign = "center",
   title: titleProp,
+  subtitle,
 }: Props) {
   const { t } = useAppStrings();
   const colors = useColors();
@@ -188,6 +192,23 @@ export function ChooseCurrencySubheader({
           <Text style={titleStyle} numberOfLines={1} ellipsizeMode="tail">
             {title}
           </Text>
+          {subtitle ? (
+            <Text
+              style={[
+                floatingDialogSubtitleTextStyle,
+                {
+                  color: colors.secondary,
+                  textAlign: titleAlign,
+                  width: "100%",
+                  marginTop: 1,
+                },
+              ]}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
+              {subtitle}
+            </Text>
+          ) : null}
         </View>
 
         {showFilter ? (
@@ -211,7 +232,7 @@ const styles = StyleSheet.create({
     paddingTop: STRIP_PADDING_PX,
     paddingBottom: STRIP_PADDING_PX,
     position: "relative",
-    overflow: "visible",
+    overflow: "hidden",
   },
   row: {
     flexDirection: "row",

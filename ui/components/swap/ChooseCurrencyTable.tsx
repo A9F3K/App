@@ -419,6 +419,10 @@ type Props = {
   columnShellWidthPx?: number;
   /** When false, skip DYOR sparkline prefetch (panel hidden via display:none). */
   prefetchCharts?: boolean;
+  /** When set, show only these columns instead of responsive market-browser layout. */
+  visibleColumnKeys?: readonly ChooseCurrencyColumnKey[];
+  /** Shown when `rows` is empty and not loading. */
+  listEmptyMessage?: string | null;
   /**
    * Height of a pinned gradient CTA under this table; scroll thumb travels through it.
    */
@@ -434,6 +438,8 @@ export function ChooseCurrencyTable({
   onSelectRow,
   columnShellWidthPx = 0,
   prefetchCharts = true,
+  visibleColumnKeys,
+  listEmptyMessage = null,
   scrollIndicatorExtendBottomPx = 0,
 }: Props) {
   const { t, tf, locale } = useAppStrings();
@@ -469,7 +475,10 @@ export function ChooseCurrencyTable({
     [t],
   );
 
-  const layoutReferenceRows = useMemo(() => [buildChooseCurrencyDllrRow(locale)] as const, [locale]);
+  const layoutReferenceRows = useMemo(() => {
+    if (rows.length > 0) return rows;
+    return [buildChooseCurrencyDllrRow(locale)] as const;
+  }, [locale, rows]);
 
   const visibleColumns = useMemo(() => {
     const metrics = buildChooseCurrencyColumnMetrics(headers, layoutReferenceRows);
@@ -483,8 +492,17 @@ export function ChooseCurrencyTable({
       shellWidthPx === Number.POSITIVE_INFINITY
         ? shellWidthPx
         : Math.max(0, shellWidthPx - CONTENT_INSET_PX * 2);
+
+    if (visibleColumnKeys?.length) {
+      const byKey = new Map(metrics.map((entry) => [entry.key, entry]));
+      const ordered = visibleColumnKeys
+        .map((key) => byKey.get(key))
+        .filter((entry): entry is NonNullable<typeof entry> => entry != null);
+      return resolveChooseCurrencyColumnLayout(contentWidthPx, ordered);
+    }
+
     return resolveChooseCurrencyColumnLayout(contentWidthPx, metrics);
-  }, [columnShellWidthPx, headers, layoutReferenceRows, widthPx]);
+  }, [columnShellWidthPx, headers, layoutReferenceRows, visibleColumnKeys, widthPx]);
 
   const syncScrollMetricsFromDom = useCallback(() => {
     if (Platform.OS !== "web") return;
@@ -852,6 +870,15 @@ export function ChooseCurrencyTable({
     return null;
   }, [colors.accent, colors.secondary, isFetchingMore, isLoading, loadError, rows.length, t]);
 
+  const listEmpty = useMemo(() => {
+    if (!listEmptyMessage || isLoading || rows.length > 0) return null;
+    return (
+      <View style={styles.footerState}>
+        <Text style={[typographyAeroport15, { color: colors.secondary }]}>{listEmptyMessage}</Text>
+      </View>
+    );
+  }, [colors.secondary, isLoading, listEmptyMessage, rows.length]);
+
   return (
     <View style={styles.shell} onLayout={onShellLayout} ref={setShellNodeRef} collapsable={false}>
       <FlatList
@@ -878,9 +905,10 @@ export function ChooseCurrencyTable({
         onLayout={onListLayout}
         onContentSizeChange={onContentSizeChange}
         scrollEventThrottle={16}
-        onEndReached={handleEndReached}
+        onEndReached={onLoadMore ? handleEndReached : undefined}
         onEndReachedThreshold={0.35}
         ListFooterComponent={listFooter}
+        ListEmptyComponent={listEmpty}
       />
       <View style={styles.headerOverlay} pointerEvents="box-none">
         {listHeader}

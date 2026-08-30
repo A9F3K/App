@@ -9,6 +9,7 @@ import {
   useFloatingDialogDragHandle,
 } from "./FloatingDialogShell";
 import {
+  floatingDialogSubtitleTextStyle,
   floatingDialogTitleTextStyle,
   resolveFloatingDialogInsets,
 } from "./floatingDialogChrome";
@@ -21,6 +22,8 @@ type Props = {
   onClose: () => void;
   closeLabel: string;
   title?: string;
+  /** Wallet name or address snippet shown under the title. */
+  subtitle?: string;
   hideTitle?: boolean;
   leading?: ReactNode;
   titleAlign?: "left" | "center";
@@ -33,6 +36,7 @@ export function FloatingDialogStickyHeader({
   onClose,
   closeLabel,
   title,
+  subtitle,
   hideTitle = false,
   leading,
   titleAlign = "left",
@@ -85,21 +89,35 @@ export function FloatingDialogStickyHeader({
         {hideTitle || !title ? (
           <View style={{ flex: 1, minWidth: 0, minHeight: 28 }} />
         ) : (
-          <Text
-            style={[
-              floatingDialogTitleTextStyle,
-              {
-                color: colors.primary,
-                flex: 1,
-                minWidth: 0,
-                paddingRight: 8,
-                textAlign: titleAlign,
-              },
-            ]}
-            numberOfLines={titleAlign === "center" ? 1 : undefined}
-          >
-            {title}
-          </Text>
+          <View style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+            <Text
+              style={[
+                floatingDialogTitleTextStyle,
+                {
+                  color: colors.primary,
+                  textAlign: titleAlign,
+                },
+              ]}
+              numberOfLines={titleAlign === "center" ? 1 : undefined}
+            >
+              {title}
+            </Text>
+            {subtitle ? (
+              <Text
+                style={[
+                  floatingDialogSubtitleTextStyle,
+                  {
+                    color: colors.secondary,
+                    marginTop: 2,
+                    textAlign: titleAlign,
+                  },
+                ]}
+                numberOfLines={1}
+              >
+                {subtitle}
+              </Text>
+            ) : null}
+          </View>
         )}
         <FloatingDialogCloseButton label={closeLabel} onPress={onClose} />
       </View>

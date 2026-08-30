@@ -26,9 +26,7 @@ export function SwapScreen() {
     <AuthenticatedAppShell>
       <View style={{ flex: 1, width: "100%", minHeight: 0 }}>
         {pickerMode != null ? (
-          <ChooseCurrencyPanelContent
-            walletAddress={wallet?.wallet_address ?? null}
-          />
+          <ChooseCurrencyPanelContent walletAddress={wallet?.wallet_address ?? null} />
         ) : (
           <SwapPanelContent />
         )}
