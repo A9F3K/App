@@ -237,6 +237,8 @@ type Props = {
   walletAddress: string;
   /** Profile label from `users.display_name`. */
   displayName: string;
+  /** Live built-in wallet total for the header balance line. */
+  headerBalanceLabel?: string;
   /** Opens the built-in wallet currencies dialog. */
   onBalancePress?: () => void;
   /** Wallet currencies dialog is open — inverts chip colors on the wallet control. */
@@ -255,6 +257,7 @@ type Props = {
 export function HomeAuthenticatedHeaderRow({
   walletAddress,
   displayName,
+  headerBalanceLabel = "0$",
   onBalancePress,
   walletCurrenciesOpen = false,
   activeHeaderMenuKey,
@@ -283,19 +286,26 @@ export function HomeAuthenticatedHeaderRow({
   }, [trimmed]);
 
   const balanceButton = (extraTextStyle?: object) => (
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-      <Text
-        {...displayAmountTextProps}
-        style={[homeWalletBalanceHeaderText, { color: colors.primary }, extraTextStyle]}
-      >
-        1$
-      </Text>
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        height: homeWalletBalanceHeaderText.lineHeight,
+        gap: 5,
+      }}
+    >
       <UndercoverWalletButton
         accessibilityLabel={t("home.header.balanceExpandHint")}
         active={walletCurrenciesOpen}
         disabled={!onBalancePress}
         onPress={onBalancePress}
       />
+      <Text
+        {...displayAmountTextProps}
+        style={[homeWalletBalanceHeaderText, { color: colors.primary }, extraTextStyle]}
+      >
+        {headerBalanceLabel}
+      </Text>
     </View>
   );
 

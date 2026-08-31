@@ -535,9 +535,15 @@ export async function startConnectAttempt(
     if (existingId) {
       const existing = attempts.get(existingId);
       if (existing && existing.authState !== "failed") {
-        // Never clobber an in-flight QR / phone / 2FA attempt (unless fresh=true).
-        // Concurrent warmup/resume used to dispose mid-connect → client poll 404 attempt_not_found.
-        if (isMidConnectAttempt(existing)) {
+        if (
+          existing.authState === "wait_qr" &&
+          authMethod === "phone" &&
+          !options?.fresh
+        ) {
+          logConnectEvent(existing, "connect_switch_qr_to_phone", {});
+          writeStoredAuthMethod(telegramUsername, "phone");
+          await disposeAttemptAsync(existingId);
+        } else if (isMidConnectAttempt(existing)) {
           pinConnectAuth(existing);
           logConnectEvent(existing, "connect_reuse_mid_auth", {
             requestedAuthMethod: authMethod,

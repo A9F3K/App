@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { useAppStrings } from "../../locales/AppStringsContext";
 import {
@@ -16,6 +16,10 @@ import {
 import { TON_JETTON_ADDRESS } from "../swap/swapChartConstants";
 import { SWAP_GRAM_TOKEN, SWAP_TON_ZERO_ADDRESS } from "../swap/swapPairTypes";
 import type { SwapJetton } from "../swap/swapJettonsTypes";
+import {
+  getWalletBalanceRefreshNonce,
+  subscribeWalletBalanceRefresh,
+} from "./walletBalanceRefresh";
 
 const DLLR_SYMBOL = "DLLR";
 
@@ -76,10 +80,25 @@ function parseUsdValue(row: ChooseCurrencyRow): number {
   return balance * rate;
 }
 
+/** Header balance line — matches legacy `1$` style but uses live totals when available. */
+export function formatHeaderWalletBalanceLabel(totalUsd: number, isLoading: boolean): string {
+  if (isLoading) return "…";
+  if (!Number.isFinite(totalUsd) || totalUsd <= 0) return "0$";
+  if (totalUsd < 0.01) return "<0.01$";
+  if (totalUsd < 1_000) {
+    const rounded = totalUsd >= 10 ? totalUsd.toFixed(0) : totalUsd.toFixed(2).replace(/\.?0+$/, "");
+    return `${rounded}$`;
+  }
+  if (totalUsd < 1_000_000) return `${Math.round(totalUsd / 1_000)}K$`;
+  if (totalUsd < 1_000_000_000) return `${(totalUsd / 1_000_000).toFixed(1).replace(/\.0$/, "")}M$`;
+  return `${(totalUsd / 1_000_000_000).toFixed(1).replace(/\.0$/, "")}B$`;
+}
+
 export type WalletHeldCurrencyRowsState = {
   rows: readonly ChooseCurrencyRow[];
   isLoading: boolean;
   error: string | null;
+  headerBalanceLabel: string;
 };
 
 /** Jettons and native GRAM with a non-zero on-chain balance for one wallet address. */
@@ -88,6 +107,11 @@ export function useWalletHeldCurrencyRows(
   enabled = true,
 ): WalletHeldCurrencyRowsState {
   const { locale } = useAppStrings();
+  const refreshNonce = useSyncExternalStore(
+    subscribeWalletBalanceRefresh,
+    getWalletBalanceRefreshNonce,
+    getWalletBalanceRefreshNonce,
+  );
   const accountCreationDllrRow = useMemo(() => buildChooseCurrencyDllrRow(locale), [locale]);
   const [heldRows, setHeldRows] = useState<readonly ChooseCurrencyRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -101,6 +125,11 @@ export function useWalletHeldCurrencyRows(
     );
     return [accountCreationDllrRow, ...withoutDllr];
   }, [accountCreationDllrRow, heldRows]);
+
+  const headerBalanceLabel = useMemo(() => {
+    const totalUsd = heldRows.reduce((sum, row) => sum + parseUsdValue(row), 0);
+    return formatHeaderWalletBalanceLabel(totalUsd, isLoading);
+  }, [heldRows, isLoading]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -182,11 +211,24 @@ export function useWalletHeldCurrencyRows(
 
     void load();
     const id = setInterval(() => void load(), 30_000);
+
+    const onVisibility = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        void load();
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onVisibility);
+    }
+
     return () => {
       cancelled = true;
       clearInterval(id);
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibility);
+      }
     };
-  }, [enabled, walletAddress]);
+  }, [enabled, refreshNonce, walletAddress]);
 
-  return { rows, isLoading, error };
+  return { rows, isLoading, error, headerBalanceLabel };
 }

@@ -23,3 +23,18 @@ export function formatWalletDialogSubtitle(
   }
   return tf("wallet.dialogSubtitleAddress", { snippet });
 }
+
+/** Subtitle for Get — TonConnect external wallet (not the app built-in wallet). */
+export function formatConnectedWalletDialogSubtitle(
+  walletName: string | null | undefined,
+  walletAddress: string | null | undefined,
+  t: Translate,
+  tf: TranslateFormat,
+): string {
+  const trimmed = trimWalletAddress(walletAddress ?? "");
+  if (!trimmed) {
+    return t("get.chooseCurrencyNotConnected");
+  }
+  const name = walletName?.trim() || t("get.connectedWalletFallbackName");
+  return formatWalletDialogSubtitle(name, trimmed, t, tf);
+}

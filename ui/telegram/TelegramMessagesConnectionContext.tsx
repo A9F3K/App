@@ -44,6 +44,8 @@ type TelegramMessagesConnectionCtx = {
   emojiFetchEpoch: number;
   connectPending: boolean;
   connectSheetVisible: boolean;
+  /** True after MTProto auth succeeds — sheet shows checkmark until chats are loaded. */
+  connectSuccessSyncing: boolean;
   connectAuthState: MtprotoAuthState;
   connectAuthMethod: MtprotoAuthMethod;
   connectQrLink: string | null;
@@ -111,6 +113,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   const [emojiFetchEpoch, setEmojiFetchEpoch] = useState(0);
   const [connectPending, setConnectPending] = useState(false);
   const [connectSheetVisible, setConnectSheetVisible] = useState(false);
+  const [connectSuccessSyncing, setConnectSuccessSyncing] = useState(false);
   const [connectAuthState, setConnectAuthState] = useState<MtprotoAuthState>("idle");
   const [connectAuthMethod, setConnectAuthMethod] = useState<MtprotoAuthMethod>("qr");
   const [connectQrLink, setConnectQrLink] = useState<string | null>(null);
@@ -130,6 +133,9 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   /** Mirrors `isTelegramMessagesConnected` for async recover/warmup without stale closures. */
   const connectedRef = useRef(false);
   const connectSheetVisibleRef = useRef(false);
+  const connectSuccessSyncingRef = useRef(false);
+  const connectSuccessShownAtRef = useRef(0);
+  const connectSuccessDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** After status confirms DB link is gone, back off silent warmup (avoids 403 spam loops). */
   const notConnectedBackoffUntilRef = useRef(0);
   /** Blocks silent resume until auth session reflects logout. */
@@ -159,6 +165,57 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
   useEffect(() => {
     connectSheetVisibleRef.current = connectSheetVisible;
   }, [connectSheetVisible]);
+
+  useEffect(() => {
+    connectSuccessSyncingRef.current = connectSuccessSyncing;
+  }, [connectSuccessSyncing]);
+
+  const clearConnectSuccessDismissTimer = useCallback(() => {
+    if (connectSuccessDismissTimerRef.current) {
+      clearTimeout(connectSuccessDismissTimerRef.current);
+      connectSuccessDismissTimerRef.current = null;
+    }
+  }, []);
+
+  const dismissConnectSuccessSheet = useCallback(() => {
+    clearConnectSuccessDismissTimer();
+    connectSuccessSyncingRef.current = false;
+    setConnectSuccessSyncing(false);
+    setConnectSheetVisible(false);
+    connectAuthStateRef.current = "idle";
+    setConnectAuthState("idle");
+    logTelegramConnect("connect_success_sheet_dismissed");
+  }, [clearConnectSuccessDismissTimer]);
+
+  const scheduleConnectSuccessDismiss = useCallback(
+    (delayMs: number) => {
+      clearConnectSuccessDismissTimer();
+      connectSuccessDismissTimerRef.current = setTimeout(() => {
+        connectSuccessDismissTimerRef.current = null;
+        if (connectSuccessSyncingRef.current) {
+          dismissConnectSuccessSheet();
+        }
+      }, delayMs);
+    },
+    [clearConnectSuccessDismissTimer, dismissConnectSuccessSheet],
+  );
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onChatsLoaded = (event: Event) => {
+      if (!connectSuccessSyncingRef.current) return;
+      const count = Number((event as CustomEvent<{ count?: number }>).detail?.count ?? 0);
+      if (count <= 0) return;
+      const elapsed = Date.now() - connectSuccessShownAtRef.current;
+      const minVisibleMs = 1200;
+      scheduleConnectSuccessDismiss(Math.max(0, minVisibleMs - elapsed));
+      logTelegramConnect("connect_success_chats_ready", { count, elapsedMs: elapsed });
+    };
+    document.addEventListener("hsp-telegram-chats-loaded", onChatsLoaded);
+    return () => document.removeEventListener("hsp-telegram-chats-loaded", onChatsLoaded);
+  }, [scheduleConnectSuccessDismiss]);
+
+  useEffect(() => () => clearConnectSuccessDismissTimer(), [clearConnectSuccessDismissTimer]);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -426,7 +483,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
         setConnectAuthState(state);
         connectAuthStateRef.current = state;
       }
-      if (json.qrLink) {
+      if (json.qrLink && connectAuthMethodRef.current === "qr") {
         setConnectQrLink(json.qrLink);
       } else if (state === "ready" || state === "failed" || state === "idle") {
         setConnectQrLink(null);
@@ -434,7 +491,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       setConnectError(json.error ?? (json.ok === false ? "connect_failed" : null));
 
       if (state === "ready") {
-        if (explicitDisconnectRef.current || sessionTelegramMessagesConnectedRef.current !== true) {
+        if (explicitDisconnectRef.current) {
           logTelegramConnect("connect_success_ignored_after_disconnect");
           stopPolling();
           attemptIdRef.current = null;
@@ -447,7 +504,16 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
         explicitDisconnectRef.current = false;
         connectedRef.current = true;
         setConnected(true);
-        setConnectSheetVisible(false);
+        const userInitiatedConnect =
+          connectSheetVisibleRef.current || isMidConnectAuth(connectAuthStateRef.current);
+        if (userInitiatedConnect) {
+          connectSuccessShownAtRef.current = Date.now();
+          setConnectSuccessSyncing(true);
+          setConnectSheetVisible(true);
+          scheduleConnectSuccessDismiss(45_000);
+        } else {
+          setConnectSheetVisible(false);
+        }
         stopPolling();
         clearStoredMtprotoConnect();
         setConnectCodeDelivery(null);
@@ -457,6 +523,10 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
           document.dispatchEvent(new CustomEvent("hsp-auth-session-updated"));
         }
         void refreshStatusInner();
+        if (!userInitiatedConnect) {
+          connectAuthStateRef.current = "idle";
+          setConnectAuthState("idle");
+        }
       } else if (state === "failed") {
         stopPolling();
         clearStoredMtprotoConnect();
@@ -468,7 +538,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
         });
       }
     },
-    [stopPolling, refreshStatusInner],
+    [stopPolling, refreshStatusInner, scheduleConnectSuccessDismiss],
   );
 
   const pollConnectStatus = useCallback(async () => {
@@ -733,9 +803,10 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     soft?: boolean;
   }) => {
     const authMethod: MtprotoAuthMethod = options?.authMethod === "phone" ? "phone" : "qr";
-    const useFresh =
-      Boolean(options?.fresh) || sessionTelegramMessagesConnectedRef.current !== true;
     const softPhoneStart = Boolean(options?.soft) && authMethod === "phone";
+    const useFresh =
+      Boolean(options?.fresh) ||
+      (sessionTelegramMessagesConnectedRef.current !== true && !softPhoneStart);
     const current = connectAuthStateRef.current;
     if (
       !useFresh &&
@@ -766,7 +837,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     setConnectPending(true);
     setConnectError(null);
     if (softPhoneStart) {
-      setConnectQrLink(null);
+      // Keep QR and current step visible while the phone session starts.
     } else if (!useFresh && attemptIdRef.current && isMidConnectAuth(current)) {
       setConnectQrLink(null);
     } else {
@@ -780,7 +851,9 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     try {
       const body: Record<string, unknown> = useFresh
         ? { fresh: true, authMethod }
-        : { resume: true, authMethod };
+        : softPhoneStart
+          ? { fresh: false, authMethod }
+          : { resume: true, authMethod };
       const response = await fetch(startUrl, {
         method: "POST",
         credentials: "include",
@@ -867,6 +940,11 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       if (connectAuthStateRef.current === "wait_code" || connectAuthStateRef.current === "wait_password") {
         return;
       }
+      logTelegramConnect("connect_phone_submit", {
+        authState: connectAuthStateRef.current,
+        authMethod: connectAuthMethodRef.current,
+        hasAttemptId: Boolean(attemptIdRef.current),
+      });
       setConnectPending(true);
       setConnectError(null);
       try {
@@ -887,7 +965,21 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
             stopPolling();
             setConnectAuthMethod("phone");
             connectAuthMethodRef.current = "phone";
-            await beginMtprotoConnect({ fresh: true, authMethod: "phone", soft: true });
+            const switchingFromQr = connectAuthStateRef.current === "wait_qr";
+            await beginMtprotoConnect({
+              fresh: switchingFromQr || !attemptIdRef.current || connectAuthStateRef.current === "failed",
+              authMethod: "phone",
+              soft: true,
+            });
+            if (connectAuthStateRef.current === "wait_qr") {
+              logTelegramConnect("connect_phone_retry_force_fresh_after_qr_reuse");
+              await beginMtprotoConnect({ fresh: true, authMethod: "phone", soft: true });
+            }
+            if (connectAuthStateRef.current === "wait_qr") {
+              setConnectError("telegram_network_unreachable");
+              return;
+            }
+            setConnectPending(true);
             const ready = await waitForPhoneGatewayReady(45_000);
             if (!ready) {
               setConnectError(
@@ -1103,6 +1195,9 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     connectStartAbortRef.current?.abort();
     connectStartGenerationRef.current += 1;
     pollGenerationRef.current += 1;
+    clearConnectSuccessDismissTimer();
+    connectSuccessSyncingRef.current = false;
+    setConnectSuccessSyncing(false);
     setConnectSheetVisible(false);
     setConnectPending(false);
     setConnectAuthState("idle");
@@ -1114,7 +1209,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     setConnectCodeDelivery(null);
     attemptIdRef.current = null;
     clearStoredMtprotoConnect();
-  }, [stopPolling]);
+  }, [clearConnectSuccessDismissTimer, stopPolling]);
 
   const disconnectTelegramMessages = useCallback(async () => {
     logTelegramConnect("disconnect_start");
@@ -1126,6 +1221,9 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     connectStartAbortRef.current?.abort();
     connectStartGenerationRef.current += 1;
     pollGenerationRef.current += 1;
+    clearConnectSuccessDismissTimer();
+    connectSuccessSyncingRef.current = false;
+    setConnectSuccessSyncing(false);
     setConnectSheetVisible(false);
     setConnectPending(false);
     attemptIdRef.current = null;
@@ -1158,7 +1256,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
     }
     await refreshStatusInner();
     logTelegramConnect("disconnect_done");
-  }, [refreshStatusInner, stopPolling]);
+  }, [clearConnectSuccessDismissTimer, refreshStatusInner, stopPolling]);
 
   const value = useMemo(
     (): TelegramMessagesConnectionCtx => ({
@@ -1167,6 +1265,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       emojiFetchEpoch,
       connectPending,
       connectSheetVisible,
+      connectSuccessSyncing,
       connectAuthState,
       connectAuthMethod,
       connectQrLink,
@@ -1190,6 +1289,7 @@ export function TelegramMessagesConnectionProvider({ children }: { children: Rea
       emojiFetchEpoch,
       connectPending,
       connectSheetVisible,
+      connectSuccessSyncing,
       connectAuthState,
       connectAuthMethod,
       connectQrLink,

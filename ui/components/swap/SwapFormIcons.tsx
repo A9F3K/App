@@ -18,6 +18,7 @@ import {
 } from "./swapFormAssets";
 
 const UNDERCOVER_CIRCLE_PX = layout.bottomBar.undercoverButtonHeightPx;
+const WALLET_GLYPH_PX = 17;
 
 function isLightTheme(colors: ThemeColors): boolean {
   return colors.primary === "#000000";
@@ -37,9 +38,9 @@ export function SwapSelectChevronDown() {
   );
 }
 
-function WalletGlyph({ color }: { color: string }) {
+function WalletGlyph({ color, size = WALLET_GLYPH_PX }: { color: string; size?: number }) {
   return (
-    <Svg width={14} height={14} viewBox="0 0 24 24" fill="none">
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
       <Rect x="3.5" y="6.5" width="17" height="12" rx="2.5" stroke={color} strokeWidth={1.75} />
       <Path d="M3.5 10h17" stroke={color} strokeWidth={1.75} strokeLinecap="round" />
       <Circle cx="16.5" cy="14" r="1.25" fill={color} />

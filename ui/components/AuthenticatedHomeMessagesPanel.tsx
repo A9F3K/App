@@ -1182,6 +1182,11 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
           }
           return next;
         });
+        if (rows.length > 0 && typeof document !== "undefined") {
+          document.dispatchEvent(
+            new CustomEvent("hsp-telegram-chats-loaded", { detail: { count: rows.length } }),
+          );
+        }
       };
       // First paint must stay urgent — startTransition deferred the empty→rows
       // apply for seconds behind history/voice work (long "No chats yet" / spinner).

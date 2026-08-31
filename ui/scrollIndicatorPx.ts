@@ -52,22 +52,47 @@ export function scrollContentOverflowsViewport(contentH: number, viewH: number):
 }
 
 /**
- * Remaining height (px) inside {@link shellEl}'s parent after sibling chrome (headers, etc.).
+ * Remaining height (px) inside {@link shellEl}'s flex slot after sibling chrome (headers, etc.).
  * Used when RN-web lets the shell grow with content (`overflow: visible`) so flex `minHeight: 0`
  * alone does not produce a real scrollport — common in the AI third column.
+ *
+ * Walks up flex ancestors when the immediate parent expanded with content height.
  */
 export function readShellFlexAvailableHeightPx(shellEl: HTMLElement | null | undefined): number {
-  if (!shellEl?.parentElement) return 0;
-  const parent = shellEl.parentElement;
-  const parentH = parent.clientHeight;
-  if (!(parentH > 0)) return 0;
-  let siblingsH = 0;
-  for (let i = 0; i < parent.children.length; i += 1) {
-    const child = parent.children[i] as HTMLElement | null;
-    if (!child || child === shellEl) continue;
-    siblingsH += child.getBoundingClientRect().height;
+  if (!shellEl) return 0;
+
+  let node: HTMLElement | null = shellEl;
+  for (let depth = 0; depth < 10 && node; depth += 1) {
+    const parent = node.parentElement;
+    if (!parent) break;
+    const parentH = parent.clientHeight;
+    if (!(parentH > 0)) {
+      node = parent;
+      continue;
+    }
+
+    let siblingsH = 0;
+    for (let i = 0; i < parent.children.length; i += 1) {
+      const child = parent.children[i] as HTMLElement | null;
+      if (!child || child === node) continue;
+      siblingsH += child.offsetHeight;
+    }
+    const avail = Math.max(0, parentH - siblingsH);
+    if (avail <= 0) {
+      node = parent;
+      continue;
+    }
+
+    const eps = scrollIndicatorOverflowEpsilonPx();
+    const parentScrollOverflow = parent.scrollHeight - parentH;
+    const parentGrewWithContent =
+      parentScrollOverflow <= eps && parent.offsetHeight >= parentH - eps && siblingsH > 0;
+    if (!parentGrewWithContent || depth >= 9) {
+      return avail;
+    }
+    node = parent;
   }
-  return Math.max(0, parentH - siblingsH);
+  return 0;
 }
 
 /**
@@ -91,13 +116,15 @@ export function readScrollportOverflowPx(
   const contentH = el.scrollHeight;
   let layoutH = el.clientHeight;
   const parentAvail = shellEl ? readShellFlexAvailableHeightPx(shellEl) : 0;
+  const hostAvail = shellEl ? readSplitColumnScrollHostHeightPx(shellEl) : 0;
+  const flexAvail = Math.max(parentAvail, hostAvail);
   const shellH = shellEl?.clientHeight ?? 0;
   // Prefer the flex allocation over a shell that has already grown to content height.
   const capH =
-    parentAvail > 0 && shellH > 0
-      ? Math.min(shellH, parentAvail)
-      : parentAvail > 0
-        ? parentAvail
+    flexAvail > 0 && shellH > 0
+      ? Math.min(shellH, flexAvail)
+      : flexAvail > 0
+        ? flexAvail
         : shellH;
   if (!(layoutH > 0) && !(capH > 0)) return null;
   const eps = scrollIndicatorOverflowEpsilonPx();
@@ -156,6 +183,56 @@ export function scrollIndicatorSplitSeamPortalLeftPx(columnRightPx: number): num
   const measured = measureNearestSplitDividerPortalLeftPx(columnRightPx);
   if (measured != null) return measured;
   return snapScrollIndicatorCoordPx(columnRightPx);
+}
+
+/** True when the scroll shell lives in a split column pinned to the viewport's right edge (no right divider). */
+export function isSplitColumnFlushRight(shellEl: HTMLElement | null | undefined): boolean {
+  if (!shellEl) return false;
+  return shellEl.closest("[data-hsp-column-flush-right]") != null;
+}
+
+/**
+ * Height (px) available to a scroll shell inside `[data-hsp-split-column-scroll-host]`,
+ * subtracting fixed siblings (headers) between the shell and that host.
+ */
+export function readSplitColumnScrollHostHeightPx(shellEl: HTMLElement | null | undefined): number {
+  if (!shellEl) return 0;
+  const host = shellEl.closest("[data-hsp-split-column-scroll-host]") as HTMLElement | null;
+  if (!host) return 0;
+  const hostH = host.clientHeight;
+  if (!(hostH > 0)) return 0;
+
+  let chromeH = 0;
+  let node: HTMLElement | null = shellEl;
+  while (node && node !== host) {
+    const parent = node.parentElement;
+    if (!parent) break;
+    for (let i = 0; i < parent.children.length; i += 1) {
+      const sibling = parent.children[i];
+      if (sibling !== node && sibling instanceof HTMLElement) {
+        chromeH += sibling.offsetHeight;
+      }
+    }
+    node = parent;
+  }
+  return Math.max(0, hostH - chromeH);
+}
+
+/** Portal `left` for a vertical thumb: viewport edge when flush-right / at edge, else split seam. */
+export function scrollIndicatorPortalLeftPx(
+  columnRightPx: number,
+  shellEl?: HTMLElement | null,
+): number {
+  const viewportW =
+    typeof window !== "undefined"
+      ? snapScrollIndicatorCoordPx(window.visualViewport?.width ?? window.innerWidth)
+      : null;
+  if (viewportW != null) {
+    if (isSplitColumnFlushRight(shellEl) || isScrollIndicatorAtViewportRightEdge(columnRightPx)) {
+      return viewportW;
+    }
+  }
+  return scrollIndicatorSplitSeamPortalLeftPx(columnRightPx);
 }
 
 /** Extra hit area (px) perpendicular to the scroll axis for dragging hairline thumbs. */

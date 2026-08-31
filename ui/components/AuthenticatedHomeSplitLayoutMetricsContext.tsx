@@ -14,6 +14,8 @@ export type AuthenticatedHomeSplitLayoutMetrics = {
   firstColumnWidthPx: number;
   /** Flex middle column width when wide (0 on compact single-column layout). */
   middleColumnWidthPx: number;
+  /** Third column width when triple layout (0 otherwise). */
+  thirdColumnWidthPx: number;
   columnCount: 1 | 2 | 3;
 };
 

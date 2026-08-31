@@ -5,14 +5,16 @@ import { createPortal } from "react-dom";
 import { resolveWebRefElement } from "../smart/resolveWebLayoutElement";
 import {
   isScrollIndicatorAtViewportRightEdge,
+  isSplitColumnFlushRight,
   scrollIndicatorHairlineBorderWidthPx,
-  scrollIndicatorSplitSeamPortalLeftPx,
+  scrollIndicatorPortalLeftPx,
   SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX,
   snapScrollIndicatorCoordPx,
 } from "../scrollIndicatorPx";
 import { layout } from "../theme";
 import { ScrollIndicatorDragHandle } from "./ScrollIndicatorDragHandle";
 import { useTelegram } from "./Telegram";
+import { useAuthenticatedHomeSplitLayoutMetrics } from "./AuthenticatedHomeSplitLayoutMetricsContext";
 
 const SEAM_OVERLAY_Z = layout.authenticatedHome.scrollIndicatorOverlayZIndex;
 /** Split-pane remounts often leave shell height/width at 0 for several frames. */
@@ -69,6 +71,7 @@ export function HspVerticalScrollIndicator({
   style,
 }: Props) {
   const { colorScheme } = useTelegram();
+  const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   const hairline = scrollIndicatorHairlineBorderWidthPx();
   const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
   const extendTop = Math.max(0, scrollIndicatorExtendTopPx);
@@ -128,6 +131,10 @@ export function HspVerticalScrollIndicator({
       if (ro) ro.disconnect();
       ro = new ResizeObserver(onWin);
       ro.observe(dom);
+      const host = dom.closest("[data-hsp-split-column-scroll-host]");
+      if (host && host instanceof HTMLElement) {
+        ro.observe(host);
+      }
       return true;
     };
 
@@ -173,7 +180,18 @@ export function HspVerticalScrollIndicator({
 
   useLayoutEffect(() => {
     if (overlaySeam && show) syncSeamBox();
-  }, [overlaySeam, show, trackH, thumbH, thumbTop, syncSeamBox]);
+  }, [
+    overlaySeam,
+    show,
+    trackH,
+    thumbH,
+    thumbTop,
+    syncSeamBox,
+    splitMetrics?.columnCount,
+    splitMetrics?.effectiveSplitWidthPx,
+    splitMetrics?.thirdColumnWidthPx,
+    splitMetrics?.splitRowWidthPx,
+  ]);
 
   if (!show || trackH <= 0 || thumbH <= 0) return null;
 
@@ -183,13 +201,27 @@ export function HspVerticalScrollIndicator({
       : null;
 
   const shellDom = findDomNode(shellRef.current);
+  const shellRect = shellDom?.getBoundingClientRect();
   const shellRightPx =
-    shellDom != null ? snapScrollIndicatorCoordPx(shellDom.getBoundingClientRect().right) : null;
-  const columnRightPx = seamBox?.rightPx ?? shellRightPx ?? viewportRightPx ?? 0;
+    shellRect != null ? snapScrollIndicatorCoordPx(shellRect.right) : null;
+  const fallbackBox: TrackBox | null =
+    shellRect && shellRect.height > 0
+      ? {
+          rightPx: shellRightPx ?? snapScrollIndicatorCoordPx(shellRect.left + shellRect.width),
+          topPx: snapScrollIndicatorCoordPx(shellRect.top),
+          heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, shellRect.height + extendBottom)),
+        }
+      : null;
+  const activeBox = seamBox ?? fallbackBox;
+  const columnRightPx = activeBox?.rightPx ?? shellRightPx ?? viewportRightPx ?? 0;
+  const flushRight = isSplitColumnFlushRight(shellDom);
   const atViewportRightEdge =
     overlaySeam &&
-    (seamBox != null || shellRightPx != null) &&
-    (isScrollIndicatorAtViewportRightEdge(columnRightPx) ||
+    (flushRight ||
+      activeBox != null ||
+      shellRightPx != null) &&
+    (flushRight ||
+      isScrollIndicatorAtViewportRightEdge(columnRightPx) ||
       (viewportRightPx != null && columnRightPx >= viewportRightPx - 2.5));
   // Light theme only: 3px fill at the viewport edge (hairline clips against letterboxing).
   // Dark theme keeps the 1px hairline — the wide thumb is intentionally light-only.
@@ -232,33 +264,25 @@ export function HspVerticalScrollIndicator({
     </ScrollIndicatorDragHandle>
   );
 
-  if (overlaySeam && typeof document !== "undefined") {
-    if (seamBox) {
-      // Viewport-right columns have no seam stroke; pin flush to the visual viewport edge
-      // so a column that extends past innerWidth (subpixel / zoom) does not portal off-screen.
-      const portalLeft =
-        atViewportRightEdge && viewportRightPx != null
-          ? viewportRightPx
-          : scrollIndicatorSplitSeamPortalLeftPx(seamBox.rightPx);
-      const portal: ReactNode = (
-        <View
-          pointerEvents="none"
-          style={{
-            position: "fixed" as unknown as "absolute",
-            top: seamBox.topPx,
-            left: portalLeft,
-            width: 0,
-            height: seamBox.heightPx,
-            zIndex: SEAM_OVERLAY_Z,
-            overflow: "visible",
-          }}
-        >
-          {thumb}
-        </View>
-      );
-      return createPortal(portal, document.body);
-    }
-    // Seam sync can lag after column resize; keep the thumb in-column until portal metrics land.
+  if (overlaySeam && typeof document !== "undefined" && activeBox) {
+    const portalLeft = scrollIndicatorPortalLeftPx(activeBox.rightPx, shellDom);
+    const portal: ReactNode = (
+      <View
+        pointerEvents="none"
+        style={{
+          position: "fixed" as unknown as "absolute",
+          top: activeBox.topPx,
+          left: portalLeft,
+          width: 0,
+          height: activeBox.heightPx,
+          zIndex: SEAM_OVERLAY_Z,
+          overflow: "visible",
+        }}
+      >
+        {thumb}
+      </View>
+    );
+    return createPortal(portal, document.body);
   }
 
   return (

@@ -20,6 +20,7 @@ import { GetColumnFooter } from "../components/get/GetColumnFooter";
 import { TradeColumnFooter } from "../components/trade/TradeColumnFooter";
 import { HomeAuthenticatedHeaderRow } from "../components/HomeAuthenticatedHeaderRow";
 import { WalletCurrenciesDialog } from "../components/wallet/WalletCurrenciesDialog";
+import { useWalletHeldCurrencyRows } from "../wallet/useWalletHeldCurrencyRows";
 import { AuthenticatedHomeLeftNavStrip } from "../components/AuthenticatedHomeLeftNavStrip";
 import { AuthenticatedHomeFeedPanel } from "../components/AuthenticatedHomeFeedPanel";
 import { AuthenticatedHomeMessagesPanel } from "../components/AuthenticatedHomeMessagesPanel";
@@ -780,6 +781,7 @@ function HomeAuthenticatedScreenMain() {
   /** True only when we can actually show a wallet string (avoids "has_wallet" with no row / stale flags). */
   const hasDisplayAddress = Boolean(effectiveWalletAddress);
   const effectiveHasWallet = hasWallet || hasDisplayAddress;
+  const { headerBalanceLabel } = useWalletHeldCurrencyRows(effectiveWalletAddress, hasDisplayAddress);
   const headerDisplayName = displayName?.trim() || t("common.emDash");
   const onHeaderBalancePress = useCallback(() => {
     setWalletCurrenciesOpen((open) => {
@@ -1360,6 +1362,7 @@ function HomeAuthenticatedScreenMain() {
         <HomeAuthenticatedHeaderRow
           walletAddress={effectiveWalletAddress ?? ""}
           displayName={headerDisplayName}
+          headerBalanceLabel={headerBalanceLabel}
           onBalancePress={onHeaderBalancePress}
           walletCurrenciesOpen={walletCurrenciesOpen}
         />
@@ -1421,6 +1424,7 @@ function HomeAuthenticatedScreenMain() {
         <HomeAuthenticatedHeaderRow
           walletAddress={effectiveWalletAddress ?? ""}
           displayName={headerDisplayName}
+          headerBalanceLabel={headerBalanceLabel}
           onBalancePress={onHeaderBalancePress}
           walletCurrenciesOpen={walletCurrenciesOpen}
         />
@@ -1478,6 +1482,7 @@ function HomeAuthenticatedScreenMain() {
         <HomeAuthenticatedHeaderRow
           walletAddress={effectiveWalletAddress ?? ""}
           displayName={headerDisplayName}
+          headerBalanceLabel={headerBalanceLabel}
           onBalancePress={onHeaderBalancePress}
           walletCurrenciesOpen={walletCurrenciesOpen}
         />
@@ -1658,6 +1663,7 @@ function HomeAuthenticatedScreenMain() {
     <HomeAuthenticatedHeaderRow
       walletAddress={effectiveWalletAddress ?? ""}
       displayName={headerDisplayName}
+      headerBalanceLabel={headerBalanceLabel}
       onBalancePress={onHeaderBalancePress}
       walletCurrenciesOpen={walletCurrenciesOpen}
       layoutIsWide={isWideHome}

@@ -23,11 +23,15 @@ import {
 } from "../../swap/swapPairTypes";
 import { getTonBalance } from "../../ton/getTonBalance";
 import { buildGetTopUpTransaction } from "../../ton/buildGetTopUpTransaction";
+import {
+  bumpWalletBalanceRefresh,
+  scheduleWalletBalanceRefreshBurst,
+} from "../../wallet/walletBalanceRefresh";
 import { formatTonConnectErrorMessage } from "../../ton/formatTonConnectErrorMessage";
 import { isTonConnectUserRejection } from "../../ton/isTonConnectUserRejection";
 import { useTonConnectSession } from "../../ton/TonConnectProvider";
 import { trimWalletAddress } from "../../wallet/walletAddressFormat";
-import { formatWalletDialogSubtitle } from "../../wallet/formatWalletDialogSubtitle";
+import { formatConnectedWalletDialogSubtitle } from "../../wallet/formatWalletDialogSubtitle";
 import {
   layout,
   typographyAeroport15,
@@ -46,7 +50,7 @@ import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
 import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
 import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
-import { SwapSelectChevron, UndercoverChevronDownButton } from "../swap/SwapFormIcons";
+import { SwapSelectChevron } from "../swap/SwapFormIcons";
 import { swapTonTokenImage } from "../swap/swapFormAssets";
 import { GetActionSummaryRow } from "./GetActionSummaryRow";
 import { GetConnectedWalletChip } from "./GetConnectedWalletChip";
@@ -178,9 +182,9 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     return tf("get.walletOnTon", { name });
   }, [displayName, t, tf]);
 
-  const builtInWalletDialogSubtitle = useMemo(
-    () => formatWalletDialogSubtitle(displayName, walletAddress, t, tf),
-    [displayName, t, tf, walletAddress],
+  const connectedWalletDialogSubtitle = useMemo(
+    () => formatConnectedWalletDialogSubtitle(ton.walletName, ton.address, t, tf),
+    [t, tf, ton.address, ton.walletName],
   );
 
   useEffect(() => {
@@ -206,11 +210,14 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     try {
       const native = await getTonBalance(connectedAddress);
       const nativeText = formatNativeBalance(native);
-      const nativeOption: GetCurrencyOption = {
-        token: SWAP_GRAM_TOKEN,
-        balanceLabel: nativeText,
-        balanceText: nativeText,
-      };
+      const nativeOption: GetCurrencyOption | null =
+        native > 0
+          ? {
+              token: SWAP_GRAM_TOKEN,
+              balanceLabel: nativeText,
+              balanceText: nativeText,
+            }
+          : null;
 
       let jettonOptions: GetCurrencyOption[] = [];
       try {
@@ -222,6 +229,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
             const symbol = (jetton.symbol ?? "").trim() || "TOKEN";
             const decimals = typeof jetton.decimals === "number" ? jetton.decimals : 9;
             const balanceText = formatRawTokenBalance(item.balance, decimals);
+            if (balanceText === "0" || balanceText === "—") return null;
             const token: SwapPairToken = {
               address: jetton.address,
               symbol,
@@ -237,13 +245,16 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         jettonOptions = [];
       }
 
-      const next = [nativeOption, ...jettonOptions];
+      const next = [
+        ...(nativeOption ? [nativeOption] : []),
+        ...jettonOptions,
+      ];
       setOptions(next);
       setSelected((prev) => {
         const match = next.find(
           (row) => row.token.address.toLowerCase() === prev.token.address.toLowerCase(),
         );
-        return match ?? nativeOption;
+        return match ?? next[0] ?? prev;
       });
     } finally {
       setBalancesLoading(false);
@@ -328,6 +339,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     if (!trimmedAmount || enteredAmount == null || enteredAmount <= 0) return;
 
     setTopUpPending(true);
+    scheduleWalletBalanceRefreshBurst();
     try {
       const request = await buildGetTopUpTransaction({
         amount: trimmedAmount,
@@ -337,6 +349,8 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
       });
       await ton.sendTransaction(request);
       await refreshBalances(ton.address);
+      bumpWalletBalanceRefresh();
+      scheduleWalletBalanceRefreshBurst([3_000, 12_000, 30_000]);
       setTopUpResult({
         kind: "success",
         amount: trimmedAmount,
@@ -352,6 +366,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
           detail: formatTonConnectErrorMessage(error),
         });
       }
+      scheduleWalletBalanceRefreshBurst([5_000, 15_000, 35_000, 60_000]);
     } finally {
       setTopUpPending(false);
     }
@@ -437,30 +452,18 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
   ];
 
   const balanceRow = (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        alignSelf: "flex-start",
-        gap: 5,
-      }}
+    <Animated.Text
+      style={[
+        ...multiLineBody,
+        {
+          color: colors.secondary,
+          alignSelf: "flex-start",
+          transform: [{ translateX: balanceShakeX }],
+        },
+      ]}
     >
-      <Animated.Text
-        style={[
-          ...multiLineBody,
-          {
-            color: colors.secondary,
-            transform: [{ translateX: balanceShakeX }],
-          },
-        ]}
-      >
-        {balanceLine}
-      </Animated.Text>
-      <UndercoverChevronDownButton
-        accessibilityLabel={t("get.chooseCurrencyA11y")}
-        onPress={() => setPickerOpen(true)}
-      />
-    </View>
+      {balanceLine}
+    </Animated.Text>
   );
 
   const currencyChip = (
@@ -757,16 +760,25 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
           <FloatingDialogStickyHeader
             insets={dialogInsets}
             title={t("get.chooseCurrencyTitle")}
-            subtitle={builtInWalletDialogSubtitle}
+            subtitle={connectedWalletDialogSubtitle}
             onClose={() => setPickerOpen(false)}
             closeLabel={t("common.close")}
           />
           <FlatList
-          data={options.length > 0 ? options : [selected]}
+          data={options}
           keyExtractor={(item) => item.token.address}
           keyboardShouldPersistTaps="handled"
           style={{ flex: 1, minHeight: 0 }}
           showsVerticalScrollIndicator={false}
+          ListEmptyComponent={
+            <View style={{ paddingHorizontal: 20, paddingVertical: 16 }}>
+              <Text style={[typographyAeroport15, { color: colors.secondary, lineHeight: MULTI_LINE_HEIGHT_PX }]}>
+                {ton.connected && ton.address
+                  ? t("get.chooseCurrencyEmpty")
+                  : t("get.chooseCurrencyNotConnected")}
+              </Text>
+            </View>
+          }
           renderItem={({ item }) => {
             const symbol = swapTokenDisplaySymbol(item.token);
             const active =

@@ -168,6 +168,7 @@ export function AuthenticatedHomeSplitBody({
       effectiveSplitWidthPx,
       firstColumnWidthPx,
       middleColumnWidthPx,
+      thirdColumnWidthPx: isTriple ? thirdPanePx : 0,
       columnCount,
     };
   }, [effectiveWidth, isWide, isTriple, rowWidth, leftPanePx, thirdPanePx]);
@@ -718,10 +719,19 @@ export function AuthenticatedHomeSplitBody({
               minHeight: 0,
               width: "100%",
               alignSelf: "stretch",
+              flexDirection: "column",
               paddingHorizontal: inset,
-              // Match middle column: allow scroll-shell bleed to the seam / viewport edge.
-              overflow: "visible",
+              // Clip vertical growth so HspScrollColumn sees a bounded scrollport (AI third column).
+              overflow: "hidden",
             }}
+            {...(Platform.OS === "web"
+              ? ({
+                  dataSet: {
+                    hspSplitColumnScrollHost: "1",
+                    hspColumnFlushRight: "1",
+                  },
+                } as object)
+              : {})}
           >
             {third}
           </View>
@@ -734,8 +744,11 @@ export function AuthenticatedHomeSplitBody({
         style={{
           width: thirdPanePx,
           flexShrink: 0,
+          flexDirection: "column",
+          minHeight: 0,
           paddingHorizontal: inset,
           paddingBottom: bottomInset,
+          overflow: "hidden",
         }}
       >
         {third}

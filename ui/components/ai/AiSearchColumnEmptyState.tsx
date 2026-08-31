@@ -1,10 +1,11 @@
-import { useCallback, useMemo, useState } from "react";
-import { Text, View, type LayoutChangeEvent } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Platform, Text, View, useWindowDimensions, type LayoutChangeEvent } from "react-native";
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { layout, typographyRect15, useColors } from "../../theme";
+import { useAuthenticatedHomeSplitLayoutMetrics } from "../AuthenticatedHomeSplitLayoutMetricsContext";
 import { useBottomBarLayout } from "../BottomBarLayoutContext";
-import { HspScrollColumn } from "../HspScrollColumn";
+import { HspScrollColumn, type HspScrollColumnHandle } from "../HspScrollColumn";
 import { AiAgentsColumnHeader, type AiAgentTab } from "./AiAgentsColumnHeader";
 import { AiSearchPromptButton } from "./AiSearchPromptButton";
 
@@ -79,9 +80,14 @@ function AiAgentTabEmptyBody({
 export function AiSearchColumnEmptyState() {
   const colors = useColors();
   const { draftText, setDraftText } = useBottomBarLayout();
+  const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
+  const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+  const scrollRef = useRef<HspScrollColumnHandle>(null);
   const chatStarted = draftText.trim().length > 0;
   const showEmptyBody = !chatStarted;
   const [columnWidth, setColumnWidth] = useState(0);
+  const [headerHeightPx, setHeaderHeightPx] = useState(0);
+  const [viewportHeightPx, setViewportHeightPx] = useState(0);
   const [tabs, setTabs] = useState<AiAgentTab[]>(() => [{ id: "agent-1" }]);
   const [activeTabId, setActiveTabId] = useState("agent-1");
   const contentInset = layout.contentSideInsetPx;
@@ -92,7 +98,36 @@ export function AiSearchColumnEmptyState() {
   const onColumnLayout = useCallback((event: LayoutChangeEvent) => {
     const next = Math.round(event.nativeEvent.layout.width);
     setColumnWidth((current) => (current === next ? current : next));
+    const nextH = Math.round(event.nativeEvent.layout.height);
+    setViewportHeightPx((current) => (current === nextH ? current : nextH));
   }, []);
+
+  const onHeaderLayout = useCallback((event: LayoutChangeEvent) => {
+    const next = Math.round(event.nativeEvent.layout.height);
+    setHeaderHeightPx((current) => (current === next ? current : next));
+  }, []);
+
+  const remeasureScrollColumn = useCallback(() => {
+    if (Platform.OS !== "web") return;
+    requestAnimationFrame(() => {
+      scrollRef.current?.syncScrollMetricsFromDom();
+      requestAnimationFrame(() => scrollRef.current?.syncScrollMetricsFromDom());
+    });
+  }, []);
+
+  useEffect(() => {
+    remeasureScrollColumn();
+  }, [
+    remeasureScrollColumn,
+    columnWidth,
+    viewportHeightPx,
+    headerHeightPx,
+    windowHeight,
+    windowWidth,
+    splitMetrics?.columnCount,
+    splitMetrics?.splitRowWidthPx,
+    splitMetrics?.thirdColumnWidthPx,
+  ]);
 
   const onAddTab = useCallback(() => {
     const id = createAgentTabId();
@@ -126,10 +161,10 @@ export function AiSearchColumnEmptyState() {
 
   return (
     <View
-      style={{ flex: 1, width: "100%", alignSelf: "stretch", minHeight: 0 }}
+      style={{ flex: 1, width: "100%", alignSelf: "stretch", minHeight: 0, flexDirection: "column" }}
       onLayout={onColumnLayout}
     >
-      <View style={scrollShellBleed}>
+      <View style={scrollShellBleed} onLayout={onHeaderLayout}>
         <AiAgentsColumnHeader
           tabs={tabs}
           activeTabId={activeTabId}
@@ -141,6 +176,7 @@ export function AiSearchColumnEmptyState() {
       </View>
       {showEmptyBody ? (
         <HspScrollColumn
+          scrollControllerRef={scrollRef}
           style={{ flex: 1, minHeight: 0, ...scrollShellBleed }}
           contentContainerStyle={{
             paddingHorizontal: contentInset,
@@ -148,6 +184,7 @@ export function AiSearchColumnEmptyState() {
           }}
           indicatorColor={colors.scrollIndicator}
           scrollbarRightInsetPx={0}
+          scrollIndicatorExtendTopPx={headerHeightPx}
         >
           {/* Remount body when switching tabs so each tab starts from the default empty state. */}
           <AiAgentTabEmptyBody

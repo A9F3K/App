@@ -27,11 +27,13 @@ import {
   SCROLL_INDICATOR_SCROLL_EPS,
   readScrollportOverflowPx,
   readShellFlexAvailableHeightPx,
+  readSplitColumnScrollHostHeightPx,
   scrollContentOverflowsViewport,
 } from "../scrollIndicatorPx";
 import { isBrowserZoomWheelEvent } from "../browserZoom";
 import { layout, useColors } from "../theme";
 import { resolveWebRefElement } from "../smart/resolveWebLayoutElement";
+import { useAuthenticatedHomeSplitLayoutMetrics } from "./AuthenticatedHomeSplitLayoutMetricsContext";
 import { useFloatingDialogScrollChrome } from "./floatingDialogScrollChrome";
 import { HspVerticalScrollIndicator } from "./HspVerticalScrollIndicator";
 
@@ -90,6 +92,8 @@ export type HspScrollColumnHandle = {
   clearNearTopLatch: () => void;
   /** Allow {@link onNearBottom} to fire again after appending content near the bottom. */
   clearNearBottomLatch: () => void;
+  /** Re-read DOM scrollport metrics (resize / split-pane reflow). Web only. */
+  syncScrollMetricsFromDom: () => void;
 };
 
 type Props = {
@@ -505,7 +509,10 @@ export function HspScrollColumn({
       shellDom.style.setProperty("min-height", "0");
       shellDom.style.setProperty("flex", "1 1 0px");
       shellDom.style.setProperty("align-self", "stretch");
-      const avail = readShellFlexAvailableHeightPx(shellDom);
+      const avail = Math.max(
+        readShellFlexAvailableHeightPx(shellDom),
+        readSplitColumnScrollHostHeightPx(shellDom),
+      );
       const portalsSeam =
         scrollIndicatorOverlaySeam ??
         (Platform.OS === "web" && scrollbarRightInsetPx <= 0);
@@ -546,6 +553,7 @@ export function HspScrollColumn({
       if (shellDom) bindShellBox(shellDom);
       if (scrollEl) bindScrollportBox(scrollEl);
       resizeHandlerRef.current();
+      syncScrollMetricsFromDom();
     };
 
     /** Ctrl/Cmd+wheel zoom does not always fire window.resize in the same frame. */
@@ -576,6 +584,10 @@ export function HspScrollColumn({
       const shellDom = findShellDomNode(shellRef.current);
       if (shellDom && shellDom !== next) {
         ro.observe(shellDom);
+        const host = shellDom.closest("[data-hsp-split-column-scroll-host]");
+        if (host && host instanceof HTMLElement && host !== next && host !== shellDom) {
+          ro.observe(host);
+        }
         const shellParent = shellDom.parentElement;
         if (shellParent && shellParent !== next && shellParent !== shellDom) {
           ro.observe(shellParent);
@@ -890,6 +902,26 @@ export function HspScrollColumn({
 
   resizeHandlerRef.current = handleContentResize;
 
+  const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const run = () => {
+      resizeHandlerRef.current();
+      syncScrollMetricsFromDom();
+    };
+    requestAnimationFrame(() => {
+      run();
+      requestAnimationFrame(run);
+    });
+  }, [
+    splitMetrics?.columnCount,
+    splitMetrics?.effectiveSplitWidthPx,
+    splitMetrics?.middleColumnWidthPx,
+    splitMetrics?.splitRowWidthPx,
+    splitMetrics?.thirdColumnWidthPx,
+    syncScrollMetricsFromDom,
+  ]);
+
   // Seed the stable anchor as soon as preservation is enabled, before the first
   // scroll event, so an early media resize has something to pin to.
   useEffect(() => {
@@ -1038,6 +1070,7 @@ export function HspScrollColumn({
       clearNearBottomLatch: () => {
         nearBottomFiredRef.current = false;
       },
+      syncScrollMetricsFromDom,
     };
     (scrollControllerRef as MutableRefObject<HspScrollColumnHandle | null>).current = controller;
     return () => {
@@ -1045,7 +1078,7 @@ export function HspScrollColumn({
         scrollControllerRef.current = null;
       }
     };
-  }, [scrollControllerRef, scrollToEnd, scrollToY, applyInitialScroll, captureScrollAnchor, keepScrollPositionOnPrepend, restoreScrollAnchor, captureItemAnchor, restoreItemAnchor, getScrollElement]);
+  }, [scrollControllerRef, scrollToEnd, scrollToY, applyInitialScroll, captureScrollAnchor, keepScrollPositionOnPrepend, restoreScrollAnchor, captureItemAnchor, restoreItemAnchor, getScrollElement, syncScrollMetricsFromDom]);
 
   useLayoutEffect(() => {
     if (initialScrollPosition !== "bottom" || didInitialBottomScrollRef.current) return;

@@ -93,6 +93,7 @@ export function TelegramConnectSheet() {
     connectSheetVisible,
     closeConnectSheet,
     connectPending,
+    connectSuccessSyncing,
     connectAuthState,
     connectQrLink,
     connectError,
@@ -102,7 +103,6 @@ export function TelegramConnectSheet() {
     submitMtprotoCode,
     resendMtprotoCode,
     submitMtprotoPassword,
-    switchToQrConnect,
   } = useTelegramMessagesConnection();
   const inTelegramApp = isActuallyInTelegram();
   const [password, setPassword] = useState("");
@@ -124,6 +124,10 @@ export function TelegramConnectSheet() {
       sheetBootstrapRef.current = false;
       return;
     }
+    if (connectSuccessSyncing || connectAuthState === "ready") {
+      sheetBootstrapRef.current = true;
+      return;
+    }
     if (sheetBootstrapRef.current) return;
     if (connectAuthState === "wait_code" || connectAuthState === "wait_password") {
       sheetBootstrapRef.current = true;
@@ -137,12 +141,8 @@ export function TelegramConnectSheet() {
     }
     if (connectAuthState === "failed") {
       void beginMtprotoConnect({ fresh: true, authMethod: "qr" });
-      return;
     }
-    if (connectAuthState === "wait_phone") {
-      void switchToQrConnect();
-    }
-  }, [connectSheetVisible, connectAuthState, beginMtprotoConnect, switchToQrConnect]);
+  }, [connectSheetVisible, connectAuthState, connectSuccessSyncing, beginMtprotoConnect]);
 
   const onRetry = useCallback(() => {
     setPassword("");
@@ -178,13 +178,6 @@ export function TelegramConnectSheet() {
     if (connectQrLink) openTelegramDeepLink(connectQrLink);
   }, [connectQrLink]);
 
-  const onSwitchToQr = useCallback(() => {
-    setPhoneNumber("");
-    setLoginCode("");
-    setPhoneInvalid(false);
-    void switchToQrConnect();
-  }, [switchToQrConnect]);
-
   const onClose = useCallback(() => {
     logTelegramConnect("sheet_close");
     setPassword("");
@@ -194,9 +187,11 @@ export function TelegramConnectSheet() {
     closeConnectSheet();
   }, [closeConnectSheet]);
 
-  const showCode = connectAuthState === "wait_code";
-  const showPassword = connectAuthState === "wait_password";
-  const showMethods = !showCode && !showPassword && connectAuthState !== "failed";
+  const showSuccess = connectSuccessSyncing;
+  const showCode = !showSuccess && connectAuthState === "wait_code";
+  const showPassword = !showSuccess && connectAuthState === "wait_password";
+  const showMethods = !showCode && !showPassword && !showSuccess && connectAuthState !== "failed";
+  const compactStep = showCode || showPassword || showSuccess;
 
   const phoneErrorText =
     phoneInvalid || connectError === "invalid_phone_number"
@@ -211,11 +206,13 @@ export function TelegramConnectSheet() {
     connectCodeDelivery?.type !== "authenticationCodeTypeTelegramMessage" ||
     Boolean(connectCodeDelivery?.nextType);
 
-  const sheetTitle = showPassword
-    ? t("messages.connectSheetPasswordTitle")
-    : showCode
-      ? t("messages.connectSheetCodeTitle")
-      : t("messages.connectSheetTitle");
+  const sheetTitle = showSuccess
+    ? t("messages.connectSheetSuccessTitle")
+    : showPassword
+      ? t("messages.connectSheetPasswordTitle")
+      : showCode
+        ? t("messages.connectSheetCodeTitle")
+        : t("messages.connectSheetTitle");
 
   return (
     <AppModalSheet
@@ -223,10 +220,35 @@ export function TelegramConnectSheet() {
       onClose={onClose}
       title={sheetTitle}
       sizeKind="connect"
-      minSize={{ width: 300, height: 480 }}
-      sizeStorageKey="hsp.telegramConnectSheet.size.v2"
-      offsetStorageKey="hsp.telegramConnectSheet.offset.v2"
+      fitContentHeight={compactStep}
+      minSize={compactStep ? { width: 300, height: 180 } : { width: 300, height: 480 }}
+      sizeStorageKey={
+        compactStep ? "hsp.telegramConnectSheet.compact.size.v1" : "hsp.telegramConnectSheet.size.v2"
+      }
+      offsetStorageKey={
+        compactStep ? "hsp.telegramConnectSheet.compact.offset.v1" : "hsp.telegramConnectSheet.offset.v2"
+      }
     >
+      {showSuccess ? (
+        <View style={[appModalSheetStyles.centerBlock, { marginTop: 4, marginBottom: 4 }]}>
+          <Text
+            accessibilityLabel={t("messages.connectSheetSuccessTitle")}
+            style={{
+              fontSize: 44,
+              lineHeight: 48,
+              color: colors.primary,
+              marginBottom: 12,
+            }}
+          >
+            ✓
+          </Text>
+          <ActivityIndicator size="small" color={colors.primary} style={{ marginBottom: 12 }} />
+          <Text style={[appModalSheetStyles.bodySupporting, { color: colors.secondary, marginBottom: 0 }]}>
+            {t("messages.connectSheetSuccessBody")}
+          </Text>
+        </View>
+      ) : null}
+
       {showMethods ? (
         <>
           <Text style={[appModalSheetStyles.body, { color: colors.secondary }]}>
@@ -268,15 +290,12 @@ export function TelegramConnectSheet() {
               submitLabel={t("messages.connectSheetPhoneSubmit")}
               onSubmit={onSubmitPhone}
               submitDisabled={!phoneNumber.trim()}
-              submitting={connectPending && (connectAuthState === "wait_phone" || connectAuthState === "wait_qr")}
+              submitting={connectPending}
               layout="fill"
             />
           </ConnectMethodSection>
 
           <ConnectMethodSection title={t("messages.connectSheetOneTouchConnect")}>
-            <Text style={[appModalSheetStyles.body, { color: colors.secondary, marginBottom: 12 }]}>
-              {t("messages.connectSheetOneTouchBody")}
-            </Text>
             <Pressable
               accessibilityRole="button"
               onPress={onOpenInTelegram}
@@ -295,6 +314,9 @@ export function TelegramConnectSheet() {
                 {t("messages.connectSheetPassToTelegramApp")}
               </Text>
             </Pressable>
+            <Text style={[appModalSheetStyles.body, { color: colors.secondary, marginTop: 12 }]}>
+              {t("messages.connectSheetOneTouchBody")}
+            </Text>
           </ConnectMethodSection>
         </>
       ) : null}
@@ -309,7 +331,7 @@ export function TelegramConnectSheet() {
             onChangeText={setLoginCode}
             placeholder={t("messages.connectSheetCodePlaceholder")}
             keyboardType="number-pad"
-            textContentType="oneTimeCode"
+            secureTextEntry
             inputId="telegram-connect-code-input"
             errorText={
               connectError && /code|PHONE_CODE/i.test(connectError)
@@ -334,16 +356,6 @@ export function TelegramConnectSheet() {
               </Text>
             </Pressable>
           ) : null}
-          <Pressable
-            accessibilityRole="button"
-            onPress={onSwitchToQr}
-            style={[appModalSheetStyles.button, { marginTop: 8, alignSelf: "flex-start" }]}
-            disabled={connectPending}
-          >
-            <Text style={[typographyFixedRow40Label, { color: colors.primary }]}>
-              {t("messages.connectSheetUseQrInstead")}
-            </Text>
-          </Pressable>
         </View>
       ) : null}
 
