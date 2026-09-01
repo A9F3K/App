@@ -6,6 +6,7 @@ import {
   type ChooseCurrencyRow,
 } from "../components/swap/chooseCurrencyTableTypes";
 import { swapTonTokenImage } from "../components/swap/swapFormAssets";
+import { logPageDisplay } from "../pageDisplayLog";
 import { getTonBalance } from "../ton/getTonBalance";
 import { fetchSwapMarketStats } from "../swap/fetchSwapChart";
 import { fetchAccountSwapJettons } from "../swap/fetchSwapJettons";
@@ -22,6 +23,8 @@ import {
 } from "./walletBalanceRefresh";
 
 const DLLR_SYMBOL = "DLLR";
+/** Pinned baseline shown in header and wallet dialog until real DLLR balances ship. */
+export const PINNED_DLLR_USD_BASELINE = 1;
 
 function isDllrJetton(jetton: SwapJetton): boolean {
   return jetton.symbol?.trim().toUpperCase() === DLLR_SYMBOL;
@@ -80,9 +83,8 @@ function parseUsdValue(row: ChooseCurrencyRow): number {
   return balance * rate;
 }
 
-/** Header balance line — matches legacy `1$` style but uses live totals when available. */
-export function formatHeaderWalletBalanceLabel(totalUsd: number, isLoading: boolean): string {
-  if (isLoading) return "…";
+/** Header balance line — pinned 1 DLLR plus live holdings. */
+export function formatHeaderWalletBalanceLabel(totalUsd: number): string {
   if (!Number.isFinite(totalUsd) || totalUsd <= 0) return "0$";
   if (totalUsd < 0.01) return "<0.01$";
   if (totalUsd < 1_000) {
@@ -127,9 +129,18 @@ export function useWalletHeldCurrencyRows(
   }, [accountCreationDllrRow, heldRows]);
 
   const headerBalanceLabel = useMemo(() => {
-    const totalUsd = heldRows.reduce((sum, row) => sum + parseUsdValue(row), 0);
-    return formatHeaderWalletBalanceLabel(totalUsd, isLoading);
-  }, [heldRows, isLoading]);
+    const heldUsd = heldRows.reduce((sum, row) => sum + parseUsdValue(row), 0);
+    const totalUsd = PINNED_DLLR_USD_BASELINE + heldUsd;
+    const label = formatHeaderWalletBalanceLabel(totalUsd);
+    logPageDisplay("wallet_header_total", {
+      baselineUsd: PINNED_DLLR_USD_BASELINE,
+      heldUsd,
+      totalUsd,
+      heldRowCount: heldRows.length,
+      label,
+    });
+    return label;
+  }, [heldRows]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -154,6 +165,13 @@ export function useWalletHeldCurrencyRows(
           fetchSwapMarketStats(TON_JETTON_ADDRESS),
         ]);
         if (cancelled) return;
+
+        logPageDisplay("wallet_held_balances", {
+          addressPreview: `${trimmed.slice(0, 8)}…${trimmed.slice(-6)}`,
+          nativeBalance,
+          jettonCount: accountResponse.items?.length ?? 0,
+          gramPriceUsd: gramStats.priceUsd ?? null,
+        });
 
         const next: ChooseCurrencyRow[] = [];
 

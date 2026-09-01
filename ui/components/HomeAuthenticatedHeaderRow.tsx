@@ -257,7 +257,7 @@ type Props = {
 export function HomeAuthenticatedHeaderRow({
   walletAddress,
   displayName,
-  headerBalanceLabel = "0$",
+  headerBalanceLabel = "1$",
   onBalancePress,
   walletCurrenciesOpen = false,
   activeHeaderMenuKey,
