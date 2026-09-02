@@ -128,6 +128,8 @@ const en = {
     "Telegram login took too long to start. Tap Try again — the QR code should appear within a few seconds.",
   "messages.connectErrorSessionExpired":
     "Login session expired or conflicted with another attempt. Tap Try again to scan a fresh QR code.",
+  "messages.connectErrorBinlogLocked":
+    "Telegram is already open on the server for this account. Wait a few seconds, then tap Try again. If it keeps failing, restart the TDLib gateway.",
   "messages.connectPrompt": "Connect Telegram to see your chats here.",
   "messages.connectRetry": "Try again",
   "messages.connectSheetSuccessTitle": "Telegram connected",
@@ -753,6 +755,8 @@ const ru = {
     "Запуск входа в Telegram занял слишком много времени. Нажмите «Повторить» — QR-код должен появиться через несколько секунд.",
   "messages.connectErrorSessionExpired":
     "Сессия входа истекла или конфликтует с другой попыткой. Нажмите «Повторить», чтобы отсканировать новый QR-код.",
+  "messages.connectErrorBinlogLocked":
+    "Telegram уже открыт на сервере для этого аккаунта. Подождите несколько секунд и нажмите «Повторить». Если ошибка повторяется — перезапустите TDLib gateway.",
   "messages.connectPrompt": "Подключите Telegram, чтобы видеть чаты здесь.",
   "messages.connectRetry": "Повторить",
   "messages.connectSheetSuccessTitle": "Telegram подключён",
@@ -1356,6 +1360,8 @@ const zh = {
   "messages.connectErrorNetwork": "提交密码时发生网络错误。请检查网络连接后重试。",
   "messages.connectErrorGatewayTimeout": "Telegram 登录启动超时。请点「重试」——二维码通常几秒内就会出现。",
   "messages.connectErrorSessionExpired": "登录会话已过期，或与另一次尝试冲突。请点「重试」扫描新的二维码。",
+  "messages.connectErrorBinlogLocked":
+    "该账号的 Telegram 已在服务器上打开。请稍等几秒后点「重试」。若仍失败，请重启 TDLib gateway。",
   "messages.connectPrompt": "连接 Telegram 以在此查看聊天。",
   "messages.connectRetry": "重试",
   "messages.connectSheetSuccessTitle": "Telegram 已连接",

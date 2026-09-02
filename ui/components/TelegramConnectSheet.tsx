@@ -57,9 +57,16 @@ function connectErrorMessage(error: string | null, t: (key: string) => string): 
     error === "authorization_closed" ||
     error === "Not Found" ||
     error === "attempt_not_found" ||
-    error === "gateway_attempt_lost"
+    error === "gateway_attempt_lost" ||
+    error === "tdlib_binlog_locked" ||
+    /can't lock file/i.test(error) ||
+    /already in use by current program/i.test(error)
   ) {
-    return t("messages.connectErrorSessionExpired");
+    return error === "tdlib_binlog_locked" ||
+      /can't lock file/i.test(error) ||
+      /already in use by current program/i.test(error)
+      ? t("messages.connectErrorBinlogLocked")
+      : t("messages.connectErrorSessionExpired");
   }
   if (error === "attempt_id_and_password_required") {
     return t("messages.connectErrorPasswordRequest");

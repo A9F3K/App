@@ -198,13 +198,22 @@ function logConnectEvent(record: AttemptRecord, event: string, extra?: Record<st
 const QR_INVOKE_TIMEOUT_MS = 30_000;
 const CONNECT_WATCHDOG_MS = 45_000;
 
+/** Serialize connect / restore for one user so two TDLib clients never open the same binlog. */
+const connectStartInflight = new Map<string, Promise<ConnectAttemptSnapshot>>();
+
+function isTdlibBinlogLockError(message: string | null | undefined): boolean {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return lower.includes("can't lock file") || lower.includes("already in use");
+}
+
 function failAttempt(record: AttemptRecord, error: string): void {
   if (record.authState === "ready" || record.authState === "failed") return;
   record.authState = "failed";
-  record.error = error;
+  record.error = isTdlibBinlogLockError(error) ? "tdlib_binlog_locked" : error;
   clearConnectWatchdog(record);
   unpinConnectAuth(record.telegramUsername);
-  logConnectEvent(record, "connect_failed", { error });
+  logConnectEvent(record, "connect_failed", { error: record.error });
 }
 
 function clearConnectWatchdog(record: AttemptRecord): void {
@@ -518,7 +527,7 @@ function unpinConnectAuth(telegramUsername: string): void {
   unpinGatewayUserSession(telegramUsername, "connect_auth");
 }
 
-export async function startConnectAttempt(
+async function startConnectAttemptUnlocked(
   telegramUsername: string,
   options?: { fresh?: boolean; authMethod?: ConnectAuthMethod },
 ): Promise<ConnectAttemptSnapshot> {
@@ -535,6 +544,16 @@ export async function startConnectAttempt(
     if (existingId) {
       const existing = attempts.get(existingId);
       if (existing && existing.authState !== "failed") {
+        // Never open a second client on a live ready session — that races the binlog lock.
+        if (existing.authState === "ready") {
+          attachLiveChatSync(existing);
+          pinConnectAuth(existing);
+          logConnectEvent(existing, "connect_reuse_ready", {
+            requestedAuthMethod: authMethod,
+            ageMs: Date.now() - existing.createdAt,
+          });
+          return snapshot(existing);
+        }
         if (
           existing.authState === "wait_qr" &&
           authMethod === "phone" &&
@@ -550,18 +569,16 @@ export async function startConnectAttempt(
             ageMs: Date.now() - existing.createdAt,
           });
           return snapshot(existing);
+        } else if (isInProgressPhoneAttempt(existing) && authMethod === "qr") {
+          return snapshot(existing);
+        } else if (existing.authMethod === authMethod) {
+          return snapshot(existing);
+        } else {
+          await disposeAttemptAsync(existingId);
         }
-        if (Date.now() - existing.createdAt < 15 * 60_000) {
-          if (isInProgressPhoneAttempt(existing) && authMethod === "qr") {
-            return snapshot(existing);
-          }
-          if (existing.authMethod === authMethod) {
-            if (existing.authState === "ready") attachLiveChatSync(existing);
-            return snapshot(existing);
-          }
-        }
+      } else if (existing) {
+        await disposeAttemptAsync(existingId);
       }
-      disposeAttempt(existingId);
     }
   }
 
@@ -576,6 +593,8 @@ export async function startConnectAttempt(
       codeDelivery: null,
     };
   }
+
+  await waitForGatewayUserUnload(telegramUsername);
 
   const attemptId = randomUUID();
   const record: AttemptRecord = {
@@ -612,10 +631,48 @@ export async function startConnectAttempt(
     // Return immediately; auth listener + client poll pick up QR / password / ready.
     return snapshot(record);
   } catch (err) {
+    const message = err instanceof Error ? err.message : "connect_failed";
     record.authState = "failed";
-    record.error = err instanceof Error ? err.message : "connect_failed";
-    return snapshot(record);
+    record.error = isTdlibBinlogLockError(message) ? "tdlib_binlog_locked" : message;
+    logConnectEvent(record, "connect_create_client_failed", { error: record.error });
+    await disposeAttemptAsync(attemptId);
+    return {
+      attemptId: "",
+      telegramUsername,
+      authState: "failed",
+      qrLink: null,
+      error: record.error,
+      chatCount: null,
+      codeDelivery: null,
+    };
   }
+}
+
+export async function startConnectAttempt(
+  telegramUsername: string,
+  options?: { fresh?: boolean; authMethod?: ConnectAuthMethod },
+): Promise<ConnectAttemptSnapshot> {
+  const pending = connectStartInflight.get(telegramUsername);
+  if (pending) {
+    const snap = await pending;
+    // A concurrent start already owns the client; reuse unless caller forces a wipe.
+    if (!options?.fresh && snap.authState !== "failed") {
+      return snap;
+    }
+    if (!options?.fresh) {
+      // Previous attempt failed — fall through to start a new one after it settles.
+    } else {
+      await pending.catch(() => undefined);
+    }
+  }
+
+  const promise = startConnectAttemptUnlocked(telegramUsername, options).finally(() => {
+    if (connectStartInflight.get(telegramUsername) === promise) {
+      connectStartInflight.delete(telegramUsername);
+    }
+  });
+  connectStartInflight.set(telegramUsername, promise);
+  return promise;
 }
 
 export function getConnectAttempt(attemptId: string): ConnectAttemptSnapshot | null {
@@ -845,7 +902,8 @@ async function disposeAttemptAsync(attemptId: string): Promise<void> {
     }
     record.client = null;
   }
-  await new Promise((r) => setTimeout(r, 300));
+  // TDLib releases the binlog lock asynchronously after close(); give it a beat.
+  await new Promise((r) => setTimeout(r, 500));
 }
 
 /** Soft-close in-memory TDLib client; keep on-disk auth for later wake. */
@@ -911,6 +969,12 @@ export async function ensureGatewayUserSession(
   timeoutMs: number,
 ): Promise<AttemptRecord | null> {
   await waitForGatewayUserUnload(telegramUsername);
+
+  // Wait out an in-flight connect so we never open a second TDLib on the same db.
+  const connectPending = connectStartInflight.get(telegramUsername);
+  if (connectPending) {
+    await connectPending.catch(() => undefined);
+  }
 
   const active = getActiveRecord(telegramUsername);
   if (active?.client && active.authState === "ready") {
