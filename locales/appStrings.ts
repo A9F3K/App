@@ -78,6 +78,9 @@ const en = {
   "debug.webAppPollLine": "webAppApiPoll: {{count}}",
 
   "feed.empty": "No feed items yet.",
+  "feed.topUp.title": "Wallet top-up",
+  "feed.topUp.subtitle": "{{amount}} {{symbol}}",
+  "feed.topUp.trailing": "+{{amount}} {{symbol}}",
   "feed.manualWelcomeTranslation": "Translate welcome feed with UI language",
   "feed.manualWelcomeTranslationA11y": "When on, welcome feed messages follow the interface language toggle",
   "feed.offlinePreview": "(offline preview)",
@@ -704,6 +707,9 @@ const ru = {
   "debug.webAppPollLine": "webAppApiPoll: {{count}}",
 
   "feed.empty": "Пока нет записей в ленте.",
+  "feed.topUp.title": "Пополнение кошелька",
+  "feed.topUp.subtitle": "{{amount}} {{symbol}}",
+  "feed.topUp.trailing": "+{{amount}} {{symbol}}",
   "feed.manualWelcomeTranslation": "Переводить приветственную ленту по языку интерфейса",
   "feed.manualWelcomeTranslationA11y":
     "Если включено, приветственные сообщения в ленте следуют выбранному языку интерфейса",
@@ -1324,6 +1330,9 @@ const zh = {
   "debug.webAppInitLine": "webAppApiPoll: {{web}} · initDataPoll: {{init}}",
   "debug.webAppPollLine": "webAppApiPoll: {{count}}",
   "feed.empty": "暂无动态。",
+  "feed.topUp.title": "钱包充值",
+  "feed.topUp.subtitle": "{{amount}} {{symbol}}",
+  "feed.topUp.trailing": "+{{amount}} {{symbol}}",
   "feed.manualWelcomeTranslation": "按界面语言翻译欢迎动态",
   "feed.manualWelcomeTranslationA11y": "开启后，欢迎动态消息将跟随界面语言切换",
   "feed.offlinePreview": "（离线预览）",

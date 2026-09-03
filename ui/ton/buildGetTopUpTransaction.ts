@@ -59,12 +59,14 @@ export async function buildGetTopUpTransaction(opts: {
   const validUntil = Math.floor(Date.now() / 1000) + 300;
 
   if (isNativeTonToken(opts.token)) {
+    // Non-bounceable: first native top-up must land on an uninitialized built-in
+    // wallet. Bounceable EQ… transfers reverse when status is still `nonexist`.
     return {
       validUntil,
       network: TONCONNECT_MAINNET,
       messages: [
         {
-          address: depositAddr.toString(),
+          address: depositAddr.toString({ urlSafe: true, bounceable: false }),
           amount: units.toString(),
         },
       ],

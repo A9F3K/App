@@ -27,9 +27,12 @@ import {
   bumpWalletBalanceRefresh,
   scheduleWalletBalanceRefreshBurst,
 } from "../../wallet/walletBalanceRefresh";
+import { postWalletTopUpFeedNotification } from "../../feed/feedNotificationActions";
+import { requestWalletActivate } from "../../ton/requestWalletActivate";
 import { formatTonConnectErrorMessage } from "../../ton/formatTonConnectErrorMessage";
 import { isTonConnectUserRejection } from "../../ton/isTonConnectUserRejection";
 import { useTonConnectSession } from "../../ton/TonConnectProvider";
+import { useTelegram } from "../Telegram";
 import { trimWalletAddress } from "../../wallet/walletAddressFormat";
 import { formatConnectedWalletDialogSubtitle } from "../../wallet/formatWalletDialogSubtitle";
 import {
@@ -136,6 +139,7 @@ function tokenIconSource(token: SwapPairToken) {
 export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Props) {
   const colors = useColors();
   const { t, tf } = useAppStrings();
+  const { initData } = useTelegram();
   const ton = useTonConnectSession();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const showGetActionBlock = windowWidth <= layout.authenticatedHome.secondBreakpoint;
@@ -351,6 +355,23 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
       await refreshBalances(ton.address);
       bumpWalletBalanceRefresh();
       scheduleWalletBalanceRefreshBurst([3_000, 12_000, 30_000]);
+      const symbol = swapTokenDisplaySymbol(selected.token);
+      const sourceId = `wallet_topup:${Date.now()}:${trimmedAmount}:${symbol}:${trimmedDeposit.slice(-8)}`;
+      void postWalletTopUpFeedNotification({
+        initDataRaw: initData,
+        sourceId,
+        amount: trimmedAmount,
+        symbol,
+        title: t("feed.topUp.title"),
+        subtitle: tf("feed.topUp.subtitle", { amount: trimmedAmount, symbol }),
+        trailingLabel: tf("feed.topUp.trailing", { amount: trimmedAmount, symbol }),
+      });
+      // Deploy V4 once balance lands (gas from wallet). Retries cover indexer lag.
+      for (const delayMs of [5_000, 15_000, 35_000]) {
+        setTimeout(() => {
+          void requestWalletActivate({ initDataRaw: initData, force: true });
+        }, delayMs);
+      }
       setTopUpResult({
         kind: "success",
         amount: trimmedAmount,
@@ -370,7 +391,18 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     } finally {
       setTopUpPending(false);
     }
-  }, [amount, enteredAmount, refreshBalances, selected.token, ton, topUpPending, trimmedDeposit]);
+  }, [
+    amount,
+    enteredAmount,
+    initData,
+    refreshBalances,
+    selected.token,
+    t,
+    tf,
+    ton,
+    topUpPending,
+    trimmedDeposit,
+  ]);
 
   useEffect(() => {
     if (!insufficientBalance) {

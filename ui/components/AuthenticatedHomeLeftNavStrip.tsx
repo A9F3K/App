@@ -18,10 +18,12 @@ import { logPageDisplay } from "../pageDisplayLog";
 import { layout, type ThemeColors } from "../theme";
 import { scrollIndicatorThumbSpanAndOffset } from "../scrollIndicatorPx";
 import { ScrollIndicatorDragHandle } from "./ScrollIndicatorDragHandle";
+import { MessageUnreadCountBadge } from "./messages/MessageUnreadCountBadge";
 import { useAuthenticatedHomeSplitLayoutMetrics } from "./AuthenticatedHomeSplitLayoutMetricsContext";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import type { AppStringKey } from "../../locales/appStrings";
 import { getAppString } from "../../locales/appStrings";
+import { formatFeedUnreadCountLabel } from "../feed/feedUnreadStore";
 
 const NAV_IDS = ["feed", "messages", "tasks", "items", "coins"] as const;
 
@@ -138,11 +140,14 @@ export function AuthenticatedHomeLeftNavStrip({
   colors,
   selectedIndex: selectedIndexProp,
   onSelectIndex,
+  feedUnreadCount = 0,
 }: {
   colors: ThemeColors;
   /** Controlled mode: parent owns which tab is highlighted. */
   selectedIndex?: number;
   onSelectIndex?: (index: number) => void;
+  /** Unread feed notifications — badge to the right of the Feed label. */
+  feedUnreadCount?: number;
 }) {
   const { t, locale } = useAppStrings();
   const { width: windowWidth } = useWindowDimensions();
@@ -730,12 +735,16 @@ export function AuthenticatedHomeLeftNavStrip({
           {NAV_IDS.map((navId, index) => {
             const label = t(`home.nav.${navId}` as AppStringKey);
             const isActive = activeIndex >= 0 && index === activeIndex;
+            const feedUnreadLabel =
+              navId === "feed" ? formatFeedUnreadCountLabel(feedUnreadCount) : "";
             return (
             <Pressable
               key={navId}
               accessibilityRole="button"
               accessibilityState={{ selected: isActive }}
-              accessibilityLabel={label}
+              accessibilityLabel={
+                feedUnreadLabel ? `${label}, ${feedUnreadLabel}` : label
+              }
               onPress={() => {
                 if (isControlled) {
                   onSelectIndex?.(index);
@@ -745,9 +754,16 @@ export function AuthenticatedHomeLeftNavStrip({
               }}
               style={{
                 marginRight: index < NAV_IDS.length - 1 ? ITEM_GAP_PX : 0,
+                flexDirection: "row",
+                alignItems: "center",
               }}
             >
               <Text style={labelStyle(isActive)}>{label}</Text>
+              {feedUnreadLabel ? (
+                <View style={{ marginLeft: 6 }}>
+                  <MessageUnreadCountBadge label={feedUnreadLabel} colors={colors} />
+                </View>
+              ) : null}
             </Pressable>
             );
           })}

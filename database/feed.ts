@@ -216,7 +216,8 @@ async function insertCatalogFeedItem(opts: {
       layout_variant,
       default_message_id,
       source_id,
-      payload
+      payload,
+      read_at
     )
     VALUES (
       ${telegramUsername},
@@ -226,12 +227,148 @@ async function insertCatalogFeedItem(opts: {
       ${layoutVariant},
       ${defaultId},
       ${`${FEED_WELCOME_BUNDLE_MARKER}:${key}:${seq}`},
-      ${JSON.stringify(payload)}::jsonb
+      ${JSON.stringify(payload)}::jsonb,
+      NOW()
     )
     ON CONFLICT (telegram_username, default_message_id)
       WHERE default_message_id IS NOT NULL
       DO NOTHING;
   `;
+}
+
+/** Catalogue welcome demos are not “unread notifications” — mark any leftover rows as read. */
+export async function markWelcomeFeedItemsRead(telegramUsername: string): Promise<void> {
+  const u = normalizeUsername(telegramUsername);
+  if (!u) return;
+  await sql`
+    UPDATE feed_items
+    SET read_at = NOW()
+    WHERE lower(btrim(telegram_username)) = ${u}
+      AND source_type = ${"welcome_bundle"}
+      AND read_at IS NULL;
+  `;
+}
+
+export type WalletTopUpFeedInsert = {
+  telegramUsername: string;
+  sourceId: string;
+  amountLabel: string;
+  symbol: string;
+  title: string;
+  subtitle: string;
+  trailingLabel: string;
+};
+
+/** Idempotent wallet top-up notification (`read_at` null until the user opens it). */
+export async function insertWalletTopUpFeedItem(
+  opts: WalletTopUpFeedInsert,
+): Promise<{ id: number; inserted: boolean } | null> {
+  const telegramUsername = normalizeUsername(opts.telegramUsername);
+  const sourceId = opts.sourceId.trim();
+  if (!telegramUsername || !sourceId) return null;
+
+  const payload = {
+    title: opts.title,
+    subtitle: opts.subtitle,
+    trailing_label: opts.trailingLabel,
+    amount: opts.amountLabel,
+    symbol: opts.symbol,
+    icon: { type: "svg_url", url: "/welcome_messages/token.svg" },
+  };
+
+  const rows = await sql`
+    INSERT INTO feed_items (
+      telegram_username,
+      sent_at,
+      source_type,
+      card_type,
+      layout_variant,
+      source_id,
+      payload
+    )
+    VALUES (
+      ${telegramUsername},
+      NOW(),
+      ${"wallet_topup"},
+      ${"reward_token"},
+      ${"value_trailing"},
+      ${sourceId},
+      ${JSON.stringify(payload)}::jsonb
+    )
+    ON CONFLICT (telegram_username, source_id)
+      WHERE source_id IS NOT NULL
+      DO NOTHING
+    RETURNING id;
+  `;
+
+  const inserted = Array.isArray(rows) && rows.length > 0;
+  if (inserted) {
+    return { id: Number((rows[0] as { id: unknown }).id), inserted: true };
+  }
+
+  const existing = await sql`
+    SELECT id
+    FROM feed_items
+    WHERE lower(btrim(telegram_username)) = ${telegramUsername}
+      AND source_id = ${sourceId}
+    LIMIT 1;
+  `;
+  const idRaw = Array.isArray(existing) && existing[0] ? (existing[0] as { id: unknown }).id : null;
+  if (idRaw == null) return null;
+  return { id: Number(idRaw), inserted: false };
+}
+
+export async function countUnreadFeedItems(telegramUsername: string): Promise<number> {
+  const u = normalizeUsername(telegramUsername);
+  if (!u) return 0;
+  const rows = await sql`
+    SELECT COUNT(*)::int AS n
+    FROM feed_items
+    WHERE lower(btrim(telegram_username)) = ${u}
+      AND read_at IS NULL
+      AND dismissed_at IS NULL;
+  `;
+  const n = Array.isArray(rows) && rows[0] ? Number((rows[0] as { n: unknown }).n) : 0;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** Mark one or more feed items read. Empty `ids` marks every unread row for the user. */
+export async function markFeedItemsRead(opts: {
+  telegramUsername: string;
+  ids?: number[] | null;
+}): Promise<{ marked: number; unreadCount: number }> {
+  const u = normalizeUsername(opts.telegramUsername);
+  if (!u) return { marked: 0, unreadCount: 0 };
+
+  const ids = (opts.ids ?? [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  let marked = 0;
+  if (ids.length === 0) {
+    const rows = await sql`
+      UPDATE feed_items
+      SET read_at = NOW()
+      WHERE lower(btrim(telegram_username)) = ${u}
+        AND read_at IS NULL
+      RETURNING id;
+    `;
+    marked = Array.isArray(rows) ? rows.length : 0;
+  } else {
+    for (const id of ids) {
+      const rows = await sql`
+        UPDATE feed_items
+        SET read_at = NOW()
+        WHERE lower(btrim(telegram_username)) = ${u}
+          AND read_at IS NULL
+          AND id = ${id}
+        RETURNING id;
+      `;
+      if (Array.isArray(rows) && rows.length > 0) marked += 1;
+    }
+  }
+
+  return { marked, unreadCount: await countUnreadFeedItems(u) };
 }
 
 /**
@@ -459,6 +596,11 @@ export async function bootstrapAuthenticatedFeedItems(opts: {
     });
   } catch {
     // Best effort — still return whatever rows exist.
+  }
+  try {
+    await markWelcomeFeedItemsRead(opts.telegramUsername);
+  } catch {
+    /* ignore */
   }
   return listFeedItemsForUser(opts.telegramUsername, opts.limit ?? 80, catalogLocale);
 }

@@ -1,3 +1,4 @@
+nks un lion
 Pg fr ammy, ammy fr %, % fr kents, %?, ammy fr kents, kents argued, % fr habl, % fr total, ammy fr total?, ammy wins, otto. 
 reactions, message edited
 chats output

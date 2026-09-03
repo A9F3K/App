@@ -1,5 +1,5 @@
 /**
- * Authenticated feed: lists `feed_items` and triggers welcome bundle delivery once per user.
+ * Authenticated feed: list items, create wallet top-up notifications, mark read.
  */
 import {
   deleteSession,
@@ -8,6 +8,9 @@ import {
 } from "../../database/telegramAuth.js";
 import {
   bootstrapAuthenticatedFeedItems,
+  countUnreadFeedItems,
+  insertWalletTopUpFeedItem,
+  markFeedItemsRead,
   type FeedCatalogLocale,
 } from "../../database/feed.js";
 import {
@@ -23,15 +26,26 @@ import { appLog } from "../../shared/appLog.js";
 const JSON_HEADERS = { "Content-Type": "application/json" };
 const FEED_LOG_TAG = "[api/feed]";
 
+type NodeRes = {
+  setHeader(name: string, value: string): void;
+  status(code: number): void;
+  end(body?: string): void;
+};
+
 function feedLog(payload: Record<string, unknown>): void {
   const { phase, ...rest } = payload;
   appLog(FEED_LOG_TAG, typeof phase === "string" ? phase : "log", rest);
 }
 
-function getHeader(req: Request, name: string): string | null {
-  const h = req.headers;
-  if (h && typeof h.get === "function") return h.get(name);
-  return null;
+function sendJson(res: NodeRes | undefined, body: object, status: number): Response | void {
+  const json = JSON.stringify(body);
+  if (res) {
+    res.setHeader("Content-Type", "application/json");
+    res.status(status);
+    res.end(json);
+    return;
+  }
+  return new Response(json, { status, headers: JSON_HEADERS });
 }
 
 async function telegramUsernameFromRequest(
@@ -83,15 +97,12 @@ async function telegramUsernameFromRequest(
   return { username: auth.telegramUsername, locale: auth.locale };
 }
 
-function jsonResponse(body: object, status = 200): Response {
-  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
-}
-
 function catalogLocaleFromRequest(request: Request, bodyCatalogLocale?: unknown): FeedCatalogLocale {
   const hinted = parseFeedCatalogLocaleHint(bodyCatalogLocale);
   if (hinted) return hinted;
   try {
-    const url = new URL(request.url);
+    const rawUrl = (request as { url?: string }).url ?? "";
+    const url = new URL(rawUrl, "http://localhost");
     const fromQuery = parseFeedCatalogLocaleHint(url.searchParams.get("catalog_locale"));
     if (fromQuery) return fromQuery;
   } catch {
@@ -100,61 +111,130 @@ function catalogLocaleFromRequest(request: Request, bodyCatalogLocale?: unknown)
   return FEED_CATALOG_FALLBACK_LOCALE;
 }
 
-async function handler(request: Request): Promise<Response> {
+type FeedPostBody = {
+  initData?: unknown;
+  catalog_locale?: unknown;
+  action?: unknown;
+  source_id?: unknown;
+  amount?: unknown;
+  symbol?: unknown;
+  title?: unknown;
+  subtitle?: unknown;
+  trailing_label?: unknown;
+  ids?: unknown;
+  id?: unknown;
+};
+
+function asTrimmedString(value: unknown, maxLen: number): string {
+  if (typeof value !== "string") return "";
+  return value.trim().slice(0, maxLen);
+}
+
+async function handler(request: Request, res?: NodeRes): Promise<Response | void> {
   const t0 = Date.now();
-  const method = request.method ?? "GET";
-  let postBody: { initData?: unknown; catalog_locale?: unknown } = {};
+  const method = (request as { method?: string }).method ?? "GET";
+  let postBody: FeedPostBody = {};
   if (method === "POST") {
     try {
-      postBody = (await request.json()) as {
-        initData?: unknown;
-        catalog_locale?: unknown;
-      };
+      postBody = (await request.json()) as FeedPostBody;
     } catch {
       postBody = {};
     }
   }
   const displayLocale = catalogLocaleFromRequest(request, postBody.catalog_locale);
+  const action =
+    typeof postBody.action === "string" ? postBody.action.trim().toLowerCase() : "";
 
   feedLog({
     phase: "request_start",
     method,
+    action: action || null,
     cookiePresent: (() => {
       const token = getSessionTokenFromRequest(request);
       return typeof token === "string" && token.length > 0;
     })(),
-    urlSnippet: typeof request.url === "string" ? request.url.slice(0, 120) : null,
   });
 
   if (method !== "GET" && method !== "POST") {
     feedLog({ phase: "method_reject", durationMs: Date.now() - t0, method });
-    return new Response("Method Not Allowed", { status: 405 });
+    return sendJson(res, { ok: false, error: "method_not_allowed" }, 405);
   }
 
   try {
-    const authStart = Date.now();
     const user = await telegramUsernameFromRequest(request, postBody);
-    feedLog({
-      phase: "auth_resolve",
-      durationMs: Date.now() - t0,
-      authInnerMs: Date.now() - authStart,
-      ok: !!user,
-      usernameLen: user?.username?.length ?? 0,
-      hasLocaleHint: !!user?.locale,
-    });
-
     if (!user) {
       feedLog({
         phase: "unauthorized",
         durationMs: Date.now() - t0,
         method,
-        hint_post_initdata_when_no_cookie:
-          method === "GET",
       });
-      return jsonResponse({ ok: false, error: "unauthorized" }, 401);
+      return sendJson(res, { ok: false, error: "unauthorized" }, 401);
     }
 
-    const listStart = Date.now();
+    if (method === "POST" && action === "create_topup") {
+      const sourceId = asTrimmedString(postBody.source_id, 180);
+      const amount = asTrimmedString(postBody.amount, 64);
+      const symbol = asTrimmedString(postBody.symbol, 32) || "GRAM";
+      const title = asTrimmedString(postBody.title, 120) || "Wallet top-up";
+      const subtitle =
+        asTrimmedString(postBody.subtitle, 120) || (amount ? `${amount} ${symbol}` : symbol);
+      const trailingLabel =
+        asTrimmedString(postBody.trailing_label, 64) || (amount ? `+${amount} ${symbol}` : `+${symbol}`);
+      if (!sourceId || !amount) {
+        return sendJson(res, { ok: false, error: "source_id_and_amount_required" }, 400);
+      }
+      const inserted = await insertWalletTopUpFeedItem({
+        telegramUsername: user.username,
+        sourceId,
+        amountLabel: amount,
+        symbol,
+        title,
+        subtitle,
+        trailingLabel,
+      });
+      const unreadCount = await countUnreadFeedItems(user.username);
+      feedLog({
+        phase: "create_topup_ok",
+        inserted: inserted?.inserted ?? false,
+        itemId: inserted?.id ?? null,
+        unreadCount,
+        totalMs: Date.now() - t0,
+      });
+      return sendJson(
+        res,
+        {
+          ok: true,
+          item_id: inserted?.id ?? null,
+          inserted: inserted?.inserted ?? false,
+          unread_count: unreadCount,
+        },
+        200,
+      );
+    }
+
+    if (method === "POST" && action === "mark_read") {
+      const idsRaw = Array.isArray(postBody.ids) ? postBody.ids : [];
+      const singleId = postBody.id;
+      const ids = [...idsRaw, ...(singleId != null ? [singleId] : [])]
+        .map((v) => Number(v))
+        .filter((n) => Number.isFinite(n) && n > 0);
+      const result = await markFeedItemsRead({
+        telegramUsername: user.username,
+        ids: ids.length > 0 ? ids : null,
+      });
+      feedLog({
+        phase: "mark_read_ok",
+        marked: result.marked,
+        unreadCount: result.unreadCount,
+        totalMs: Date.now() - t0,
+      });
+      return sendJson(
+        res,
+        { ok: true, marked: result.marked, unread_count: result.unreadCount },
+        200,
+      );
+    }
+
     const deliverLocalePreferred =
       user.locale ??
       (displayLocale !== FEED_CATALOG_FALLBACK_LOCALE ? displayLocale : null);
@@ -163,18 +243,15 @@ async function handler(request: Request): Promise<Response> {
       catalogLocale: displayLocale,
       localePreferred: deliverLocalePreferred,
     });
+    const unreadCount = items.reduce((n, row) => (row.read_at ? n : n + 1), 0);
     feedLog({
       phase: "response_ok",
       itemCount: items.length,
+      unreadCount,
       displayLocale,
-      listMs: Date.now() - listStart,
       totalMs: Date.now() - t0,
-      usernamePrefix:
-        user.username.length > 0
-          ? `${user.username.slice(0, Math.min(3, user.username.length))}***`
-          : "empty",
     });
-    return jsonResponse({ ok: true, items }, 200);
+    return sendJson(res, { ok: true, items, unread_count: unreadCount }, 200);
   } catch (e) {
     const msg = e instanceof Error ? e.message : "internal_error";
     const status =
@@ -189,7 +266,7 @@ async function handler(request: Request): Promise<Response> {
       httpStatus: status,
       error: msg,
     });
-    return jsonResponse({ ok: false, error: msg }, status);
+    return sendJson(res, { ok: false, error: msg }, status);
   }
 }
 

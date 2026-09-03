@@ -387,6 +387,18 @@ async function runSchemaMigrations() {
   `;
 
   await sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS uniq_feed_items_user_source_id
+      ON feed_items(telegram_username, source_id)
+      WHERE source_id IS NOT NULL;
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_feed_items_user_unread
+      ON feed_items(telegram_username)
+      WHERE read_at IS NULL AND dismissed_at IS NULL;
+  `;
+
+  await sql`
     CREATE TABLE IF NOT EXISTS feed_item_interactions (
       id                  BIGSERIAL PRIMARY KEY,
       feed_item_id        BIGINT NOT NULL REFERENCES feed_items(id) ON DELETE CASCADE,

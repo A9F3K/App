@@ -7,16 +7,13 @@ import {
 } from "../components/swap/chooseCurrencyTableTypes";
 import { swapTonTokenImage } from "../components/swap/swapFormAssets";
 import { logPageDisplay } from "../pageDisplayLog";
-import { getTonBalance } from "../ton/getTonBalance";
-import { fetchSwapMarketStats } from "../swap/fetchSwapChart";
-import { fetchAccountSwapJettons } from "../swap/fetchSwapJettons";
+import { fetchTonapiAccountHoldings } from "../ton/fetchTonapiAccountHoldings";
+import { requestWalletActivate } from "../ton/requestWalletActivate";
 import {
   formatSwapJettonBalance,
   formatSwapTokenPriceUsd,
 } from "../swap/formatSwapTokenMarketValue";
-import { TON_JETTON_ADDRESS } from "../swap/swapChartConstants";
 import { SWAP_GRAM_TOKEN, SWAP_TON_ZERO_ADDRESS } from "../swap/swapPairTypes";
-import type { SwapJetton } from "../swap/swapJettonsTypes";
 import {
   getWalletBalanceRefreshNonce,
   subscribeWalletBalanceRefresh,
@@ -26,23 +23,12 @@ const DLLR_SYMBOL = "DLLR";
 /** Pinned baseline shown in header and wallet dialog until real DLLR balances ship. */
 export const PINNED_DLLR_USD_BASELINE = 1;
 
-function isDllrJetton(jetton: SwapJetton): boolean {
-  return jetton.symbol?.trim().toUpperCase() === DLLR_SYMBOL;
-}
-
 function hasNonZeroRawBalance(balanceRaw: string): boolean {
   try {
     return BigInt(balanceRaw) > 0n;
   } catch {
     return false;
   }
-}
-
-function jettonRowIcon(jetton: SwapJetton) {
-  const upper = jetton.symbol?.trim().toUpperCase();
-  if (upper === "TON" || upper === "GRAM") return swapTonTokenImage;
-  if (jetton.image_url) return { uri: jetton.image_url } as const;
-  return null;
 }
 
 function buildHeldRow(
@@ -103,7 +89,7 @@ export type WalletHeldCurrencyRowsState = {
   headerBalanceLabel: string;
 };
 
-/** Jettons and native GRAM with a non-zero on-chain balance for one wallet address. */
+/** Jettons and native GRAM with a non-zero on-chain balance for one wallet address (TonAPI). */
 export function useWalletHeldCurrencyRows(
   walletAddress: string | null | undefined,
   enabled = true,
@@ -159,41 +145,47 @@ export function useWalletHeldCurrencyRows(
       setIsLoading(true);
       setError(null);
       try {
-        const [nativeBalance, accountResponse, gramStats] = await Promise.all([
-          getTonBalance(trimmed),
-          fetchAccountSwapJettons(trimmed),
-          fetchSwapMarketStats(TON_JETTON_ADDRESS),
-        ]);
+        const holdings = await fetchTonapiAccountHoldings(trimmed);
         if (cancelled) return;
 
         logPageDisplay("wallet_held_balances", {
+          source: "tonapi",
           addressPreview: `${trimmed.slice(0, 8)}…${trimmed.slice(-6)}`,
-          nativeBalance,
-          jettonCount: accountResponse.items?.length ?? 0,
-          gramPriceUsd: gramStats.priceUsd ?? null,
+          status: holdings.status,
+          nativeBalance: holdings.nativeBalance,
+          jettonCount: holdings.jettons.length,
+          tonPriceUsd: holdings.tonPriceUsd,
         });
+
+        const statusLc = (holdings.status ?? "").toLowerCase();
+        if (
+          holdings.nativeBalance >= 0.005 &&
+          statusLc &&
+          statusLc !== "active"
+        ) {
+          void requestWalletActivate();
+        }
 
         const next: ChooseCurrencyRow[] = [];
 
-        if (nativeBalance > 0) {
+        if (holdings.nativeBalance > 0) {
           next.push(
             buildHeldRow(
               SWAP_TON_ZERO_ADDRESS,
               SWAP_GRAM_TOKEN.name,
               SWAP_GRAM_TOKEN.symbol,
               swapTonTokenImage,
-              formatNativeBalanceDisplay(nativeBalance),
-              gramStats.priceUsd,
+              formatNativeBalanceDisplay(holdings.nativeBalance),
+              holdings.tonPriceUsd,
             ),
           );
         }
 
-        for (const item of accountResponse.items ?? []) {
+        for (const item of holdings.jettons) {
           if (!hasNonZeroRawBalance(item.balance)) continue;
           const jetton = item.jetton;
-          if (jetton && isDllrJetton(jetton)) continue;
-          const addressKey = (jetton?.address ?? item.jetton_address)?.toLowerCase();
-          if (!addressKey || !jetton?.symbol?.trim()) continue;
+          if (jetton.symbol.trim().toUpperCase() === DLLR_SYMBOL) continue;
+          const addressKey = jetton.address.toLowerCase();
           if (addressKey === SWAP_TON_ZERO_ADDRESS.toLowerCase()) continue;
 
           const decimals = typeof jetton.decimals === "number" ? jetton.decimals : 9;
@@ -204,9 +196,9 @@ export function useWalletHeldCurrencyRows(
               addressKey,
               name,
               symbol,
-              jettonRowIcon(jetton),
+              jetton.image ? ({ uri: jetton.image } as const) : null,
               formatSwapJettonBalance(item.balance, decimals),
-              jetton.market_stats?.price_usd,
+              item.priceUsd,
             ),
           );
         }

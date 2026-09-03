@@ -1,4 +1,4 @@
-const TONAPI = "https://tonapi.io/v2";
+import { tonapiFetch } from "./tonapiClient";
 
 /** Nanoton → TON number (lossy float for display only). */
 export function fromNanoTon(nano: string | number): number {
@@ -10,7 +10,7 @@ export function fromNanoTon(nano: string | number): number {
 export async function getTonBalance(address: string): Promise<number> {
   const trimmed = address.trim();
   if (!trimmed) return 0;
-  const res = await fetch(`${TONAPI}/accounts/${encodeURIComponent(trimmed)}`);
+  const res = await tonapiFetch(`/accounts/${encodeURIComponent(trimmed)}`);
   if (!res.ok) return 0;
   const data = (await res.json()) as { balance?: number | string };
   return fromNanoTon(data.balance ?? 0);

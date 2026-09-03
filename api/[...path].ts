@@ -8,6 +8,8 @@
  *
  * `vercel dev` on Windows may spawn extra workers for both this catch-all and explicit `api/auth/*`
  * files; if a worker crashes (exit 3221226505), use `npm run web` or WSL.
+ *
+ * Includes feed create_topup / mark_read actions (wallet notifications + unread badge).
  */
 
 import aiHandler from './_handlers/ai.js';
@@ -18,10 +20,12 @@ import feedHandler from './_handlers/feed.js';
 import pingHandler from './_handlers/ping.js';
 import releasesHandler from './_handlers/releases.js';
 import swapCoffeeTokensHandler from './_handlers/swap-coffee-tokens.js';
+import tonAccountHoldingsHandler from './_handlers/ton-account-holdings.js';
 import telegramHandler from './_handlers/telegram.js';
 import walletEnvelopePingHandler from './_handlers/wallet-envelope-ping.js';
 import walletEnvelopeProbeHandler from './_handlers/wallet-envelope-probe.js';
 import walletEnvelopeRoundtripHandler from './_handlers/wallet-envelope-roundtrip.js';
+import walletActivateHandler from './_handlers/wallet-activate.js';
 import {
   telegramMessagesChatsHandler,
   telegramMessagesChatsLoadMoreHandler,
@@ -103,9 +107,11 @@ const ROUTES: Record<string, ApiHandler> = {
   telegram: telegramHandler as ApiHandler,
   releases: releasesHandler as ApiHandler,
   'swap-coffee-tokens': swapCoffeeTokensHandler as ApiHandler,
+  'ton-account-holdings': tonAccountHoldingsHandler as ApiHandler,
   'wallet-envelope-ping': walletEnvelopePingHandler as ApiHandler,
   'wallet-envelope-probe': walletEnvelopeProbeHandler as ApiHandler,
   'wallet-envelope-roundtrip': walletEnvelopeRoundtripHandler as ApiHandler,
+  'wallet-activate': walletActivateHandler as ApiHandler,
   /** Public short paths from vercel.json rewrites (request URL may still show these segments). */
   kmsping: walletEnvelopePingHandler as ApiHandler,
   kmsprobe: walletEnvelopeProbeHandler as ApiHandler,

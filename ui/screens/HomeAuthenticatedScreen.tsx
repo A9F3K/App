@@ -23,6 +23,10 @@ import { WalletCurrenciesDialog } from "../components/wallet/WalletCurrenciesDia
 import { useWalletHeldCurrencyRows } from "../wallet/useWalletHeldCurrencyRows";
 import { AuthenticatedHomeLeftNavStrip } from "../components/AuthenticatedHomeLeftNavStrip";
 import { AuthenticatedHomeFeedPanel } from "../components/AuthenticatedHomeFeedPanel";
+import {
+  getFeedUnreadCount,
+  subscribeFeedUnreadCount,
+} from "../feed/feedUnreadStore";
 import { AuthenticatedHomeMessagesPanel } from "../components/AuthenticatedHomeMessagesPanel";
 import { MessageChatPanel } from "../components/messages/MessageChatPanel";
 import { MessageChatOlderHistoryLoadLine } from "../components/messages/MessageChatOlderHistoryLoadLine";
@@ -596,6 +600,11 @@ function HomeAuthenticatedScreenMain() {
   const router = useRouter();
   const { t, tf, translateFlowError } = useAppStrings();
   const homeNavIndex = useAuthenticatedHomeLeftNavIndex();
+  const feedUnreadCount = useSyncExternalStore(
+    subscribeFeedUnreadCount,
+    getFeedUnreadCount,
+    getFeedUnreadCount,
+  );
   const { listSearchActive } = useMessagesChatListSearch();
   const messagesSearchScrollMode = homeNavIndex === 1 && listSearchActive;
   useEffect(() => {
@@ -1656,6 +1665,7 @@ function HomeAuthenticatedScreenMain() {
       colors={colors}
       selectedIndex={leftNavSelectedIndex}
       onSelectIndex={setAuthenticatedHomeLeftNavIndex}
+      feedUnreadCount={feedUnreadCount}
     />
   );
 

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentRef, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentRef, type ReactNode } from "react";
 import { Platform, Pressable, ScrollView, Text, useWindowDimensions, View } from "react-native";
 import { buildApiUrl } from "../../api/_base";
 import {
@@ -26,6 +26,9 @@ import { getAppString } from "../../locales/appStrings";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { useAuth } from "../../auth/AuthContext";
 import { useTelegram } from "./Telegram";
+import { markFeedItemsReadClient } from "../feed/feedNotificationActions";
+import { setFeedUnreadCount } from "../feed/feedUnreadStore";
+import { getFeedRefreshNonce, subscribeFeedRefresh } from "../feed/feedRefreshStore";
 
 /** One extra attempt after client abort (slow TMA / cold API) before showing timeout + offline preview. */
 const FEED_FETCH_ATTEMPTS_ON_TIMEOUT = 2;
@@ -39,6 +42,8 @@ type FeedRow = {
   card_type: string;
   layout_variant: string | null;
   payload: unknown;
+  /** Null/undefined = unread notification. */
+  read_at?: string | null | number | undefined;
 };
 
 function firstPresent(...values: unknown[]): unknown {
@@ -58,12 +63,14 @@ function normalizeFeedRow(raw: unknown): FeedRow | null {
   if (typeof cardType !== "string" || !cardType) return null;
   const layoutVariant = firstPresent(row.layout_variant, row.layoutVariant);
   const sentAt = firstPresent(row.sent_at, row.sentAt, row.created_at, row.createdAt);
+  const readAt = firstPresent(row.read_at, row.readAt);
   return {
     id: idNum,
     sent_at: (sentAt as string | number | null | undefined) ?? null,
     card_type: cardType,
     layout_variant: layoutVariant == null ? null : String(layoutVariant),
     payload: row.payload ?? {},
+    read_at: (readAt as string | number | null | undefined) ?? null,
   };
 }
 
@@ -253,6 +260,7 @@ function FeedFeedRow({
   const subtitle = typeof p.subtitle === "string" ? p.subtitle : "";
   const trailing =
     typeof p.trailing_label === "string" ? p.trailing_label : "";
+  const isUnread = item.read_at == null || item.read_at === "";
 
   const iconUrl = resolveIconUrl(p.icon);
   const avatarInitials = useMemo(() => extractChatAvatarInitials(title), [title]);
@@ -327,7 +335,7 @@ function FeedFeedRow({
               ellipsizeMode="tail"
               style={{
                 ...textBase,
-                color: colors.primary,
+                color: isUnread ? colors.primary : colors.secondary,
               }}
             >
               {title}
@@ -340,7 +348,11 @@ function FeedFeedRow({
               style={{
                 ...textBase,
                 flexShrink: 0,
-                color: timeIsProvisional ? colors.secondary : colors.accent,
+                color: timeIsProvisional
+                  ? colors.secondary
+                  : isUnread
+                    ? colors.accent
+                    : colors.secondary,
               }}
             >
               {timeLabel}
@@ -376,7 +388,7 @@ function FeedFeedRow({
                   ...textBase,
                   flexShrink: 0,
                   maxWidth: "45%",
-                  color: colors.secondary,
+                  color: isUnread ? colors.primary : colors.secondary,
                   textAlign: "right",
                 }}
               >
@@ -459,6 +471,12 @@ export function AuthenticatedHomeFeedPanel({
     });
   }, [items]);
 
+  const feedRefreshNonce = useSyncExternalStore(
+    subscribeFeedRefresh,
+    getFeedRefreshNonce,
+    getFeedRefreshNonce,
+  );
+
   /**
    * When `initData` is present, key is **only** the trimmed string so `status` going `loading`→`ok`
    * does not cancel an in-flight `/api/feed` and restart (that duplicated cold work and slowed updates).
@@ -467,12 +485,23 @@ export function AuthenticatedHomeFeedPanel({
   const feedLoadKey = useMemo(() => {
     if (status === "error") return null;
     const trimmed = typeof initData === "string" ? initData.trim() : "";
-    if (trimmed !== "") return `post:${trimmed}:${welcomeFeedCatalogLocale}`;
+    if (trimmed !== "") return `post:${trimmed}:${welcomeFeedCatalogLocale}:${feedRefreshNonce}`;
     if (!authReady || !isAuthenticated) return null;
     // Cookie web auth: feed_items may ship in GET /api/auth/session (budgeted); else /api/feed.
-    if (Array.isArray(sessionFeedItems) && sessionFeedItems.length > 0) return null;
-    return `get:${welcomeFeedCatalogLocale}`;
-  }, [initData, status, welcomeFeedCatalogLocale, authReady, isAuthenticated, sessionFeedItems]);
+    // Still refetch when a live notification (e.g. top-up) bumps the refresh nonce.
+    if (Array.isArray(sessionFeedItems) && sessionFeedItems.length > 0 && feedRefreshNonce === 0) {
+      return null;
+    }
+    return `get:${welcomeFeedCatalogLocale}:${feedRefreshNonce}`;
+  }, [
+    initData,
+    status,
+    welcomeFeedCatalogLocale,
+    authReady,
+    isAuthenticated,
+    sessionFeedItems,
+    feedRefreshNonce,
+  ]);
 
   useLayoutEffect(() => {
     if (Platform.OS !== "web") return;
@@ -750,13 +779,39 @@ export function AuthenticatedHomeFeedPanel({
 
   const listShellStyle = homeListShellStyle(wideListChrome);
 
+  const syncUnreadFromRows = (rows: readonly FeedRow[]) => {
+    const unread = rows.reduce((n, row) => {
+      if (row.id <= 0) return n;
+      return row.read_at == null || row.read_at === "" ? n + 1 : n;
+    }, 0);
+    setFeedUnreadCount(unread);
+  };
+
+  useEffect(() => {
+    syncUnreadFromRows(items);
+  }, [items]);
+
+  const onFeedRowPress = (item: FeedRow) => {
+    setSelectedFeedId(item.id);
+    if (item.id <= 0) return;
+    if (item.read_at != null && item.read_at !== "") return;
+    const readAtIso = new Date().toISOString();
+    setItems((prev) =>
+      prev.map((row) => (row.id === item.id ? { ...row, read_at: readAtIso } : row)),
+    );
+    void markFeedItemsReadClient({
+      initDataRaw: initData,
+      ids: [item.id],
+    });
+  };
+
   const renderListBody = (content: ReactNode) => (
     <Pressable
       style={{ width: "100%", alignSelf: "stretch" }}
       onPress={() => setSelectedFeedId(null)}
     >
       <View style={listShellStyle} pointerEvents="box-none">
-        {body}
+        {content}
       </View>
     </Pressable>
   );
@@ -801,7 +856,7 @@ export function AuthenticatedHomeFeedPanel({
           isActive={selectedFeedId === it.id}
           colors={colors}
           timePendingLabel={t("feed.timePending")}
-          onPress={() => setSelectedFeedId(it.id)}
+          onPress={() => onFeedRowPress(it)}
         />
       ))}
     </>
