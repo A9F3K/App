@@ -228,7 +228,7 @@ export const layout = {
     /** Full-bleed divider stroke height (px) under the wide header row. */
     headerDividerHeight: 1,
     /** Character count taken from the end of the wallet string for the snippet (after `walletAddressSnippetPrefix`). */
-    walletAddressSnippetTailLength: 8,
+    walletAddressSnippetTailLength: 5,
     /** Prefix before the visible wallet tail on the authenticated home header. */
     walletAddressSnippetPrefix: "..",
     /** Placeholder when the wallet address is empty (authenticated home header snippet). */

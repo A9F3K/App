@@ -17,6 +17,7 @@ import { Stack } from "expo-router";
 import { DefaultTheme } from "@react-navigation/native";
 import * as Updates from "expo-updates";
 import { AuthProvider, useAuth } from "../auth/AuthContext";
+import { ScreenTimeTracker } from "../ui/screenTime/ScreenTimeTracker";
 import { TelegramProvider, useTelegram } from "../ui/components/Telegram";
 import { AppStringsProvider, useAppStrings } from "../locales/AppStringsContext";
 import { GlobalLogoBarWithFallback } from "../ui/components/GlobalLogoBarWithFallback";
@@ -94,6 +95,7 @@ export default function RootLayout() {
     <TelegramProvider>
       <AppStringsProvider>
         <AuthProvider>
+          <ScreenTimeTracker />
           <WelcomeEmailAuthProvider>
           <TelegramMessagesConnectionProvider>
             <SettingsProvider>

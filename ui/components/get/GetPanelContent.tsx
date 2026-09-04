@@ -376,6 +376,8 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         kind: "success",
         amount: trimmedAmount,
         token: selected.token,
+        walletAddress: trimmedDeposit,
+        landedAtMs: Date.now(),
       });
     } catch (error) {
       if (isTonConnectUserRejection(error)) {

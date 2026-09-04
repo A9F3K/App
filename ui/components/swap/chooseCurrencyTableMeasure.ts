@@ -21,6 +21,11 @@ import {
   CHOOSE_CURRENCY_TABLE_VOLUME_LAYOUT_SAMPLES,
 } from "./chooseCurrencyTableConstants";
 import type { ChooseCurrencyColumnKey, ChooseCurrencyRow } from "./chooseCurrencyTableTypes";
+import {
+  CROSS_NAMEPLATE_GAP_PX,
+  CROSS_NAMEPLATE_WIDTH_PX,
+  isDllrCurrencyRow,
+} from "./CrossTokenNameplate";
 
 const HEADER_FONT_SIZE_PX = 15;
 const HEADER_LINE_HEIGHT_PX = 20;
@@ -189,10 +194,12 @@ function compactUsdContentWidthPx(header: string, rowValues: readonly string[], 
 function currencyContentWidthPx(header: string, rows: readonly ChooseCurrencyRow[]): number {
   const headerWidth = measureTextWidthPx(header, headerTextStyle);
   const rowWidths = rows.map((row) => {
-    const textWidth = Math.max(
-      measureTextWidthPx(row.currency.name, currencyNameTextStyle),
-      measureTextWidthPx(row.currency.ticker, currencyTickerTextStyle),
-    );
+    const nameWidth = measureTextWidthPx(row.currency.name, currencyNameTextStyle);
+    const tickerWidth = measureTextWidthPx(row.currency.ticker, currencyTickerTextStyle);
+    const nameLineWidth = isDllrCurrencyRow(row)
+      ? nameWidth + CROSS_NAMEPLATE_GAP_PX + CROSS_NAMEPLATE_WIDTH_PX
+      : nameWidth;
+    const textWidth = Math.max(nameLineWidth, tickerWidth);
     return (
       CHOOSE_CURRENCY_TABLE_CURRENCY_ICON_SIZE_PX +
       CHOOSE_CURRENCY_TABLE_CURRENCY_ICON_TEXT_GAP_PX +

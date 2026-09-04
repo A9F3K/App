@@ -6,9 +6,9 @@ import { Pressable, StyleSheet, Text, useWindowDimensions, View, Platform } from
 import Svg, { Path } from "react-native-svg";
 import {
   authenticatedHomeWideMenuColumnWidthPx,
-  homeHeaderProfileNameText,
   homeWideMenuItemLabel,
   displayAmountTextProps,
+  homeHeaderProfileNameText,
   homeWalletAddressHeaderText,
   homeWalletBalanceHeaderText,
   layout,
@@ -31,7 +31,10 @@ import type { AppStringKey } from "../../locales/appStrings";
 import { openAuthenticatedHomeRightPanel } from "../authenticatedHomeRightPanel";
 import { openSwapCurrenciesBrowse } from "../swap/swapCurrencyPicker";
 import { focusAuthenticatedHomeMiddleColumnOnHeaderPanel } from "../authenticatedHomeSelectedChat";
-import { UndercoverWalletButton } from "./swap/SwapFormIcons";
+import { UndercoverProButton, UndercoverWalletButton } from "./swap/SwapFormIcons";
+import { TonviewerExplorerButton } from "./TonviewerExplorerButton";
+import { ProAccessDialog } from "../pro/ProAccessDialog";
+import { trimWalletAddress, walletAddressHeaderSnippet } from "../wallet/walletAddressFormat";
 import {
   HeaderIconCopy,
   HeaderIconEdit,
@@ -43,6 +46,29 @@ import {
 } from "./icons/HeaderActionIcons";
 
 const AH = layout.authenticatedHome;
+const HEADER_CONTROL_ROW_PX = layout.bottomBar.undercoverButtonHeightPx;
+
+/** Horizontal switch-wallet glyph (two opposing arrows). */
+function HeaderSwitchWalletIcon({ color, size = 16 }: { color: string; size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+      <Path
+        d="M4 8h12.5M13.5 4.5 17.5 8l-4 3.5"
+        stroke={color}
+        strokeWidth={1.7}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M20 16H7.5M10.5 19.5 6.5 16l4-3.5"
+        stroke={color}
+        strokeWidth={1.7}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </Svg>
+  );
+}
 
 /** Wide multicolumn header: 15 + 30 + 10 + 30 + 15 = {@link AH.headerWideRowHeightPx}. */
 const WIDE_HEADER_BAND_PX = AH.headerIconDisplaySize;
@@ -136,25 +162,6 @@ const WIDE_MENU_ITEM_KEYS = [
   { key: "trade", labelKey: "home.menu.trade" as const, Icon: MenuTradeIcon },
   { key: "send", labelKey: "home.menu.send" as const, Icon: MenuSendIcon },
 ] as const;
-
-import { trimWalletAddress, walletAddressHeaderSnippet } from "../wallet/walletAddressFormat";
-
-/** Chevron from `assets/header/right.svg`; fill uses theme `highlight`. */
-function HeaderProfileChevronIcon({ color }: { color: string }) {
-  return (
-    <Svg
-      width={AH.headerProfileChevronWidth}
-      height={AH.headerProfileChevronHeight}
-      viewBox={AH.headerProfileChevronViewBox}
-      fill="none"
-    >
-      <Path
-        d="M1.79003 7.58886C2.98576 6.27528 2.98578 4.38625 1.79006 3.07266L0.205486 1.3319C-0.0684974 1.03091 -0.0684952 0.598063 0.205492 0.297075C0.569221 -0.102499 1.24895 -0.102496 1.61268 0.297078L4.07529 3.00239C5.30824 4.35685 5.30823 6.30469 4.07527 7.65914L1.61268 10.3644C1.24895 10.764 0.569223 10.764 0.205495 10.3644C-0.0684934 10.0634 -0.0684931 9.63054 0.205496 9.32955L1.79003 7.58886Z"
-        fill={color}
-      />
-    </Svg>
-  );
-}
 
 /** Get/Swap/… row: wide = fixed `columnWidth` per item; narrow = equal `flex` columns (under profile). */
 function AuthenticatedHomeMenuItems({
@@ -272,41 +279,181 @@ export function HomeAuthenticatedHeaderRow({
   const { width: windowWidth } = useWindowDimensions();
   /** Measured shell width — matches the header column, not always the browser window (`useWindowDimensions` can stay wide on web). */
   const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
-  const widthForLayout = measuredWidth ?? readAuthenticatedHomeLayoutWidthPx(windowWidth);
+  const [proDialogOpen, setProDialogOpen] = useState(false);
+  const liveViewportWidthPx = readAuthenticatedHomeLayoutWidthPx(windowWidth);
+  const widthForLayout = Math.min(
+    measuredWidth ?? liveViewportWidthPx,
+    liveViewportWidthPx > 0 ? liveViewportWidthPx : Number.POSITIVE_INFINITY,
+  );
   const atOrAboveFirstBreakpoint =
-    layoutIsWide ?? widthForLayout > AH.firstBreakpoint;
+    widthForLayout > AH.firstBreakpoint && (layoutIsWide ?? true);
   const headerMenuActiveKey =
     atOrAboveFirstBreakpoint && activeHeaderMenuKey ? activeHeaderMenuKey : null;
   const trimmed = trimWalletAddress(walletAddress);
   const displaySnippet = walletAddressHeaderSnippet(trimmed);
+  const walletNameLabel = (() => {
+    const name = displayName.trim();
+    const emDash = t("common.emDash");
+    if (!name || name === emDash) return null;
+    return name;
+  })();
 
   const copyFullWalletAddress = useCallback(async () => {
     if (!trimmed) return;
     await Clipboard.setStringAsync(trimmed);
   }, [trimmed]);
 
-  const balanceButton = (extraTextStyle?: object) => (
+  const balanceButton = (
     <View
       style={{
         flexDirection: "row",
         alignItems: "center",
-        height: homeWalletBalanceHeaderText.lineHeight,
+        height: HEADER_CONTROL_ROW_PX,
         gap: 5,
       }}
     >
+      <UndercoverProButton
+        accessibilityLabel={t("pro.buyCta")}
+        active={proDialogOpen}
+        onPress={() => setProDialogOpen((open) => !open)}
+      />
       <UndercoverWalletButton
         accessibilityLabel={t("home.header.balanceExpandHint")}
         active={walletCurrenciesOpen}
         disabled={!onBalancePress}
         onPress={onBalancePress}
       />
-      <Text
-        {...displayAmountTextProps}
-        style={[homeWalletBalanceHeaderText, { color: colors.primary }, extraTextStyle]}
+      <View
+        style={{
+          height: HEADER_CONTROL_ROW_PX,
+          justifyContent: "center",
+        }}
       >
-        {headerBalanceLabel}
-      </Text>
+        <Text
+          {...displayAmountTextProps}
+          style={[
+            homeWalletBalanceHeaderText,
+            {
+              color: colors.primary,
+              lineHeight: HEADER_CONTROL_ROW_PX,
+              // Noto Sans digits sit low in a 30px em next to chips — nudge up for optical center.
+              transform: [{ translateY: -2 }],
+              ...(Platform.OS === "web"
+                ? ({
+                    display: "block",
+                    marginTop: 0,
+                    marginBottom: 0,
+                    paddingTop: 0,
+                    paddingBottom: 0,
+                  } as object)
+                : null),
+            },
+          ]}
+        >
+          {headerBalanceLabel}
+        </Text>
+      </View>
     </View>
+  );
+
+  const headerMonoLineStyle = [
+    homeWalletAddressHeaderText,
+    {
+      color: colors.secondary,
+      lineHeight: HEADER_CONTROL_ROW_PX,
+      ...(Platform.OS === "web"
+        ? ({
+            display: "flex",
+            alignItems: "center",
+            height: HEADER_CONTROL_ROW_PX,
+          } as object)
+        : null),
+    },
+  ];
+
+  const walletAddressRow = (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        minWidth: 0,
+        flexShrink: 1,
+        height: HEADER_CONTROL_ROW_PX,
+      }}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={tf("home.header.walletAddressA11y", { snippet: displaySnippet })}
+        accessibilityHint={t("home.header.copyWalletHint")}
+        disabled={!trimmed}
+        hitSlop={AH.headerPressableHitSlop}
+        onPress={() => {
+          void copyFullWalletAddress();
+        }}
+        style={{
+          flexShrink: 0,
+          height: HEADER_CONTROL_ROW_PX,
+          justifyContent: "center",
+        }}
+      >
+        <Text numberOfLines={1} style={headerMonoLineStyle}>
+          {displaySnippet}
+        </Text>
+      </Pressable>
+      {trimmed ? (
+        <TonviewerExplorerButton
+          address={trimmed}
+          accessibilityLabel={t("home.header.openTonviewerA11y")}
+        />
+      ) : null}
+      {walletNameLabel ? (
+        <Text numberOfLines={1} style={[...headerMonoLineStyle, { flexShrink: 1, minWidth: 0 }]}>
+          {walletNameLabel}
+        </Text>
+      ) : null}
+    </View>
+  );
+
+  const switchWalletRow = (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t("home.header.switchWalletA11y")}
+      disabled={!onBalancePress}
+      hitSlop={AH.headerPressableHitSlop}
+      onPress={onBalancePress}
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        gap: 6,
+        flexShrink: 1,
+        minWidth: 0,
+        height: HEADER_CONTROL_ROW_PX,
+      }}
+    >
+      <Text
+        numberOfLines={1}
+        style={[
+          homeHeaderProfileNameText,
+          {
+            color: colors.primary,
+            lineHeight: HEADER_CONTROL_ROW_PX,
+            textAlign: "right",
+            ...(Platform.OS === "web"
+              ? ({
+                  display: "flex",
+                  alignItems: "center",
+                  height: HEADER_CONTROL_ROW_PX,
+                } as object)
+              : null),
+          },
+        ]}
+      >
+        {t("home.header.switchWallet")}
+      </Text>
+      <HeaderSwitchWalletIcon color={menuIconStrokeColor(colors, "highlight")} size={16} />
+    </Pressable>
   );
 
   const handleMenuKeyPress = useCallback(
@@ -343,6 +490,74 @@ export function HomeAuthenticatedHeaderRow({
     signOut();
     router.replace("/");
   }, [router, signOut, triggerHaptic]);
+
+  const headerActionIconsRow = (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: AH.headerIconGap,
+        justifyContent: "flex-end",
+        flexShrink: 0,
+      }}
+    >
+      {HEADER_ICONS_BEFORE_LANG.map(({ id, Icon, labelKey }) => {
+        const accessibilityLabel = t(labelKey);
+        return (
+          <HeaderActionIconButton
+            key={id}
+            accessibilityLabel={accessibilityLabel}
+            onPress={() => {
+              if (id === "copy") {
+                void copyFullWalletAddress();
+                return;
+              }
+              if (id === "key") {
+                router.push("/key" as any);
+                return;
+              }
+              /* Wired when flows land */
+            }}
+          >
+            {(color) => <Icon color={color} size={AH.headerIconDisplaySize} />}
+          </HeaderActionIconButton>
+        );
+      })}
+      <HeaderActionIconButton
+        accessibilityLabel={
+          headerLanguageToggleShows === "en"
+            ? t("home.header.languageIconSwitchToEn")
+            : headerLanguageToggleShows === "ru"
+              ? t("home.header.languageIconSwitchToRu")
+              : t("home.header.languageIconSwitchToZh")
+        }
+        onPress={() => {
+          if (Platform.OS !== "web") {
+            triggerHaptic("light");
+          }
+          toggleUiLanguage();
+        }}
+      >
+        {(color) =>
+          headerLanguageToggleShows === "en" ? (
+            <HeaderIconEn color={color} size={AH.headerIconDisplaySize} />
+          ) : headerLanguageToggleShows === "ru" ? (
+            <HeaderIconRu color={color} size={AH.headerIconDisplaySize} />
+          ) : (
+            <HeaderIconZh color={color} size={AH.headerIconDisplaySize} />
+          )
+        }
+      </HeaderActionIconButton>
+      <HeaderActionIconButton
+        accessibilityLabel={t(HEADER_ICON_EXIT_LABEL_KEY)}
+        onPress={handleSignOut}
+      >
+        {(color) => (
+          <HeaderIconExit color={color} size={AH.headerIconDisplaySize} />
+        )}
+      </HeaderActionIconButton>
+    </View>
+  );
 
   const wideMenuColumnWidth = authenticatedHomeWideMenuColumnWidthPx(widthForLayout);
 
@@ -405,9 +620,10 @@ export function HomeAuthenticatedHeaderRow({
   ]);
 
   return (
-    /* Outer shell: full width; marginBottom = gap under header+divider before body (see theme `headerRowMarginBottom`). */
+    <>
+    {/* Outer shell: full width; marginBottom = gap under header+divider before body (see theme `headerRowMarginBottom`). */}
     <View
-      style={{ width: "100%", marginBottom: AH.headerRowMarginBottom }}
+      style={{ width: "100%", marginBottom: AH.headerRowMarginBottom, overflow: "hidden" }}
       onLayout={(e) => {
         const w = Math.round(e.nativeEvent.layout.width);
         setMeasuredWidth((prev) => {
@@ -422,186 +638,70 @@ export function HomeAuthenticatedHeaderRow({
       }}
     >
       <View style={{ width: "100%", paddingHorizontal: layout.contentSideInsetPx }}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: atOrAboveFirstBreakpoint ? "stretch" : "flex-start",
-            width: "100%",
-            ...(atOrAboveFirstBreakpoint
-              ? {
-                  position: "relative" as const,
-                  height: AH.headerWideRowHeightPx,
-                  overflow: "visible" as const,
-                }
-              : {}),
-          }}
-        >
-      <View
-        style={
-          atOrAboveFirstBreakpoint
-            ? { ...wideHeaderSideColumnStyle, alignItems: "flex-start" }
-            : {
-                flex: 1,
-                minWidth: 0,
-                alignItems: "flex-start",
-                justifyContent: "center",
-                marginRight: AH.addressRowGap,
-              }
-        }
-      >
         {atOrAboveFirstBreakpoint ? (
-          <>
-            <View style={wideHeaderTopBandStyle}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={tf("home.header.walletAddressA11y", { snippet: displaySnippet })}
-                accessibilityHint={t("home.header.copyWalletHint")}
-                disabled={!trimmed}
-                hitSlop={AH.headerPressableHitSlop}
-                onPress={() => {
-                  void copyFullWalletAddress();
-                }}
-              >
-                <Text
-                  style={[homeWalletAddressHeaderText, { color: colors.secondary }]}
-                >
-                  {displaySnippet}
-                </Text>
-              </Pressable>
-            </View>
-            <View style={wideHeaderBottomBandStyle}>
-              {balanceButton()}
-            </View>
-          </>
-        ) : (
-          <View style={{ flex: 1, alignSelf: "stretch", minWidth: 0 }}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={tf("home.header.walletAddressA11y", { snippet: displaySnippet })}
-              accessibilityHint={t("home.header.copyWalletHint")}
-              disabled={!trimmed}
-              hitSlop={AH.headerPressableHitSlop}
-              onPress={() => {
-                void copyFullWalletAddress();
-              }}
-              style={{ alignSelf: "stretch" }}
-            >
-              <Text style={[homeWalletAddressHeaderText, { color: colors.secondary }]}>
-                {displaySnippet}
-              </Text>
-            </Pressable>
-            {balanceButton({ marginTop: AH.walletBalanceBelowAddressGap })}
-          </View>
-        )}
-      </View>
-      <View
-        style={{
-          flexDirection: "column",
-          alignItems: "flex-end",
-          ...(atOrAboveFirstBreakpoint
-            ? { ...wideHeaderSideColumnStyle, alignItems: "flex-end" }
-            : { flexShrink: 0, marginLeft: ("auto" as const) }),
-        }}
-      >
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: AH.headerIconGap,
-            justifyContent: "flex-end",
-            ...(atOrAboveFirstBreakpoint
-              ? ({
-                  ...wideHeaderTopBandStyle,
-                  position: "relative" as const,
-                  zIndex: 2,
-                } as const)
-              : {}),
-          }}
-        >
-          {HEADER_ICONS_BEFORE_LANG.map(({ id, Icon, labelKey }) => {
-            const accessibilityLabel = t(labelKey);
-            return (
-              <HeaderActionIconButton
-                key={id}
-                accessibilityLabel={accessibilityLabel}
-                onPress={() => {
-                  if (id === "copy") {
-                    void copyFullWalletAddress();
-                    return;
-                  }
-                  if (id === "key") {
-                    router.push("/key" as any);
-                    return;
-                  }
-                  /* Wired when flows land */
-                }}
-              >
-                {(color) => <Icon color={color} size={AH.headerIconDisplaySize} />}
-              </HeaderActionIconButton>
-            );
-          })}
-          <HeaderActionIconButton
-            accessibilityLabel={
-              headerLanguageToggleShows === "en"
-                ? t("home.header.languageIconSwitchToEn")
-                : headerLanguageToggleShows === "ru"
-                  ? t("home.header.languageIconSwitchToRu")
-                  : t("home.header.languageIconSwitchToZh")
-            }
-            onPress={() => {
-              if (Platform.OS !== "web") {
-                triggerHaptic("light");
-              }
-              toggleUiLanguage();
-            }}
-          >
-            {(color) =>
-              headerLanguageToggleShows === "en" ? (
-                <HeaderIconEn color={color} size={AH.headerIconDisplaySize} />
-              ) : headerLanguageToggleShows === "ru" ? (
-                <HeaderIconRu color={color} size={AH.headerIconDisplaySize} />
-              ) : (
-                <HeaderIconZh color={color} size={AH.headerIconDisplaySize} />
-              )
-            }
-          </HeaderActionIconButton>
-          <HeaderActionIconButton
-            accessibilityLabel={t(HEADER_ICON_EXIT_LABEL_KEY)}
-            onPress={handleSignOut}
-          >
-            {(color) => (
-              <HeaderIconExit color={color} size={AH.headerIconDisplaySize} />
-            )}
-          </HeaderActionIconButton>
-        </View>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            justifyContent: "flex-end",
-            ...(atOrAboveFirstBreakpoint
-              ? wideHeaderBottomBandStyle
-              : { marginTop: AH.walletBalanceBelowAddressGap }),
-          }}
-        >
-          <Text
-            style={[homeHeaderProfileNameText, { color: colors.primary }]}
-            accessibilityLabel={displayName}
-            numberOfLines={1}
-          >
-            {displayName}
-          </Text>
           <View
             style={{
-              marginLeft: AH.headerProfileChevronAfterNameGap,
+              flexDirection: "row",
+              alignItems: "stretch",
+              width: "100%",
+              position: "relative",
+              height: AH.headerWideRowHeightPx,
+              overflow: "hidden",
             }}
           >
-            <HeaderProfileChevronIcon color={menuIconStrokeColor(colors, "highlight")} />
+            <View style={{ ...wideHeaderSideColumnStyle, alignItems: "flex-start" }}>
+              <View style={wideHeaderTopBandStyle}>{balanceButton}</View>
+              <View style={wideHeaderBottomBandStyle}>{walletAddressRow}</View>
+            </View>
+            <View style={{ ...wideHeaderSideColumnStyle, alignItems: "flex-end" }}>
+              <View
+                style={{
+                  ...wideHeaderTopBandStyle,
+                  position: "relative",
+                  zIndex: 2,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "flex-end",
+                }}
+              >
+                {headerActionIconsRow}
+              </View>
+              <View style={wideHeaderBottomBandStyle}>{switchWalletRow}</View>
+            </View>
+            {wideMenuStrip}
           </View>
-        </View>
-      </View>
-      {wideMenuStrip}
-      </View>
+        ) : (
+          <View style={{ width: "100%", flexDirection: "column" }}>
+            {/* Shared bands: balance|icons and switch-wallet|name share one vertical center each. */}
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                height: WIDE_HEADER_BAND_PX,
+                width: "100%",
+                gap: AH.addressRowGap,
+              }}
+            >
+              {balanceButton}
+              {headerActionIconsRow}
+            </View>
+            <View
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between",
+                height: WIDE_HEADER_BAND_PX,
+                width: "100%",
+                marginTop: WIDE_HEADER_MID_GAP_PX,
+                gap: AH.addressRowGap,
+              }}
+            >
+              {walletAddressRow}
+              {switchWalletRow}
+            </View>
+          </View>
+        )}
       {!atOrAboveFirstBreakpoint ? (
         <View style={{ marginTop: AH.headerDividerTopGap, width: "100%" }}>
           <View style={{ flexDirection: "row", alignItems: "center", width: "100%" }}>
@@ -629,5 +729,7 @@ export function HomeAuthenticatedHeaderRow({
         />
       ) : null}
     </View>
+    <ProAccessDialog visible={proDialogOpen} onClose={() => setProDialogOpen(false)} />
+    </>
   );
 }

@@ -1,3 +1,4 @@
+import fs from "fs";
 import path from "path";
 
 export function getTdlibDbRoot(): string {
@@ -50,9 +51,78 @@ export function getTdlibClientIdleCheckMs(): number {
   return n;
 }
 
+function safeTdlibUserKey(telegramUsername: string): string {
+  return telegramUsername.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function messengerSlotFile(telegramUsername: string): string {
+  return path.join(getTdlibDbRoot(), `${safeTdlibUserKey(telegramUsername)}.active-slot`);
+}
+
+const messengerSlotMemory = new Map<string, number>();
+
+export function getMessengerSlot(telegramUsername: string): number {
+  const key = safeTdlibUserKey(telegramUsername);
+  const mem = messengerSlotMemory.get(key);
+  if (typeof mem === "number" && mem >= 0) return mem;
+  try {
+    const raw = fs.readFileSync(messengerSlotFile(telegramUsername), "utf8").trim();
+    const n = Number.parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 0) {
+      messengerSlotMemory.set(key, n);
+      return n;
+    }
+  } catch {
+    /* missing file = slot 0 */
+  }
+  messengerSlotMemory.set(key, 0);
+  return 0;
+}
+
+export function setMessengerSlot(telegramUsername: string, slot: number): void {
+  const n = Number.isFinite(slot) && slot >= 0 ? Math.floor(slot) : 0;
+  const key = safeTdlibUserKey(telegramUsername);
+  messengerSlotMemory.set(key, n);
+  try {
+    fs.mkdirSync(getTdlibDbRoot(), { recursive: true });
+    fs.writeFileSync(messengerSlotFile(telegramUsername), String(n), "utf8");
+  } catch {
+    /* best effort */
+  }
+}
+
+export function messengerSlotDirName(telegramUsername: string, slot: number): string {
+  const safe = safeTdlibUserKey(telegramUsername);
+  return slot <= 0 ? safe : `${safe}__s${slot}`;
+}
+
+/** On-disk TDLib folders for this HSP user (slot 0 is the original directory). */
+export function listMessengerSlots(telegramUsername: string): number[] {
+  const root = getTdlibDbRoot();
+  const safe = safeTdlibUserKey(telegramUsername);
+  const found = new Set<number>();
+  if (fs.existsSync(path.join(root, safe, "db"))) found.add(0);
+  if (!fs.existsSync(root)) return [...found].sort((a, b) => a - b);
+  const prefix = `${safe}__s`;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+    const n = Number.parseInt(entry.name.slice(prefix.length), 10);
+    if (!Number.isFinite(n) || n < 1) continue;
+    if (fs.existsSync(path.join(root, entry.name, "db"))) found.add(n);
+  }
+  return [...found].sort((a, b) => a - b);
+}
+
+export function allocateNextMessengerSlot(telegramUsername: string): number {
+  const used = new Set(listMessengerSlots(telegramUsername));
+  let slot = 0;
+  while (used.has(slot)) slot += 1;
+  return slot;
+}
+
 export function getTdlibUserDir(telegramUsername: string): string {
-  const safe = telegramUsername.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return path.join(getTdlibDbRoot(), safe);
+  const slot = getMessengerSlot(telegramUsername);
+  return path.join(getTdlibDbRoot(), messengerSlotDirName(telegramUsername, slot));
 }
 
 export function getGatewayBindHost(): string {

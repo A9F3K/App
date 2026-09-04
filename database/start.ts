@@ -421,6 +421,45 @@ async function runSchemaMigrations() {
 
   `;
 
+  // Per-user visible screen time (sessions + totals) for economics / infra cost models.
+  await sql`
+    CREATE TABLE IF NOT EXISTS user_screen_sessions (
+      id                    BIGSERIAL PRIMARY KEY,
+      telegram_username     TEXT NOT NULL REFERENCES users(telegram_username),
+      client_session_id     TEXT NOT NULL,
+      started_at            TIMESTAMPTZ NOT NULL,
+      last_heartbeat_at     TIMESTAMPTZ NOT NULL,
+      ended_at              TIMESTAMPTZ,
+      active_ms             BIGINT NOT NULL DEFAULT 0,
+      platform              TEXT,
+      user_agent            TEXT,
+      created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (telegram_username, client_session_id)
+    );
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_user_screen_sessions_user_started
+      ON user_screen_sessions(telegram_username, started_at DESC);
+  `;
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_user_screen_sessions_open
+      ON user_screen_sessions(telegram_username)
+      WHERE ended_at IS NULL;
+  `;
+
+  await sql`
+    CREATE TABLE IF NOT EXISTS user_screen_time_totals (
+      telegram_username     TEXT PRIMARY KEY REFERENCES users(telegram_username),
+      total_active_ms       BIGINT NOT NULL DEFAULT 0,
+      session_count         BIGINT NOT NULL DEFAULT 0,
+      last_active_at        TIMESTAMPTZ,
+      updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+
   // Telegram client message sync (TDLib gateway); connection flag only — chat list lives in gateway memory.
   await sql`
     CREATE TABLE IF NOT EXISTS telegram_messages_connections (

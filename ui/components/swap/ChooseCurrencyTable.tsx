@@ -77,6 +77,7 @@ import {
   type ChooseCurrencyColumnKey,
   type ChooseCurrencyRow,
 } from "./chooseCurrencyTableTypes";
+import { CrossTokenNameplate, CROSS_NAMEPLATE_GAP_PX, isDllrCurrencyRow } from "./CrossTokenNameplate";
 
 /** Match {@link SwapColumnFooter} / deal row: same side inset as `layout.bottomBar.horizontalPadding`. */
 const CONTENT_INSET_PX = layout.bottomBar.horizontalPadding;
@@ -157,25 +158,37 @@ function CurrencyIcon({ row }: { row: ChooseCurrencyRow }) {
 
 function CurrencyCell({ row }: { row: ChooseCurrencyRow }) {
   const colors = useColors();
+  const showCrossPlate = isDllrCurrencyRow(row);
 
   return (
     <View style={styles.currencyCell}>
       <CurrencyIcon row={row} />
       <View style={{ width: CHOOSE_CURRENCY_TABLE_CURRENCY_ICON_TEXT_GAP_PX }} />
       <View style={styles.currencyTextStack}>
-        <Text
-          style={[
-            typographyAeroport15,
-            typographySansSemibold,
-            styles.truncatedText,
-            styles.currencyNameText,
-            { color: colors.primary },
-          ]}
-          numberOfLines={1}
-          ellipsizeMode="tail"
-        >
-          {row.currency.name}
-        </Text>
+        <View style={styles.currencyNameRow}>
+          <Text
+            style={[
+              typographyAeroport15,
+              typographySansSemibold,
+              styles.truncatedText,
+              styles.currencyNameText,
+              {
+                color: colors.primary,
+                // Never shrink/ellipsis “Dollar” when CROSS sits beside it.
+                flexShrink: showCrossPlate ? 0 : 1,
+              },
+            ]}
+            numberOfLines={1}
+            ellipsizeMode={showCrossPlate ? undefined : "tail"}
+          >
+            {row.currency.name}
+          </Text>
+          {showCrossPlate ? (
+            <View style={{ marginLeft: CROSS_NAMEPLATE_GAP_PX, flexShrink: 0, justifyContent: "center" }}>
+              <CrossTokenNameplate lineHeightPx={CHOOSE_CURRENCY_CURRENCY_NAME_LINE_HEIGHT_PX} />
+            </View>
+          ) : null}
+        </View>
         <Text
           style={[
             typographyAeroport15,
@@ -1046,12 +1059,24 @@ const styles = StyleSheet.create({
     flex: 1,
     height: CHOOSE_CURRENCY_TABLE_MINI_CHART_HEIGHT_PX,
   },
+  currencyNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    minWidth: 0,
+    height: CHOOSE_CURRENCY_CURRENCY_NAME_LINE_HEIGHT_PX,
+  },
   currencyNameText: {
     fontSize: 15,
     lineHeight: CHOOSE_CURRENCY_CURRENCY_NAME_LINE_HEIGHT_PX,
     height: CHOOSE_CURRENCY_CURRENCY_NAME_LINE_HEIGHT_PX,
     // Cancel Aeroport global translateY so name/ticker line boxes stack flush with the chart.
     transform: [{ translateY: 0 }],
+  },
+  currencyTickerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    minWidth: 0,
+    height: CHOOSE_CURRENCY_CURRENCY_TICKER_LINE_HEIGHT_PX,
   },
   currencyTickerText: {
     fontSize: 15,

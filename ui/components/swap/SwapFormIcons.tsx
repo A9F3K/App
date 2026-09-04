@@ -1,8 +1,10 @@
 import { Image } from "expo-image";
 import { useState } from "react";
-import { Platform, Pressable, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import Svg, { Circle, Path, Rect } from "react-native-svg";
 import { useTelegram } from "../Telegram";
+import { FONT_UI_SANS_BOLD, WEB_UI_SANS_STACK } from "../../fonts";
+import { ProMetallicRocket } from "../../pro/ProMetallicRocket";
 import {
   layout,
   useColors,
@@ -19,6 +21,7 @@ import {
 
 const UNDERCOVER_CIRCLE_PX = layout.bottomBar.undercoverButtonHeightPx;
 const WALLET_GLYPH_PX = 17;
+const PRO_ROCKET_GLYPH_PX = 18;
 
 function isLightTheme(colors: ThemeColors): boolean {
   return colors.primary === "#000000";
@@ -48,6 +51,34 @@ function WalletGlyph({ color, size = WALLET_GLYPH_PX }: { color: string; size?: 
   );
 }
 
+function undercoverChipColors(
+  colors: ThemeColors,
+  colorScheme: ReturnType<typeof useTelegram>["colorScheme"],
+  active: boolean,
+  hover: boolean,
+) {
+  const contentColor = colors.primary;
+  const backgroundColor = active
+    ? undercoverWithOpacity(colors.undercover, 0.71)
+    : hover
+      ? welcomeAuthButtonHoverBackground(colors, colorScheme)
+      : colors.undercover;
+  return { contentColor, backgroundColor };
+}
+
+/** Theme undercover at a fixed alpha (active header chips). */
+function undercoverWithOpacity(hex: string, opacity: number): string {
+  const raw = hex.trim().replace(/^#/, "");
+  if (raw.length !== 6 || Number.isNaN(Number.parseInt(raw, 16))) {
+    return hex;
+  }
+  const n = Number.parseInt(raw, 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return `rgba(${r},${g},${b},${opacity})`;
+}
+
 /** Circular undercover chip wrapping a wallet icon (header balance control). */
 export function UndercoverWalletButton({
   onPress,
@@ -58,19 +89,18 @@ export function UndercoverWalletButton({
   onPress?: () => void;
   accessibilityLabel: string;
   disabled?: boolean;
-  /** Dialog open — primary chip, secondary icon. */
+  /** Dialog open — undercover fill at 71% opacity. */
   active?: boolean;
 }) {
   const colors = useColors();
   const { colorScheme } = useTelegram();
   const [hover, setHover] = useState(false);
-
-  const iconColor = active ? colors.secondary : colors.primary;
-  const backgroundColor = active
-    ? colors.primary
-    : hover
-      ? welcomeAuthButtonHoverBackground(colors, colorScheme)
-      : colors.undercover;
+  const { contentColor, backgroundColor } = undercoverChipColors(
+    colors,
+    colorScheme,
+    active,
+    hover,
+  );
 
   return (
     <Pressable
@@ -93,7 +123,70 @@ export function UndercoverWalletButton({
             : backgroundColor,
       })}
     >
-      <WalletGlyph color={iconColor} />
+      <WalletGlyph color={contentColor} />
+    </Pressable>
+  );
+}
+
+/** Fully rounded undercover pill: PRO label + metallic rocket (opens Pro Access tariffs). */
+export function UndercoverProButton({
+  onPress,
+  accessibilityLabel,
+  disabled,
+  active = false,
+}: {
+  onPress?: () => void;
+  accessibilityLabel: string;
+  disabled?: boolean;
+  active?: boolean;
+}) {
+  const colors = useColors();
+  const { colorScheme } = useTelegram();
+  const [hover, setHover] = useState(false);
+  const { contentColor, backgroundColor } = undercoverChipColors(
+    colors,
+    colorScheme,
+    active,
+    hover,
+  );
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={{ expanded: active }}
+      disabled={disabled}
+      onPress={onPress}
+      onHoverIn={Platform.OS === "web" ? () => setHover(true) : undefined}
+      onHoverOut={Platform.OS === "web" ? () => setHover(false) : undefined}
+      style={({ pressed }) => ({
+        height: UNDERCOVER_CIRCLE_PX,
+        paddingHorizontal: 10,
+        borderRadius: UNDERCOVER_CIRCLE_PX / 2,
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 5,
+        backgroundColor:
+          !active && pressed
+            ? welcomeAuthButtonActiveBackground(colors, colorScheme)
+            : backgroundColor,
+      })}
+    >
+      <Text
+        style={{
+          color: contentColor,
+          fontSize: 12,
+          lineHeight: 14,
+          fontWeight: "700",
+          letterSpacing: 0.6,
+          fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_BOLD,
+          includeFontPadding: false,
+        }}
+      >
+        PRO
+      </Text>
+      <ProMetallicRocket sizePx={PRO_ROCKET_GLYPH_PX} />
     </Pressable>
   );
 }

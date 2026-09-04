@@ -27,6 +27,7 @@ import {
   getFeedUnreadCount,
   subscribeFeedUnreadCount,
 } from "../feed/feedUnreadStore";
+import { getInitDataString } from "../components/telegramWebApp";
 import { AuthenticatedHomeMessagesPanel } from "../components/AuthenticatedHomeMessagesPanel";
 import { MessageChatPanel } from "../components/messages/MessageChatPanel";
 import { MessageChatOlderHistoryLoadLine } from "../components/messages/MessageChatOlderHistoryLoadLine";
@@ -689,12 +690,11 @@ function HomeAuthenticatedScreenMain() {
     );
   }, []);
   const fallbackLayoutWidthPx = readAuthenticatedHomeLayoutWidthPx(windowWidth);
-  const isWideHome = splitLayoutMetrics
-    ? splitLayoutMetrics.columnCount >= 2
-    : isAuthenticatedHomeWideLayoutWidthPx(fallbackLayoutWidthPx);
-  const isTripleColumn = splitLayoutMetrics
-    ? splitLayoutMetrics.columnCount === 3
-    : isAuthenticatedHomeTripleColumnLayoutWidthPx(fallbackLayoutWidthPx);
+  const liveLayoutWidthPx = splitLayoutMetrics
+    ? Math.min(splitLayoutMetrics.effectiveSplitWidthPx, fallbackLayoutWidthPx)
+    : fallbackLayoutWidthPx;
+  const isWideHome = isAuthenticatedHomeWideLayoutWidthPx(liveLayoutWidthPx);
+  const isTripleColumn = isAuthenticatedHomeTripleColumnLayoutWidthPx(liveLayoutWidthPx);
   const aiBarDock = authenticatedHomeBottomBarDock(pathname, windowWidth, true);
   const swapActiveOnWide = isWideHome && rightPanel === "swap";
   const tradeActiveOnWide = isWideHome && rightPanel === "trade";
@@ -790,7 +790,7 @@ function HomeAuthenticatedScreenMain() {
   /** True only when we can actually show a wallet string (avoids "has_wallet" with no row / stale flags). */
   const hasDisplayAddress = Boolean(effectiveWalletAddress);
   const effectiveHasWallet = hasWallet || hasDisplayAddress;
-  const { headerBalanceLabel } = useWalletHeldCurrencyRows(effectiveWalletAddress, hasDisplayAddress);
+  const { headerBalanceLabel } = useWalletHeldCurrencyRows(effectiveWalletAddress, hasDisplayAddress, getInitDataString());
   const headerDisplayName = displayName?.trim() || t("common.emDash");
   const onHeaderBalancePress = useCallback(() => {
     setWalletCurrenciesOpen((open) => {
@@ -1660,15 +1660,6 @@ function HomeAuthenticatedScreenMain() {
     </>
   );
 
-  const homeLeftNavStrip = (
-    <AuthenticatedHomeLeftNavStrip
-      colors={colors}
-      selectedIndex={leftNavSelectedIndex}
-      onSelectIndex={setAuthenticatedHomeLeftNavIndex}
-      feedUnreadCount={feedUnreadCount}
-    />
-  );
-
   const homeHeaderRow = (
     <HomeAuthenticatedHeaderRow
       walletAddress={effectiveWalletAddress ?? ""}
@@ -1700,7 +1691,10 @@ function HomeAuthenticatedScreenMain() {
    * Wide: header pinned in chrome; nav pinned; feed scrolls in the left column only.
    */
   const homeLeftScrollShell = (scrollColumn: ReactNode) => (
-    <View style={{ flex: 1, minHeight: 0, position: "relative" }}>
+    <View
+      key="authenticated-home-left-scroll"
+      style={{ flex: 1, minHeight: 0, position: "relative" }}
+    >
       {scrollColumn}
       {showChatListBottomLoader ? (
         <MessageChatOlderHistoryLoadLine active edge="bottom" color={colors.accent} />
@@ -1710,18 +1704,26 @@ function HomeAuthenticatedScreenMain() {
 
   /**
    * Compact: pin wallet header + nav above the scroll so search results move under them.
-   * Wide: nav pinned beside the scroll; panels stay the sole scroll child so wide↔narrow
-   * does not remount feed/messages state.
+   * Wide: nav pinned beside the scroll. Stable keys keep feed/messages mounted when the
+   * compact header is inserted and when the split goes 3 columns → 1.
    */
   const homeLeftColumn = (
     <>
-      {isWideHome ? homeLeftNavStrip : null}
       {!isWideHome ? (
-        <View style={{ paddingTop: layout.authenticatedHome.contentInsetTop, width: "100%" }}>
+        <View
+          key="authenticated-home-compact-header"
+          style={{ paddingTop: layout.authenticatedHome.contentInsetTop, width: "100%" }}
+        >
           {homeHeaderRow}
         </View>
       ) : null}
-      {!isWideHome ? homeLeftNavStrip : null}
+      <AuthenticatedHomeLeftNavStrip
+        key="authenticated-home-left-nav"
+        colors={colors}
+        selectedIndex={leftNavSelectedIndex}
+        onSelectIndex={setAuthenticatedHomeLeftNavIndex}
+        feedUnreadCount={feedUnreadCount}
+      />
       {homeLeftScrollShell(
         <HspScrollColumn
           style={{ flex: 1, minHeight: 0 }}

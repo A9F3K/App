@@ -28,6 +28,26 @@ import {
   rememberSelfTelegramProfile,
 } from "../../telegram/selfTelegramProfileCache";
 import { useTelegram } from "../Telegram";
+import {
+  getTelegramTotalUnread,
+  subscribeTelegramTotalUnread,
+  formatTelegramUnreadLabel,
+} from "../../messages/telegramUnreadStore";
+import {
+  FREE_MESSENGER_ACCOUNT_LIMIT,
+  getMessengerAccounts,
+  subscribeMessengerAccounts,
+  upsertMessengerAccount,
+  setActiveMessengerAccount,
+  setMessengerAccountUnread,
+  removeMessengerAccount,
+} from "../../messages/messengerAccountsStore";
+import {
+  isProAccessActive,
+  subscribeProAccess,
+} from "../../pro/proAccessStore";
+import { AccountLimitReachedDialog } from "../../pro/AccountLimitReachedDialog";
+import { ProAccessDialog } from "../../pro/ProAccessDialog";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import {
   allocateFloatingSurfaceId,
@@ -248,11 +268,30 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     connectedTelegramUserId,
     disconnectTelegramMessages,
     openConnectSheet,
+    switchMessengerAccount,
+    activeMessengerSlot,
   } = useTelegramMessagesConnection();
   const { openProfileSheet } = useProfileSheet();
   const { height: windowHeight } = useWindowDimensions();
   const musicSnap = useSyncExternalStore(subscribeMusicPlayer, getMusicPlayer, getMusicPlayer);
   const musicTopInset = musicSnap.visible ? MUSIC_CONTROL_BAR_HEIGHT_PX : 0;
+  const telegramTotalUnread = useSyncExternalStore(
+    subscribeTelegramTotalUnread,
+    getTelegramTotalUnread,
+    getTelegramTotalUnread,
+  );
+  const storedAccounts = useSyncExternalStore(
+    subscribeMessengerAccounts,
+    getMessengerAccounts,
+    getMessengerAccounts,
+  );
+  const proActive = useSyncExternalStore(
+    subscribeProAccess,
+    isProAccessActive,
+    isProAccessActive,
+  );
+  const [limitDialogOpen, setLimitDialogOpen] = useState(false);
+  const [proDialogOpen, setProDialogOpen] = useState(false);
   const [mounted, setMounted] = useState(visible);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [accountsExpanded, setAccountsExpanded] = useState(false);
@@ -356,17 +395,20 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   }, [connectedTelegramUserId, profilePhoto?.has_animation, selfAvatarUrl]);
 
   const handleDisconnect = useCallback(() => {
-    // Logout only — never close the side menu from this control.
+    const active = storedAccounts.find((a) => a.active);
+    const others = storedAccounts.filter((a) => !a.active);
+    if (active) removeMessengerAccount(active.key);
+    if (others[0]) {
+      setActiveMessengerAccount(others[0].key);
+      void switchMessengerAccount(others[0].slot);
+      return;
+    }
     void disconnectTelegramMessages();
-  }, [disconnectTelegramMessages]);
+  }, [disconnectTelegramMessages, storedAccounts, switchMessengerAccount]);
 
   const toggleAccountsExpanded = useCallback(() => {
     setAccountsExpanded((prev) => !prev);
   }, []);
-
-  const handleAddAccount = useCallback(() => {
-    openConnectSheet();
-  }, [openConnectSheet]);
 
   const openMyProfile = useCallback(() => {
     if (connectedTelegramUserId == null && !isTelegramMessagesConnected) return;
@@ -407,26 +449,96 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     [onClose],
   );
 
-  /** Connected Telegram sessions listed in the expandable switcher (one is fine). */
-  const connectedAccounts: Array<{
-    key: string;
-    title: string;
-    usernameAt: string | null;
-    avatarUrl: string | null;
-    initials: string[];
-  }> = useMemo(() => {
+  /** Connected Telegram sessions listed in the expandable switcher. */
+  const connectedAccounts = useMemo(() => {
+    if (!isTelegramMessagesConnected && storedAccounts.length === 0) return [];
+    if (storedAccounts.length > 0) {
+      return storedAccounts.map((account) => ({
+        key: account.key,
+        slot: account.slot,
+        title: account.title,
+        usernameAt: formatTelegramUsernameAt(account.username),
+        avatarUrl: account.avatarUrl,
+        initials: extractChatAvatarInitials(account.title),
+        unreadLabel: formatTelegramUnreadLabel(
+          account.active ? telegramTotalUnread : account.unreadCount,
+        ),
+        active: account.active,
+        telegramUserId: account.telegramUserId,
+      }));
+    }
     if (!isTelegramMessagesConnected) return [];
     return [
       {
         key: "primary",
+        slot: 0,
         title: profileTitle,
         usernameAt,
         avatarUrl: selfAvatarUrl,
         initials: avatarInitials,
+        unreadLabel: formatTelegramUnreadLabel(telegramTotalUnread),
+        active: true,
+        telegramUserId: connectedTelegramUserId ?? 0,
       },
     ];
-  }, [avatarInitials, isTelegramMessagesConnected, profileTitle, selfAvatarUrl, usernameAt]);
+  }, [
+    avatarInitials,
+    connectedTelegramUserId,
+    isTelegramMessagesConnected,
+    profileTitle,
+    selfAvatarUrl,
+    storedAccounts,
+    telegramTotalUnread,
+    usernameAt,
+  ]);
+
+  // Keep the active roster row in sync with the live Telegram profile + unread total.
+  useEffect(() => {
+    if (!isTelegramMessagesConnected || connectedTelegramUserId == null) return;
+    const slot = activeMessengerSlot;
+    upsertMessengerAccount({
+      slot,
+      telegramUserId: connectedTelegramUserId,
+      title: profileTitle,
+      username: resolvedUsername,
+      avatarUrl: selfAvatarUrl,
+      unreadCount: telegramTotalUnread,
+      makeActive: true,
+    });
+  }, [
+    connectedTelegramUserId,
+    isTelegramMessagesConnected,
+    profileTitle,
+    resolvedUsername,
+    selfAvatarUrl,
+    telegramTotalUnread,
+    activeMessengerSlot,
+  ]);
+
   const showAccountsSection = accountsExpanded;
+
+  const handleAddAccount = useCallback(() => {
+    const count = Math.max(connectedAccounts.length, storedAccounts.length);
+    if (!proActive && count >= FREE_MESSENGER_ACCOUNT_LIMIT) {
+      setLimitDialogOpen(true);
+      return;
+    }
+    openConnectSheet({ addAccount: true });
+  }, [connectedAccounts.length, openConnectSheet, proActive, storedAccounts.length]);
+
+  const handleSwitchAccount = useCallback(
+    async (account: { key: string; slot: number; active: boolean }) => {
+      if (account.active) return;
+      const current = storedAccounts.find((a) => a.active);
+      if (current) setMessengerAccountUnread(current.key, telegramTotalUnread);
+      setActiveMessengerAccount(account.key);
+      const ok = await switchMessengerAccount(account.slot);
+      if (!ok) {
+        if (current) setActiveMessengerAccount(current.key);
+      }
+    },
+    [storedAccounts, switchMessengerAccount, telegramTotalUnread],
+  );
 
   const navRows: MenuRow[] = useMemo(
     () => [
@@ -481,17 +593,28 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
   );
 
   const menuDialogs = (
-    <MessagesMenuDialogs
-      kind={menuDialogKind}
-      onClose={() => setMenuDialogKind(null)}
-      settingsProfile={{
-        title: profileTitle,
-        phone: null,
-        usernameAt,
-        avatarUrl: selfAvatarUrl,
-        initials: avatarInitials.join(""),
-      }}
-    />
+    <>
+      <MessagesMenuDialogs
+        kind={menuDialogKind}
+        onClose={() => setMenuDialogKind(null)}
+        settingsProfile={{
+          title: profileTitle,
+          phone: null,
+          usernameAt,
+          avatarUrl: selfAvatarUrl,
+          initials: avatarInitials.join(""),
+        }}
+      />
+      <AccountLimitReachedDialog
+        visible={limitDialogOpen}
+        onClose={() => setLimitDialogOpen(false)}
+        onBuyProAccess={() => {
+          setLimitDialogOpen(false);
+          setProDialogOpen(true);
+        }}
+      />
+      <ProAccessDialog visible={proDialogOpen} onClose={() => setProDialogOpen(false)} />
+    </>
   );
 
   if (!mounted) {
@@ -671,15 +794,20 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
               <SideMenuSectionDivider color={colors.highlight} />
               <View style={{ paddingTop: 8, paddingBottom: 8 }}>
                 {connectedAccounts.map((account) => (
-                  <View
+                  <Pressable
                     key={account.key}
-                    style={{
+                    accessibilityRole="button"
+                    onPress={() => {
+                      void handleSwitchAccount(account);
+                    }}
+                    style={({ pressed }) => ({
                       flexDirection: "row",
                       alignItems: "center",
                       minHeight: ROW_MIN_H,
                       paddingHorizontal: PAD_X,
                       gap: 12,
-                    }}
+                      opacity: pressed ? 0.8 : 1,
+                    })}
                   >
                     <Pressable
                       accessibilityRole="button"
@@ -695,8 +823,8 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                         scheme={colorScheme}
                         loadEnabled={visible}
                         fetchPriority="high"
-                        profilePhoto={profilePhoto}
-                        animatedIconUrl={selfAnimatedAvatarUrl}
+                        profilePhoto={account.active ? profilePhoto : null}
+                        animatedIconUrl={account.active ? selfAnimatedAvatarUrl : null}
                         emojiFetchEnabled={visible}
                       />
                     </Pressable>
@@ -716,14 +844,39 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
                         </Text>
                       ) : null}
                     </View>
-                    {isTelegramMessagesConnected ? (
+                    {account.unreadLabel ? (
+                      <View
+                        style={{
+                          backgroundColor: colors.undercover,
+                          borderRadius: 11,
+                          minWidth: 22,
+                          height: 22,
+                          paddingHorizontal: 7,
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <Text
+                          style={{
+                            color: colors.primary,
+                            fontSize: 12,
+                            fontWeight: "700",
+                            lineHeight: 16,
+                          }}
+                          numberOfLines={1}
+                        >
+                          {account.unreadLabel}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {account.active && isTelegramMessagesConnected ? (
                       <AccountLogoutText
                         colors={colors}
                         label={t("messages.sideMenu.logOut")}
                         onPress={handleDisconnect}
                       />
                     ) : null}
-                  </View>
+                  </Pressable>
                 ))}
                 <SideMenuRow
                   label={t("messages.sideMenu.addAccount")}

@@ -53,6 +53,7 @@ import {
   setChatListSyncStatus,
   type ChatListSyncStatus,
 } from "./messages/chatListSyncStatus";
+import { setTelegramTotalUnread } from "../messages/telegramUnreadStore";
 import { setChatListBottomLoaderActive } from "./messages/chatListBottomLoaderStatus";
 import { setChatListNearBottomHandler } from "./messages/chatListNearBottom";
 import {
@@ -651,6 +652,13 @@ export function AuthenticatedHomeMessagesPanel({ colors, scrollable = true }: Pr
     useTelegramMessagesConnection();
   const recoverChatsInFlightRef = useRef(false);
   const [chats, setChats] = useState<MessageChatRowData[]>([]);
+
+  // Push total unread count to the global store whenever chat rows change.
+  useEffect(() => {
+    const total = chats.reduce((sum, row) => sum + (row.unread_count > 0 ? row.unread_count : 0), 0);
+    setTelegramTotalUnread(total);
+  }, [chats]);
+
   const [chatListSync, setChatListSync] = useState<ChatListSyncStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [gatewayWarming, setGatewayWarming] = useState(false);

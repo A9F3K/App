@@ -7,6 +7,7 @@ import {
   View,
   type ViewStyle,
 } from "react-native";
+import { readAuthenticatedHomeLayoutWidthPx } from "../authenticatedHomeLayoutWidth";
 import { logPageDisplay } from "../pageDisplayLog";
 import { hairlineBorderWidthPx } from "../scrollIndicatorPx";
 import { layout, useColors } from "../theme";
@@ -147,7 +148,18 @@ export function AuthenticatedHomeSplitBody({
     rowWidthRef.current = rowWidth;
   }, [rowWidth]);
 
-  const effectiveWidth = rowWidth > 0 ? rowWidth : windowWidth;
+  const liveViewportWidthPx = readAuthenticatedHomeLayoutWidthPx(windowWidth);
+  /**
+   * `rowWidth` from `onLayout` lags a frame behind live resize. Prefer the smaller of
+   * measured row vs viewport so shrinking past a breakpoint drops columns immediately
+   * (avoids wide overlay chrome sitting on a 1-column window).
+   */
+  const effectiveWidth =
+    rowWidth > 0
+      ? Math.min(rowWidth, liveViewportWidthPx > 0 ? liveViewportWidthPx : rowWidth)
+      : liveViewportWidthPx > 0
+        ? liveViewportWidthPx
+        : windowWidth;
   const isWide = effectiveWidth > AH.firstBreakpoint;
   const isTriple = effectiveWidth > AH.secondBreakpoint;
   isWideRef.current = isWide;
@@ -176,6 +188,16 @@ export function AuthenticatedHomeSplitBody({
   useEffect(() => {
     onSplitLayoutMetricsChange?.(splitLayoutMetrics);
   }, [onSplitLayoutMetricsChange, splitLayoutMetrics]);
+
+  useEffect(() => {
+    if (!(liveViewportWidthPx > 0)) return;
+    setRowWidth((cur) => {
+      if (!(cur > 0)) return cur;
+      const next = Math.round(liveViewportWidthPx);
+      if (next < cur - 1) return next;
+      return cur;
+    });
+  }, [liveViewportWidthPx]);
 
   useEffect(() => {
     if (isWide) return;
@@ -671,90 +693,12 @@ export function AuthenticatedHomeSplitBody({
     minWidth: AH.splitPaneMinSecondColumnPx,
     minHeight: 0,
   };
+  const hiddenColumnStyle: ViewStyle = { display: "none" };
 
   const columnAiBarWrapStyle: ViewStyle =
     Platform.OS === "web"
       ? { position: "sticky", bottom: 0, zIndex: 2, alignSelf: "stretch" }
       : { alignSelf: "stretch" };
-
-  const middleColumn = (() => {
-    if (middleColumnFooter && !isTriple) {
-      return (
-        <View style={{ ...middleFlexBase, flexDirection: "column", minHeight: 0 }}>
-          <View style={{ flex: 1, minHeight: 0, paddingHorizontal: inset, overflow: "visible" }}>{right}</View>
-          <View style={columnAiBarWrapStyle}>{middleColumnFooter}</View>
-        </View>
-      );
-    }
-    if (middleColumnFooter && isTriple) {
-      return (
-        <View style={{ ...middleFlexBase, flexDirection: "column", minHeight: 0 }}>
-          <View style={{ flex: 1, minHeight: 0, paddingHorizontal: inset, overflow: "visible" }}>{right}</View>
-          <View style={columnAiBarWrapStyle}>{middleColumnFooter}</View>
-        </View>
-      );
-    }
-    return (
-      <View style={{ ...middleFlexBase, flexDirection: "column", minHeight: 0 }}>
-        <View style={{ flex: 1, minHeight: 0, paddingHorizontal: inset, overflow: "visible" }}>{right}</View>
-      </View>
-    );
-  })();
-
-  const thirdColumn = (() => {
-    if (!isTriple) return null;
-    if (thirdColumnFooter) {
-      return (
-        <View
-          style={{
-            width: thirdPanePx,
-            flexShrink: 0,
-            flexDirection: "column",
-            minHeight: 0,
-          }}
-        >
-          <View
-            style={{
-              flex: 1,
-              minHeight: 0,
-              width: "100%",
-              alignSelf: "stretch",
-              flexDirection: "column",
-              paddingHorizontal: inset,
-              // Clip vertical growth so HspScrollColumn sees a bounded scrollport (AI third column).
-              overflow: "hidden",
-            }}
-            {...(Platform.OS === "web"
-              ? ({
-                  dataSet: {
-                    hspSplitColumnScrollHost: "1",
-                    hspColumnFlushRight: "1",
-                  },
-                } as object)
-              : {})}
-          >
-            {third}
-          </View>
-          <View style={columnAiBarWrapStyle}>{thirdColumnFooter}</View>
-        </View>
-      );
-    }
-    return (
-      <View
-        style={{
-          width: thirdPanePx,
-          flexShrink: 0,
-          flexDirection: "column",
-          minHeight: 0,
-          paddingHorizontal: inset,
-          paddingBottom: bottomInset,
-          overflow: "hidden",
-        }}
-      >
-        {third}
-      </View>
-    );
-  })();
 
   return (
     <View
@@ -779,81 +723,126 @@ export function AuthenticatedHomeSplitBody({
       }}
     >
       <AuthenticatedHomeSplitLayoutMetricsProvider value={splitLayoutMetrics}>
-        {!isWide ? (
-          leftColumnFooter ? (
-            <View style={{ flex: 1, width: "100%", flexDirection: "column", minHeight: 0 }}>
-              <View style={{ flex: 1, minHeight: 0 }}>{left}</View>
-              <View style={columnAiBarWrapStyle}>{leftColumnFooter}</View>
-            </View>
-          ) : (
-            <View style={{ flex: 1, minHeight: 0, width: "100%", alignSelf: "stretch" }}>{left}</View>
-          )
-        ) : (
+        {/* One tree for 1/2/3 columns so feed, messages, and chat stay mounted across breakpoints. */}
+        <View
+          style={{
+            flex: 1,
+            width: "100%",
+            flexDirection: isWide ? "row" : "column",
+            alignItems: "stretch",
+            marginBottom: isWide ? -bottomInset : 0,
+            position: "relative",
+          }}
+        >
           <View
-            style={{
-              flex: 1,
-              width: "100%",
-              flexDirection: "row",
-              alignItems: "stretch",
-              marginBottom: -bottomInset,
-              position: "relative",
-            }}
+            style={
+              isWide
+                ? {
+                    width: leftPanePx,
+                    flexShrink: 0,
+                    flexDirection: "column",
+                    minHeight: 0,
+                    ...(leftColumnFooter ? null : { paddingBottom: bottomInset }),
+                  }
+                : {
+                    flex: 1,
+                    width: "100%",
+                    alignSelf: "stretch",
+                    flexDirection: "column",
+                    minHeight: 0,
+                  }
+            }
           >
-            {leftColumnFooter ? (
-              <View
-                style={{
-                  width: leftPanePx,
-                  flexShrink: 0,
-                  flexDirection: "column",
-                  minHeight: 0,
-                }}
-              >
-                <View style={{ flex: 1, minHeight: 0 }}>{left}</View>
-                <View style={columnAiBarWrapStyle}>{leftColumnFooter}</View>
-              </View>
-            ) : (
-              <View
-                style={{
-                  width: leftPanePx,
-                  flexShrink: 0,
-                  paddingBottom: bottomInset,
-                }}
-              >
-                {left}
-              </View>
-            )}
-            {middleColumn}
-            {thirdColumn}
+            <View style={{ flex: 1, minHeight: 0, width: "100%", alignSelf: "stretch" }}>{left}</View>
+            {isWide && leftColumnFooter ? (
+              <View style={columnAiBarWrapStyle}>{leftColumnFooter}</View>
+            ) : null}
+          </View>
+          <View
+            pointerEvents={isWide ? "auto" : "none"}
+            accessibilityElementsHidden={!isWide}
+            importantForAccessibility={isWide ? "auto" : "no-hide-descendants"}
+            style={
+              isWide
+                ? { ...middleFlexBase, flexDirection: "column", minHeight: 0 }
+                : hiddenColumnStyle
+            }
+          >
+            <View style={{ flex: 1, minHeight: 0, paddingHorizontal: inset, overflow: "visible" }}>
+              {right}
+            </View>
+            {middleColumnFooter ? <View style={columnAiBarWrapStyle}>{middleColumnFooter}</View> : null}
+          </View>
+          <View
+            pointerEvents={isTriple ? "auto" : "none"}
+            accessibilityElementsHidden={!isTriple}
+            importantForAccessibility={isTriple ? "auto" : "no-hide-descendants"}
+            style={
+              isTriple
+                ? {
+                    width: thirdPanePx,
+                    flexShrink: 0,
+                    flexDirection: "column",
+                    minHeight: 0,
+                  }
+                : hiddenColumnStyle
+            }
+          >
+            <View
+              style={{
+                flex: 1,
+                minHeight: 0,
+                width: "100%",
+                alignSelf: "stretch",
+                flexDirection: "column",
+                paddingHorizontal: inset,
+                overflow: "hidden",
+                ...(thirdColumnFooter ? null : { paddingBottom: bottomInset }),
+              }}
+              {...(Platform.OS === "web"
+                ? ({
+                    dataSet: {
+                      hspSplitColumnScrollHost: "1",
+                      hspColumnFlushRight: "1",
+                    },
+                  } as object)
+                : {})}
+            >
+              {third}
+            </View>
+            {thirdColumnFooter ? <View style={columnAiBarWrapStyle}>{thirdColumnFooter}</View> : null}
+          </View>
+          {isWide ? (
             <View
               style={overlayDividerHitStyle(firstDividerLeft)}
               {...(webPointerProps(1) ?? {})}
               {...(Platform.OS === "web" ? {} : panResponder1.panHandlers)}
             >
-                <View
-                  pointerEvents="none"
-                  style={dividerLineStyleFor(1)}
-                  {...(Platform.OS === "web"
-                    ? ({ dataSet: { hspSplitDividerStroke: "1" } } as object)
-                    : {})}
-                />
-              </View>
-            {isTriple ? (
               <View
-                style={overlayDividerHitStyle(secondDividerLeft)}
-                {...(webPointerProps(2) ?? {})}
-                {...(Platform.OS === "web" ? {} : panResponder2.panHandlers)}
-              >
-                <View
-                  pointerEvents="none"
-                  style={dividerLineStyleFor(2)}
-                  {...(Platform.OS === "web"
-                    ? ({ dataSet: { hspSplitDividerStroke: "2" } } as object)
-                    : {})}
-                />
-              </View>
-            ) : null}
-          </View>
-        )}
+                pointerEvents="none"
+                style={dividerLineStyleFor(1)}
+                {...(Platform.OS === "web"
+                  ? ({ dataSet: { hspSplitDividerStroke: "1" } } as object)
+                  : {})}
+              />
+            </View>
+          ) : null}
+          {isTriple ? (
+            <View
+              style={overlayDividerHitStyle(secondDividerLeft)}
+              {...(webPointerProps(2) ?? {})}
+              {...(Platform.OS === "web" ? {} : panResponder2.panHandlers)}
+            >
+              <View
+                pointerEvents="none"
+                style={dividerLineStyleFor(2)}
+                {...(Platform.OS === "web"
+                  ? ({ dataSet: { hspSplitDividerStroke: "2" } } as object)
+                  : {})}
+              />
+            </View>
+          ) : null}
+        </View>
       </AuthenticatedHomeSplitLayoutMetricsProvider>
     </View>
   );

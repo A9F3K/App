@@ -204,21 +204,34 @@ export async function telegramMtprotoConnectStartHandler(
   const startBody = await parseRequestBody<{
     resume?: boolean;
     fresh?: boolean;
+    addAccount?: boolean;
+    switchSlot?: number;
     authMethod?: "qr" | "phone";
   }>(request);
   let resume = Boolean(startBody.resume);
   let fresh = Boolean(startBody.fresh);
+  const addAccount = Boolean(startBody.addAccount);
+  const switchSlot =
+    typeof startBody.switchSlot === "number" && Number.isFinite(startBody.switchSlot)
+      ? Math.floor(startBody.switchSlot)
+      : undefined;
   const authMethod = startBody.authMethod === "phone" ? "phone" : "qr";
 
   // After explicit logout, never silently resume from on-disk TDLib — start fresh.
-  if (resume && !fresh && (await isTelegramMessagesLinkRevoked(userOrRes))) {
+  if (resume && !fresh && !addAccount && switchSlot == null && (await isTelegramMessagesLinkRevoked(userOrRes))) {
     logTdlibGatewayApi("connect_start_revoked_force_fresh", { telegramUsername: userOrRes });
     resume = false;
     fresh = true;
   }
 
   try {
-    const snap = await gatewayConnectStart(userOrRes, { resume, fresh, authMethod });
+    const snap = await gatewayConnectStart(userOrRes, {
+      resume,
+      fresh,
+      addAccount,
+      switchSlot,
+      authMethod,
+    });
     const ok = snap.authState !== "failed" || Boolean(snap.attemptId);
     logTdlibGatewayApi("connect_start_gateway_result", {
       telegramUsername: userOrRes,
@@ -228,6 +241,7 @@ export async function telegramMtprotoConnectStartHandler(
       error: snap.error ?? null,
       hasAttemptId: Boolean(snap.attemptId),
       hasQrLink: Boolean(snap.qrLink),
+      messengerSlot: (snap as { messengerSlot?: number }).messengerSlot ?? null,
     });
     return finishJson(
       request,
@@ -240,6 +254,7 @@ export async function telegramMtprotoConnectStartHandler(
         error: snap.error ?? null,
         chatCount: snap.chatCount ?? null,
         codeDelivery: snap.codeDelivery ?? null,
+        messengerSlot: (snap as { messengerSlot?: number }).messengerSlot ?? null,
       },
       snap.httpStatus >= 400 ? snap.httpStatus : 200,
     );

@@ -43,11 +43,17 @@ export function useAuthenticatedHomeLayoutMode(): {
   const fallbackWidthPx = readAuthenticatedHomeLayoutWidthPx(windowWidth);
 
   if (splitMetrics) {
+    const layoutWidthPx = Math.min(splitMetrics.effectiveSplitWidthPx, fallbackWidthPx);
+    const isWide = isAuthenticatedHomeWideLayoutWidthPx(layoutWidthPx);
     return {
-      layoutWidthPx: splitMetrics.effectiveSplitWidthPx,
-      isWide: splitMetrics.columnCount >= 2,
-      isTripleColumn: splitMetrics.columnCount === 3,
-      columnCount: splitMetrics.columnCount,
+      layoutWidthPx,
+      isWide,
+      isTripleColumn: isAuthenticatedHomeTripleColumnLayoutWidthPx(layoutWidthPx),
+      columnCount: isWide
+        ? isAuthenticatedHomeTripleColumnLayoutWidthPx(layoutWidthPx)
+          ? 3
+          : 2
+        : 1,
     };
   }
 

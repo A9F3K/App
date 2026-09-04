@@ -71,7 +71,7 @@ export function floatingDialogViewportMax(
   };
 }
 
-export type FloatingDialogSizeKind = "profile" | "profileList" | "modal" | "picker" | "connect";
+export type FloatingDialogSizeKind = "profile" | "profileList" | "modal" | "picker" | "connect" | "pro";
 
 /**
  * Reasonable first-open size from viewport + dialog role.
@@ -109,6 +109,11 @@ export function resolveFloatingDialogDefaultSize(
       return prefer(
         Math.min(420, Math.max(360, Math.round(windowWidth * 0.34))),
         Math.min(760, Math.max(560, Math.round(windowHeight * 0.82))),
+      );
+    case "pro":
+      return prefer(
+        Math.min(460, Math.max(380, Math.round(windowWidth * 0.38))),
+        Math.min(780, Math.max(620, Math.round(windowHeight * 0.86))),
       );
     case "modal":
     default:

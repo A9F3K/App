@@ -4,7 +4,7 @@ import { randomUUID } from "crypto";
 import type { Client } from "tdl";
 import * as tdl from "tdl";
 import { getTdjson } from "prebuilt-tdlib";
-import { getTdlibDbRoot, getTdlibRestoreMode, getTdlibStorageMode, getTelegramApiCredentials, getTdlibUserDir } from "./env.js";
+import { getTdlibDbRoot, getTdlibRestoreMode, getTdlibStorageMode, getTelegramApiCredentials, getTdlibUserDir, getMessengerSlot, setMessengerSlot, allocateNextMessengerSlot } from "./env.js";
 import {
   clearGatewayUserIdleState,
   pinGatewayUserSession,
@@ -67,6 +67,7 @@ export type ConnectAttemptSnapshot = {
   error: string | null;
   chatCount: number | null;
   codeDelivery: ConnectCodeDelivery | null;
+  messengerSlot?: number;
 };
 
 type AttemptRecord = ConnectAttemptSnapshot & {
@@ -182,6 +183,7 @@ function snapshot(record: AttemptRecord): ConnectAttemptSnapshot {
     error: record.error,
     chatCount: record.chatCount,
     codeDelivery: record.codeDelivery,
+    messengerSlot: getMessengerSlot(record.telegramUsername),
   };
 }
 
@@ -529,8 +531,17 @@ function unpinConnectAuth(telegramUsername: string): void {
 
 async function startConnectAttemptUnlocked(
   telegramUsername: string,
-  options?: { fresh?: boolean; authMethod?: ConnectAuthMethod },
+  options?: { fresh?: boolean; authMethod?: ConnectAuthMethod; addAccount?: boolean },
 ): Promise<ConnectAttemptSnapshot> {
+  if (options?.addAccount) {
+    await softUnloadGatewayUserSession(telegramUsername);
+    const nextSlot = allocateNextMessengerSlot(telegramUsername);
+    setMessengerSlot(telegramUsername, nextSlot);
+    const { clearLiveChatCache } = await import("./liveChatCache.js");
+    clearLiveChatCache(telegramUsername);
+    logGateway("connect_add_account_slot", { telegramUsername, nextSlot });
+    options = { ...options, fresh: true };
+  }
   const authMethod = resolveConnectAuthMethod(
     telegramUsername,
     options?.authMethod === "phone" ? "phone" : "qr",
@@ -650,16 +661,16 @@ async function startConnectAttemptUnlocked(
 
 export async function startConnectAttempt(
   telegramUsername: string,
-  options?: { fresh?: boolean; authMethod?: ConnectAuthMethod },
+  options?: { fresh?: boolean; authMethod?: ConnectAuthMethod; addAccount?: boolean },
 ): Promise<ConnectAttemptSnapshot> {
   const pending = connectStartInflight.get(telegramUsername);
   if (pending) {
     const snap = await pending;
     // A concurrent start already owns the client; reuse unless caller forces a wipe.
-    if (!options?.fresh && snap.authState !== "failed") {
+    if (!options?.fresh && !options?.addAccount && snap.authState !== "failed") {
       return snap;
     }
-    if (!options?.fresh) {
+    if (!options?.fresh && !options?.addAccount) {
       // Previous attempt failed — fall through to start a new one after it settles.
     } else {
       await pending.catch(() => undefined);
@@ -953,6 +964,8 @@ export function listPersistedSessionUsernames(): string[] {
   const usernames: string[] = [];
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
+    // Extra messenger slots are `user__sN` — restore via the HSP username + active slot.
+    if (/__s\d+$/.test(entry.name)) continue;
     if (fs.existsSync(path.join(root, entry.name, "db"))) usernames.push(entry.name);
   }
   return usernames;
@@ -1110,6 +1123,7 @@ export async function resumeExistingSession(
       error: "no_session",
       chatCount: null,
       codeDelivery: null,
+      messengerSlot: getMessengerSlot(telegramUsername),
     };
   }
   const active = getActiveRecord(telegramUsername);
@@ -1117,6 +1131,24 @@ export async function resumeExistingSession(
     return snapshot(active);
   }
   return startConnectAttempt(telegramUsername, { authMethod: options?.authMethod });
+}
+
+/** Park the current TDLib client and wake another on-disk messenger slot. */
+export async function switchMessengerSlot(
+  telegramUsername: string,
+  slot: number,
+): Promise<ConnectAttemptSnapshot> {
+  const next = Number.isFinite(slot) && slot >= 0 ? Math.floor(slot) : 0;
+  const current = getMessengerSlot(telegramUsername);
+  if (next === current) {
+    const active = getActiveRecord(telegramUsername);
+    if (active && active.authState === "ready") return snapshot(active);
+  }
+  await softUnloadGatewayUserSession(telegramUsername);
+  setMessengerSlot(telegramUsername, next);
+  const { clearLiveChatCache } = await import("./liveChatCache.js");
+  clearLiveChatCache(telegramUsername);
+  return resumeExistingSession(telegramUsername);
 }
 
 export async function listContactsForUser(

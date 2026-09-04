@@ -65,6 +65,7 @@ import {
   toggleChatPinnedForUser,
   setPinnedChatsOrderForUser,
   startConnectAttempt,
+  switchMessengerSlot,
   resendConnectCode,
   submitConnectCode,
   submitConnectPassword,
@@ -246,6 +247,8 @@ export function startTdlibGatewayServer(): http.Server {
             resume?: boolean;
             fresh?: boolean;
             resumeOnly?: boolean;
+            addAccount?: boolean;
+            switchSlot?: number;
             authMethod?: "qr" | "phone";
           };
           const telegramUsername = (body.telegramUsername || "").trim();
@@ -254,18 +257,29 @@ export function startTdlibGatewayServer(): http.Server {
             telegramUsername: telegramUsername || null,
             resume: Boolean(body.resume),
             fresh: Boolean(body.fresh),
+            addAccount: Boolean(body.addAccount),
+            switchSlot:
+              typeof body.switchSlot === "number" && Number.isFinite(body.switchSlot)
+                ? Math.floor(body.switchSlot)
+                : null,
             authMethod,
           });
           if (!telegramUsername) {
             sendJson(res, 400, { ok: false, error: "username_required" });
             return;
           }
-          let snap = body.resume
-            ? await resumeExistingSession(telegramUsername, { authMethod })
-            : await startConnectAttempt(telegramUsername, {
-                fresh: Boolean(body.fresh),
-                authMethod,
-              });
+          let snap: Awaited<ReturnType<typeof startConnectAttempt>>;
+          if (typeof body.switchSlot === "number" && Number.isFinite(body.switchSlot)) {
+            snap = await switchMessengerSlot(telegramUsername, Math.floor(body.switchSlot));
+          } else if (body.resume) {
+            snap = await resumeExistingSession(telegramUsername, { authMethod });
+          } else {
+            snap = await startConnectAttempt(telegramUsername, {
+              fresh: Boolean(body.fresh),
+              addAccount: Boolean(body.addAccount),
+              authMethod,
+            });
+          }
           if (body.resume && snap.authState === "failed" && snap.error === "no_session" && !body.resumeOnly) {
             logGateway("connect_start_no_session_fallback", { telegramUsername });
             snap = await startConnectAttempt(telegramUsername, { authMethod });
@@ -275,6 +289,7 @@ export function startTdlibGatewayServer(): http.Server {
             authState: snap.authState,
             error: snap.error,
             hasQrLink: Boolean(snap.qrLink),
+            messengerSlot: snap.messengerSlot ?? null,
           });
           sendJson(res, 200, { ok: snap.authState !== "failed" || Boolean(snap.attemptId), ...snap });
           return;

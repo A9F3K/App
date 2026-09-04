@@ -14,6 +14,7 @@ export type GatewayConnectSnapshot = {
   qrLink?: string | null;
   error?: string | null;
   chatCount?: number | null;
+  messengerSlot?: number | null;
   codeDelivery?: {
     type: string;
     nextType?: string | null;
@@ -118,7 +119,14 @@ function safeHost(url: string): string | null {
 
 export async function gatewayConnectStart(
   telegramUsername: string,
-  options?: { resume?: boolean; fresh?: boolean; resumeOnly?: boolean; authMethod?: "qr" | "phone" },
+  options?: {
+    resume?: boolean;
+    fresh?: boolean;
+    resumeOnly?: boolean;
+    addAccount?: boolean;
+    switchSlot?: number;
+    authMethod?: "qr" | "phone";
+  },
 ): Promise<GatewayConnectSnapshot & { httpStatus: number }> {
   const { response, json } = await gatewayFetch("/v1/connect/start", {
     method: "POST",
@@ -127,6 +135,11 @@ export async function gatewayConnectStart(
       resume: Boolean(options?.resume),
       fresh: Boolean(options?.fresh),
       resumeOnly: Boolean(options?.resumeOnly),
+      addAccount: Boolean(options?.addAccount),
+      switchSlot:
+        typeof options?.switchSlot === "number" && Number.isFinite(options.switchSlot)
+          ? Math.floor(options.switchSlot)
+          : undefined,
       authMethod: options?.authMethod === "phone" ? "phone" : "qr",
     }),
   });

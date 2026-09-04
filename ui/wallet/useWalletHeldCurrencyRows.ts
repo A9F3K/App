@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { useAppStrings } from "../../locales/AppStringsContext";
 import {
@@ -9,6 +9,7 @@ import { swapTonTokenImage } from "../components/swap/swapFormAssets";
 import { logPageDisplay } from "../pageDisplayLog";
 import { fetchTonapiAccountHoldings } from "../ton/fetchTonapiAccountHoldings";
 import { requestWalletActivate } from "../ton/requestWalletActivate";
+import { postWalletTopUpFeedNotification } from "../feed/feedNotificationActions";
 import {
   formatSwapJettonBalance,
   formatSwapTokenPriceUsd,
@@ -93,8 +94,10 @@ export type WalletHeldCurrencyRowsState = {
 export function useWalletHeldCurrencyRows(
   walletAddress: string | null | undefined,
   enabled = true,
+  /** Telegram initData for authenticated calls (e.g. wallet activation). */
+  initDataRaw?: string | null,
 ): WalletHeldCurrencyRowsState {
-  const { locale } = useAppStrings();
+  const { locale, t, tf } = useAppStrings();
   const refreshNonce = useSyncExternalStore(
     subscribeWalletBalanceRefresh,
     getWalletBalanceRefreshNonce,
@@ -127,6 +130,8 @@ export function useWalletHeldCurrencyRows(
     });
     return label;
   }, [heldRows]);
+
+  const prevNativeBalanceRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
@@ -163,8 +168,31 @@ export function useWalletHeldCurrencyRows(
           statusLc &&
           statusLc !== "active"
         ) {
-          void requestWalletActivate();
+          void requestWalletActivate({ initDataRaw: initDataRaw ?? undefined, force: true });
         }
+
+        // Detect incoming transfer: balance increased since last poll.
+        const prevBal = prevNativeBalanceRef.current;
+        if (
+          prevBal !== null &&
+          holdings.nativeBalance > prevBal &&
+          holdings.nativeBalance - prevBal >= 0.0001
+        ) {
+          const delta = holdings.nativeBalance - prevBal;
+          const symbol = SWAP_GRAM_TOKEN.symbol;
+          const deltaStr = delta.toFixed(7).replace(/\.?0+$/, "");
+          const sourceId = `incoming:${Date.now()}:${deltaStr}:${symbol}:${trimmed.slice(-8)}`;
+          void postWalletTopUpFeedNotification({
+            initDataRaw: initDataRaw ?? undefined,
+            sourceId,
+            amount: deltaStr,
+            symbol,
+            title: t("feed.incomingTransfer.title"),
+            subtitle: tf("feed.incomingTransfer.subtitle", { amount: deltaStr, symbol }),
+            trailingLabel: tf("feed.incomingTransfer.trailing", { amount: deltaStr, symbol }),
+          });
+        }
+        prevNativeBalanceRef.current = holdings.nativeBalance;
 
         const next: ChooseCurrencyRow[] = [];
 

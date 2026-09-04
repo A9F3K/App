@@ -3,6 +3,7 @@ import { View, useWindowDimensions } from "react-native";
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { useWalletHeldCurrencyRows } from "../../wallet/useWalletHeldCurrencyRows";
+import { getInitDataString } from "../telegramWebApp";
 import { formatWalletDialogSubtitle } from "../../wallet/formatWalletDialogSubtitle";
 import { resolveFloatingDialogInsets } from "../floatingDialogChrome";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
@@ -36,7 +37,7 @@ export function WalletCurrenciesDialog({
   );
   const dialogInsets = resolveFloatingDialogInsets(windowHeight);
   const trimmedWallet = walletAddress.trim() || null;
-  const { rows, isLoading, error } = useWalletHeldCurrencyRows(trimmedWallet, visible);
+  const { rows, isLoading, error } = useWalletHeldCurrencyRows(trimmedWallet, visible, getInitDataString());
   const title = titleProp ?? t("home.header.walletCurrenciesTitle");
   const subtitle = formatWalletDialogSubtitle(displayName, walletAddress, t, tf);
 
