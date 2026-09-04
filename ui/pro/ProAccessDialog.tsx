@@ -10,6 +10,7 @@ import { FloatingDialogShell } from "../components/FloatingDialogShell";
 import { FloatingDialogStickyHeader } from "../components/FloatingDialogStickyHeader";
 import { resolveFloatingDialogInsets } from "../components/floatingDialogChrome";
 import { resolveFloatingDialogDefaultSize } from "../components/floatingDialogGeometry";
+import { FloatingDialogScrollChromeProvider } from "../components/floatingDialogScrollChrome";
 import { HspScrollColumn } from "../components/HspScrollColumn";
 import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
 import { SmartGradientDivider } from "../components/smart/SmartGradientDivider";
@@ -42,6 +43,7 @@ export function ProAccessDialog({ visible, onClose }: Props) {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [planId, setPlanId] = useState<ProAccessPlanId>("month");
   const [subscribed, setSubscribed] = useState(false);
+  const [headerExtendPx, setHeaderExtendPx] = useState(0);
   const defaultSize = useMemo(
     () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "pro"),
     [windowHeight, windowWidth],
@@ -75,156 +77,160 @@ export function ProAccessDialog({ visible, onClose }: Props) {
       onRequestClose={onClose}
       testId="pro-access"
     >
-      <View style={{ flex: 1, minHeight: 0 }}>
-        <FloatingDialogStickyHeader
-          insets={dialogInsets}
-          onClose={onClose}
-          closeLabel={t("common.close")}
-          title={t("pro.sale.title")}
-        />
-
-        <HspScrollColumn
-          style={{ flex: 1, minHeight: 0 }}
-          scrollIndicatorOverlaySeam={false}
-          contentContainerStyle={{
-            paddingTop: 14,
-            paddingBottom: 22,
-            gap: 22,
-          }}
-          scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
-        >
-          <View style={{ paddingHorizontal: dialogInsets.padX, gap: 6 }}>
-            <Text
-              style={{
-                color: ink,
-                fontSize: 22,
-                lineHeight: 28,
-                fontWeight: "700",
-                fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-              }}
-            >
-              {t("pro.sale.headline")}
-            </Text>
-            <Text
-              style={{
-                color: muted,
-                fontSize: 14,
-                lineHeight: 20,
-                fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-              }}
-            >
-              {t("pro.sale.subtitle")}
-            </Text>
-          </View>
-
-          <ProTariffCarousel
-            planId={planId}
-            onSelectPlan={setPlanId}
-            contentPadX={dialogInsets.padX}
+      <FloatingDialogScrollChromeProvider headerExtendPx={headerExtendPx}>
+        <View style={{ flex: 1, minHeight: 0 }}>
+          <FloatingDialogStickyHeader
+            insets={dialogInsets}
+            onClose={onClose}
+            closeLabel={t("common.close")}
+            title={t("pro.sale.title")}
+            onHeightChange={setHeaderExtendPx}
           />
 
-          <View style={{ paddingHorizontal: dialogInsets.padX, gap: 16 }}>
-            {PRO_ACCESS_FEATURES.map((feature) => (
-              <View key={feature.id} style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}>
-                <View
-                  style={{
-                    width: 26,
-                    height: 24,
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
-                    marginTop: 0,
-                  }}
-                >
-                  <ProFeatureIcon
-                    id={feature.id}
-                    color={lightTheme ? materials.accent : colors.primary}
-                    size={24}
-                  />
-                </View>
-                <View style={{ flex: 1, gap: 3, minWidth: 0 }}>
-                  <Text
-                    style={{
-                      color: ink,
-                      fontSize: 14,
-                      lineHeight: 24,
-                      fontWeight: "700",
-                      fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-                    }}
-                  >
-                    {t(feature.titleKey as AppStringKey)}
-                  </Text>
-                  <Text
-                    style={{
-                      color: muted,
-                      fontSize: 13,
-                      lineHeight: 18,
-                      fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-                    }}
-                  >
-                    {t(feature.bodyKey as AppStringKey)}
-                  </Text>
-                </View>
-              </View>
-            ))}
-          </View>
-        </HspScrollColumn>
-
-        <View
-          style={{
-            flexShrink: 0,
-            backgroundColor: colors.background,
-            zIndex: 4,
-          }}
-        >
-          <SmartGradientDivider bleedPastContentInset={false} horizontalPaddingPx={0} />
-          <View
-            style={{
-              paddingHorizontal: dialogInsets.padX,
+          <HspScrollColumn
+            style={{ flex: 1, minHeight: 0 }}
+            scrollIndicatorOverlaySeam={false}
+            contentContainerStyle={{
               paddingTop: 14,
-              paddingBottom: dialogInsets.headerPadBottom + 6,
-              gap: 10,
-              alignItems: "center",
+              paddingBottom: 22,
+              gap: 22,
             }}
+            scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+            indicatorColor={colors.scrollIndicator}
           >
-            {subscribed ? (
-              <View
+            <View style={{ paddingHorizontal: dialogInsets.padX, gap: 6 }}>
+              <Text
                 style={{
-                  alignSelf: "stretch",
-                  borderRadius: 12,
-                  padding: 14,
-                  backgroundColor: materials.plate,
-                  borderWidth: 1,
-                  borderColor: materials.chrome,
+                  color: ink,
+                  fontSize: 22,
+                  lineHeight: 28,
+                  fontWeight: "700",
+                  fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
                 }}
               >
-                <Text style={{ color: materials.metalInk, fontWeight: "700", fontSize: 15 }}>
-                  {t("pro.sale.activated")}
-                </Text>
-                <Text style={{ color: materials.metalMuted, fontSize: 13, marginTop: 4 }}>
-                  {tf("pro.sale.activatedHint", { plan: selectedPlanLabel })}
-                </Text>
-              </View>
-            ) : (
-              <ProSubscribeButton
-                label={tf("pro.sale.subscribe", { price: formatUsd(selected.priceUsd) })}
-                onPress={onSubscribe}
-              />
-            )}
-            <Text
+                {t("pro.sale.headline")}
+              </Text>
+              <Text
+                style={{
+                  color: muted,
+                  fontSize: 14,
+                  lineHeight: 20,
+                  fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                }}
+              >
+                {t("pro.sale.subtitle")}
+              </Text>
+            </View>
+
+            <ProTariffCarousel
+              planId={planId}
+              onSelectPlan={setPlanId}
+              contentPadX={dialogInsets.padX}
+            />
+
+            <View style={{ paddingHorizontal: dialogInsets.padX, gap: 16 }}>
+              {PRO_ACCESS_FEATURES.map((feature) => (
+                <View key={feature.id} style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}>
+                  <View
+                    style={{
+                      width: 26,
+                      height: 24,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                      marginTop: 0,
+                    }}
+                  >
+                    <ProFeatureIcon
+                      id={feature.id}
+                      color={lightTheme ? materials.accent : colors.primary}
+                      size={24}
+                    />
+                  </View>
+                  <View style={{ flex: 1, gap: 3, minWidth: 0 }}>
+                    <Text
+                      style={{
+                        color: ink,
+                        fontSize: 14,
+                        lineHeight: 24,
+                        fontWeight: "700",
+                        fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                      }}
+                    >
+                      {t(feature.titleKey as AppStringKey)}
+                    </Text>
+                    <Text
+                      style={{
+                        color: muted,
+                        fontSize: 13,
+                        lineHeight: 18,
+                        fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                      }}
+                    >
+                      {t(feature.bodyKey as AppStringKey)}
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          </HspScrollColumn>
+
+          <View
+            style={{
+              flexShrink: 0,
+              backgroundColor: colors.background,
+              zIndex: 4,
+            }}
+          >
+            <SmartGradientDivider bleedPastContentInset={false} horizontalPaddingPx={0} />
+            <View
               style={{
-                color: muted,
-                fontSize: 12,
-                lineHeight: 17,
-                textAlign: "center",
-                alignSelf: "stretch",
+                paddingHorizontal: dialogInsets.padX,
+                paddingTop: 14,
+                paddingBottom: dialogInsets.headerPadBottom + 6,
+                gap: 10,
+                alignItems: "center",
               }}
             >
-              {t("pro.sale.footer")}
-            </Text>
+              {subscribed ? (
+                <View
+                  style={{
+                    alignSelf: "stretch",
+                    borderRadius: 12,
+                    padding: 14,
+                    backgroundColor: materials.plate,
+                    borderWidth: 1,
+                    borderColor: materials.chrome,
+                  }}
+                >
+                  <Text style={{ color: materials.metalInk, fontWeight: "700", fontSize: 15 }}>
+                    {t("pro.sale.activated")}
+                  </Text>
+                  <Text style={{ color: materials.metalMuted, fontSize: 13, marginTop: 4 }}>
+                    {tf("pro.sale.activatedHint", { plan: selectedPlanLabel })}
+                  </Text>
+                </View>
+              ) : (
+                <ProSubscribeButton
+                  label={tf("pro.sale.subscribe", { price: formatUsd(selected.priceUsd) })}
+                  onPress={onSubscribe}
+                />
+              )}
+              <Text
+                style={{
+                  color: muted,
+                  fontSize: 12,
+                  lineHeight: 17,
+                  textAlign: "center",
+                  alignSelf: "stretch",
+                }}
+              >
+                {t("pro.sale.footer")}
+              </Text>
+            </View>
           </View>
         </View>
-      </View>
+      </FloatingDialogScrollChromeProvider>
     </FloatingDialogShell>
   );
 }

@@ -26,7 +26,7 @@ export type ProAccessMaterials = {
   accent: string;
 };
 
-/** Shared black metal for tariff cards + subscribe CTA (both themes). Cards stay obscure/matte. */
+/** Shared black metal for tariff cards (both themes). Cards stay obscure/matte. */
 const BLACK_METAL = {
   plate: "#0E0E0E",
   porcelain: "#161616",
@@ -35,18 +35,26 @@ const BLACK_METAL = {
   metalMuted: "#9A9A9A",
 } as const;
 
+/** Light-theme tray: darker than dialog `#F1F1F1` so black cards and selection ring read clearly. */
+const LIGHT_FIELD = "#9A9A9A";
+const LIGHT_FIELD_MID = "#868686";
+
 export function resolveProAccessMaterials(
   colors: ThemeColors,
-  _lightTheme: boolean,
+  lightTheme: boolean,
 ): ProAccessMaterials {
   return {
-    field: colors.undercover,
+    field: lightTheme ? LIGHT_FIELD : colors.undercover,
     ...BLACK_METAL,
+    // Dark rim on light so unselected cards separate from the grey tray.
+    chrome: lightTheme ? "#0A0A0A" : BLACK_METAL.chrome,
     ink: colors.primary,
     muted: colors.secondary,
     accent: colors.scrollIndicator,
   };
 }
+
+export const PRO_ACCESS_LIGHT_FIELD_MID = LIGHT_FIELD_MID;
 
 export function parseHex(hex: string): { r: number; g: number; b: number } | null {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
@@ -225,7 +233,9 @@ export function paintPlatinumLiveOverlay(
   }
 
   const ao = ctx.createLinearGradient(0, 0, 0, h);
-  ao.addColorStop(0, `rgba(255,255,255,${isPlate ? 0.03 : lightTheme || isCta ? 0.28 : 0.14})`);
+  const topHighlight =
+    isPlate ? 0.03 : kind === "field" && lightTheme ? 0.06 : lightTheme || isCta ? 0.28 : 0.14;
+  ao.addColorStop(0, `rgba(255,255,255,${topHighlight})`);
   ao.addColorStop(0.14, "rgba(255,255,255,0)");
   ao.addColorStop(0.86, "rgba(0,0,0,0)");
   ao.addColorStop(1, `rgba(0,0,0,${aoStrength})`);
@@ -233,16 +243,35 @@ export function paintPlatinumLiveOverlay(
   ctx.fillRect(0, 0, w, h);
 
   if (kind === "field") {
-    const lip = ctx.createLinearGradient(0, 0, 0, 12);
-    lip.addColorStop(0, "rgba(255,255,255,0.35)");
-    lip.addColorStop(1, "rgba(255,255,255,0)");
-    ctx.fillStyle = lip;
-    ctx.fillRect(0, 0, w, 12);
+    if (lightTheme) {
+      // Crisp seam vs dialog background — no washed white lip.
+      ctx.fillStyle = "rgba(0,0,0,0.22)";
+      ctx.fillRect(0, 0, w, 1);
+      const topShade = ctx.createLinearGradient(0, 1, 0, 14);
+      topShade.addColorStop(0, "rgba(0,0,0,0.14)");
+      topShade.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = topShade;
+      ctx.fillRect(0, 1, w, 14);
 
-    const floor = ctx.createLinearGradient(0, h - 16, 0, h);
-    floor.addColorStop(0, "rgba(0,0,0,0)");
-    floor.addColorStop(1, lightTheme ? "rgba(20,28,38,0.14)" : "rgba(0,0,0,0.38)");
-    ctx.fillStyle = floor;
-    ctx.fillRect(0, h - 16, w, 16);
+      ctx.fillStyle = "rgba(0,0,0,0.16)";
+      ctx.fillRect(0, h - 1, w, 1);
+      const floor = ctx.createLinearGradient(0, h - 14, 0, h - 1);
+      floor.addColorStop(0, "rgba(0,0,0,0)");
+      floor.addColorStop(1, "rgba(0,0,0,0.12)");
+      ctx.fillStyle = floor;
+      ctx.fillRect(0, h - 14, w, 13);
+    } else {
+      const lip = ctx.createLinearGradient(0, 0, 0, 12);
+      lip.addColorStop(0, "rgba(255,255,255,0.35)");
+      lip.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = lip;
+      ctx.fillRect(0, 0, w, 12);
+
+      const floor = ctx.createLinearGradient(0, h - 16, 0, h);
+      floor.addColorStop(0, "rgba(0,0,0,0)");
+      floor.addColorStop(1, "rgba(0,0,0,0.38)");
+      ctx.fillStyle = floor;
+      ctx.fillRect(0, h - 16, w, 16);
+    }
   }
 }

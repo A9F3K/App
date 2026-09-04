@@ -21,10 +21,12 @@ import {
 } from "../scrollIndicatorPx";
 import { useColors } from "../theme";
 import { useTelegram } from "../components/Telegram";
+import { HYPERLINKS_SPACE_LOGO_GREEN } from "../components/HyperlinksSpaceLogo";
 import { ScrollIndicatorDragHandle } from "../components/ScrollIndicatorDragHandle";
 import { ProTariffCardFace } from "./ProTariffCardFace";
 import { ProTariffUndercoverCanvas } from "./ProTariffUndercoverCanvas";
 import {
+  PRO_ACCESS_LIGHT_FIELD_MID,
   resolveProAccessMaterials,
   type ProAccessMaterials,
 } from "./proAccessMaterials";
@@ -222,8 +224,16 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
       alignSelf: "stretch",
       backgroundColor: materials.field,
       overflow: "hidden",
+      ...(lightTheme
+        ? {
+            borderTopWidth: 1,
+            borderBottomWidth: 1,
+            borderTopColor: "rgba(0,0,0,0.22)",
+            borderBottomColor: "rgba(0,0,0,0.16)",
+          }
+        : null),
     };
-  }, [materials.field]);
+  }, [materials.field, lightTheme]);
 
   return (
     <View style={{ gap: 10, width: "100%", alignSelf: "stretch" }}>
@@ -243,7 +253,7 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
       <View ref={bandRef} onLayout={onViewportLayout} style={undercoverStyle}>
         <ProTariffUndercoverCanvas
           undercover={materials.field}
-          background={lightTheme ? "#DDDDDD" : materials.plate}
+          background={lightTheme ? PRO_ACCESS_LIGHT_FIELD_MID : materials.plate}
           highlight={materials.chrome}
           primary={materials.metalInk}
           lightTheme={lightTheme}
@@ -377,10 +387,10 @@ function TariffCard({
           transition: "transform 180ms ease, box-shadow 180ms ease, border-color 160ms ease",
           boxShadow: lightTheme
             ? selected
-              ? `0 1px 0 rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.08)`
+              ? `0 3px 12px rgba(0,0,0,0.28), 0 0 0 2px ${HYPERLINKS_SPACE_LOGO_GREEN}, inset 0 1px 0 rgba(255,255,255,0.1)`
               : hover
-                ? `inset 0 1px 0 rgba(255,255,255,0.06)`
-                : `inset 0 1px 0 rgba(255,255,255,0.04)`
+                ? `0 2px 8px rgba(0,0,0,0.22), 0 0 0 1px rgba(0,0,0,0.55)`
+                : `0 2px 6px rgba(0,0,0,0.18), 0 0 0 1px rgba(0,0,0,0.4)`
             : selected
               ? `0 4px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.06)`
               : hover
@@ -404,8 +414,12 @@ function TariffCard({
         opacity: pressed ? 0.94 : 1,
         zIndex: selected ? 3 : 2,
         backgroundColor: materials.plate,
-        borderWidth: selected ? 1.5 : 1,
-        borderColor: selected ? "#FFFFFF" : materials.chrome,
+        borderWidth: selected ? (lightTheme ? 2 : 1.5) : 1,
+        borderColor: selected
+          ? lightTheme
+            ? HYPERLINKS_SPACE_LOGO_GREEN
+            : "#FFFFFF"
+          : materials.chrome,
         ...web3d,
       })}
     >
@@ -414,8 +428,8 @@ function TariffCard({
         undercover={materials.plate}
         background={selected ? materials.porcelain : materials.plate}
         highlight={materials.chrome}
-        primary={materials.metalInk}
-        lightTheme
+        primary={lightTheme && selected ? HYPERLINKS_SPACE_LOGO_GREEN : materials.metalInk}
+        lightTheme={lightTheme}
       />
 
       <View style={{ flex: 1, padding: 14, justifyContent: "space-between", zIndex: 1 }}>

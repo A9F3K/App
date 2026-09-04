@@ -99,13 +99,19 @@ export function ProTariffCardFace({
 
       roundRect(ctx, 0.75, 0.75, w - 1.5, h - 1.5, r - 0.2);
       ctx.strokeStyle = selected
-        ? "rgba(255,255,255,0.88)"
-        : withAlpha(highlight, 0.55);
-      ctx.lineWidth = selected ? 1.5 : 1;
+        ? lightTheme
+          ? withAlpha(primary, 0.95)
+          : "rgba(255,255,255,0.88)"
+        : withAlpha(highlight, lightTheme ? 0.75 : 0.55);
+      ctx.lineWidth = selected ? (lightTheme ? 2 : 1.5) : 1;
       ctx.stroke();
 
       roundRect(ctx, 2.2, 2.2, w - 4.4, h - 4.4, r - 1.8);
-      ctx.strokeStyle = selected ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.35)";
+      ctx.strokeStyle = selected
+        ? lightTheme
+          ? withAlpha(primary, 0.28)
+          : "rgba(255,255,255,0.12)"
+        : "rgba(0,0,0,0.35)";
       ctx.lineWidth = 1;
       ctx.stroke();
 

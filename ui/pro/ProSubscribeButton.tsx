@@ -4,6 +4,7 @@ import { Platform, Pressable, Text, View } from "react-native";
 import { HYPERLINKS_SPACE_LOGO_GREEN } from "../components/HyperlinksSpaceLogo";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../fonts";
 import { useTelegram } from "../components/Telegram";
+import { typographyRect15, uiTextVerticalCompensationY } from "../theme";
 import { mixHex, withAlpha } from "./proAccessMaterials";
 
 type Props = {
@@ -12,11 +13,11 @@ type Props = {
 };
 
 const LOGO_GREEN = HYPERLINKS_SPACE_LOGO_GREEN;
-const LOGO_GREEN_DEEP = "#009E3F";
-const LOGO_GREEN_LIFT = "#3CFF86";
+const LOGO_GREEN_DEEP = "#00B348";
+const LOGO_GREEN_LIFT = "#1AE86A";
 
 /**
- * Active Pro subscribe CTA — logo-green plate (reads as enabled, not chrome metal).
+ * Active Pro subscribe CTA — clean logo-green plate (reads as enabled).
  */
 export function ProSubscribeButton({ label, onPress }: Props) {
   const { colorScheme } = useTelegram();
@@ -48,7 +49,7 @@ export function ProSubscribeButton({ label, onPress }: Props) {
     let grainKey = "";
 
     const ensureGrain = (w: number, h: number) => {
-      const key = `${w}x${h}:logo-green-cta`;
+      const key = `${w}x${h}:logo-green-cta-v2:${lightTheme ? 1 : 0}`;
       if (grain && grainKey === key) return grain;
       grain = document.createElement("canvas");
       grain.width = Math.max(1, Math.round(w));
@@ -57,26 +58,19 @@ export function ProSubscribeButton({ label, onPress }: Props) {
       const g = grain.getContext("2d");
       if (!g) return grain;
 
-      const base = g.createLinearGradient(0, 0, w * 0.15, h);
-      base.addColorStop(0, LOGO_GREEN_LIFT);
-      base.addColorStop(0.35, LOGO_GREEN);
-      base.addColorStop(0.72, mixHex(LOGO_GREEN, LOGO_GREEN_DEEP, 0.45));
-      base.addColorStop(1, LOGO_GREEN_DEEP);
+      // Clean vertical brand-green fill — no blue-grey brush dirt.
+      const base = g.createLinearGradient(0, 0, 0, h);
+      if (lightTheme) {
+        base.addColorStop(0, LOGO_GREEN_LIFT);
+        base.addColorStop(0.45, LOGO_GREEN);
+        base.addColorStop(1, LOGO_GREEN_DEEP);
+      } else {
+        base.addColorStop(0, mixHex(LOGO_GREEN_LIFT, LOGO_GREEN, 0.25));
+        base.addColorStop(0.4, LOGO_GREEN);
+        base.addColorStop(1, LOGO_GREEN_DEEP);
+      }
       g.fillStyle = base;
       g.fillRect(0, 0, w, h);
-
-      g.save();
-      g.globalAlpha = 0.18;
-      for (let y = 0; y < h; y += 1.35) {
-        const cool = 180 + ((y * 13) % 40);
-        g.strokeStyle = `rgba(${cool - 40},${cool + 40},${cool - 20},0.45)`;
-        g.lineWidth = 1;
-        g.beginPath();
-        g.moveTo(0, y + Math.sin(y * 0.4) * 0.3);
-        g.lineTo(w, y + Math.sin(y * 0.28) * 0.3);
-        g.stroke();
-      }
-      g.restore();
 
       return grain;
     };
@@ -109,51 +103,35 @@ export function ProSubscribeButton({ label, onPress }: Props) {
       ctx.clip();
       ctx.drawImage(ensureGrain(w, h), 0, 0, w, h);
 
-      const keyX = w * (0.28 + 0.08 * Math.sin(t * 0.7));
-      const keyY = h * (0.22 + 0.06 * Math.cos(t * 0.55));
-      const key = ctx.createRadialGradient(keyX, keyY, 2, keyX, keyY, Math.max(w, h) * 0.75);
-      key.addColorStop(0, "rgba(255,255,255,0.42)");
-      key.addColorStop(0.25, "rgba(180,255,210,0.18)");
-      key.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = key;
+      // Soft top sheen only — keep green saturated and clean.
+      const sheen = ctx.createLinearGradient(0, 0, 0, h * 0.55);
+      sheen.addColorStop(0, lightTheme ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.2)");
+      sheen.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = sheen;
       ctx.fillRect(0, 0, w, h);
 
-      const sweepX = ((t * 90) % (w + 240)) - 100;
+      const sweepX = ((t * 70) % (w + 200)) - 80;
       ctx.save();
       ctx.translate(sweepX, 0);
-      ctx.rotate(-0.28);
-      const sweep = ctx.createLinearGradient(0, 0, 48, h * 1.2);
+      ctx.rotate(-0.22);
+      const sweep = ctx.createLinearGradient(0, 0, 36, h);
       sweep.addColorStop(0, "rgba(255,255,255,0)");
-      sweep.addColorStop(0.45, "rgba(220,255,230,0.08)");
-      sweep.addColorStop(0.5, "rgba(255,255,255,0.38)");
-      sweep.addColorStop(0.55, "rgba(220,255,230,0.08)");
+      sweep.addColorStop(0.5, lightTheme ? "rgba(255,255,255,0.22)" : "rgba(255,255,255,0.28)");
       sweep.addColorStop(1, "rgba(255,255,255,0)");
       ctx.fillStyle = sweep;
-      ctx.fillRect(-60, -40, 130, h + 80);
+      ctx.fillRect(-40, -20, 90, h + 40);
       ctx.restore();
 
-      const ao = ctx.createLinearGradient(0, 0, 0, h);
-      ao.addColorStop(0, "rgba(255,255,255,0.22)");
-      ao.addColorStop(0.18, "rgba(255,255,255,0)");
-      ao.addColorStop(0.82, "rgba(0,0,0,0)");
-      ao.addColorStop(1, "rgba(0,80,30,0.28)");
+      const ao = ctx.createLinearGradient(0, h * 0.55, 0, h);
+      ao.addColorStop(0, "rgba(0,0,0,0)");
+      ao.addColorStop(1, lightTheme ? "rgba(0,90,40,0.14)" : "rgba(0,70,30,0.22)");
       ctx.fillStyle = ao;
       ctx.fillRect(0, 0, w, h);
       ctx.restore();
 
-      roundRect(ctx, 0.8, 0.8, w - 1.6, h - 1.6, 11.2);
-      ctx.strokeStyle = withAlpha("#FFFFFF", 0.55);
-      ctx.lineWidth = 1.4;
-      ctx.stroke();
-
-      roundRect(ctx, 2.2, 2.2, w - 4.4, h - 4.4, 10);
-      ctx.strokeStyle = "rgba(255,255,255,0.22)";
-      ctx.lineWidth = 1.1;
-      ctx.stroke();
-
-      roundRect(ctx, 0.4, 0.4, w - 0.8, h - 0.8, 12);
-      ctx.strokeStyle = withAlpha(LOGO_GREEN_LIFT, 0.65);
-      ctx.lineWidth = 1.8;
+      roundRect(ctx, 0.75, 0.75, w - 1.5, h - 1.5, 11.2);
+      ctx.strokeStyle = withAlpha("#FFFFFF", lightTheme ? 0.45 : 0.4);
+      ctx.lineWidth = 1.25;
       ctx.stroke();
 
       raf = requestAnimationFrame(tick);
@@ -165,28 +143,22 @@ export function ProSubscribeButton({ label, onPress }: Props) {
       ro.disconnect();
       canvas.remove();
     };
-  }, []);
+  }, [lightTheme]);
 
-  const liftAmt = pressed ? 0 : hover ? 1 : 0;
   const web3d =
     Platform.OS === "web"
       ? ({
           transform: pressed
-            ? "perspective(900px) rotateX(4deg) translateY(1px) scale(0.99)"
+            ? "translateY(1px) scale(0.99)"
             : hover
-              ? "perspective(900px) rotateX(-2deg) translateY(-1px) scale(1.01)"
-              : "perspective(900px) rotateX(0deg) translateY(0px) scale(1)",
-          transformStyle: "preserve-3d",
+              ? "translateY(-1px) scale(1.01)"
+              : "translateY(0) scale(1)",
           transition: "transform 140ms ease, box-shadow 160ms ease",
           boxShadow: pressed
-            ? `inset 0 2px 4px rgba(0,60,25,0.35), 0 0 0 1px ${LOGO_GREEN_DEEP}`
+            ? `inset 0 2px 4px rgba(0,70,30,0.28)`
             : hover
-              ? lightTheme
-                ? `0 4px 14px rgba(0,224,90,0.35), inset 0 1px 0 rgba(255,255,255,0.55)`
-                : `0 8px 22px rgba(0,224,90,0.28), inset 0 1px 0 rgba(255,255,255,0.4)`
-              : lightTheme
-                ? `0 3px 10px rgba(0,224,90,0.28), inset 0 1px 0 rgba(255,255,255,0.45)`
-                : `0 6px 18px rgba(0,224,90,0.22), inset 0 1px 0 rgba(255,255,255,0.35)`,
+              ? `0 4px 14px rgba(0,224,90,${lightTheme ? 0.32 : 0.28})`
+              : `0 3px 10px rgba(0,224,90,${lightTheme ? 0.24 : 0.2})`,
         } as object)
       : null;
 
@@ -203,7 +175,8 @@ export function ProSubscribeButton({ label, onPress }: Props) {
         borderRadius: 12,
         overflow: "hidden",
         minHeight: 48,
-        paddingHorizontal: 8,
+        height: 48,
+        paddingHorizontal: 22,
         alignItems: "center",
         justifyContent: "center",
         backgroundColor: LOGO_GREEN,
@@ -222,24 +195,33 @@ export function ProSubscribeButton({ label, onPress }: Props) {
         }}
       />
       <Text
-        style={{
-          color: "#FFFFFF",
-          fontSize: 15,
-          fontWeight: "700",
-          letterSpacing: 0.3,
-          paddingVertical: 14,
-          paddingHorizontal: 22,
-          zIndex: 1,
-          textShadowColor: liftAmt ? "rgba(255,255,255,0.35)" : "rgba(0,60,25,0.35)",
-          textShadowOffset: { width: 0, height: liftAmt ? -0.5 : 0.5 },
-          textShadowRadius: 2,
-          fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-          ...(Platform.OS === "web"
-            ? ({
-                userSelect: "none",
-              } as object)
-            : null),
-        }}
+        numberOfLines={1}
+        style={[
+          typographyRect15,
+          {
+            color: "#FFFFFF",
+            fontWeight: "700",
+            letterSpacing: 0.3,
+            zIndex: 1,
+            textAlign: "center",
+            // Optical center in the 48px plate (global Text nudge alone is not enough here).
+            transform: [{ translateY: uiTextVerticalCompensationY - 1 }],
+            fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+            ...(Platform.OS === "web"
+              ? ({
+                  userSelect: "none",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  lineHeight: 18,
+                  marginTop: 0,
+                  marginBottom: 0,
+                  paddingTop: 0,
+                  paddingBottom: 0,
+                } as object)
+              : null),
+          },
+        ]}
       >
         {label}
       </Text>
