@@ -37,11 +37,13 @@ const TAB_GAP_PX = 8;
 const ICON_SIZE_PX = 14;
 const CLOSE_HIT_PX = 16;
 const ADD_HIT_PX = 30;
+/** Match main header right icons (`contentSideInsetPx`). */
+const ADD_RIGHT_INSET_PX = STRIP_PADDING_PX;
 /** 10px background fade immediately left of the solid mask. */
 const ADD_GRADIENT_W_PX = 10;
 /** Solid mask begins this many px left of the + icon. */
 const ADD_GAP_BEFORE_ICON_PX = 5;
-const ADD_SOLID_W_PX = ADD_GAP_BEFORE_ICON_PX + ADD_HIT_PX;
+const ADD_SOLID_W_PX = ADD_GAP_BEFORE_ICON_PX + ADD_HIT_PX + ADD_RIGHT_INSET_PX;
 const RIGHT_OVERLAY_W_PX = ADD_GRADIENT_W_PX + ADD_SOLID_W_PX;
 /** Last tab stops this many px before the gradient’s left edge at max scroll. */
 const LAST_TAB_GRADIENT_INDENT_PX = 15;
@@ -695,7 +697,7 @@ const styles = StyleSheet.create({
   },
   addHit: {
     position: "absolute",
-    right: 0,
+    right: ADD_RIGHT_INSET_PX,
     top: 0,
     width: ADD_HIT_PX,
     height: CHOOSE_CURRENCY_SUBHEADER_HEIGHT_PX,

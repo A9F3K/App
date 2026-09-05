@@ -50,7 +50,6 @@ function loadCredentials(): { credentials: SaCreds; projectId: string } | { erro
     return { credentials, projectId };
   }
 
-  // Local / ADC: let BigQuery client pick up GOOGLE_APPLICATION_CREDENTIALS or key file.
   const projectId =
     process.env.GCP_BILLING_PROJECT_ID?.trim() ||
     process.env.GOOGLE_CLOUD_PROJECT?.trim() ||
@@ -80,51 +79,88 @@ function makeClient(projectId: string, credentials: SaCreds): BigQuery {
         private_key: String(credentials.private_key),
         ...(credentials.project_id ? { project_id: String(credentials.project_id) } : {}),
       },
+      // Billing export cold queries can exceed the default ~60s on first pull.
+      autoRetry: true,
+      maxRetries: 5,
     });
   }
-  return new BigQuery({ projectId });
+  return new BigQuery({ projectId, autoRetry: true, maxRetries: 5 });
 }
 
 const BILLING_TABLE_RE = /^gcp_billing_export(_resource)?_v1_/i;
 
+/** Prefer detailed resource export when both standard + resource tables exist. */
+function pickBillingTableId(tableIds: string[]): string | null {
+  const matches = tableIds.filter((id) => BILLING_TABLE_RE.test(id));
+  if (matches.length === 0) return null;
+  const resource = matches.find((id) => /_resource_v1_/i.test(id));
+  return resource ?? matches[0] ?? null;
+}
+
+async function listDatasetTableIds(bq: BigQuery, datasetId: string): Promise<string[]> {
+  const [tables] = await bq.dataset(datasetId).getTables();
+  return tables.map((t) => t.id).filter((id): id is string => Boolean(id));
+}
+
 async function discoverBillingTable(
   bq: BigQuery,
   projectId: string,
-): Promise<string | null> {
+): Promise<{ table: string | null; scannedDatasets: string[]; emptyPreferred: boolean }> {
   const preferredDataset = process.env.GCP_BIGQUERY_BILLING_DATASET?.trim();
-  const datasets = preferredDataset
-    ? [{ id: preferredDataset }]
-    : await bq.getDatasets().then(([ds]) => ds);
+  const scannedDatasets: string[] = [];
+  let emptyPreferred = false;
 
-  for (const ds of datasets) {
-    const datasetId = ds.id || preferredDataset;
-    if (!datasetId) continue;
+  const tryDataset = async (datasetId: string): Promise<string | null> => {
+    scannedDatasets.push(datasetId);
     try {
-      const [tables] = await bq.dataset(datasetId).getTables();
-      const match = tables.find((t) => t.id && BILLING_TABLE_RE.test(t.id));
-      if (match?.id) {
-        return `${projectId}.${datasetId}.${match.id}`;
+      const ids = await listDatasetTableIds(bq, datasetId);
+      if (preferredDataset && datasetId === preferredDataset && ids.length === 0) {
+        emptyPreferred = true;
       }
+      const pick = pickBillingTableId(ids);
+      return pick ? `${projectId}.${datasetId}.${pick}` : null;
     } catch {
-      /* no access / empty */
+      return null;
     }
+  };
+
+  if (preferredDataset) {
+    const hit = await tryDataset(preferredDataset);
+    if (hit) return { table: hit, scannedDatasets, emptyPreferred };
   }
-  return null;
+
+  try {
+    const [datasets] = await bq.getDatasets();
+    for (const ds of datasets) {
+      const datasetId = ds.id;
+      if (!datasetId || datasetId === preferredDataset) continue;
+      const hit = await tryDataset(datasetId);
+      if (hit) return { table: hit, scannedDatasets, emptyPreferred };
+    }
+  } catch {
+    /* list datasets may fail without broader IAM */
+  }
+
+  return { table: null, scannedDatasets, emptyPreferred };
 }
 
 async function queryDailySpend(
   bq: BigQuery,
   tableFq: string,
   days: number,
+  useConversionRate: boolean,
 ): Promise<GcpBillingDay[]> {
   const ref = parseTableRef(tableFq);
   if (!ref) throw new Error(`Invalid GCP_BIGQUERY_BILLING_TABLE: ${tableFq}`);
 
-  // Standard Cloud Billing export schema (cost + usage_start_time).
+  const costExpr = useConversionRate
+    ? "IFNULL(cost, 0) * IFNULL(currency_conversion_rate, 1)"
+    : "IFNULL(cost, 0)";
+
   const sql = `
     SELECT
       FORMAT_DATE('%Y-%m-%d', DATE(usage_start_time)) AS day,
-      SUM(cost) AS usd
+      SUM(${costExpr}) AS usd
     FROM \`${ref.projectId}.${ref.datasetId}.${ref.tableId}\`
     WHERE DATE(usage_start_time) >= DATE_SUB(CURRENT_DATE(), INTERVAL @days DAY)
     GROUP BY day
@@ -135,6 +171,8 @@ async function queryDailySpend(
     query: sql,
     params: { days },
     location: process.env.GCP_BIGQUERY_LOCATION?.trim() || undefined,
+    // First export pulls / cold jobs can be slow from serverless.
+    jobTimeoutMs: 120_000,
   });
 
   return (rows as Array<{ day?: string; usd?: number | string }>)
@@ -147,7 +185,7 @@ async function queryDailySpend(
 
 /**
  * Query billing export for the last `periodDays` (capped 1–90).
- * Auto-discovers `gcp_billing_export_v1_*` when table env is unset.
+ * Auto-discovers `gcp_billing_export_v1_*` / `gcp_billing_export_resource_v1_*`.
  */
 export async function fetchGcpBillingFromBigQuery(
   periodDays = 14,
@@ -162,9 +200,14 @@ export async function fetchGcpBillingFromBigQuery(
   const bq = makeClient(projectId, credentials);
 
   let table = process.env.GCP_BIGQUERY_BILLING_TABLE?.trim() || "";
+  let emptyPreferred = false;
+  let scannedDatasets: string[] = [];
   if (!table) {
     try {
-      table = (await discoverBillingTable(bq, projectId)) || "";
+      const discovered = await discoverBillingTable(bq, projectId);
+      table = discovered.table || "";
+      emptyPreferred = discovered.emptyPreferred;
+      scannedDatasets = discovered.scannedDatasets;
     } catch (err) {
       return {
         ok: false,
@@ -177,15 +220,30 @@ export async function fetchGcpBillingFromBigQuery(
   }
 
   if (!table) {
+    const dsHint =
+      process.env.GCP_BIGQUERY_BILLING_DATASET?.trim() || "gcp_billing_export";
+    if (emptyPreferred) {
+      return {
+        ok: false,
+        detail: `Billing export dataset ${projectId}.${dsHint} is empty — Google usually creates gcp_billing_export_v1_* within ~24h after enabling export. Scanned: ${scannedDatasets.join(", ") || dsHint}.`,
+      };
+    }
     return {
       ok: false,
       detail:
-        "No Cloud Billing → BigQuery export table yet. One-time Console step: Billing → Billing export → enable Standard usage cost into dataset gcp_billing_export (project hyperlinksspacebot). Data appears within ~24h. https://console.cloud.google.com/billing/012A7B-1A56F5-EA0A98/export?project=hyperlinksspacebot",
+        "No Cloud Billing → BigQuery export table yet. Enable Standard usage cost export into dataset gcp_billing_export (project hyperlinksspacebot). https://console.cloud.google.com/billing/012A7B-1A56F5-EA0A98/export?project=hyperlinksspacebot",
     };
   }
 
   try {
-    const byDay = await queryDailySpend(bq, table, days);
+    let byDay: GcpBillingDay[];
+    try {
+      byDay = await queryDailySpend(bq, table, days, true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/currency_conversion_rate|Unrecognized name/i.test(msg)) throw err;
+      byDay = await queryDailySpend(bq, table, days, false);
+    }
     const windowSum = byDay.reduce((a, d) => a + d.usd, 0);
     const usdMonth =
       byDay.length > 0 ? round4(windowSum * (30 / Math.max(1, byDay.length))) : 0;
@@ -194,7 +252,10 @@ export async function fetchGcpBillingFromBigQuery(
       table,
       byDay,
       usdMonth,
-      detail: `BigQuery billing export · ${table} · ${byDay.length} days`,
+      detail:
+        byDay.length > 0
+          ? `BigQuery billing export · ${table} · ${byDay.length} days · $${windowSum.toFixed(4)} window`
+          : `BigQuery billing export · ${table} · table live but no cost rows in last ${days}d (often $0 / still backfilling)`,
     };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
