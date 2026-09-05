@@ -11,6 +11,7 @@ import { useAppStrings } from "../../../locales/AppStringsContext";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../../fonts";
 import { typographyRect15, useColors, type ThemeColors } from "../../theme";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
+import { FloatingDialogBody } from "../FloatingDialogBody";
 import {
   FloatingDialogShell,
   floatingDialogDragHandleDomProps,
@@ -1179,14 +1180,16 @@ function ProfileSheetScrollBody({ children }: { children: ReactNode }) {
   }
 
   return (
-    <HspScrollColumn
-      style={{ flex: 1, minHeight: 0 }}
-      contentContainerStyle={paddingStyle}
-      scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
-      scrollIndicatorOverlaySeam={false}
-      containOverscroll
-    >
-      {children}
-    </HspScrollColumn>
+    <FloatingDialogBody>
+      <HspScrollColumn
+        style={{ flex: 1, minHeight: 0 }}
+        contentContainerStyle={paddingStyle}
+        scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+        scrollIndicatorOverlaySeam={false}
+        containOverscroll
+      >
+        {children}
+      </HspScrollColumn>
+    </FloatingDialogBody>
   );
 }

@@ -19,6 +19,10 @@ import {
   getWalletBalanceRefreshNonce,
   subscribeWalletBalanceRefresh,
 } from "./walletBalanceRefresh";
+import {
+  getBuiltinDllrBalanceUsd,
+  subscribeBuiltinDllrBalance,
+} from "../pro/dllrBalanceStore";
 
 const DLLR_SYMBOL = "DLLR";
 /** Pinned baseline shown in header and wallet dialog until real DLLR balances ship. */
@@ -103,7 +107,19 @@ export function useWalletHeldCurrencyRows(
     getWalletBalanceRefreshNonce,
     getWalletBalanceRefreshNonce,
   );
-  const accountCreationDllrRow = useMemo(() => buildChooseCurrencyDllrRow(locale), [locale]);
+  const dllrBalanceUsd = useSyncExternalStore(
+    subscribeBuiltinDllrBalance,
+    getBuiltinDllrBalanceUsd,
+    getBuiltinDllrBalanceUsd,
+  );
+  const accountCreationDllrRow = useMemo(() => {
+    const base = buildChooseCurrencyDllrRow(locale);
+    const bal =
+      dllrBalanceUsd >= 10
+        ? dllrBalanceUsd.toFixed(0)
+        : dllrBalanceUsd.toFixed(2).replace(/\.?0+$/, "");
+    return { ...base, balance: bal || "0" };
+  }, [dllrBalanceUsd, locale]);
   const [heldRows, setHeldRows] = useState<readonly ChooseCurrencyRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -119,17 +135,17 @@ export function useWalletHeldCurrencyRows(
 
   const headerBalanceLabel = useMemo(() => {
     const heldUsd = heldRows.reduce((sum, row) => sum + parseUsdValue(row), 0);
-    const totalUsd = PINNED_DLLR_USD_BASELINE + heldUsd;
+    const totalUsd = dllrBalanceUsd + heldUsd;
     const label = formatHeaderWalletBalanceLabel(totalUsd);
     logPageDisplay("wallet_header_total", {
-      baselineUsd: PINNED_DLLR_USD_BASELINE,
+      baselineUsd: dllrBalanceUsd,
       heldUsd,
       totalUsd,
       heldRowCount: heldRows.length,
       label,
     });
     return label;
-  }, [heldRows]);
+  }, [dllrBalanceUsd, heldRows]);
 
   const prevNativeBalanceRef = useRef<number | null>(null);
 

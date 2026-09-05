@@ -164,6 +164,8 @@ function RootScreenFooter({
 }) {
   if (Platform.OS === "web" && useTelegramTheme && !themeBgReady) return null;
 
+  if (pathname === "/founder") return null;
+
   if (isAuthenticated) {
     if (bottomBarDock !== "screenFooter") return null;
     if (pathname === "/swap") return <GlobalBottomBar />;
@@ -332,6 +334,9 @@ function RootContent() {
   ]);
 
   const showGlobalLogoBar = useMemo(() => {
+    if (pathname === "/founder") {
+      return false;
+    }
     if (pathname == null || pathname === "") {
       return true;
     }

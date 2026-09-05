@@ -1,3 +1,11 @@
+Эксклюзивный предмет из коллекции Hyperlinks Space Pro
+
+Настройте Get, Swap, Smart, Trade и Send — привяжите пункты к ботам, сайтам или приложениям под свой сценарий. Меняйте порядок пунктов, удаляйте существующие, добавляйте свои.
+
+Menu setup demo.
+
+When you buy dllrs, when you have 20 on balance, the system automatically buys a subscription, 1 remains on the balance. As well 21 dllr is the minimum amount to buy for the balance, this info should be included.
+
 Buy Dollars, pay for the subscription in dollars
 in app tma opening
 Turn on, d server

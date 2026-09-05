@@ -57,9 +57,28 @@ export function scrollContentOverflowsViewport(contentH: number, viewH: number):
  * alone does not produce a real scrollport — common in the AI third column.
  *
  * Walks up flex ancestors when the immediate parent expanded with content height.
+ * Floating dialogs mark `[data-hsp-floating-dialog-body]` so we never walk past the
+ * header/scroll/footer column (that would return the full sheet height and hide the thumb).
  */
 export function readShellFlexAvailableHeightPx(shellEl: HTMLElement | null | undefined): number {
   if (!shellEl) return 0;
+
+  const dialogBody =
+    shellEl.closest("[data-hsp-floating-dialog-body]") ??
+    shellEl.closest(".hsp-floating-dialog-body");
+  if (dialogBody instanceof HTMLElement) {
+    const parentH = dialogBody.clientHeight;
+    if (parentH > 0) {
+      let siblingsH = 0;
+      for (let i = 0; i < dialogBody.children.length; i += 1) {
+        const child = dialogBody.children[i] as HTMLElement | null;
+        if (!child) continue;
+        if (child === shellEl || child.contains(shellEl)) continue;
+        siblingsH += child.offsetHeight;
+      }
+      return Math.max(0, parentH - siblingsH);
+    }
+  }
 
   let node: HTMLElement | null = shellEl;
   for (let depth = 0; depth < 10 && node; depth += 1) {

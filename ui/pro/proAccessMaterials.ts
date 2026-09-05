@@ -35,9 +35,9 @@ const BLACK_METAL = {
   metalMuted: "#9A9A9A",
 } as const;
 
-/** Light-theme tray: darker than dialog `#F1F1F1` so black cards and selection ring read clearly. */
-const LIGHT_FIELD = "#9A9A9A";
-const LIGHT_FIELD_MID = "#868686";
+/** Light-theme tray: clean silver (not muddy charcoal) vs dialog `#F1F1F1`. */
+const LIGHT_FIELD = "#E4E4E4";
+const LIGHT_FIELD_MID = "#D6D6D6";
 
 export function resolveProAccessMaterials(
   colors: ThemeColors,
@@ -46,8 +46,7 @@ export function resolveProAccessMaterials(
   return {
     field: lightTheme ? LIGHT_FIELD : colors.undercover,
     ...BLACK_METAL,
-    // Dark rim on light so unselected cards separate from the grey tray.
-    chrome: lightTheme ? "#0A0A0A" : BLACK_METAL.chrome,
+    chrome: lightTheme ? "#111111" : BLACK_METAL.chrome,
     ink: colors.primary,
     muted: colors.secondary,
     accent: colors.scrollIndicator,

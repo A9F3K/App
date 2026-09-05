@@ -228,8 +228,8 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
         ? {
             borderTopWidth: 1,
             borderBottomWidth: 1,
-            borderTopColor: "rgba(0,0,0,0.22)",
-            borderBottomColor: "rgba(0,0,0,0.16)",
+            borderTopColor: "rgba(0,0,0,0.16)",
+            borderBottomColor: "rgba(0,0,0,0.12)",
           }
         : null),
     };

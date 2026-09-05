@@ -65,6 +65,14 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
     return respond(res, { ok: true }, 204);
   }
 
+  // Keep screen-time tables present even if a deploy skipped migrate.
+  try {
+    const { ensureSchema } = await import("../../database/start.js");
+    await ensureSchema();
+  } catch {
+    /* continue — writes may still fail with a clear error */
+  }
+
   const username = await telegramUsernameFromSessionCookie(request);
   if (!username) {
     return respond(res, { ok: false, error: "unauthorized" }, 401);
@@ -136,6 +144,26 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : "screen_time_failed";
+    // First write after deploy may race schema — ensure tables then retry once.
+    if (/does not exist|relation/i.test(message)) {
+      try {
+        const { ensureSchema } = await import("../../database/start.js");
+        await ensureSchema();
+        const result = await applyScreenTimeHeartbeat({
+          telegramUsername: username,
+          clientSessionId,
+          deltaMs: asDeltaMs(body.delta_ms),
+          end,
+          platform: asPlatform(body.platform),
+          userAgent,
+        });
+        return respond(res, { ok: true, ...result }, 200);
+      } catch (retryErr) {
+        const retryMessage =
+          retryErr instanceof Error ? retryErr.message : "screen_time_failed";
+        return respond(res, { ok: false, error: retryMessage }, 500);
+      }
+    }
     return respond(res, { ok: false, error: message }, 500);
   }
 }

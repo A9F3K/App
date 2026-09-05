@@ -20,6 +20,7 @@ import feedHandler from './_handlers/feed.js';
 import pingHandler from './_handlers/ping.js';
 import releasesHandler from './_handlers/releases.js';
 import screenTimeHandler from './_handlers/screen-time.js';
+import founderHandler from './_handlers/founder.js';
 import swapCoffeeTokensHandler from './_handlers/swap-coffee-tokens.js';
 import tonAccountHoldingsHandler from './_handlers/ton-account-holdings.js';
 import telegramHandler from './_handlers/telegram.js';
@@ -108,6 +109,7 @@ const ROUTES: Record<string, ApiHandler> = {
   telegram: telegramHandler as ApiHandler,
   releases: releasesHandler as ApiHandler,
   'screen-time': screenTimeHandler as ApiHandler,
+  founder: founderHandler as ApiHandler,
   'swap-coffee-tokens': swapCoffeeTokensHandler as ApiHandler,
   'ton-account-holdings': tonAccountHoldingsHandler as ApiHandler,
   'wallet-envelope-ping': walletEnvelopePingHandler as ApiHandler,

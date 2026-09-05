@@ -143,6 +143,7 @@
     "@expo-google-fonts/noto-sans-mono": "^0.4.2",
     "@expo/metro-runtime": "~6.1.2",
     "@expo/vector-icons": "^15.0.2",
+    "@google-cloud/bigquery": "^7.9.4",
     "@google-cloud/kms": "^5.4.0",
     "@lottiefiles/dotlottie-web": "^0.56.0",
     "@neondatabase/api-client": "^2.7.0",

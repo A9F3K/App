@@ -256,10 +256,15 @@ function CellContent({
 function HeaderLabel({ columnKey, label }: { columnKey: ChooseCurrencyColumnKey; label: string }) {
   const colors = useColors();
 
-  if (columnKey === "rank") {
+  if (columnKey === "rank" || columnKey === "currency") {
     return (
       <Text
-        style={[typographyAeroport15, styles.rankCellText, styles.truncatedText, { color: colors.primary }]}
+        style={[
+          typographyAeroport15,
+          styles.rankCellText,
+          styles.truncatedText,
+          { color: colors.primary, width: "100%" },
+        ]}
         numberOfLines={1}
         ellipsizeMode="tail"
       >
@@ -283,11 +288,15 @@ function columnVariantStyle(
   columnKey: ChooseCurrencyColumnKey,
   edge: "first" | "last" | "middle",
 ) {
+  // Currency keeps its own left padding so the legend lines up with the icon,
+  // even when it is the first visible column (wallet / held-only tables).
+  if (columnKey === "currency") {
+    return edge === "first" ? styles.currencyColumnFirst : styles.currencyColumn;
+  }
   if (columnKey === "rank" || edge === "first") {
     return edge === "first" ? styles.firstColumn : styles.rankColumn;
   }
   if (edge === "last") return styles.lastColumn;
-  if (columnKey === "currency") return styles.currencyColumn;
   return styles.centeredColumn;
 }
 
@@ -325,6 +334,7 @@ function DataRow({
   isLast,
   onPress,
   prefetchCharts,
+  contentInsetPx,
 }: {
   row: ChooseCurrencyRow;
   rank: string;
@@ -332,6 +342,7 @@ function DataRow({
   isLast: boolean;
   onPress?: (row: ChooseCurrencyRow) => void;
   prefetchCharts: boolean;
+  contentInsetPx: number;
 }) {
   const colors = useColors();
   const { colorScheme } = useTelegram();
@@ -369,7 +380,7 @@ function DataRow({
         style={{
           width: "100%",
           alignSelf: "stretch",
-          paddingHorizontal: CONTENT_INSET_PX,
+          paddingHorizontal: contentInsetPx,
           marginBottom: isLast ? 0 : LIST_ROW_GAP_PX,
         }}
       >
@@ -394,7 +405,7 @@ function DataRow({
         return {
           width: "100%",
           alignSelf: "stretch",
-          paddingHorizontal: CONTENT_INSET_PX,
+          paddingHorizontal: contentInsetPx,
           paddingVertical: LIST_ROW_PRESS_HIGHLIGHT_PADDING_Y_PX,
           backgroundColor,
         };
@@ -418,7 +429,8 @@ const MemoDataRow = memo(
     prev.isLast === next.isLast &&
     prev.onPress === next.onPress &&
     prev.prefetchCharts === next.prefetchCharts &&
-    prev.visibleColumns === next.visibleColumns,
+    prev.visibleColumns === next.visibleColumns &&
+    prev.contentInsetPx === next.contentInsetPx,
 );
 
 type Props = {
@@ -440,6 +452,11 @@ type Props = {
    * Height of a pinned gradient CTA under this table; scroll thumb travels through it.
    */
   scrollIndicatorExtendBottomPx?: number;
+  /**
+   * Horizontal inset for legend + rows. Defaults to page `contentSideInset` (15).
+   * Floating dialogs should pass the same padX as {@link FloatingDialogStickyHeader}.
+   */
+  contentInsetPx?: number;
 };
 
 export function ChooseCurrencyTable({
@@ -454,7 +471,9 @@ export function ChooseCurrencyTable({
   visibleColumnKeys,
   listEmptyMessage = null,
   scrollIndicatorExtendBottomPx = 0,
+  contentInsetPx = CONTENT_INSET_PX,
 }: Props) {
+  const insetX = Number.isFinite(contentInsetPx) && contentInsetPx >= 0 ? contentInsetPx : CONTENT_INSET_PX;
   const { t, tf, locale } = useAppStrings();
   const defaultRows = useMemo(() => [buildChooseCurrencyDllrRow(locale)] as const, [locale]);
   const rows = rowsProp ?? defaultRows;
@@ -504,7 +523,7 @@ export function ChooseCurrencyTable({
     const contentWidthPx =
       shellWidthPx === Number.POSITIVE_INFINITY
         ? shellWidthPx
-        : Math.max(0, shellWidthPx - CONTENT_INSET_PX * 2);
+        : Math.max(0, shellWidthPx - insetX * 2);
 
     if (visibleColumnKeys?.length) {
       const byKey = new Map(metrics.map((entry) => [entry.key, entry]));
@@ -515,7 +534,7 @@ export function ChooseCurrencyTable({
     }
 
     return resolveChooseCurrencyColumnLayout(contentWidthPx, metrics);
-  }, [columnShellWidthPx, headers, layoutReferenceRows, visibleColumnKeys, widthPx]);
+  }, [columnShellWidthPx, headers, insetX, layoutReferenceRows, visibleColumnKeys, widthPx]);
 
   const syncScrollMetricsFromDom = useCallback(() => {
     if (Platform.OS !== "web") return;
@@ -813,7 +832,7 @@ export function ChooseCurrencyTable({
   const listHeader = useMemo(
     () => (
       <View style={[styles.headerBlock, { backgroundColor: colors.background }]}>
-        <View style={[styles.headerRow, { paddingHorizontal: CONTENT_INSET_PX }]}>
+        <View style={[styles.headerRow, { paddingHorizontal: insetX }]}>
           {visibleColumns.map((column, columnIndex) => {
             const edge =
               columnIndex === 0
@@ -830,11 +849,11 @@ export function ChooseCurrencyTable({
         </View>
         <SmartGradientDivider
           bleedPastContentInset={false}
-          horizontalPaddingPx={CONTENT_INSET_PX}
+          horizontalPaddingPx={insetX}
         />
       </View>
     ),
-    [colors.background, headers, visibleColumns],
+    [colors.background, headers, insetX, visibleColumns],
   );
 
   const renderItem = useCallback(
@@ -846,9 +865,10 @@ export function ChooseCurrencyTable({
         isLast={index >= rows.length - 1}
         onPress={onSelectRow}
         prefetchCharts={prefetchCharts}
+        contentInsetPx={insetX}
       />
     ),
-    [onSelectRow, prefetchCharts, rows.length, visibleColumns],
+    [insetX, onSelectRow, prefetchCharts, rows.length, visibleColumns],
   );
 
   const keyExtractor = useCallback((item: ChooseCurrencyRow) => item.rowKey, []);
@@ -1024,6 +1044,12 @@ const styles = StyleSheet.create({
   currencyColumn: {
     alignItems: "flex-start",
     paddingHorizontal: CHOOSE_CURRENCY_TABLE_CELL_PADDING_HORIZONTAL_PX,
+  },
+  /** First visible column is currency — flush left to the page inset; icon starts at the edge. */
+  currencyColumnFirst: {
+    alignItems: "flex-start",
+    paddingLeft: 0,
+    paddingRight: CHOOSE_CURRENCY_TABLE_CELL_PADDING_HORIZONTAL_PX,
   },
   centeredColumn: {
     alignItems: "center",

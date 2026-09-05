@@ -79,7 +79,11 @@ type ProState = {
   expiresAt: string | null;
 };
 
-const STORAGE_KEY = "hsp_pro_access_v1";
+/** Bumped so stub activations from `hsp_pro_access_v1` are dropped for every client. */
+const STORAGE_KEY = "hsp_pro_access_v2";
+const LEGACY_STORAGE_KEYS = ["hsp_pro_access_v1"] as const;
+/** One-shot revoke of stub entitlements after payment UI replaced free activate. */
+const STUB_REVOKE_FLAG = "hsp_pro_access_stub_revoked_v1";
 const listeners = new Set<() => void>();
 let state: ProState = { active: false, planId: null, expiresAt: null };
 let hydrated = false;
@@ -102,6 +106,16 @@ function hydrate(): void {
   hydrated = true;
   if (Platform.OS !== "web" || typeof localStorage === "undefined") return;
   try {
+    for (const key of LEGACY_STORAGE_KEYS) {
+      localStorage.removeItem(key);
+    }
+    const stubRevoked = localStorage.getItem(STUB_REVOKE_FLAG) === "1";
+    if (!stubRevoked) {
+      localStorage.setItem(STUB_REVOKE_FLAG, "1");
+      localStorage.removeItem(STORAGE_KEY);
+      state = { active: false, planId: null, expiresAt: null };
+      return;
+    }
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw) as ProState;
@@ -157,6 +171,15 @@ export function activateProAccess(planId: ProAccessPlanId): void {
     planId: plan.id,
     expiresAt: expires.toISOString(),
   };
+  persist();
+  notify();
+}
+
+/** Revoke Pro Access for this client (all messenger accounts share one entitlement). */
+export function clearProAccess(): void {
+  hydrate();
+  if (!state.active && !state.planId && !state.expiresAt) return;
+  state = { active: false, planId: null, expiresAt: null };
   persist();
   notify();
 }

@@ -1,7 +1,7 @@
 import * as Clipboard from "expo-clipboard";
 import { usePathname, useRouter } from "expo-router";
 import { useAuth } from "../../auth/AuthContext";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View, Platform } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import {
@@ -34,6 +34,7 @@ import { focusAuthenticatedHomeMiddleColumnOnHeaderPanel } from "../authenticate
 import { UndercoverProButton, UndercoverWalletButton } from "./swap/SwapFormIcons";
 import { TonviewerExplorerButton } from "./TonviewerExplorerButton";
 import { ProAccessDialog } from "../pro/ProAccessDialog";
+import { isProAccessActive, subscribeProAccess } from "../pro/proAccessStore";
 import { trimWalletAddress, walletAddressHeaderSnippet } from "../wallet/walletAddressFormat";
 import {
   HeaderIconCopy,
@@ -47,6 +48,8 @@ import {
 
 const AH = layout.authenticatedHome;
 const HEADER_CONTROL_ROW_PX = layout.bottomBar.undercoverButtonHeightPx;
+/** Optical nudge: large digits / SVG icons sit slightly low in the 30px band. */
+const HEADER_OPTICAL_NUDGE_UP_PX = -2;
 
 /** Horizontal switch-wallet glyph (two opposing arrows). */
 function HeaderSwitchWalletIcon({ color, size = 16 }: { color: string; size?: number }) {
@@ -75,22 +78,15 @@ const WIDE_HEADER_BAND_PX = AH.headerIconDisplaySize;
 const WIDE_HEADER_PAD_PX = AH.headerWideSidePaddingVerticalPx;
 const WIDE_HEADER_MID_GAP_PX = AH.headerWideSideMiddleGapPx;
 
-const wideHeaderSideColumnStyle = {
-  flex: 1,
-  minWidth: 0,
-  height: "100%" as const,
-  paddingTop: WIDE_HEADER_PAD_PX,
-  paddingBottom: WIDE_HEADER_PAD_PX,
-  gap: WIDE_HEADER_MID_GAP_PX,
-};
-
-const wideHeaderBandStyle = {
+/** One header band: left + right controls share a single vertical center. */
+const headerControlRowStyle = {
+  flexDirection: "row" as const,
+  alignItems: "center" as const,
+  justifyContent: "space-between" as const,
   height: WIDE_HEADER_BAND_PX,
-  justifyContent: "center" as const,
+  width: "100%" as const,
+  gap: AH.addressRowGap,
 };
-
-const wideHeaderTopBandStyle = wideHeaderBandStyle;
-const wideHeaderBottomBandStyle = wideHeaderBandStyle;
 
 const HEADER_ICONS_BEFORE_LANG: readonly {
   id: "copy" | "edit" | "key";
@@ -280,6 +276,11 @@ export function HomeAuthenticatedHeaderRow({
   /** Measured shell width — matches the header column, not always the browser window (`useWindowDimensions` can stay wide on web). */
   const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
   const [proDialogOpen, setProDialogOpen] = useState(false);
+  const proSubscribed = useSyncExternalStore(
+    subscribeProAccess,
+    isProAccessActive,
+    () => false,
+  );
   const liveViewportWidthPx = readAuthenticatedHomeLayoutWidthPx(windowWidth);
   const widthForLayout = Math.min(
     measuredWidth ?? liveViewportWidthPx,
@@ -309,14 +310,16 @@ export function HomeAuthenticatedHeaderRow({
         flexDirection: "row",
         alignItems: "center",
         height: HEADER_CONTROL_ROW_PX,
-        gap: 5,
       }}
     >
       <UndercoverProButton
         accessibilityLabel={t("pro.buyCta")}
         active={proDialogOpen}
+        subscribed={proSubscribed}
         onPress={() => setProDialogOpen((open) => !open)}
       />
+      {/* Same 15px rhythm: PRO→wallet and wallet→balance. */}
+      <View style={{ width: AH.headerIconGap, flexShrink: 0 }} />
       <UndercoverWalletButton
         accessibilityLabel={t("home.header.balanceExpandHint")}
         active={walletCurrenciesOpen}
@@ -325,8 +328,11 @@ export function HomeAuthenticatedHeaderRow({
       />
       <View
         style={{
+          marginLeft: AH.headerIconGap,
           height: HEADER_CONTROL_ROW_PX,
           justifyContent: "center",
+          alignItems: "center",
+          flexShrink: 0,
         }}
       >
         <Text
@@ -336,11 +342,12 @@ export function HomeAuthenticatedHeaderRow({
             {
               color: colors.primary,
               lineHeight: HEADER_CONTROL_ROW_PX,
-              // Noto Sans digits sit low in a 30px em next to chips — nudge up for optical center.
-              transform: [{ translateY: -2 }],
+              transform: [{ translateY: HEADER_OPTICAL_NUDGE_UP_PX }],
               ...(Platform.OS === "web"
                 ? ({
-                    display: "block",
+                    display: "flex",
+                    alignItems: "center",
+                    height: HEADER_CONTROL_ROW_PX,
                     marginTop: 0,
                     marginBottom: 0,
                     paddingTop: 0,
@@ -425,7 +432,7 @@ export function HomeAuthenticatedHeaderRow({
       style={{
         flexDirection: "row",
         alignItems: "center",
-        justifyContent: "flex-end",
+        justifyContent: "flex-start",
         gap: 6,
         flexShrink: 1,
         minWidth: 0,
@@ -439,7 +446,7 @@ export function HomeAuthenticatedHeaderRow({
           {
             color: colors.primary,
             lineHeight: HEADER_CONTROL_ROW_PX,
-            textAlign: "right",
+            textAlign: "left",
             ...(Platform.OS === "web"
               ? ({
                   display: "flex",
@@ -496,9 +503,11 @@ export function HomeAuthenticatedHeaderRow({
       style={{
         flexDirection: "row",
         alignItems: "center",
+        height: HEADER_CONTROL_ROW_PX,
         gap: AH.headerIconGap,
         justifyContent: "flex-end",
         flexShrink: 0,
+        transform: [{ translateY: HEADER_OPTICAL_NUDGE_UP_PX }],
       }}
     >
       {HEADER_ICONS_BEFORE_LANG.map(({ id, Icon, labelKey }) => {
@@ -641,64 +650,53 @@ export function HomeAuthenticatedHeaderRow({
         {atOrAboveFirstBreakpoint ? (
           <View
             style={{
-              flexDirection: "row",
-              alignItems: "stretch",
+              flexDirection: "column",
+              justifyContent: "center",
               width: "100%",
               position: "relative",
               height: AH.headerWideRowHeightPx,
+              paddingTop: WIDE_HEADER_PAD_PX,
+              paddingBottom: WIDE_HEADER_PAD_PX,
+              gap: WIDE_HEADER_MID_GAP_PX,
               overflow: "hidden",
             }}
           >
-            <View style={{ ...wideHeaderSideColumnStyle, alignItems: "flex-start" }}>
-              <View style={wideHeaderTopBandStyle}>{balanceButton}</View>
-              <View style={wideHeaderBottomBandStyle}>{walletAddressRow}</View>
-            </View>
-            <View style={{ ...wideHeaderSideColumnStyle, alignItems: "flex-end" }}>
+            {/*
+              Shared rows (not side columns): left+right on each band share one vertical center.
+              Top: balance · address/name · Bottom: switch wallet · action icons.
+            */}
+            <View style={headerControlRowStyle}>
+              {balanceButton}
               <View
                 style={{
-                  ...wideHeaderTopBandStyle,
-                  position: "relative",
-                  zIndex: 2,
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "flex-end",
+                  minWidth: 0,
+                  flexShrink: 1,
+                  height: HEADER_CONTROL_ROW_PX,
+                  position: "relative",
+                  zIndex: 2,
                 }}
               >
-                {headerActionIconsRow}
+                {walletAddressRow}
               </View>
-              <View style={wideHeaderBottomBandStyle}>{switchWalletRow}</View>
+            </View>
+            <View style={headerControlRowStyle}>
+              {switchWalletRow}
+              {headerActionIconsRow}
             </View>
             {wideMenuStrip}
           </View>
         ) : (
           <View style={{ width: "100%", flexDirection: "column" }}>
-            {/* Shared bands: balance|icons and switch-wallet|name share one vertical center each. */}
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-                height: WIDE_HEADER_BAND_PX,
-                width: "100%",
-                gap: AH.addressRowGap,
-              }}
-            >
+            <View style={headerControlRowStyle}>
               {balanceButton}
-              {headerActionIconsRow}
-            </View>
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                justifyContent: "space-between",
-                height: WIDE_HEADER_BAND_PX,
-                width: "100%",
-                marginTop: WIDE_HEADER_MID_GAP_PX,
-                gap: AH.addressRowGap,
-              }}
-            >
               {walletAddressRow}
+            </View>
+            <View style={{ ...headerControlRowStyle, marginTop: WIDE_HEADER_MID_GAP_PX }}>
               {switchWalletRow}
+              {headerActionIconsRow}
             </View>
           </View>
         )}

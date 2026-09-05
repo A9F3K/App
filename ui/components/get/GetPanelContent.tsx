@@ -3,7 +3,6 @@ import { Image } from "expo-image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
-  FlatList,
   Platform,
   Pressable,
   Text,
@@ -46,12 +45,17 @@ import {
   resolveFloatingDialogInsets,
 } from "../floatingDialogChrome";
 import { FloatingDialogStickyHeader } from "../FloatingDialogStickyHeader";
+import { FloatingDialogBody } from "../FloatingDialogBody";
 import {
   FloatingDialogShell,
 } from "../FloatingDialogShell";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { HspScrollColumn, type HspScrollMetrics } from "../HspScrollColumn";
-import { SCROLL_INDICATOR_SCROLL_EPS } from "../../scrollIndicatorPx";
+import {
+  SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX,
+  SCROLL_INDICATOR_SCROLL_EPS,
+} from "../../scrollIndicatorPx";
+import { FloatingDialogScrollChromeProvider } from "../floatingDialogScrollChrome";
 import { PanelGradientCtaBlock } from "../PanelGradientCtaBlock";
 import { SwapSelectChevron } from "../swap/SwapFormIcons";
 import { swapTonTokenImage } from "../swap/swapFormAssets";
@@ -158,6 +162,7 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
     balanceText: "0",
   }));
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerHeaderExtendPx, setPickerHeaderExtendPx] = useState(0);
   const [options, setOptions] = useState<GetCurrencyOption[]>([]);
   const [balancesLoading, setBalancesLoading] = useState(false);
   const [topUpPending, setTopUpPending] = useState(false);
@@ -790,78 +795,95 @@ export function GetPanelContent({ walletAddress, displayName, showTitleRow }: Pr
         onRequestClose={() => setPickerOpen(false)}
         testId="get-currency-picker"
       >
-        <View style={{ flex: 1, minHeight: 0 }}>
-          <FloatingDialogStickyHeader
-            insets={dialogInsets}
-            title={t("get.chooseCurrencyTitle")}
-            subtitle={connectedWalletDialogSubtitle}
-            onClose={() => setPickerOpen(false)}
-            closeLabel={t("common.close")}
-          />
-          <FlatList
-          data={options}
-          keyExtractor={(item) => item.token.address}
-          keyboardShouldPersistTaps="handled"
-          style={{ flex: 1, minHeight: 0 }}
-          showsVerticalScrollIndicator={false}
-          ListEmptyComponent={
-            <View style={{ paddingHorizontal: 20, paddingVertical: 16 }}>
-              <Text style={[typographyAeroport15, { color: colors.secondary, lineHeight: MULTI_LINE_HEIGHT_PX }]}>
-                {ton.connected && ton.address
-                  ? t("get.chooseCurrencyEmpty")
-                  : t("get.chooseCurrencyNotConnected")}
-              </Text>
-            </View>
-          }
-          renderItem={({ item }) => {
-            const symbol = swapTokenDisplaySymbol(item.token);
-            const active =
-              item.token.address.toLowerCase() === selected.token.address.toLowerCase();
-            return (
-              <Pressable
-                onPress={() => {
-                  setSelected(item);
-                  setPickerOpen(false);
-                }}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 12,
-                  paddingHorizontal: 20,
-                  paddingVertical: 12,
-                  backgroundColor: active ? colors.undercover : "transparent",
-                }}
-                {...(Platform.OS === "web" ? ({ "data-floating-no-drag": "1" } as object) : {})}
-              >
-                <Image
-                  source={tokenIconSource(item.token)}
-                  style={{
-                    width: CURRENCY_ICON_PX,
-                    height: CURRENCY_ICON_PX,
-                    borderRadius: CURRENCY_ICON_PX / 2,
-                  }}
-                />
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text
-                    style={[typographyAeroport20, { color: colors.primary, fontWeight: "400" }]}
-                  >
-                    {symbol}
-                  </Text>
+        <FloatingDialogScrollChromeProvider headerExtendPx={pickerHeaderExtendPx}>
+          <FloatingDialogBody>
+            <FloatingDialogStickyHeader
+              insets={dialogInsets}
+              title={t("get.chooseCurrencyTitle")}
+              subtitle={connectedWalletDialogSubtitle}
+              onClose={() => setPickerOpen(false)}
+              closeLabel={t("common.close")}
+              onHeightChange={setPickerHeaderExtendPx}
+            />
+            <HspScrollColumn
+              style={{ flex: 1, minHeight: 0 }}
+              scrollIndicatorOverlaySeam={false}
+              containOverscroll
+              scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+              indicatorColor={colors.scrollIndicator}
+              contentContainerStyle={{ paddingBottom: 8 }}
+            >
+              {options.length === 0 ? (
+                <View style={{ paddingHorizontal: 20, paddingVertical: 16 }}>
                   <Text
                     style={[
                       typographyAeroport15,
                       { color: colors.secondary, lineHeight: MULTI_LINE_HEIGHT_PX },
                     ]}
-                    numberOfLines={1}
                   >
-                    {item.balanceText}
+                    {ton.connected && ton.address
+                      ? t("get.chooseCurrencyEmpty")
+                      : t("get.chooseCurrencyNotConnected")}
                   </Text>
                 </View>
-              </Pressable>
-            );
-          }}
-        />
-        </View>
+              ) : (
+                options.map((item) => {
+                  const symbol = swapTokenDisplaySymbol(item.token);
+                  const active =
+                    item.token.address.toLowerCase() === selected.token.address.toLowerCase();
+                  return (
+                    <Pressable
+                      key={item.token.address}
+                      onPress={() => {
+                        setSelected(item);
+                        setPickerOpen(false);
+                      }}
+                      style={{
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 12,
+                        paddingHorizontal: 20,
+                        paddingVertical: 12,
+                        backgroundColor: active ? colors.undercover : "transparent",
+                      }}
+                      {...(Platform.OS === "web"
+                        ? ({ "data-floating-no-drag": "1" } as object)
+                        : {})}
+                    >
+                      <Image
+                        source={tokenIconSource(item.token)}
+                        style={{
+                          width: CURRENCY_ICON_PX,
+                          height: CURRENCY_ICON_PX,
+                          borderRadius: CURRENCY_ICON_PX / 2,
+                        }}
+                      />
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text
+                          style={[
+                            typographyAeroport20,
+                            { color: colors.primary, fontWeight: "400" },
+                          ]}
+                        >
+                          {symbol}
+                        </Text>
+                        <Text
+                          style={[
+                            typographyAeroport15,
+                            { color: colors.secondary, lineHeight: MULTI_LINE_HEIGHT_PX },
+                          ]}
+                          numberOfLines={1}
+                        >
+                          {item.balanceText}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })
+              )}
+            </HspScrollColumn>
+          </FloatingDialogBody>
+        </FloatingDialogScrollChromeProvider>
       </FloatingDialogShell>
       ) : null}
 

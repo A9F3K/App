@@ -30,6 +30,7 @@ import {
 } from "../floatingDialogChrome";
 import { FloatingDialogScrollChromeProvider } from "../floatingDialogScrollChrome";
 import { FloatingDialogStickyHeader } from "../FloatingDialogStickyHeader";
+import { FloatingDialogBody } from "../FloatingDialogBody";
 import {
   FloatingDialogShell,
 } from "../FloatingDialogShell";
@@ -341,7 +342,7 @@ function MenuDialogShell({
       sheetStyle={{ backgroundColor: colors.background }}
     >
       <FloatingDialogScrollChromeProvider headerExtendPx={headerExtendPx}>
-        <View style={{ flex: 1, minHeight: 0, backgroundColor: colors.background }}>
+        <FloatingDialogBody style={{ backgroundColor: colors.background }}>
           <FloatingDialogStickyHeader
             insets={insets}
             title={title}
@@ -362,7 +363,7 @@ function MenuDialogShell({
               {footer}
             </View>
           ) : null}
-        </View>
+        </FloatingDialogBody>
       </FloatingDialogScrollChromeProvider>
     </FloatingDialogShell>
   );

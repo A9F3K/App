@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import Svg, { Circle, Defs, LinearGradient, Path, Stop } from "react-native-svg";
 
@@ -7,9 +7,13 @@ import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../fonts";
 import { FREE_MESSENGER_ACCOUNT_LIMIT } from "../messages/messengerAccountsStore";
 import { useColors } from "../theme";
 import { FloatingDialogShell } from "../components/FloatingDialogShell";
+import { FloatingDialogBody } from "../components/FloatingDialogBody";
 import { FloatingDialogStickyHeader } from "../components/FloatingDialogStickyHeader";
+import { FloatingDialogScrollChromeProvider } from "../components/floatingDialogScrollChrome";
 import { resolveFloatingDialogInsets } from "../components/floatingDialogChrome";
 import { resolveFloatingDialogDefaultSize } from "../components/floatingDialogGeometry";
+import { HspScrollColumn } from "../components/HspScrollColumn";
+import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
 
 const PRO_GRADIENT = ["#7B5CFF", "#E84AC8"] as const;
 
@@ -63,6 +67,7 @@ export function AccountLimitReachedDialog({ visible, onClose, onBuyProAccess }: 
   const colors = useColors();
   const { t, tf } = useAppStrings();
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const [headerExtendPx, setHeaderExtendPx] = useState(0);
   const defaultSize = useMemo(
     () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "modal"),
     [windowHeight, windowWidth],
@@ -80,110 +85,124 @@ export function AccountLimitReachedDialog({ visible, onClose, onBuyProAccess }: 
       onRequestClose={onClose}
       testId="account-limit-reached"
     >
-      <View style={{ flex: 1, minHeight: 0 }}>
-        <FloatingDialogStickyHeader
-          insets={dialogInsets}
-          onClose={onClose}
-          closeLabel={t("common.close")}
-          title={t("pro.limit.title")}
-        />
-        <View style={{ paddingHorizontal: dialogInsets.padX, paddingBottom: 20, gap: 16 }}>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "flex-start",
-              justifyContent: "space-between",
-            }}
-          >
-            <View style={{ flex: 1, paddingRight: 12, paddingTop: 6 }}>
-              <Text
-                style={{
-                  color: colors.primary,
-                  fontSize: 14,
-                  lineHeight: 20,
-                  fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-                }}
-              >
-                {tf("pro.limit.body", { limit: FREE_MESSENGER_ACCOUNT_LIMIT })}
-              </Text>
-            </View>
-            <LimitBubble count={FREE_MESSENGER_ACCOUNT_LIMIT} />
-          </View>
-
-          <View
-            style={{
-              flexDirection: "row",
-              borderRadius: 12,
-              overflow: "hidden",
-              minHeight: 44,
+      <FloatingDialogScrollChromeProvider headerExtendPx={headerExtendPx}>
+        <FloatingDialogBody>
+          <FloatingDialogStickyHeader
+            insets={dialogInsets}
+            onClose={onClose}
+            closeLabel={t("common.close")}
+            title={t("pro.limit.title")}
+            onHeightChange={setHeaderExtendPx}
+          />
+          <HspScrollColumn
+            style={{ flex: 1, minHeight: 0 }}
+            scrollIndicatorOverlaySeam={false}
+            containOverscroll
+            scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+            indicatorColor={colors.scrollIndicator}
+            contentContainerStyle={{
+              paddingHorizontal: dialogInsets.padX,
+              paddingBottom: 20,
+              gap: 16,
             }}
           >
             <View
               style={{
-                flex: 1,
-                backgroundColor: colors.undercover,
-                paddingHorizontal: 14,
                 flexDirection: "row",
-                alignItems: "center",
+                alignItems: "flex-start",
                 justifyContent: "space-between",
               }}
             >
-              <Text style={{ color: colors.primary, fontWeight: "700", fontSize: 14 }}>
-                {t("pro.limit.free")}
-              </Text>
-              <Text style={{ color: colors.primary, fontWeight: "700", fontSize: 14 }}>
-                {FREE_MESSENGER_ACCOUNT_LIMIT}
-              </Text>
+              <View style={{ flex: 1, paddingRight: 12, paddingTop: 6 }}>
+                <Text
+                  style={{
+                    color: colors.primary,
+                    fontSize: 14,
+                    lineHeight: 20,
+                    fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                  }}
+                >
+                  {tf("pro.limit.body", { limit: FREE_MESSENGER_ACCOUNT_LIMIT })}
+                </Text>
+              </View>
+              <LimitBubble count={FREE_MESSENGER_ACCOUNT_LIMIT} />
             </View>
+
             <View
               style={{
-                flex: 1.15,
-                paddingHorizontal: 14,
                 flexDirection: "row",
+                borderRadius: 12,
+                overflow: "hidden",
+                minHeight: 44,
+              }}
+            >
+              <View
+                style={{
+                  flex: 1,
+                  backgroundColor: colors.undercover,
+                  paddingHorizontal: 14,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <Text style={{ color: colors.primary, fontWeight: "700", fontSize: 14 }}>
+                  {t("pro.limit.free")}
+                </Text>
+                <Text style={{ color: colors.primary, fontWeight: "700", fontSize: 14 }}>
+                  {FREE_MESSENGER_ACCOUNT_LIMIT}
+                </Text>
+              </View>
+              <View
+                style={{
+                  flex: 1.15,
+                  paddingHorizontal: 14,
+                  flexDirection: "row",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  ...(Platform.OS === "web"
+                    ? ({
+                        backgroundImage: `linear-gradient(90deg, ${PRO_GRADIENT[0]}, ${PRO_GRADIENT[1]})`,
+                      } as object)
+                    : { backgroundColor: PRO_GRADIENT[0] }),
+                }}
+              >
+                <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>
+                  {t("pro.limit.proAccess")}
+                </Text>
+                <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>∞</Text>
+              </View>
+            </View>
+
+            <Pressable
+              accessibilityRole="button"
+              onPress={onBuyProAccess}
+              style={({ pressed }) => ({
+                opacity: pressed ? 0.88 : 1,
+                borderRadius: 999,
+                paddingVertical: 14,
                 alignItems: "center",
-                justifyContent: "space-between",
                 ...(Platform.OS === "web"
                   ? ({
                       backgroundImage: `linear-gradient(90deg, ${PRO_GRADIENT[0]}, ${PRO_GRADIENT[1]})`,
                     } as object)
                   : { backgroundColor: PRO_GRADIENT[0] }),
-              }}
+              })}
             >
-              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>
-                {t("pro.limit.proAccess")}
+              <Text
+                style={{
+                  color: "#fff",
+                  fontSize: 16,
+                  fontWeight: "800",
+                  fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                }}
+              >
+                {t("pro.buyCta")}
               </Text>
-              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 14 }}>∞</Text>
-            </View>
-          </View>
-
-          <Pressable
-            accessibilityRole="button"
-            onPress={onBuyProAccess}
-            style={({ pressed }) => ({
-              opacity: pressed ? 0.88 : 1,
-              borderRadius: 999,
-              paddingVertical: 14,
-              alignItems: "center",
-              ...(Platform.OS === "web"
-                ? ({
-                    backgroundImage: `linear-gradient(90deg, ${PRO_GRADIENT[0]}, ${PRO_GRADIENT[1]})`,
-                  } as object)
-                : { backgroundColor: PRO_GRADIENT[0] }),
-            })}
-          >
-            <Text
-              style={{
-                color: "#fff",
-                fontSize: 16,
-                fontWeight: "800",
-                fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-              }}
-            >
-              {t("pro.buyCta")}
-            </Text>
-          </Pressable>
-        </View>
-      </View>
+            </Pressable>
+          </HspScrollColumn>
+        </FloatingDialogBody>
+      </FloatingDialogScrollChromeProvider>
     </FloatingDialogShell>
   );
 }

@@ -460,6 +460,25 @@ async function runSchemaMigrations() {
     );
   `;
 
+  // Daily founder cost ↔ screen-time snapshots for improving unit-economics calibration.
+  await sql`
+    CREATE TABLE IF NOT EXISTS founder_cost_snapshots (
+      day                   DATE PRIMARY KEY,
+      screen_active_ms      BIGINT NOT NULL DEFAULT 0,
+      screen_users          INT NOT NULL DEFAULT 0,
+      screen_sessions       INT NOT NULL DEFAULT 0,
+      vercel_fixed_usd      DOUBLE PRECISION NOT NULL DEFAULT 0,
+      vercel_ondemand_usd   DOUBLE PRECISION NOT NULL DEFAULT 0,
+      railway_usd           DOUBLE PRECISION NOT NULL DEFAULT 0,
+      gcp_usd               DOUBLE PRECISION NOT NULL DEFAULT 0,
+      ondemand_usd          DOUBLE PRECISION NOT NULL DEFAULT 0,
+      fixed_usd             DOUBLE PRECISION NOT NULL DEFAULT 0,
+      source                TEXT,
+      created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+
   // Telegram client message sync (TDLib gateway); connection flag only — chat list lives in gateway memory.
   await sql`
     CREATE TABLE IF NOT EXISTS telegram_messages_connections (

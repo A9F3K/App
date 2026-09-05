@@ -268,7 +268,10 @@ export function MessageChatProfilePlaylistSheet({
           overflow: "hidden",
         }}
         {...(Platform.OS === "web"
-          ? ({ "data-profile-playlist-sheet": "1" } as object)
+          ? ({
+              "data-profile-playlist-sheet": "1",
+              "data-hsp-floating-dialog-body": "1",
+            } as object)
           : {})}
       >
         <FloatingDialogStickyHeader

@@ -128,58 +128,111 @@ export function UndercoverWalletButton({
   );
 }
 
-/** Fully rounded undercover pill: PRO label + metallic rocket (opens Pro Access tariffs). */
+/** Rectangle PRO chip: inactive = inner dotted border; subscribed = flat undercover. */
 export function UndercoverProButton({
   onPress,
   accessibilityLabel,
   disabled,
   active = false,
+  subscribed = false,
 }: {
   onPress?: () => void;
   accessibilityLabel: string;
   disabled?: boolean;
+  /** Dialog open. */
   active?: boolean;
+  /** Pro Access entitlement is active. */
+  subscribed?: boolean;
 }) {
   const colors = useColors();
   const { colorScheme } = useTelegram();
   const [hover, setHover] = useState(false);
-  const { contentColor, backgroundColor } = undercoverChipColors(
-    colors,
-    colorScheme,
-    active,
-    hover,
-  );
+  const [pressed, setPressed] = useState(false);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  const contentColor = colors.primary;
+  const backgroundColor = subscribed
+    ? active
+      ? undercoverWithOpacity(colors.undercover, 0.71)
+      : hover
+        ? welcomeAuthButtonHoverBackground(colors, colorScheme)
+        : colors.undercover
+    : "transparent";
+  const borderHot = pressed || active || hover;
+  const borderColor = borderHot ? colors.primary : colors.highlight;
 
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel}
-      accessibilityState={{ expanded: active }}
+      accessibilityState={{ expanded: active, selected: subscribed }}
       disabled={disabled}
       onPress={onPress}
+      onPressIn={() => setPressed(true)}
+      onPressOut={() => setPressed(false)}
       onHoverIn={Platform.OS === "web" ? () => setHover(true) : undefined}
       onHoverOut={Platform.OS === "web" ? () => setHover(false) : undefined}
-      style={({ pressed }) => ({
+      onLayout={(e) => {
+        const { width, height } = e.nativeEvent.layout;
+        if (!(width > 0) || !(height > 0)) return;
+        setSize((prev) =>
+          Math.abs(prev.w - width) < 0.5 && Math.abs(prev.h - height) < 0.5
+            ? prev
+            : { w: width, h: height },
+        );
+      }}
+      style={{
         height: UNDERCOVER_CIRCLE_PX,
-        paddingHorizontal: 10,
-        borderRadius: UNDERCOVER_CIRCLE_PX / 2,
+        paddingLeft: subscribed ? 8 : 7,
+        // Rocket sits at the trailing edge — keep right inset tight (inner 2px border still clears).
+        paddingRight: subscribed ? 5 : 4,
+        paddingVertical: 0,
+        borderRadius: 0,
+        borderWidth: 0,
+        position: "relative",
         flexDirection: "row",
         alignItems: "center",
         justifyContent: "center",
-        gap: 5,
+        gap: 3,
         backgroundColor:
-          !active && pressed
-            ? welcomeAuthButtonActiveBackground(colors, colorScheme)
-            : backgroundColor,
-      })}
+          !subscribed && pressed
+            ? "transparent"
+            : subscribed && !active && pressed
+              ? welcomeAuthButtonActiveBackground(colors, colorScheme)
+              : backgroundColor,
+      }}
     >
+      {!subscribed && size.w > 0 && size.h > 0 ? (
+        <Svg
+          width={size.w}
+          height={size.h}
+          style={{ position: "absolute", left: 0, top: 0 }}
+          pointerEvents="none"
+        >
+          {/*
+            Inner 2px stroke: path inset by 1px so the full stroke sits inside the chip.
+            Dash: 3px line / 1px gap.
+          */}
+          <Rect
+            x={1}
+            y={1}
+            width={Math.max(0, size.w - 2)}
+            height={Math.max(0, size.h - 2)}
+            fill="none"
+            stroke={borderColor}
+            strokeWidth={2}
+            strokeDasharray="3 1"
+            strokeLinecap="butt"
+            strokeLinejoin="miter"
+          />
+        </Svg>
+      ) : null}
       <Text
         style={{
           color: contentColor,
           fontSize: 12,
           lineHeight: 14,
           fontWeight: "700",
-          letterSpacing: 0.6,
+          letterSpacing: 0.5,
           fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_BOLD,
           includeFontPadding: false,
         }}

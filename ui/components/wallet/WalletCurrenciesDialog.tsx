@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { View, useWindowDimensions } from "react-native";
+import { useWindowDimensions } from "react-native";
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
 import { useWalletHeldCurrencyRows } from "../../wallet/useWalletHeldCurrencyRows";
@@ -8,6 +8,7 @@ import { formatWalletDialogSubtitle } from "../../wallet/formatWalletDialogSubti
 import { resolveFloatingDialogInsets } from "../floatingDialogChrome";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { FloatingDialogShell } from "../FloatingDialogShell";
+import { FloatingDialogBody } from "../FloatingDialogBody";
 import { FloatingDialogStickyHeader } from "../FloatingDialogStickyHeader";
 import { ChooseCurrencyTable } from "../swap/ChooseCurrencyTable";
 
@@ -47,12 +48,12 @@ export function WalletCurrenciesDialog({
       zIndex={10070}
       defaultSize={defaultSize}
       minSize={{ width: 300, height: 240 }}
-      sizeStorageKey="hsp.walletCurrencies.size.v1"
-      movable={false}
+      sizeStorageKey="hsp.walletCurrencies.size.v2"
+      offsetStorageKey="hsp.walletCurrencies.offset.v2"
       onRequestClose={onClose}
       testId="wallet-currencies"
     >
-      <View style={{ flex: 1, minHeight: 0 }}>
+      <FloatingDialogBody>
         <FloatingDialogStickyHeader
           insets={dialogInsets}
           title={title}
@@ -64,12 +65,12 @@ export function WalletCurrenciesDialog({
           rows={rows}
           isLoading={isLoading}
           loadError={error}
-          columnShellWidthPx={defaultSize.width}
           visibleColumnKeys={WALLET_HELD_COLUMNS}
           prefetchCharts={false}
           listEmptyMessage={t("home.header.walletCurrenciesEmpty")}
+          contentInsetPx={dialogInsets.padX}
         />
-      </View>
+      </FloatingDialogBody>
     </FloatingDialogShell>
   );
 }

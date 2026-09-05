@@ -592,7 +592,10 @@ export function MessageChatProfileMediaSheet({
           if (w > 0 && Math.abs(w - sheetWidthPx) > 0.5) setSheetWidthPx(w);
         }}
         {...(Platform.OS === "web"
-          ? ({ "data-profile-media-sheet": kind ?? undefined } as object)
+          ? ({
+              "data-profile-media-sheet": kind ?? undefined,
+              "data-hsp-floating-dialog-body": "1",
+            } as object)
           : {})}
       >
         <ProfileMediaSheetHeader

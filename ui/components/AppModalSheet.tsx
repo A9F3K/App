@@ -18,6 +18,7 @@ import {
 } from "./floatingDialogChrome";
 import { FloatingDialogScrollChromeProvider } from "./floatingDialogScrollChrome";
 import { FloatingDialogStickyHeader } from "./FloatingDialogStickyHeader";
+import { FloatingDialogBody } from "./FloatingDialogBody";
 import {
   FloatingDialogShell,
   useFloatingDialogContentSizing,
@@ -186,22 +187,18 @@ function AppModalSheetBody({
 
   if (useIntrinsicBody) {
     return chrome(
-      <View
-        style={{
-          ...(fitContentHeight && !contentSizing ? { flex: 1, minHeight: 0 } : null),
-        }}
-      >
+      <FloatingDialogBody>
         {header}
         <View style={bodyPadding}>
           {children}
           {footer}
         </View>
-      </View>,
+      </FloatingDialogBody>,
     );
   }
 
   return chrome(
-    <View style={{ flex: 1, minHeight: 0 }}>
+    <FloatingDialogBody>
       {header}
       <HspScrollColumn
         style={{ flex: 1, minHeight: 0 }}
@@ -213,7 +210,7 @@ function AppModalSheetBody({
         {children}
         {footer}
       </HspScrollColumn>
-    </View>,
+    </FloatingDialogBody>,
   );
 }
 
