@@ -4,6 +4,7 @@
  */
 import { telegramUsernameFromSessionCookie } from "../_lib/session-auth.js";
 import { isFounderAuthorized } from "../_lib/founder-auth.js";
+import { parseRequestJsonBody } from "../_lib/parse-request-body.js";
 import {
   ensureSupportTables,
   ensureSupportThreadForUser,
@@ -78,13 +79,7 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
       return respond(res, { ok: false, error: "method_not_allowed" }, 405);
     }
 
-    let payload: Record<string, unknown>;
-    try {
-      payload = (await request.json()) as Record<string, unknown>;
-    } catch {
-      return respond(res, { ok: false, error: "invalid_json" }, 400);
-    }
-
+    const payload = await parseRequestJsonBody(request);
     const action = String(payload.action ?? "send");
     const content = String(payload.content ?? "").trim();
     if (!content || content.length > 4000) {

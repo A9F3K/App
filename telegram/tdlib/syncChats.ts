@@ -485,11 +485,13 @@ async function loadAllChats(client: Client, options?: LoadAllChatsOptions): Prom
     ),
   );
 
-  if (options?.includeArchive !== false && options?.maxMainChats == null) {
+  // Always pull archive + folders when requested — a main-list cap must not drop them
+  // (tdesktop account unread includes archived / folder-only dialogs).
+  if (options?.includeArchive !== false) {
     merge(await loadChatsFromList(client, { _: "chatListArchive" }));
   }
 
-  if (options?.includeFolders !== false && options?.maxMainChats == null) {
+  if (options?.includeFolders !== false) {
     const folderIds = await resolveChatFolderIdsForSync(client, options?.telegramUsername);
     logGateway("load_all_chats_folders", {
       telegramUsername: options?.telegramUsername ?? null,
@@ -1008,11 +1010,32 @@ export async function syncChatThreads(
     const loaded = await loadPinnedAndPositionedChats(client, maxPositioned);
     chats = loaded.chats;
     positionedComplete = loaded.positionedComplete;
-    if (options?.includeArchive) {
+    if (options?.includeArchive !== false) {
       const archiveChats = await loadChatsFromList(client, { _: "chatListArchive" });
       const seen = new Set(chats.map((c) => c.id));
       for (const chat of archiveChats) {
-        if (!seen.has(chat.id)) chats.push(chat);
+        if (!seen.has(chat.id)) {
+          seen.add(chat.id);
+          chats.push(chat);
+        }
+      }
+    }
+    // Folder-only dialogs are absent from chatListMain — merge them so the flat
+    // list / unread total match tdesktop (folders + archive + main).
+    {
+      const folderIds = await resolveChatFolderIdsForSync(client, telegramUsername);
+      const seen = new Set(chats.map((c) => c.id));
+      for (const folderId of folderIds) {
+        const folderChats = await loadChatsFromList(client, {
+          _: "chatListFolder",
+          chat_folder_id: folderId,
+        });
+        for (const chat of folderChats) {
+          if (!seen.has(chat.id)) {
+            seen.add(chat.id);
+            chats.push(chat);
+          }
+        }
       }
     }
     resetChatListSyncMeta(telegramUsername, {

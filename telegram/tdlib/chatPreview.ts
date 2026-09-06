@@ -580,11 +580,18 @@ export function lastMessageAtIso(chat: TdChat, message?: TdMessage | null): stri
   return new Date().toISOString();
 }
 
+/**
+ * Per-chat unread from TDLib. Channels often exceed 50k when a user never opens them —
+ * do **not** treat large tallies as corrupt (that under-counted the account badge vs tdesktop).
+ * Only reject values that are clearly chat ids leaked into unread_count.
+ */
+const UNREAD_COUNT_ABSURD_CEILING = 100_000_000;
+
 export function normalizeUnreadCount(chat: TdChat): number {
   const raw = Number(chat.unread_count);
   if (!Number.isFinite(raw) || raw <= 0) return 0;
-  // Guard corrupt values (e.g. message/chat ids mistaken for unread).
-  if (raw > 50_000 || raw === chat.id || raw === Math.abs(chat.id)) return 0;
+  if (raw === chat.id || raw === Math.abs(chat.id)) return 0;
+  if (raw > UNREAD_COUNT_ABSURD_CEILING) return 0;
   return Math.floor(raw);
 }
 

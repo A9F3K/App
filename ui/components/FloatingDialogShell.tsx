@@ -778,6 +778,7 @@ export function FloatingDialogShell({
           overflow: "visible",
           ...(Platform.OS === "web"
             ? ({
+                position: "relative",
                 overscrollBehavior: "contain",
                 // Match former border-box inset so scrollbarRightInsetPx -1 lands on the edge strip.
                 padding: frameStroke,

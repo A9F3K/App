@@ -141,7 +141,7 @@ function AiAgentTabEmptyBody({
 export function AiSearchColumnEmptyState() {
   const colors = useColors();
   const { t } = useAppStrings();
-  const { setDraftText, setAiSearchSubmit } = useBottomBarLayout();
+  const { setDraftText, setAiSearchSubmit, setAiSearchPlaceholder } = useBottomBarLayout();
   const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const scrollRef = useRef<HspScrollColumnHandle>(null);
@@ -551,6 +551,15 @@ export function AiSearchColumnEmptyState() {
     });
     return () => setAiSearchSubmit(null);
   }, [applyPrompt, setAiSearchSubmit]);
+
+  useEffect(() => {
+    if (activeTab?.kind === "support") {
+      setAiSearchPlaceholder(t("global.bottomBar.askSupport"));
+    } else {
+      setAiSearchPlaceholder(null);
+    }
+    return () => setAiSearchPlaceholder(null);
+  }, [activeTab?.kind, setAiSearchPlaceholder, t]);
 
   const renameTarget = tabs.find((tab) => tab.id === renameTabId);
 

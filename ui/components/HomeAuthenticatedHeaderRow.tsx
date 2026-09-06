@@ -14,6 +14,7 @@ import {
   layout,
   menuIconStrokeColor,
   type ThemeColors,
+  uiIconButtonVerticalCompensationTransform,
   useColors,
 } from "../theme";
 import { readAuthenticatedHomeLayoutWidthPx } from "../authenticatedHomeLayoutWidth";
@@ -53,6 +54,11 @@ const HEADER_CONTROL_ROW_PX = layout.bottomBar.undercoverButtonHeightPx;
  * reads larger here — pull the label toward the wallet to optically match.
  */
 const WALLET_TO_BALANCE_OPTICAL_PULL_PX = 10;
+/**
+ * 30px balance digits sit optically low in the line box vs the wallet/PRO chips.
+ * Replaces the global Text −1px nudge with a stronger lift for this size only.
+ */
+const BALANCE_OPTICAL_NUDGE_Y_PX = -2;
 /** Below this width, show only the first name token in the header identity line. */
 const HEADER_FIRST_NAME_ONLY_MAX_WIDTH_PX = 460;
 
@@ -148,6 +154,14 @@ function HeaderActionIconButton({
         }, HEADER_ICON_PRESS_FLASH_MS);
       }}
       onPress={onPress}
+      style={{
+        width: AH.headerIconDisplaySize,
+        height: AH.headerIconDisplaySize,
+        alignItems: "center",
+        justifyContent: "center",
+        // Match global Text −1px optical lift so icons share a center with “Switch wallet”.
+        ...uiIconButtonVerticalCompensationTransform,
+      }}
     >
       {({ pressed }) =>
         children(menuIconStrokeColor(colors, pressed || flash ? "primary" : "highlight"))
@@ -356,17 +370,8 @@ export function HomeAuthenticatedHeaderRow({
             {
               color: colors.primary,
               lineHeight: HEADER_CONTROL_ROW_PX,
-              ...(Platform.OS === "web"
-                ? ({
-                    display: "flex",
-                    alignItems: "center",
-                    height: HEADER_CONTROL_ROW_PX,
-                    marginTop: 0,
-                    marginBottom: 0,
-                    paddingTop: 0,
-                    paddingBottom: 0,
-                  } as object)
-                : null),
+              // Stronger than global Text −1px: large digits center below the wallet/PRO chips.
+              transform: [{ translateY: BALANCE_OPTICAL_NUDGE_Y_PX }],
             },
           ]}
         >
@@ -381,13 +386,6 @@ export function HomeAuthenticatedHeaderRow({
     {
       color: colors.secondary,
       lineHeight: HEADER_CONTROL_ROW_PX,
-      ...(Platform.OS === "web"
-        ? ({
-            display: "flex",
-            alignItems: "center",
-            height: HEADER_CONTROL_ROW_PX,
-          } as object)
-        : null),
     },
   ];
 
@@ -460,19 +458,22 @@ export function HomeAuthenticatedHeaderRow({
             color: colors.primary,
             lineHeight: HEADER_CONTROL_ROW_PX,
             textAlign: "left",
-            ...(Platform.OS === "web"
-              ? ({
-                  display: "flex",
-                  alignItems: "center",
-                  height: HEADER_CONTROL_ROW_PX,
-                } as object)
-              : null),
           },
         ]}
       >
         {t("home.header.switchWallet")}
       </Text>
-      <HeaderSwitchWalletIcon color={menuIconStrokeColor(colors, "highlight")} size={16} />
+      <View
+        style={{
+          width: 16,
+          height: HEADER_CONTROL_ROW_PX,
+          alignItems: "center",
+          justifyContent: "center",
+          ...uiIconButtonVerticalCompensationTransform,
+        }}
+      >
+        <HeaderSwitchWalletIcon color={menuIconStrokeColor(colors, "highlight")} size={16} />
+      </View>
     </Pressable>
   );
 

@@ -12,7 +12,8 @@ type Props = {
  *
  * `overflow: hidden` is required so the body keeps a flex-bounded height; otherwise RN-web
  * grows with content and {@link HspScrollColumn} never sees overflow (no thumb).
- * Keep the scroll thumb inside the shell (`scrollbarRightInsetPx` ≥ 0) so it is not clipped.
+ * The scroll thumb is portaled beside this node onto the sheet so it can sit on the right
+ * chrome border and travel through header/footer without being clipped or covered.
  */
 export function FloatingDialogBody({ children, style }: Props) {
   return (

@@ -8,6 +8,7 @@ import {
   TextInput,
   useWindowDimensions,
   View,
+  type LayoutChangeEvent,
 } from "react-native";
 
 import { useAppStrings } from "../../locales/AppStringsContext";
@@ -23,6 +24,7 @@ import { HspScrollColumn } from "../components/HspScrollColumn";
 import { HeaderIconCopy } from "../components/icons/HeaderActionIcons";
 import { SmartGradientDivider } from "../components/smart/SmartGradientDivider";
 import { MusicBackChevronIcon } from "../components/music/MusicControlIcons";
+import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
 import { useTonConnectSession } from "../ton/TonConnectProvider";
 import { fetchTonapiAccountHoldings } from "../ton/fetchTonapiAccountHoldings";
 import {
@@ -194,6 +196,7 @@ export function ProPaymentMethodsDialog({
   );
   const [method, setMethod] = useState<PaymentMethodId>("builtin");
   const [headerExtendPx, setHeaderExtendPx] = useState(0);
+  const [footerExtendPx, setFooterExtendPx] = useState(0);
   const [copiedField, setCopiedField] = useState<"address" | "memo" | "directMemo" | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [selectedWalletKey, setSelectedWalletKey] = useState<string | null>(null);
@@ -205,6 +208,11 @@ export function ProPaymentMethodsDialog({
   const [directMemo, setDirectMemo] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [checkBusy, setCheckBusy] = useState(false);
+
+  const onFooterLayout = useCallback((e: LayoutChangeEvent) => {
+    const h = e.nativeEvent.layout.height;
+    if (h > 0) setFooterExtendPx(h);
+  }, []);
 
   const defaultSize = useMemo(
     () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "pro"),
@@ -705,7 +713,10 @@ export function ProPaymentMethodsDialog({
       onRequestClose={onClose}
       testId="pro-payment"
     >
-      <FloatingDialogScrollChromeProvider headerExtendPx={headerExtendPx}>
+      <FloatingDialogScrollChromeProvider
+        headerExtendPx={headerExtendPx}
+        footerExtendPx={footerExtendPx}
+      >
         <FloatingDialogBody>
           <FloatingDialogStickyHeader
             insets={dialogInsets}
@@ -736,8 +747,7 @@ export function ProPaymentMethodsDialog({
           <HspScrollColumn
             style={{ flex: 1, minHeight: 0 }}
             containOverscroll
-            // Keep thumb inside the shell so FloatingDialogBody overflow:hidden does not clip it.
-            scrollbarRightInsetPx={2}
+            scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
             scrollIndicatorOverlaySeam={false}
             contentContainerStyle={{
               paddingTop: 14,
@@ -1001,6 +1011,7 @@ export function ProPaymentMethodsDialog({
           </HspScrollColumn>
 
           <View
+            onLayout={onFooterLayout}
             style={{
               flexShrink: 0,
               backgroundColor: colors.background,

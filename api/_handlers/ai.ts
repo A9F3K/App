@@ -10,6 +10,7 @@
 
 import { transmit, type AiRequest } from "../../ai/transmitter.js";
 import { getTinyModelStatus } from "../../ai/tinymodel.js";
+import { parseRequestJsonBody } from "../_lib/parse-request-body.js";
 
 type NodeRes = {
   setHeader(name: string, value: string): void;
@@ -59,7 +60,7 @@ async function handler(
 
   let payload: unknown;
   try {
-    payload = await request.json();
+    payload = await parseRequestJsonBody(request);
   } catch {
     const body = { ok: false, error: "Invalid JSON body" };
 

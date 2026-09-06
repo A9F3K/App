@@ -24,6 +24,9 @@ type BottomBarLayoutCtx = {
    */
   aiSearchSubmit: ((text: string) => void) | null;
   setAiSearchSubmit: (fn: ((text: string) => void) | null) => void;
+  /** Override bottom-bar placeholder while a special AI column tab is active (e.g. Support). */
+  aiSearchPlaceholder: string | null;
+  setAiSearchPlaceholder: (text: string | null) => void;
 };
 
 const BottomBarLayoutContext = createContext<BottomBarLayoutCtx | null>(null);
@@ -47,6 +50,10 @@ export function BottomBarLayoutProvider({ children }: { children: ReactNode }) {
   const setAiSearchSubmit = useCallback((fn: ((text: string) => void) | null) => {
     setAiSearchSubmitState(() => fn);
   }, []);
+  const [aiSearchPlaceholder, setAiSearchPlaceholderState] = useState<string | null>(null);
+  const setAiSearchPlaceholder = useCallback((text: string | null) => {
+    setAiSearchPlaceholderState((prev) => (prev === text ? prev : text));
+  }, []);
   const value = useMemo(
     () => ({
       barHeight,
@@ -57,6 +64,8 @@ export function BottomBarLayoutProvider({ children }: { children: ReactNode }) {
       setDraftText,
       aiSearchSubmit,
       setAiSearchSubmit,
+      aiSearchPlaceholder,
+      setAiSearchPlaceholder,
     }),
     [
       barHeight,
@@ -67,6 +76,8 @@ export function BottomBarLayoutProvider({ children }: { children: ReactNode }) {
       setDraftText,
       aiSearchSubmit,
       setAiSearchSubmit,
+      aiSearchPlaceholder,
+      setAiSearchPlaceholder,
     ],
   );
   return <BottomBarLayoutContext.Provider value={value}>{children}</BottomBarLayoutContext.Provider>;

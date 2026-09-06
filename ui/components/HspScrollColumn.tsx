@@ -116,6 +116,7 @@ type Props = {
   /**
    * Extend the scroll-thumb track below the scroll viewport (px) so the indicator can travel
    * through a pinned gradient CTA row that sits under the scroller.
+   * When omitted, floating dialogs use {@link FloatingDialogScrollChromeProvider} `footerExtendPx`.
    */
   scrollIndicatorExtendBottomPx?: number;
   /**
@@ -179,7 +180,7 @@ export function HspScrollColumn({
   onScrollPositionChange,
   scrollbarRightInsetPx = DEFAULT_SCROLLBAR_RIGHT_INSET,
   scrollIndicatorOverlaySeam,
-  scrollIndicatorExtendBottomPx = 0,
+  scrollIndicatorExtendBottomPx,
   scrollIndicatorExtendTopPx,
   indicatorThumbMinPx = SCROLL_INDICATOR_THUMB_MIN_PX,
   indicatorContentSpanPx = null,
@@ -201,6 +202,10 @@ export function HspScrollColumn({
   const resolvedExtendTopPx = Math.max(
     0,
     scrollIndicatorExtendTopPx ?? dialogScrollChrome.headerExtendPx ?? 0,
+  );
+  const resolvedExtendBottomPx = Math.max(
+    0,
+    scrollIndicatorExtendBottomPx ?? dialogScrollChrome.footerExtendPx ?? 0,
   );
   const thumbColor = indicatorColor ?? colors.scrollIndicator;
   const scrollRef = useRef<ComponentRef<typeof ScrollView>>(null);
@@ -1087,7 +1092,7 @@ export function HspScrollColumn({
     const viewH = scroll.layoutH;
     const contentH = scroll.contentH;
     const y = scroll.scrollY;
-    const extendBottom = Math.max(0, scrollIndicatorExtendBottomPx);
+    const extendBottom = resolvedExtendBottomPx;
     const extendTop = resolvedExtendTopPx;
     const trackH = viewH + extendTop + extendBottom;
     // Subpixel / flexGrow fill often reports 1px phantom overflow; hide until real scroll range.
@@ -1121,7 +1126,7 @@ export function HspScrollColumn({
     scroll,
     indicatorContentSpanPx,
     indicatorThumbMinPx,
-    scrollIndicatorExtendBottomPx,
+    resolvedExtendBottomPx,
     resolvedExtendTopPx,
   ]);
 
@@ -1173,7 +1178,7 @@ export function HspScrollColumn({
         thumbColor={thumbColor}
         scrollbarRightInsetPx={scrollbarRightInsetPx}
         overlaySeam={scrollIndicatorOverlaySeam}
-        scrollIndicatorExtendBottomPx={scrollIndicatorExtendBottomPx}
+        scrollIndicatorExtendBottomPx={resolvedExtendBottomPx}
         scrollIndicatorExtendTopPx={resolvedExtendTopPx}
         onScrollTo={(y) => {
           onUserScrollIntent?.();

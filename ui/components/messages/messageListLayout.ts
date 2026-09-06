@@ -213,7 +213,8 @@ export function formatMessageUnreadCountLabel(
   maxDisplay = MESSAGE_CHAT_LIST_UNREAD_MAX_DISPLAY,
 ): string {
   if (!Number.isFinite(count) || count <= 0) return "";
-  if (count === chatId || count > 50_000) return "";
+  // Chat id mistaken for unread (same guard as {@link normalizeUnreadCount}).
+  if (count === chatId || count === Math.abs(chatId)) return "";
   if (count > maxDisplay) return `${maxDisplay}+`;
   return String(count);
 }

@@ -129,11 +129,13 @@ export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
       ] as const,
     [t],
   );
-  const placeholderWeb = options?.placeholderText ?? t("global.bottomBar.placeholderWeb");
-  const placeholderNative = options?.placeholderText ?? t("global.bottomBar.placeholderNative");
   const { themeBgReady, isInTelegram, layoutStartup } = useTelegram();
-  const { footerDockedToScreenEdge, draftText, setDraftText, aiSearchSubmit } =
+  const { footerDockedToScreenEdge, draftText, setDraftText, aiSearchSubmit, aiSearchPlaceholder } =
     useBottomBarLayout();
+  const placeholderWeb =
+    options?.placeholderText ?? aiSearchPlaceholder ?? t("global.bottomBar.placeholderWeb");
+  const placeholderNative =
+    options?.placeholderText ?? aiSearchPlaceholder ?? t("global.bottomBar.placeholderNative");
   const useLocalDraft = options?.useLocalDraft ?? false;
   const controlledDraft = options?.onDraftChange != null;
   const value = controlledDraft

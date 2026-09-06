@@ -3,6 +3,7 @@
  * POST /api/ai-chats { action, ... }
  */
 import { telegramUsernameFromSessionCookie } from "../_lib/session-auth.js";
+import { parseRequestJsonBody } from "../_lib/parse-request-body.js";
 import {
   claimSharedAiAgentChat,
   createAiAgentChat,
@@ -112,10 +113,8 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
       return respond(res, { ok: false, error: "method_not_allowed" }, 405);
     }
 
-    let payload: Record<string, unknown>;
-    try {
-      payload = (await request.json()) as Record<string, unknown>;
-    } catch {
+    const payload = await parseRequestJsonBody(request);
+    if (!payload || typeof payload !== "object") {
       return respond(res, { ok: false, error: "invalid_json" }, 400);
     }
 

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Platform, Text, useWindowDimensions, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Platform, Text, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
 
 import { useAppStrings } from "../../locales/AppStringsContext";
 import type { AppStringKey } from "../../locales/appStrings";
@@ -14,6 +14,7 @@ import { resolveFloatingDialogDefaultSize } from "../components/floatingDialogGe
 import { FloatingDialogScrollChromeProvider } from "../components/floatingDialogScrollChrome";
 import { HspScrollColumn } from "../components/HspScrollColumn";
 import { SmartGradientDivider } from "../components/smart/SmartGradientDivider";
+import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
 import {
   formatUsd,
   PRO_ACCESS_FEATURES,
@@ -44,6 +45,12 @@ export function ProAccessDialog({ visible, onClose }: Props) {
   const [planId, setPlanId] = useState<ProAccessPlanId>("month");
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [headerExtendPx, setHeaderExtendPx] = useState(0);
+  const [footerExtendPx, setFooterExtendPx] = useState(0);
+
+  const onFooterLayout = useCallback((e: LayoutChangeEvent) => {
+    const h = e.nativeEvent.layout.height;
+    if (h > 0) setFooterExtendPx(h);
+  }, []);
 
   useEffect(() => {
     if (!visible) setPaymentOpen(false);
@@ -85,7 +92,10 @@ export function ProAccessDialog({ visible, onClose }: Props) {
         onRequestClose={onCloseAll}
         testId="pro-access"
       >
-        <FloatingDialogScrollChromeProvider headerExtendPx={headerExtendPx}>
+        <FloatingDialogScrollChromeProvider
+          headerExtendPx={headerExtendPx}
+          footerExtendPx={footerExtendPx}
+        >
           <FloatingDialogBody>
             <FloatingDialogStickyHeader
               insets={dialogInsets}
@@ -98,8 +108,7 @@ export function ProAccessDialog({ visible, onClose }: Props) {
             <HspScrollColumn
               style={{ flex: 1, minHeight: 0 }}
               containOverscroll
-              // Keep thumb inside the shell so FloatingDialogBody overflow:hidden does not clip it.
-              scrollbarRightInsetPx={2}
+              scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
               scrollIndicatorOverlaySeam={false}
               contentContainerStyle={{
                 paddingTop: 14,
@@ -191,6 +200,7 @@ export function ProAccessDialog({ visible, onClose }: Props) {
             </HspScrollColumn>
 
             <View
+              onLayout={onFooterLayout}
               style={{
                 flexShrink: 0,
                 backgroundColor: colors.background,

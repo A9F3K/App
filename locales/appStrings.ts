@@ -116,6 +116,7 @@ const en = {
 
   "global.bottomBar.placeholderNative": "AI & Search",
   "global.bottomBar.placeholderWeb": "AI and search",
+  "global.bottomBar.askSupport": "Ask support",
   "global.bottomBar.premade1": "What tokens people are talking about now?",
   "global.bottomBar.premade2": "What famous artist has recently launched digital goods?",
   "global.bottomBar.premade3": "Buy eth for my 10 ton at the current rate",
@@ -879,6 +880,7 @@ const ru = {
 
   "global.bottomBar.placeholderNative": "ИИ и поиск",
   "global.bottomBar.placeholderWeb": "ИИ и поиск",
+  "global.bottomBar.askSupport": "Спросить поддержку",
   "global.bottomBar.premade1": "О каких токенах сейчас говорят люди?",
   "global.bottomBar.premade2": "Какой известный артист недавно выпустил цифровые товары?",
   "global.bottomBar.premade3": "Купи eth на мои 10 ton по текущему курсу",
@@ -1632,6 +1634,7 @@ const zh = {
   "floating.shield.label": "护盾",
   "global.bottomBar.placeholderNative": "AI 与搜索",
   "global.bottomBar.placeholderWeb": "AI 与搜索",
+  "global.bottomBar.askSupport": "询问支持",
   "global.bottomBar.premade1": "大家现在在讨论哪些代币？",
   "global.bottomBar.premade2": "哪位知名艺术家最近发布了数字商品？",
   "global.bottomBar.premade3": "用我的 10 ton 按当前汇率买入 eth",

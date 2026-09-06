@@ -17,6 +17,8 @@ import { useTelegram } from "./Telegram";
 import { useAuthenticatedHomeSplitLayoutMetrics } from "./AuthenticatedHomeSplitLayoutMetricsContext";
 
 const SEAM_OVERLAY_Z = layout.authenticatedHome.scrollIndicatorOverlayZIndex;
+/** Above sticky dialog header/footer (zIndex 4) when portaled beside FloatingDialogBody. */
+const DIALOG_CHROME_OVERLAY_Z = 20;
 /** Split-pane remounts often leave shell height/width at 0 for several frames. */
 const SEAM_SYNC_RETRY_FRAMES = 24;
 
@@ -25,6 +27,14 @@ type TrackBox = {
   rightPx: number;
   topPx: number;
   heightPx: number;
+};
+
+type DialogChromeBox = {
+  /** Offset of the dialog body within the portal host. */
+  topPx: number;
+  heightPx: number;
+  /** Distance from host’s padding edge to the chrome border strip. */
+  rightPx: number;
 };
 
 type Props = {
@@ -48,12 +58,38 @@ type Props = {
   style?: StyleProp<ViewStyle>;
 };
 
+function findDomNode(ref: View | null): HTMLElement | null {
+  if (!ref || Platform.OS !== "web") return null;
+  const fromResolver = resolveWebRefElement(ref);
+  if (fromResolver) return fromResolver;
+  if (typeof HTMLElement !== "undefined" && ref instanceof HTMLElement) return ref;
+  const anyRef = ref as unknown as {
+    getNode?: () => unknown;
+    _touchableNode?: HTMLElement;
+    _nativeNode?: HTMLElement;
+  };
+  const node = anyRef.getNode?.() ?? anyRef._touchableNode ?? anyRef._nativeNode ?? null;
+  return node instanceof HTMLElement ? node : null;
+}
+
+function findFloatingDialogBody(shell: HTMLElement | null): HTMLElement | null {
+  if (!shell) return null;
+  const body =
+    shell.closest("[data-hsp-floating-dialog-body]") ??
+    shell.closest(".hsp-floating-dialog-body");
+  return body instanceof HTMLElement ? body : null;
+}
+
 /**
  * Vertical 1px scroll thumb.
  *
  * When {@link scrollbarRightInsetPx} is `0` on web, the rail is portaled above the split-pane
  * seam overlay so it can sit on the divider (music-bar style) without being covered by it.
  * Footers keep their edge stroke via the divider overlay; only the thumb escapes column stacking.
+ *
+ * Inside floating dialogs, the rail is portaled beside {@link FloatingDialogBody} onto the sheet
+ * so `overflow: hidden` / sticky header·footer cannot clip or cover it, while still spanning the
+ * full right chrome (header + scroll + footer).
  */
 export function HspVerticalScrollIndicator({
   show,
@@ -79,24 +115,68 @@ export function HspVerticalScrollIndicator({
     overlaySeamProp ?? (Platform.OS === "web" && scrollbarRightInsetPx <= 0);
 
   const [seamBox, setSeamBox] = useState<TrackBox | null>(null);
+  const [dialogChrome, setDialogChrome] = useState<{
+    host: HTMLElement;
+    box: DialogChromeBox;
+  } | null>(null);
 
-  const applySeamBox = useCallback((x: number, y: number, w: number, h: number): boolean => {
-    if (!(w > 0) || !(h > 0)) return false;
-    const next: TrackBox = {
-      rightPx: snapScrollIndicatorCoordPx(x + w),
-      topPx: snapScrollIndicatorCoordPx(y),
-      heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, h + extendBottom)),
+  const applySeamBox = useCallback(
+    (x: number, y: number, w: number, h: number): boolean => {
+      if (!(w > 0) || !(h > 0)) return false;
+      const next: TrackBox = {
+        rightPx: snapScrollIndicatorCoordPx(x + w),
+        // Extend the track upward through sticky dialog / column chrome.
+        topPx: snapScrollIndicatorCoordPx(y - extendTop),
+        heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, h + extendTop + extendBottom)),
+      };
+      setSeamBox((prev) =>
+        prev &&
+        prev.rightPx === next.rightPx &&
+        prev.topPx === next.topPx &&
+        prev.heightPx === next.heightPx
+          ? prev
+          : next,
+      );
+      return true;
+    },
+    [trackH, extendBottom, extendTop],
+  );
+
+  const syncDialogChrome = useCallback((): boolean => {
+    if (Platform.OS !== "web" || overlaySeam || !show) {
+      setDialogChrome(null);
+      return true;
+    }
+    const shellDom = findDomNode(shellRef.current);
+    const body = findFloatingDialogBody(shellDom);
+    const host = body?.parentElement;
+    if (!body || !host) {
+      setDialogChrome(null);
+      return false;
+    }
+    const bodyRect = body.getBoundingClientRect();
+    const hostRect = host.getBoundingClientRect();
+    if (!(bodyRect.height > 0) || !(hostRect.width > 0)) {
+      setDialogChrome(null);
+      return false;
+    }
+    // Sit on the sheet’s right chrome border (host padding edge under FloatingDialogEdgeBorders).
+    const nextBox: DialogChromeBox = {
+      topPx: snapScrollIndicatorCoordPx(bodyRect.top - hostRect.top),
+      heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, bodyRect.height)),
+      rightPx: 0,
     };
-    setSeamBox((prev) =>
+    setDialogChrome((prev) =>
       prev &&
-      prev.rightPx === next.rightPx &&
-      prev.topPx === next.topPx &&
-      prev.heightPx === next.heightPx
+      prev.host === host &&
+      prev.box.topPx === nextBox.topPx &&
+      prev.box.heightPx === nextBox.heightPx &&
+      prev.box.rightPx === nextBox.rightPx
         ? prev
-        : next,
+        : { host, box: nextBox },
     );
     return true;
-  }, [trackH, extendBottom]);
+  }, [overlaySeam, show, shellRef, trackH]);
 
   const syncSeamBox = useCallback((): boolean => {
     if (!overlaySeam || !show) {
@@ -141,8 +221,6 @@ export function HspVerticalScrollIndicator({
     syncSeamBox();
     observeShell();
 
-    // Extra frames after column flex settles (common when crossing the triple breakpoint
-    // or after a window resize that remounts / reflows split panes).
     let cancelled = false;
     let frame = 0;
     let rafId = 0;
@@ -155,7 +233,6 @@ export function HspVerticalScrollIndicator({
       if (frame < SEAM_SYNC_RETRY_FRAMES && !measuredOk) {
         rafId = requestAnimationFrame(pump);
       } else if (frame < SEAM_SYNC_RETRY_FRAMES) {
-        // Keep sampling briefly even after a successful measure — resize can settle late.
         rafId = requestAnimationFrame(pump);
       }
     };
@@ -179,7 +256,62 @@ export function HspVerticalScrollIndicator({
   }, [overlaySeam, show, syncSeamBox, shellRef]);
 
   useLayoutEffect(() => {
+    if (overlaySeam || !show) {
+      setDialogChrome(null);
+      return;
+    }
+    const onWin = () => {
+      syncDialogChrome();
+    };
+    let ro: ResizeObserver | null = null;
+    const observe = () => {
+      const shellDom = findDomNode(shellRef.current);
+      const body = findFloatingDialogBody(shellDom);
+      if (!body || typeof ResizeObserver === "undefined") return false;
+      if (ro) ro.disconnect();
+      ro = new ResizeObserver(onWin);
+      ro.observe(body);
+      if (shellDom) ro.observe(shellDom);
+      const host = body.parentElement;
+      if (host) ro.observe(host);
+      return true;
+    };
+
+    syncDialogChrome();
+    observe();
+
+    let cancelled = false;
+    let frame = 0;
+    let rafId = 0;
+    const pump = () => {
+      if (cancelled) return;
+      syncDialogChrome();
+      observe();
+      frame += 1;
+      if (frame < SEAM_SYNC_RETRY_FRAMES) rafId = requestAnimationFrame(pump);
+    };
+    rafId = requestAnimationFrame(pump);
+
+    window.addEventListener("resize", onWin);
+    window.addEventListener("scroll", onWin, true);
+    const visualViewport = window.visualViewport;
+    visualViewport?.addEventListener("resize", onWin);
+    visualViewport?.addEventListener("scroll", onWin);
+
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", onWin);
+      window.removeEventListener("scroll", onWin, true);
+      visualViewport?.removeEventListener("resize", onWin);
+      visualViewport?.removeEventListener("scroll", onWin);
+      ro?.disconnect();
+    };
+  }, [overlaySeam, show, syncDialogChrome, shellRef]);
+
+  useLayoutEffect(() => {
     if (overlaySeam && show) syncSeamBox();
+    if (!overlaySeam && show) syncDialogChrome();
   }, [
     overlaySeam,
     show,
@@ -187,6 +319,7 @@ export function HspVerticalScrollIndicator({
     thumbH,
     thumbTop,
     syncSeamBox,
+    syncDialogChrome,
     splitMetrics?.columnCount,
     splitMetrics?.effectiveSplitWidthPx,
     splitMetrics?.thirdColumnWidthPx,
@@ -208,8 +341,10 @@ export function HspVerticalScrollIndicator({
     shellRect && shellRect.height > 0
       ? {
           rightPx: shellRightPx ?? snapScrollIndicatorCoordPx(shellRect.left + shellRect.width),
-          topPx: snapScrollIndicatorCoordPx(shellRect.top),
-          heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, shellRect.height + extendBottom)),
+          topPx: snapScrollIndicatorCoordPx(shellRect.top - extendTop),
+          heightPx: snapScrollIndicatorCoordPx(
+            Math.max(trackH, shellRect.height + extendTop + extendBottom),
+          ),
         }
       : null;
   const activeBox = seamBox ?? fallbackBox;
@@ -217,14 +352,10 @@ export function HspVerticalScrollIndicator({
   const flushRight = isSplitColumnFlushRight(shellDom);
   const atViewportRightEdge =
     overlaySeam &&
-    (flushRight ||
-      activeBox != null ||
-      shellRightPx != null) &&
+    (flushRight || activeBox != null || shellRightPx != null) &&
     (flushRight ||
       isScrollIndicatorAtViewportRightEdge(columnRightPx) ||
       (viewportRightPx != null && columnRightPx >= viewportRightPx - 2.5));
-  // Light theme only: 3px fill at the viewport edge (hairline clips against letterboxing).
-  // Dark theme keeps the 1px hairline — the wide thumb is intentionally light-only.
   const useViewportEdgeWideThumb =
     overlaySeam && atViewportRightEdge && colorScheme === "light";
   const crossAxisVisualSpan = useViewportEdgeWideThumb
@@ -285,6 +416,32 @@ export function HspVerticalScrollIndicator({
     return createPortal(portal, document.body);
   }
 
+  // Floating dialog: portal beside the body onto the sheet so overflow/header/footer cannot cover it.
+  if (!overlaySeam && typeof document !== "undefined") {
+    if (dialogChrome) {
+      const { host, box } = dialogChrome;
+      const portal: ReactNode = (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: box.topPx,
+            height: box.heightPx,
+            right: box.rightPx,
+            width: 0,
+            zIndex: DIALOG_CHROME_OVERLAY_Z,
+            overflow: "visible",
+          }}
+        >
+          {thumb}
+        </View>
+      );
+      return createPortal(portal, host);
+    }
+    // Inside a dialog but host metrics not ready — avoid a clipped in-shell flash.
+    if (findFloatingDialogBody(shellDom)) return null;
+  }
+
   return (
     <View
       pointerEvents="none"
@@ -304,18 +461,4 @@ export function HspVerticalScrollIndicator({
       {thumb}
     </View>
   );
-}
-
-function findDomNode(ref: View | null): HTMLElement | null {
-  if (!ref || Platform.OS !== "web") return null;
-  const fromResolver = resolveWebRefElement(ref);
-  if (fromResolver) return fromResolver;
-  if (typeof HTMLElement !== "undefined" && ref instanceof HTMLElement) return ref;
-  const anyRef = ref as unknown as {
-    getNode?: () => unknown;
-    _touchableNode?: HTMLElement;
-    _nativeNode?: HTMLElement;
-  };
-  const node = anyRef.getNode?.() ?? anyRef._touchableNode ?? anyRef._nativeNode ?? null;
-  return node instanceof HTMLElement ? node : null;
 }
