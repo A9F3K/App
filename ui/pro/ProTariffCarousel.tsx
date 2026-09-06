@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   NativeScrollEvent,
   NativeSyntheticEvent,
-  PixelRatio,
   Platform,
   Pressable,
   ScrollView,
@@ -41,16 +40,6 @@ const CARD_GAP_PX = 10;
 const CARD_MIN_W_PX = 156;
 const CARD_H_PX = 148;
 const SCROLL_EPS = 2;
-
-function hairlinePx(): number {
-  if (Platform.OS === "web") {
-    if (typeof window !== "undefined" && window.devicePixelRatio > 0) {
-      return 1 / window.devicePixelRatio;
-    }
-    return 1;
-  }
-  return PixelRatio.roundToNearestPixel(1 / PixelRatio.get());
-}
 
 function planLabelKey(id: ProAccessPlanId): AppStringKey {
   if (id === "month") return "pro.plan.month";
@@ -120,7 +109,6 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
   const [contentW, setContentW] = useState(0);
   const [scrollX, setScrollX] = useState(0);
 
-  const lineT = hairlinePx();
   const cardW = Math.max(
     CARD_MIN_W_PX,
     Math.min(200, Math.round((viewportW || 320) * 0.58)),
@@ -223,7 +211,8 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
       width: "100%",
       alignSelf: "stretch",
       backgroundColor: materials.field,
-      overflow: "hidden",
+      // Visible so the bottom scroll thumb is not clipped; cards clip inside an inner shell.
+      overflow: "visible",
       ...(lightTheme
         ? {
             borderTopWidth: 1,
@@ -234,6 +223,9 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
         : null),
     };
   }, [materials.field, lightTheme]);
+
+  /** Match dialog chrome stroke (1 CSS px). */
+  const trackH = 1;
 
   return (
     <View style={{ gap: 10, width: "100%", alignSelf: "stretch" }}>
@@ -251,74 +243,83 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
       </Text>
 
       <View ref={bandRef} onLayout={onViewportLayout} style={undercoverStyle}>
-        <ProTariffUndercoverCanvas
-          undercover={materials.field}
-          background={lightTheme ? PRO_ACCESS_LIGHT_FIELD_MID : materials.plate}
-          highlight={materials.chrome}
-          primary={materials.metalInk}
-          lightTheme={lightTheme}
-        />
-
-        <ScrollView
-          ref={scrollRef}
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          scrollEnabled={overflows}
-          onScroll={onScroll}
-          scrollEventThrottle={16}
-          onContentSizeChange={onContentSizeChange}
-          style={{ width: "100%", zIndex: 2 }}
-          contentContainerStyle={{
-            paddingHorizontal: contentPadX,
-            paddingTop: 14,
-            paddingBottom: overflows ? 16 : 14,
-            flexDirection: "row",
-            alignItems: "stretch",
-            gap: CARD_GAP_PX,
-            flexGrow: 1,
-            justifyContent: overflows ? "flex-start" : "center",
+        <View
+          style={{
+            overflow: "hidden",
+            position: "relative",
+            width: "100%",
+            borderRadius: 0,
           }}
-          decelerationRate="fast"
-          snapToInterval={overflows ? cardW + CARD_GAP_PX : undefined}
-          snapToAlignment="start"
-          disableIntervalMomentum={overflows}
-          {...(Platform.OS === "web"
-            ? ({
-                // Prefer pointer/trackpad gestures; wheel is owned by the axis-lock handler.
-                dataSet: { hspTariffCards: "1" },
-              } as object)
-            : null)}
         >
-          {PRO_ACCESS_PLANS.map((plan) => (
-            <TariffCard
-              key={plan.id}
-              plan={plan}
-              selected={plan.id === planId}
-              widthPx={cardW}
-              materials={materials}
-              lightTheme={lightTheme}
-              title={t(planLabelKey(plan.id))}
-              perMonth={tf("pro.plan.perMonth", { price: formatUsd(plan.monthlyUsd) })}
-              bestValueLabel={plan.highlight ? t("pro.plan.bestValue") : null}
-              selectedLabel={t("pro.sale.selected")}
-              tapLabel={t("pro.sale.tapToSelect")}
-              onPress={() => onSelectPlan(plan.id)}
-            />
-          ))}
-        </ScrollView>
+          <ProTariffUndercoverCanvas
+            undercover={materials.field}
+            background={lightTheme ? PRO_ACCESS_LIGHT_FIELD_MID : materials.plate}
+            highlight={materials.chrome}
+            primary={materials.metalInk}
+            lightTheme={lightTheme}
+          />
+
+          <ScrollView
+            ref={scrollRef}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            scrollEnabled={overflows}
+            onScroll={onScroll}
+            scrollEventThrottle={16}
+            onContentSizeChange={onContentSizeChange}
+            style={{ width: "100%", zIndex: 2 }}
+            contentContainerStyle={{
+              paddingHorizontal: contentPadX,
+              paddingTop: 14,
+              paddingBottom: overflows ? 14 : 14,
+              flexDirection: "row",
+              alignItems: "stretch",
+              gap: CARD_GAP_PX,
+              flexGrow: 1,
+              justifyContent: overflows ? "flex-start" : "center",
+            }}
+            decelerationRate="fast"
+            snapToInterval={overflows ? cardW + CARD_GAP_PX : undefined}
+            snapToAlignment="start"
+            disableIntervalMomentum={overflows}
+            {...(Platform.OS === "web"
+              ? ({
+                  // Prefer pointer/trackpad gestures; wheel is owned by the axis-lock handler.
+                  dataSet: { hspTariffCards: "1" },
+                } as object)
+              : null)}
+          >
+            {PRO_ACCESS_PLANS.map((plan) => (
+              <TariffCard
+                key={plan.id}
+                plan={plan}
+                selected={plan.id === planId}
+                widthPx={cardW}
+                materials={materials}
+                lightTheme={lightTheme}
+                title={t(planLabelKey(plan.id))}
+                perMonth={tf("pro.plan.perMonth", { price: formatUsd(plan.monthlyUsd) })}
+                bestValueLabel={plan.highlight ? t("pro.plan.bestValue") : null}
+                selectedLabel={t("pro.sale.selected")}
+                tapLabel={t("pro.sale.tapToSelect")}
+                onPress={() => onSelectPlan(plan.id)}
+              />
+            ))}
+          </ScrollView>
+        </View>
 
         {overflows && viewportW > 0 && thumbSnapW > 0 ? (
           <View
             pointerEvents="box-none"
             collapsable={false}
+            {...(Platform.OS === "web"
+              ? ({ dataSet: { hspTariffScrollIndicator: "1" } } as object)
+              : null)}
             style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              bottom: 0,
-              height: lineT,
+              width: "100%",
+              height: trackH,
+              marginTop: 0,
               backgroundColor: colors.highlight,
-              zIndex: 3,
               overflow: "visible",
             }}
           >
@@ -329,14 +330,14 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
               thumbOffset={thumbSnapLeft}
               scrollRange={scrollRange}
               onScrollTo={scrollToX}
-              crossAxisVisualSpan={lineT}
+              crossAxisVisualSpan={trackH}
             >
               <View
                 pointerEvents="none"
                 collapsable={false}
                 style={{
                   width: thumbSnapW,
-                  height: lineT,
+                  height: trackH,
                   backgroundColor: colors.scrollIndicator,
                   flexGrow: 0,
                   flexShrink: 0,

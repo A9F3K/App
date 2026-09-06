@@ -269,8 +269,10 @@ export function MessageChatProfilePlaylistSheet({
         }}
         {...(Platform.OS === "web"
           ? ({
-              "data-profile-playlist-sheet": "1",
-              "data-hsp-floating-dialog-body": "1",
+              dataSet: {
+                profilePlaylistSheet: "1",
+                hspFloatingDialogBody: "1",
+              },
             } as object)
           : {})}
       >

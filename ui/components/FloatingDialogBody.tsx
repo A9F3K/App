@@ -29,7 +29,8 @@ export function FloatingDialogBody({ children, style }: Props) {
       ]}
       {...(Platform.OS === "web"
         ? ({
-            "data-hsp-floating-dialog-body": "1",
+            // RN-web only reliably forwards data-* via dataSet (not raw data-* props).
+            dataSet: { hspFloatingDialogBody: "1" },
             className: "hsp-floating-dialog-body",
           } as object)
         : {})}

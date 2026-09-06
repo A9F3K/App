@@ -12,13 +12,16 @@ import {
   snapScrollIndicatorCoordPx,
 } from "../scrollIndicatorPx";
 import { layout } from "../theme";
+import { peekTopFloatingSurfaceZ } from "./floatingSurfaceStack";
 import { ScrollIndicatorDragHandle } from "./ScrollIndicatorDragHandle";
 import { useTelegram } from "./Telegram";
 import { useAuthenticatedHomeSplitLayoutMetrics } from "./AuthenticatedHomeSplitLayoutMetricsContext";
 
 const SEAM_OVERLAY_Z = layout.authenticatedHome.scrollIndicatorOverlayZIndex;
-/** Above sticky dialog header/footer (zIndex 4) when portaled beside FloatingDialogBody. */
-const DIALOG_CHROME_OVERLAY_Z = 20;
+/** Keep above FloatingDialogShell stack (Pro Access uses minZ 12050; raise-to-front climbs). */
+const DIALOG_BODY_PORTAL_Z_FLOOR = 200_000;
+/** Match FloatingDialogShell east chrome (1 CSS px frame stroke). */
+const DIALOG_THUMB_CROSS_AXIS_PX = 1;
 /** Split-pane remounts often leave shell height/width at 0 for several frames. */
 const SEAM_SYNC_RETRY_FRAMES = 24;
 
@@ -30,10 +33,10 @@ type TrackBox = {
 };
 
 type DialogChromeBox = {
-  /** Offset of the dialog body within the portal host. */
+  /** Viewport Y of the dialog body top (fixed portal). */
   topPx: number;
   heightPx: number;
-  /** Distance from host’s padding edge to the chrome border strip. */
+  /** Viewport X of the sheet’s right chrome edge (thumb paints leftward). */
   rightPx: number;
 };
 
@@ -80,6 +83,12 @@ function findFloatingDialogBody(shell: HTMLElement | null): HTMLElement | null {
   return body instanceof HTMLElement ? body : null;
 }
 
+function findFloatingDialogSheet(from: HTMLElement | null): HTMLElement | null {
+  if (!from) return null;
+  const sheet = from.closest("[data-hsp-floating-dialog-sheet]");
+  return sheet instanceof HTMLElement ? sheet : null;
+}
+
 /**
  * Vertical 1px scroll thumb.
  *
@@ -87,8 +96,8 @@ function findFloatingDialogBody(shell: HTMLElement | null): HTMLElement | null {
  * seam overlay so it can sit on the divider (music-bar style) without being covered by it.
  * Footers keep their edge stroke via the divider overlay; only the thumb escapes column stacking.
  *
- * Inside floating dialogs, the rail is portaled beside {@link FloatingDialogBody} onto the sheet
- * so `overflow: hidden` / sticky header·footer cannot clip or cover it, while still spanning the
+ * Inside floating dialogs, the rail is portaled to `document.body` with `position:fixed`
+ * above the dialog stack so edge borders / sticky chrome cannot cover it, spanning the
  * full right chrome (header + scroll + footer).
  */
 export function HspVerticalScrollIndicator({
@@ -116,7 +125,6 @@ export function HspVerticalScrollIndicator({
 
   const [seamBox, setSeamBox] = useState<TrackBox | null>(null);
   const [dialogChrome, setDialogChrome] = useState<{
-    host: HTMLElement;
     box: DialogChromeBox;
   } | null>(null);
 
@@ -149,31 +157,31 @@ export function HspVerticalScrollIndicator({
     }
     const shellDom = findDomNode(shellRef.current);
     const body = findFloatingDialogBody(shellDom);
-    const host = body?.parentElement;
-    if (!body || !host) {
+    const sheet =
+      findFloatingDialogSheet(shellDom) ?? findFloatingDialogSheet(body);
+    if (!body || !sheet) {
       setDialogChrome(null);
       return false;
     }
     const bodyRect = body.getBoundingClientRect();
-    const hostRect = host.getBoundingClientRect();
-    if (!(bodyRect.height > 0) || !(hostRect.width > 0)) {
+    const sheetRect = sheet.getBoundingClientRect();
+    if (!(bodyRect.height > 0) || !(sheetRect.width > 0)) {
       setDialogChrome(null);
       return false;
     }
-    // Sit on the sheet’s right chrome border (host padding edge under FloatingDialogEdgeBorders).
+    // Viewport coords: sit on the sheet’s east chrome border for the full body height.
     const nextBox: DialogChromeBox = {
-      topPx: snapScrollIndicatorCoordPx(bodyRect.top - hostRect.top),
+      topPx: snapScrollIndicatorCoordPx(bodyRect.top),
       heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, bodyRect.height)),
-      rightPx: 0,
+      rightPx: snapScrollIndicatorCoordPx(sheetRect.right),
     };
     setDialogChrome((prev) =>
       prev &&
-      prev.host === host &&
       prev.box.topPx === nextBox.topPx &&
       prev.box.heightPx === nextBox.heightPx &&
       prev.box.rightPx === nextBox.rightPx
         ? prev
-        : { host, box: nextBox },
+        : { box: nextBox },
     );
     return true;
   }, [overlaySeam, show, shellRef, trackH]);
@@ -267,13 +275,14 @@ export function HspVerticalScrollIndicator({
     const observe = () => {
       const shellDom = findDomNode(shellRef.current);
       const body = findFloatingDialogBody(shellDom);
-      if (!body || typeof ResizeObserver === "undefined") return false;
+      const sheet =
+        findFloatingDialogSheet(shellDom) ?? findFloatingDialogSheet(body);
+      if (!body || !sheet || typeof ResizeObserver === "undefined") return false;
       if (ro) ro.disconnect();
       ro = new ResizeObserver(onWin);
       ro.observe(body);
+      ro.observe(sheet);
       if (shellDom) ro.observe(shellDom);
-      const host = body.parentElement;
-      if (host) ro.observe(host);
       return true;
     };
 
@@ -358,14 +367,20 @@ export function HspVerticalScrollIndicator({
       (viewportRightPx != null && columnRightPx >= viewportRightPx - 2.5));
   const useViewportEdgeWideThumb =
     overlaySeam && atViewportRightEdge && colorScheme === "light";
+  const inFloatingDialog =
+    !overlaySeam && Platform.OS === "web";
   const crossAxisVisualSpan = useViewportEdgeWideThumb
     ? SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX
-    : hairline;
+    : inFloatingDialog
+      ? DIALOG_THUMB_CROSS_AXIS_PX
+      : Math.max(1, hairline);
+  const dialogTrackH =
+    inFloatingDialog && dialogChrome ? Math.max(trackH, dialogChrome.box.heightPx) : trackH;
 
   const thumb = (
     <ScrollIndicatorDragHandle
       axis="vertical"
-      trackSpan={trackH}
+      trackSpan={dialogTrackH}
       thumbSpan={thumbH}
       thumbOffset={thumbTop}
       scrollRange={maxScroll}
@@ -385,10 +400,16 @@ export function HspVerticalScrollIndicator({
           right: 0,
           top: 0,
           height: thumbH,
-          width: useViewportEdgeWideThumb ? SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX : 0,
-          backgroundColor: useViewportEdgeWideThumb ? thumbColor : "transparent",
-          borderLeftWidth: useViewportEdgeWideThumb ? 0 : hairline,
-          borderLeftColor: useViewportEdgeWideThumb ? "transparent" : thumbColor,
+          width: useViewportEdgeWideThumb
+            ? SCROLL_INDICATOR_VIEWPORT_EDGE_THUMB_PX
+            : inFloatingDialog
+              ? DIALOG_THUMB_CROSS_AXIS_PX
+              : 0,
+          backgroundColor:
+            useViewportEdgeWideThumb || inFloatingDialog ? thumbColor : "transparent",
+          borderLeftWidth: useViewportEdgeWideThumb || inFloatingDialog ? 0 : Math.max(1, hairline),
+          borderLeftColor:
+            useViewportEdgeWideThumb || inFloatingDialog ? "transparent" : thumbColor,
           borderStyle: "solid",
         }}
       />
@@ -416,30 +437,55 @@ export function HspVerticalScrollIndicator({
     return createPortal(portal, document.body);
   }
 
-  // Floating dialog: portal beside the body onto the sheet so overflow/header/footer cannot cover it.
-  if (!overlaySeam && typeof document !== "undefined") {
-    if (dialogChrome) {
-      const { host, box } = dialogChrome;
+  // Floating dialog: always portal onto document.body (never in-shell — shell overflow:hidden clips).
+  if (!overlaySeam && typeof document !== "undefined" && Platform.OS === "web") {
+    const shellDomNow = findDomNode(shellRef.current);
+    const body = findFloatingDialogBody(shellDomNow);
+    const sheet =
+      findFloatingDialogSheet(shellDomNow) ?? findFloatingDialogSheet(body);
+    const bodyRect = body?.getBoundingClientRect();
+    const sheetRect = sheet?.getBoundingClientRect();
+    const shellRectNow = shellDomNow?.getBoundingClientRect();
+    const box: DialogChromeBox | null = dialogChrome?.box
+      ?? (bodyRect && sheetRect && bodyRect.height > 0 && sheetRect.width > 0
+        ? {
+            topPx: snapScrollIndicatorCoordPx(bodyRect.top),
+            heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, bodyRect.height)),
+            rightPx: snapScrollIndicatorCoordPx(sheetRect.right),
+          }
+        : shellRectNow && shellRectNow.height > 0
+          ? {
+              topPx: snapScrollIndicatorCoordPx(shellRectNow.top - extendTop),
+              heightPx: snapScrollIndicatorCoordPx(
+                Math.max(trackH, shellRectNow.height + extendTop + extendBottom),
+              ),
+              rightPx: snapScrollIndicatorCoordPx(shellRectNow.right),
+            }
+          : null);
+    if (box) {
+      const portalZ = Math.max(DIALOG_BODY_PORTAL_Z_FLOOR, peekTopFloatingSurfaceZ() + 1);
+      const portalLeft = snapScrollIndicatorCoordPx(box.rightPx - DIALOG_THUMB_CROSS_AXIS_PX);
       const portal: ReactNode = (
         <View
           pointerEvents="none"
+          {...({
+            dataSet: { hspDialogScrollIndicator: "1" },
+          } as object)}
           style={{
-            position: "absolute",
+            position: "fixed" as unknown as "absolute",
             top: box.topPx,
+            left: portalLeft,
+            width: DIALOG_THUMB_CROSS_AXIS_PX,
             height: box.heightPx,
-            right: box.rightPx,
-            width: 0,
-            zIndex: DIALOG_CHROME_OVERLAY_Z,
+            zIndex: portalZ,
             overflow: "visible",
           }}
         >
           {thumb}
         </View>
       );
-      return createPortal(portal, host);
+      return createPortal(portal, document.body);
     }
-    // Inside a dialog but host metrics not ready — avoid a clipped in-shell flash.
-    if (findFloatingDialogBody(shellDom)) return null;
   }
 
   return (

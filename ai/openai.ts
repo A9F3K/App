@@ -1,5 +1,15 @@
 import OpenAI from "openai";
 import type { HspAiAction } from "./intentActions.js";
+import {
+  gatewayAuthKey,
+  gatewayBaseUrl,
+  isOpenAiConfigured,
+  isVercelGatewayConfigured,
+  resolveLlmRoute,
+  selectSmartChatModel,
+  type LlmBackend,
+} from "./llmRouter.js";
+import type { TinyModelEnrichmentMeta } from "./tinymodel.js";
 
 export type AiMode = "chat" | "token_info";
 
@@ -24,7 +34,7 @@ export type AiRequestBase = {
 
 export type AiResponseBase = {
   ok: boolean;
-  provider: "openai";
+  provider: LlmBackend | "openai";
   output_text?: string;
   error?: string;
   mode: AiMode;
@@ -40,36 +50,65 @@ export type AiResponseBase = {
   meta?: Record<string, unknown>;
 };
 
-const OPENAI = process.env.OPENAI?.trim() || "";
+export { selectSmartChatModel } from "./llmRouter.js";
 
-const client = OPENAI ? new OpenAI({ apiKey: OPENAI }) : null;
-
-/** Pick a model for the agent column — light prompts stay cheap; complex ones use the flagship. */
-export function selectSmartChatModel(input: string): string {
-  const t = input.trim();
-  const len = t.length;
-  const complex =
-    len > 280 ||
-    /\b(analy[sz]e|compare|architect|debug|refactor|prove|derive|code|sql|contract|security|plan)\b/i.test(
-      t,
-    ) ||
-    (t.match(/\?/g) ?? []).length >= 2;
-  return complex ? "gpt-5.2" : "gpt-4.1-mini";
+function openAiDirectClient(): OpenAI | null {
+  const key = process.env.OPENAI?.trim() || "";
+  if (!key) return null;
+  return new OpenAI({ apiKey: key });
 }
 
+function gatewayClient(): OpenAI | null {
+  const key = gatewayAuthKey();
+  if (!key) return null;
+  return new OpenAI({
+    apiKey: key,
+    baseURL: gatewayBaseUrl(),
+  });
+}
+
+function modePrefix(mode: AiMode): string {
+  return mode === "token_info"
+    ? "You are a blockchain and token analyst. Answer clearly and briefly.\n\n"
+    : "";
+}
+
+async function runResponsesCreate(
+  client: OpenAI,
+  args: {
+    model: string;
+    input: string;
+    instructions?: string;
+  },
+): Promise<{ output_text?: string; usage?: AiResponseBase["usage"] }> {
+  const response = await client.responses.create({
+    model: args.model,
+    ...(args.instructions ? { instructions: args.instructions } : {}),
+    input: args.input,
+  });
+  const r = response as {
+    output_text?: string;
+    usage?: AiResponseBase["usage"];
+  };
+  return { output_text: r.output_text, usage: r.usage };
+}
+
+/**
+ * Chat completion with cheapest-sufficient backend:
+ * Vercel AI Gateway → direct OpenAI (TinyModel-only is handled in transmitter).
+ */
 export async function callOpenAiChat(
   mode: AiMode,
-  params: AiRequestBase & { model?: string },
+  params: AiRequestBase & {
+    model?: string;
+    /** Soft hint from TinyModel; used only for route logging / future gates. */
+    tinymodel?: TinyModelEnrichmentMeta;
+    /** Force frontier-class model when true. */
+    preferFrontier?: boolean;
+    /** Skip gateway and use OpenAI only (rare). */
+    forceOpenAi?: boolean;
+  },
 ): Promise<AiResponseBase> {
-  if (!client) {
-    return {
-      ok: false,
-      provider: "openai",
-      mode,
-      error: "OPENAI env is not configured on the server.",
-    };
-  }
-
   const trimmed = params.input?.trim();
   if (!trimmed) {
     return {
@@ -80,59 +119,116 @@ export async function callOpenAiChat(
     };
   }
 
-  const prefix =
-    mode === "token_info"
-      ? "You are a blockchain and token analyst. Answer clearly and briefly.\n\n"
-      : "";
+  const route = params.forceOpenAi
+    ? isOpenAiConfigured()
+      ? {
+          backend: "openai" as const,
+          tier: "mini" as const,
+          model: params.model?.trim() || selectSmartChatModel(trimmed),
+          reason: "force_openai",
+        }
+      : { error: "OPENAI env is not configured on the server." }
+    : resolveLlmRoute(trimmed, params.tinymodel, {
+        preferFrontier: params.preferFrontier || mode === "token_info",
+        allowTinyOnly: false,
+      });
 
-  const model =
-    params.model?.trim() ||
-    (mode === "chat" ? selectSmartChatModel(trimmed) : "gpt-5.2");
-
-  try {
-    const response = await client.responses.create({
-      model,
-      ...(params.instructions ? { instructions: params.instructions } : {}),
-      input: `${prefix}${trimmed}`,
-    });
-
+  if ("error" in route) {
     return {
-      ok: true,
-      provider: "openai",
+      ok: false,
+      provider: isVercelGatewayConfigured() ? "vercel_gateway" : "openai",
       mode,
-      output_text: (response as any).output_text ?? undefined,
-      usage: (response as any).usage ?? undefined,
-      meta: { ...(params as any).meta, model },
+      error: route.error,
     };
-  } catch (e: any) {
-    const message =
-      e?.message ?? "Failed to call OpenAI. Check OPENAI env and network.";
+  }
+
+  const model = params.model?.trim() || route.model;
+  const prefix = modePrefix(mode);
+  const input = `${prefix}${trimmed}`;
+
+  const tryGateway = route.backend === "vercel_gateway" || isVercelGatewayConfigured();
+  const tryOpenAi = isOpenAiConfigured();
+
+  const attempts: Array<{ backend: LlmBackend; client: OpenAI; model: string }> = [];
+  if (!params.forceOpenAi && tryGateway) {
+    const gw = gatewayClient();
+    if (gw) {
+      attempts.push({
+        backend: "vercel_gateway",
+        client: gw,
+        model: route.backend === "vercel_gateway" ? model : model.includes("/") ? model : `openai/${model}`,
+      });
+    }
+  }
+  if (tryOpenAi) {
+    const oa = openAiDirectClient();
+    if (oa) {
+      const directModel = model.includes("/")
+        ? model.split("/").pop() || selectSmartChatModel(trimmed)
+        : model;
+      attempts.push({ backend: "openai", client: oa, model: directModel });
+    }
+  }
+
+  if (attempts.length === 0) {
     return {
       ok: false,
       provider: "openai",
       mode,
-      error: message,
-      meta: { model },
+      error:
+        "No AI provider configured. Set AI_GATEWAY_API_KEY (Vercel AI Gateway) or OPENAI on the server.",
     };
   }
+
+  let lastError = "Failed to call AI provider.";
+  for (const attempt of attempts) {
+    try {
+      const { output_text, usage } = await runResponsesCreate(attempt.client, {
+        model: attempt.model,
+        input,
+        instructions: params.instructions,
+      });
+      if (!output_text?.trim()) {
+        lastError = `${attempt.backend} returned no text.`;
+        continue;
+      }
+      return {
+        ok: true,
+        provider: attempt.backend,
+        mode,
+        output_text,
+        usage,
+        meta: {
+          ...(params as { meta?: Record<string, unknown> }).meta,
+          model: attempt.model,
+          backend: attempt.backend,
+          route_reason: route.reason,
+        },
+      };
+    } catch (e: unknown) {
+      lastError =
+        e instanceof Error
+          ? e.message
+          : `Failed to call ${attempt.backend}. Check env and network.`;
+    }
+  }
+
+  return {
+    ok: false,
+    provider: attempts[0]?.backend ?? "openai",
+    mode,
+    error: lastError,
+    meta: { attempted: attempts.map((a) => a.backend) },
+  };
 }
 
-/** Call OpenAI with streaming; onDelta(textSoFar) is called for each chunk. Returns final response. */
+/** Call with streaming; Gateway first, then OpenAI. */
 export async function callOpenAiChatStream(
   mode: AiMode,
-  params: AiRequestBase,
+  params: AiRequestBase & { tinymodel?: TinyModelEnrichmentMeta; preferFrontier?: boolean },
   onDelta: (text: string) => void | Promise<void>,
   opts?: { isCancelled?: () => boolean; getAbortSignal?: () => Promise<boolean> },
 ): Promise<AiResponseBase> {
-  if (!client) {
-    return {
-      ok: false,
-      provider: "openai",
-      mode,
-      error: "OPENAI env is not configured on the server.",
-    };
-  }
-
   const trimmed = params.input?.trim();
   if (!trimmed) {
     return {
@@ -143,82 +239,144 @@ export async function callOpenAiChatStream(
     };
   }
 
-  const prefix =
-    mode === "token_info"
-      ? "You are a blockchain and token analyst. Answer clearly and briefly.\n\n"
-      : "";
-
-  try {
-    const stream = client.responses.stream({
-      model: "gpt-5.2",
-      ...(params.instructions ? { instructions: params.instructions } : {}),
-      input: `${prefix}${trimmed}`,
-    });
-
-    stream.on("response.output_text.delta", async (event: { snapshot?: string }) => {
-      if (opts?.isCancelled && opts.isCancelled()) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (stream as any)?.abort?.();
-        } catch {
-          /* ignore */
-        }
-        return;
-      }
-      if (opts?.getAbortSignal && (await opts.getAbortSignal())) {
-        try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          (stream as any)?.abort?.();
-        } catch {
-          /* ignore */
-        }
-        return;
-      }
-      const text = event?.snapshot ?? "";
-      if (text.length > 0) void Promise.resolve(onDelta(text));
-    });
-
-    const response = await stream.finalResponse();
-    const r = response as any;
-    let output_text = r.output_text;
-    if (output_text == null || String(output_text).trim() === "") {
-      const parts: string[] = [];
-      for (const item of r.output ?? []) {
-        if (item?.type === "message" && Array.isArray(item.content)) {
-          for (const content of item.content) {
-            if (content?.type === "output_text" && typeof content.text === "string") {
-              parts.push(content.text);
-            }
-          }
-        }
-      }
-      output_text = parts.join("");
-    }
-    if (output_text == null || String(output_text).trim() === "") {
-      return {
-        ok: false,
-        provider: "openai",
-        mode,
-        error: "OpenAI returned no text.",
-        usage: r.usage ?? undefined,
-      };
-    }
-    return {
-      ok: true,
-      provider: "openai",
-      mode,
-      output_text,
-      usage: r.usage ?? undefined,
-    };
-  } catch (e: any) {
-    const message =
-      (e && typeof e === "object" && "message" in e ? (e as Error).message : null) ??
-      (e != null ? String(e) : "Failed to call OpenAI. Check OPENAI env and network.");
+  const route = resolveLlmRoute(trimmed, params.tinymodel, {
+    preferFrontier: params.preferFrontier || mode === "token_info",
+    allowTinyOnly: false,
+  });
+  if ("error" in route) {
     return {
       ok: false,
       provider: "openai",
       mode,
-      error: message,
+      error: route.error,
     };
   }
+
+  const prefix = modePrefix(mode);
+  const input = `${prefix}${trimmed}`;
+
+  const attempts: Array<{ backend: LlmBackend; client: OpenAI; model: string }> = [];
+  if (isVercelGatewayConfigured()) {
+    const gw = gatewayClient();
+    if (gw) {
+      attempts.push({
+        backend: "vercel_gateway",
+        client: gw,
+        model:
+          route.backend === "vercel_gateway"
+            ? route.model
+            : gatewayModelOrFallback(trimmed),
+      });
+    }
+  }
+  if (isOpenAiConfigured()) {
+    const oa = openAiDirectClient();
+    if (oa) {
+      attempts.push({
+        backend: "openai",
+        client: oa,
+        model: selectSmartChatModel(trimmed) === "gpt-5.2" ? "gpt-5.2" : "gpt-4.1-mini",
+      });
+    }
+  }
+
+  if (attempts.length === 0) {
+    return {
+      ok: false,
+      provider: "openai",
+      mode,
+      error:
+        "No AI provider configured. Set AI_GATEWAY_API_KEY (Vercel AI Gateway) or OPENAI on the server.",
+    };
+  }
+
+  let lastError = "Failed to stream AI response.";
+  for (const attempt of attempts) {
+    try {
+      const stream = attempt.client.responses.stream({
+        model: attempt.model,
+        ...(params.instructions ? { instructions: params.instructions } : {}),
+        input,
+      });
+
+      stream.on("response.output_text.delta", async (event: { snapshot?: string }) => {
+        if (opts?.isCancelled && opts.isCancelled()) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (stream as any)?.abort?.();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        if (opts?.getAbortSignal && (await opts.getAbortSignal())) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            (stream as any)?.abort?.();
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+        const text = event?.snapshot ?? "";
+        if (text.length > 0) void Promise.resolve(onDelta(text));
+      });
+
+      const response = await stream.finalResponse();
+      const r = response as {
+        output_text?: string;
+        output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>;
+        usage?: AiResponseBase["usage"];
+      };
+      let output_text = r.output_text;
+      if (output_text == null || String(output_text).trim() === "") {
+        const parts: string[] = [];
+        for (const item of r.output ?? []) {
+          if (item?.type === "message" && Array.isArray(item.content)) {
+            for (const content of item.content) {
+              if (content?.type === "output_text" && typeof content.text === "string") {
+                parts.push(content.text);
+              }
+            }
+          }
+        }
+        output_text = parts.join("");
+      }
+      if (output_text == null || String(output_text).trim() === "") {
+        lastError = `${attempt.backend} returned no text.`;
+        continue;
+      }
+      return {
+        ok: true,
+        provider: attempt.backend,
+        mode,
+        output_text,
+        usage: r.usage ?? undefined,
+        meta: { model: attempt.model, backend: attempt.backend },
+      };
+    } catch (e: unknown) {
+      lastError =
+        e instanceof Error
+          ? e.message
+          : `Failed to stream ${attempt.backend}. Check env and network.`;
+    }
+  }
+
+  return {
+    ok: false,
+    provider: attempts[0]?.backend ?? "openai",
+    mode,
+    error: lastError,
+  };
+}
+
+function gatewayModelOrFallback(input: string): string {
+  return selectSmartChatModel(input) === "gpt-5.2"
+    ? process.env.AI_GATEWAY_FRONTIER_MODEL?.trim() || "openai/gpt-4.1"
+    : process.env.AI_GATEWAY_MINI_MODEL?.trim() || "openai/gpt-4.1-mini";
+}
+
+/** @deprecated Prefer isOpenAiConfigured / isVercelGatewayConfigured from llmRouter. */
+export function isOpenAiClientReady(): boolean {
+  return isOpenAiConfigured() || isVercelGatewayConfigured();
 }

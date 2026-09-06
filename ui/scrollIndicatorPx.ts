@@ -132,7 +132,19 @@ export function readScrollportOverflowPx(
   overflows: boolean;
 } | null {
   if (!el) return null;
-  const contentH = el.scrollHeight;
+  const dialogBody =
+    el.closest("[data-hsp-floating-dialog-body]") ??
+    el.closest(".hsp-floating-dialog-body") ??
+    shellEl?.closest("[data-hsp-floating-dialog-body]") ??
+    shellEl?.closest(".hsp-floating-dialog-body");
+  const contentWrap = el.firstElementChild instanceof HTMLElement ? el.firstElementChild : null;
+  // RN-web can report scrollHeight === clientHeight while the inner content is taller
+  // and clipped by an ancestor — especially inside floating dialogs.
+  let contentH = Math.max(
+    el.scrollHeight,
+    contentWrap?.scrollHeight ?? 0,
+    contentWrap?.offsetHeight ?? 0,
+  );
   let layoutH = el.clientHeight;
   const parentAvail = shellEl ? readShellFlexAvailableHeightPx(shellEl) : 0;
   const hostAvail = shellEl ? readSplitColumnScrollHostHeightPx(shellEl) : 0;
@@ -155,6 +167,10 @@ export function readScrollportOverflowPx(
       layoutH = capH;
     } else if (!(layoutH > 0)) {
       layoutH = capH;
+    }
+    // Dialogs: always prefer the flex slot when the scrollport has inflated to content.
+    if (dialogBody instanceof HTMLElement && contentH > capH + eps) {
+      layoutH = Math.min(layoutH > 0 ? layoutH : capH, capH);
     }
   }
   if (!(layoutH > 0)) return null;

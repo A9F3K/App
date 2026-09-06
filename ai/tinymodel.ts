@@ -22,6 +22,8 @@ export type TinyModelRetrieveHit = {
 
 export type TinyModelEnrichmentMeta = {
   configured: boolean;
+  /** True when answer/context came from local keyword corpus (no TinyModel sidecar). */
+  local_corpus?: boolean;
   health_ok?: boolean;
   error?: string;
   top_label?: string;
@@ -192,9 +194,84 @@ function formatContextBlock(
   return lines.join("\n\n");
 }
 
+function localCorpusRetrieve(
+  query: string,
+  topK: number = DEFAULT_TOP_K,
+): TinyModelRetrieveHit[] {
+  const stop = new Set([
+    "a",
+    "an",
+    "the",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "to",
+    "of",
+    "in",
+    "on",
+    "for",
+    "and",
+    "or",
+    "what",
+    "how",
+    "why",
+    "when",
+    "where",
+    "who",
+    "which",
+    "can",
+    "do",
+    "does",
+    "did",
+    "me",
+    "my",
+    "you",
+    "your",
+    "with",
+    "from",
+    "about",
+    "please",
+    "tell",
+    "explain",
+  ]);
+  const tokens = query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/i)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && !stop.has(t));
+  if (tokens.length === 0) return [];
+
+  const scored = HSP_PROGRAM_CORPUS_CHUNKS.map((text, index) => {
+    const lower = text.toLowerCase();
+    const title = (text.split("\n", 1)[0] ?? "").toLowerCase();
+    let score = 0;
+    let titleHits = 0;
+    for (const tok of tokens) {
+      if (lower.includes(tok)) score += 1;
+      if (title.includes(tok)) {
+        score += 0.75;
+        titleHits += 1;
+      }
+    }
+    // Require at least one content hit; normalize by query length.
+    if (score <= 0) return { index, text, score: 0 };
+    score = score / Math.max(1.5, tokens.length);
+    if (titleHits > 0) score += 0.15 * titleHits;
+    return { index, text, score };
+  })
+    .filter((h) => h.score >= 0.35)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
+
+  return scored;
+}
+
 /**
  * Classify + retrieve program help snippets when TINYMODEL_API_URL is set.
- * Safe to call when not configured (returns configured:false, no throw).
+ * When unset, falls back to local keyword retrieve over the bundled program corpus
+ * so short product questions can still be answered without an LLM key.
  */
 export async function enrichWithTinyModel(
   input: string,
@@ -210,20 +287,48 @@ export async function enrichWithTinyModel(
     typeof context?.route === "string" ? (context.route as string) : undefined;
 
   if (!isTinyModelConfigured()) {
+    const hits = localCorpusRetrieve(trimmed);
+    const meta: TinyModelEnrichmentMeta = {
+      configured: false,
+      local_corpus: hits.length > 0 || Boolean(routeHint),
+      route: routeHint,
+      retrieve_hits: hits.map((h) => ({
+        index: h.index,
+        score: h.score,
+        title: h.text.split("\n", 1)[0] ?? "",
+      })),
+    };
+    if (hits.length === 0) {
+      return { meta };
+    }
     return {
-      meta: { configured: false, route: routeHint },
+      meta,
+      contextBlock: formatContextBlock(hits, undefined, routeHint, screenRoute),
     };
   }
 
   const health = await tinyModelHealth();
   if (!health.ok) {
+    // Sidecar down — still try local corpus so chat is not dead.
+    const hits = localCorpusRetrieve(trimmed);
     return {
       meta: {
         configured: true,
         health_ok: false,
         error: health.error,
         route: routeHint,
+        local_corpus: hits.length > 0,
+        retrieve_hits: hits.map((h) => ({
+          index: h.index,
+          score: h.score,
+          title: h.text.split("\n", 1)[0] ?? "",
+        })),
       },
+      ...(hits.length > 0
+        ? {
+            contextBlock: formatContextBlock(hits, undefined, routeHint, screenRoute),
+          }
+        : {}),
     };
   }
 
@@ -251,6 +356,19 @@ export async function enrichWithTinyModel(
 
   if (!ret.ok) {
     meta.error = meta.error ?? ret.error;
+    const hits = localCorpusRetrieve(trimmed);
+    if (hits.length > 0) {
+      meta.local_corpus = true;
+      meta.retrieve_hits = hits.map((h) => ({
+        index: h.index,
+        score: h.score,
+        title: h.text.split("\n", 1)[0] ?? "",
+      }));
+      return {
+        meta,
+        contextBlock: formatContextBlock(hits, undefined, routeHint, screenRoute),
+      };
+    }
     return { meta };
   }
 

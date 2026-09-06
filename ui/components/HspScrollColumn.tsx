@@ -29,8 +29,10 @@ import {
   readShellFlexAvailableHeightPx,
   readSplitColumnScrollHostHeightPx,
   scrollContentOverflowsViewport,
+  scrollIndicatorOverflowEpsilonPx,
 } from "../scrollIndicatorPx";
 import { isBrowserZoomWheelEvent } from "../browserZoom";
+import { logPageDisplay } from "../pageDisplayLog";
 import { layout, useColors } from "../theme";
 import { resolveWebRefElement } from "../smart/resolveWebLayoutElement";
 import { useAuthenticatedHomeSplitLayoutMetrics } from "./AuthenticatedHomeSplitLayoutMetricsContext";
@@ -302,17 +304,34 @@ export function HspScrollColumn({
     const shellDom = findShellDomNode(shellRef.current);
     const live = readScrollportOverflowPx(el, shellDom);
     if (!live) return;
+    let layoutH = live.layoutH;
+    let contentH = live.contentH > 0 ? live.contentH : 0;
+    // Dialogs: if the body flex slot is shorter than intrinsic content, force overflow
+    // even when RN-web reports scrollHeight === clientHeight (clipped by ancestors).
+    if (shellDom?.closest?.("[data-hsp-floating-dialog-body]")) {
+      const avail = readShellFlexAvailableHeightPx(shellDom);
+      const wrap = el.firstElementChild instanceof HTMLElement ? el.firstElementChild : null;
+      const intrinsic = Math.max(
+        el.scrollHeight,
+        wrap?.scrollHeight ?? 0,
+        wrap?.offsetHeight ?? 0,
+      );
+      if (avail > 0 && intrinsic > avail + scrollIndicatorOverflowEpsilonPx()) {
+        layoutH = avail;
+        contentH = Math.max(contentH, intrinsic);
+      }
+    }
+    if (!(layoutH > 0) || !(contentH > 0)) return;
     const scrollYRaw = el.scrollTop;
     const scrollY = scrollYRaw <= SCROLL_INDICATOR_SCROLL_EPS ? 0 : scrollYRaw;
     syncNearTopLatch(scrollY);
-    syncNearBottomLatch(scrollY, live.layoutH, live.contentH);
+    syncNearBottomLatch(scrollY, layoutH, contentH);
     setScroll((prev) => {
       const next = {
         ...prev,
-        layoutH: live.layoutH,
+        layoutH,
         scrollY,
-        // Always take live contentH (including when it shrinks after zoom-out).
-        contentH: live.contentH > 0 ? live.contentH : prev.contentH,
+        contentH,
       };
       scrollMetricsRef.current = next;
       emitScrollPosition(next);
@@ -521,8 +540,7 @@ export function HspScrollColumn({
       if (avail > 0) {
         shellDom.style.setProperty("height", `${avail}px`);
         shellDom.style.setProperty("max-height", `${avail}px`);
-        // Always clip the shell to the flex box so overflow is real (needed for dialogs).
-        // Portaled thumbs don't need overhang; in-shell thumbs use inset ≥ 0.
+        // Clip so overflow metrics are real. Dialog thumbs are portaled to document.body.
         shellDom.style.setProperty("overflow", "hidden");
       } else {
         shellDom.style.removeProperty("height");
@@ -546,6 +564,11 @@ export function HspScrollColumn({
         el.style.setProperty("max-height", `${shellH}px`);
       } else {
         el.style.setProperty("max-height", "100%");
+      }
+      // Dialogs: force a real scrollport so ancestor overflow:hidden cannot hide overflow.
+      if (shellDom?.closest("[data-hsp-floating-dialog-body]")) {
+        el.style.setProperty("overflow-y", "auto");
+        el.style.setProperty("overflow-x", "hidden");
       }
     };
 
@@ -1128,6 +1151,33 @@ export function HspScrollColumn({
     indicatorThumbMinPx,
     resolvedExtendBottomPx,
     resolvedExtendTopPx,
+  ]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    const shellDom = findShellDomNode(shellRef.current);
+    if (!shellDom?.closest?.("[data-hsp-floating-dialog-body]")) return;
+    logPageDisplay("dialog_scroll_indicator", {
+      show: indicator.show,
+      layoutH: scroll.layoutH,
+      contentH: scroll.contentH,
+      trackH: indicator.trackH,
+      thumbH: indicator.thumbH,
+      extendTop: resolvedExtendTopPx,
+      extendBottom: resolvedExtendBottomPx,
+      inset: scrollbarRightInsetPx,
+      overlaySeam: scrollIndicatorOverlaySeam,
+    });
+  }, [
+    indicator.show,
+    indicator.trackH,
+    indicator.thumbH,
+    scroll.layoutH,
+    scroll.contentH,
+    resolvedExtendTopPx,
+    resolvedExtendBottomPx,
+    scrollbarRightInsetPx,
+    scrollIndicatorOverlaySeam,
   ]);
 
   return (

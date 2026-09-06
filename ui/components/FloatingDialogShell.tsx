@@ -737,7 +737,15 @@ export function FloatingDialogShell({
       ]}
       {...(Platform.OS === "web"
         ? ({
-            [`data-${testId}`]: "1",
+            // RN-web forwards data-* via dataSet only (raw data-* props are stripped).
+            dataSet: {
+              hspFloatingDialogSheet: "1",
+              ...(testId
+                ? {
+                    [String(testId).replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())]: "1",
+                  }
+                : null),
+            },
             onClick: (e: { stopPropagation?: () => void }) => e.stopPropagation?.(),
             // Bubble phase so resize handles can own the gesture first.
             onPointerDown: beginMoveDrag,
@@ -786,6 +794,9 @@ export function FloatingDialogShell({
             : {}),
         }}
         pointerEvents="box-none"
+        {...(Platform.OS === "web"
+          ? ({ dataSet: { hspFloatingDialogContentHost: "1" } } as object)
+          : {})}
       >
         <FloatingDialogMoveContext.Provider value={moveContextValue}>
           <FloatingDialogSizingContext.Provider value={{ contentSizing }}>
@@ -820,7 +831,14 @@ export function FloatingDialogShell({
               } as object)
             : {}),
         }}
-        {...({ [`data-${testId}-root`]: "1" } as object)}
+        {...(Platform.OS === "web"
+          ? ({
+              dataSet: {
+                [`${String(testId).replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())}Root`]:
+                  "1",
+              },
+            } as object)
+          : {})}
       >
         {sheet}
       </View>,

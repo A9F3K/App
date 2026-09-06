@@ -593,8 +593,10 @@ export function MessageChatProfileMediaSheet({
         }}
         {...(Platform.OS === "web"
           ? ({
-              "data-profile-media-sheet": kind ?? undefined,
-              "data-hsp-floating-dialog-body": "1",
+              dataSet: {
+                profileMediaSheet: kind ?? undefined,
+                hspFloatingDialogBody: "1",
+              },
             } as object)
           : {})}
       >

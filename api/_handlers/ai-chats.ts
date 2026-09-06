@@ -44,10 +44,17 @@ function respond(res: NodeRes | undefined, body: object, status: number): Respon
 
 async function suggestTitle(userText: string, priorTitle: string): Promise<string> {
   const { callOpenAiChat } = await import("../../ai/openai.js");
-  const model = "gpt-4.1-mini";
+  const { isOpenAiConfigured, isVercelGatewayConfigured } = await import(
+    "../../ai/llmRouter.js"
+  );
+  if (!isOpenAiConfigured() && !isVercelGatewayConfigured()) {
+    const fallback = userText.trim().slice(0, 48);
+    return fallback || priorTitle || "New Agent";
+  }
   const result = await callOpenAiChat("chat", {
     input: userText,
-    model,
+    model: "gpt-4.1-mini",
+    preferFrontier: false,
     instructions:
       "Return ONLY a short chat tab title (2–6 words, no quotes, no punctuation at end). " +
       `Current title: "${priorTitle}". Improve it based on the latest user message if useful; otherwise keep a close variant.`,
@@ -204,7 +211,7 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
     }
 
     if (action === "send") {
-      const { callOpenAiChat, selectSmartChatModel } = await import("../../ai/openai.js");
+      const { transmit } = await import("../../ai/transmitter.js");
       const chatId = String(payload.chatId ?? "");
       const input = String(payload.input ?? "").trim();
       if (!input) return respond(res, { ok: false, error: "input_required" }, 400);
@@ -240,12 +247,14 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
         .slice(0, -1)
         .map((m) => `${m.role}: ${m.content}`)
         .join("\n");
-      const model = selectSmartChatModel(input);
-      const ai = await callOpenAiChat("chat", {
-        input: historyBlock
+      const ai = await transmit({
+        mode: "chat",
+        input,
+        llmInput: historyBlock
           ? `Previous conversation:\n${historyBlock}\n\nuser: ${input}`
           : input,
-        model,
+        userId: username,
+        context: { source: "ai_agent_column", chatId: chat.id },
         instructions:
           "You are the Hyperlinks Space Program AI assistant in the AI & Search column. " +
           "Answer clearly and helpfully. Prefer concise Markdown-friendly prose.",
@@ -263,7 +272,7 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
         chatId: chat.id,
         role: "assistant",
         content: ai.output_text.trim(),
-        model: String(ai.meta?.model ?? model),
+        model: String(ai.meta?.model ?? ai.provider),
       });
 
       const nextTitle = await suggestTitle(input, chat.title);
@@ -281,7 +290,7 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
           chat: renamed,
           userMessage,
           assistantMessage: assistant,
-          model: String(ai.meta?.model ?? model),
+          model: String(ai.meta?.model ?? ai.provider),
         },
         200,
       );

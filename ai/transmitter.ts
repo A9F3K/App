@@ -1,5 +1,9 @@
 import type { AiMode, AiRequestBase, AiResponseBase, ThreadContext } from "./openai.js";
 import { callOpenAiChat, callOpenAiChatStream } from "./openai.js";
+import {
+  buildTinyModelOnlyAnswer,
+  canAnswerWithTinyModel,
+} from "./llmRouter.js";
 import { enrichWithTinyModel, type TinyModelEnrichmentMeta } from "./tinymodel.js";
 import { actionsFromRouteHint } from "./intentActions.js";
 import {
@@ -16,6 +20,11 @@ import { trustJettonMarketCapUsd } from "../ui/swap/resolveJettonMarketCapUsd.js
 
 export type AiRequest = AiRequestBase & {
   mode?: AiMode;
+  /**
+   * Optional full prompt for the LLM (e.g. history + current user turn).
+   * TinyModel enrichment always uses `input` (latest user text only).
+   */
+  llmInput?: string;
 };
 
 export type AiResponse = AiResponseBase;
@@ -210,17 +219,43 @@ async function handleTokenInfo(
 async function applyTinyModelContext(
   request: AiRequest,
   inputWithHistory: string,
-): Promise<{ input: string; tinymodel?: TinyModelEnrichmentMeta }> {
+): Promise<{
+  input: string;
+  tinymodel?: TinyModelEnrichmentMeta;
+  enrichment?: Awaited<ReturnType<typeof enrichWithTinyModel>>;
+}> {
   if ((request.mode ?? "chat") !== "chat") {
     return { input: inputWithHistory };
   }
   const enriched = await enrichWithTinyModel(request.input, request.context);
   if (!enriched.contextBlock) {
-    return { input: inputWithHistory, tinymodel: enriched.meta };
+    return { input: inputWithHistory, tinymodel: enriched.meta, enrichment: enriched };
   }
   return {
     input: `${enriched.contextBlock}\n\n${inputWithHistory}`,
     tinymodel: enriched.meta,
+    enrichment: enriched,
+  };
+}
+
+function tinyOnlyResponse(
+  request: AiRequest,
+  enrichment: Awaited<ReturnType<typeof enrichWithTinyModel>>,
+): AiResponse {
+  const output_text = buildTinyModelOnlyAnswer(request.input, enrichment);
+  const actions = actionsFromRouteHint(enrichment.meta.route);
+  return {
+    ok: true,
+    provider: "tinymodel",
+    mode: "chat",
+    output_text,
+    ...(actions.length > 0 ? { actions } : {}),
+    meta: {
+      model: "tinymodel/rag",
+      backend: "tinymodel",
+      route_reason: "strong_retrieve_or_route",
+      tinymodel: enrichment.meta,
+    },
   };
 }
 
@@ -241,7 +276,7 @@ export async function transmit(request: AiRequest): Promise<AiResponse> {
     return result;
   }
 
-  let input = request.input;
+  let input = request.llmInput?.trim() ? request.llmInput : request.input;
   if (thread) {
     const history = await getThreadHistory({
       telegram_username: thread.telegram_username,
@@ -252,16 +287,25 @@ export async function transmit(request: AiRequest): Promise<AiResponse> {
     input = formatHistoryForInput(history) + "Current message:\nuser: " + request.input;
   }
 
-  const { input: enrichedInput, tinymodel } = await applyTinyModelContext(
+  const { input: enrichedInput, tinymodel, enrichment } = await applyTinyModelContext(
     request,
     input,
   );
+
+  if (enrichment && canAnswerWithTinyModel(request.input, tinymodel)) {
+    const result = tinyOnlyResponse(request, enrichment);
+    if (result.ok && result.output_text && thread) {
+      await persistAssistantMessage(thread, result.output_text);
+    }
+    return result;
+  }
 
   const result = await callOpenAiChat(mode, {
     input: enrichedInput,
     userId: request.userId,
     context: request.context,
     instructions: request.instructions,
+    tinymodel,
   });
 
   if (result.ok && result.output_text && thread) {
@@ -374,7 +418,7 @@ export async function transmitStream(
     };
   }
 
-  let input = request.input;
+  let input = request.llmInput?.trim() ? request.llmInput : request.input;
   if (thread) {
     const history = await getThreadHistory({
       telegram_username: thread.telegram_username,
@@ -385,10 +429,19 @@ export async function transmitStream(
     input = formatHistoryForInput(history) + "Current message:\nuser: " + request.input;
   }
 
-  const { input: enrichedInput, tinymodel } = await applyTinyModelContext(
+  const { input: enrichedInput, tinymodel, enrichment } = await applyTinyModelContext(
     request,
     input,
   );
+
+  if (enrichment && canAnswerWithTinyModel(request.input, tinymodel)) {
+    const result = tinyOnlyResponse(request, enrichment);
+    if (result.ok && result.output_text) {
+      await onDelta(result.output_text);
+      if (thread) await persistAssistantMessage(thread, result.output_text);
+    }
+    return result;
+  }
 
   const result = await callOpenAiChatStream(
     mode,
@@ -397,6 +450,7 @@ export async function transmitStream(
       userId: request.userId,
       context: request.context,
       instructions: request.instructions,
+      tinymodel,
     },
     onDelta,
     opts,

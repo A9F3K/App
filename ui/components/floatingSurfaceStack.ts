@@ -19,6 +19,11 @@ export function peekFloatingSurfaceZ(id: string): number {
   return zById.get(id) ?? FLOATING_SURFACE_BASE_Z;
 }
 
+/** Highest z currently assigned to any floating surface (dialogs, menus). */
+export function peekTopFloatingSurfaceZ(): number {
+  return topZ;
+}
+
 /** Register a surface; returns its initial z-index (already on top). */
 export function registerFloatingSurface(id: string, minZ = FLOATING_SURFACE_BASE_Z): number {
   topZ = Math.max(topZ, minZ) + FLOATING_SURFACE_Z_STEP;
