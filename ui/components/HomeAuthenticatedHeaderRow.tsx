@@ -48,8 +48,13 @@ import {
 
 const AH = layout.authenticatedHome;
 const HEADER_CONTROL_ROW_PX = layout.bottomBar.undercoverButtonHeightPx;
-/** Optical nudge: large digits / SVG icons sit slightly low in the 30px band. */
-const HEADER_OPTICAL_NUDGE_UP_PX = -2;
+/**
+ * Wallet is a circle; balance digits have left sidebearing. Same CSS gap as PRO↔wallet
+ * reads larger here — pull the label toward the wallet to optically match.
+ */
+const WALLET_TO_BALANCE_OPTICAL_PULL_PX = 10;
+/** Below this width, show only the first name token in the header identity line. */
+const HEADER_FIRST_NAME_ONLY_MAX_WIDTH_PX = 460;
 
 /** Horizontal switch-wallet glyph (two opposing arrows). */
 function HeaderSwitchWalletIcon({ color, size = 16 }: { color: string; size?: number }) {
@@ -296,6 +301,10 @@ export function HomeAuthenticatedHeaderRow({
     const name = displayName.trim();
     const emDash = t("common.emDash");
     if (!name || name === emDash) return null;
+    if (widthForLayout < HEADER_FIRST_NAME_ONLY_MAX_WIDTH_PX) {
+      const first = name.split(/\s+/)[0]?.trim();
+      return first || name;
+    }
     return name;
   })();
 
@@ -310,6 +319,7 @@ export function HomeAuthenticatedHeaderRow({
         flexDirection: "row",
         alignItems: "center",
         height: HEADER_CONTROL_ROW_PX,
+        gap: 0,
       }}
     >
       <UndercoverProButton
@@ -318,7 +328,6 @@ export function HomeAuthenticatedHeaderRow({
         subscribed={proSubscribed}
         onPress={() => setProDialogOpen((open) => !open)}
       />
-      {/* Same 15px rhythm: PRO→wallet and wallet→balance. */}
       <View style={{ width: AH.headerIconGap, flexShrink: 0 }} />
       <UndercoverWalletButton
         accessibilityLabel={t("home.header.balanceExpandHint")}
@@ -328,10 +337,15 @@ export function HomeAuthenticatedHeaderRow({
       />
       <View
         style={{
-          marginLeft: AH.headerIconGap,
+          width: Math.max(0, AH.headerIconGap - WALLET_TO_BALANCE_OPTICAL_PULL_PX),
+          flexShrink: 0,
+        }}
+      />
+      <View
+        style={{
           height: HEADER_CONTROL_ROW_PX,
           justifyContent: "center",
-          alignItems: "center",
+          alignItems: "flex-start",
           flexShrink: 0,
         }}
       >
@@ -342,7 +356,6 @@ export function HomeAuthenticatedHeaderRow({
             {
               color: colors.primary,
               lineHeight: HEADER_CONTROL_ROW_PX,
-              transform: [{ translateY: HEADER_OPTICAL_NUDGE_UP_PX }],
               ...(Platform.OS === "web"
                 ? ({
                     display: "flex",
@@ -507,7 +520,6 @@ export function HomeAuthenticatedHeaderRow({
         gap: AH.headerIconGap,
         justifyContent: "flex-end",
         flexShrink: 0,
-        transform: [{ translateY: HEADER_OPTICAL_NUDGE_UP_PX }],
       }}
     >
       {HEADER_ICONS_BEFORE_LANG.map(({ id, Icon, labelKey }) => {

@@ -29,7 +29,6 @@ import {
   type FloatingDialogSizeKind,
 } from "./floatingDialogGeometry";
 import { HspScrollColumn } from "./HspScrollColumn";
-import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
 
 export const appModalSheetStyles = StyleSheet.create({
   overlayBlock: {
@@ -203,7 +202,7 @@ function AppModalSheetBody({
       <HspScrollColumn
         style={{ flex: 1, minHeight: 0 }}
         contentContainerStyle={bodyPadding}
-        scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+        scrollbarRightInsetPx={2}
         scrollIndicatorOverlaySeam={false}
         containOverscroll
       >

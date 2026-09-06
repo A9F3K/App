@@ -45,6 +45,8 @@ import {
   PRO_PAYMENT_TON_RATE_BUFFER,
   PRO_TOPUP_RESIDUAL_DLLR_USD,
 } from "./proPaymentMemo";
+import { ProSubscribeButton } from "./ProSubscribeButton";
+import { requestOpenSupportChat } from "../support/openSupportChat";
 
 type PaymentMethodId = "builtin" | "direct" | "tonconnect";
 
@@ -462,6 +464,122 @@ export function ProPaymentMethodsDialog({
     tonPayInput,
   ]);
 
+  const planTonAmount = useMemo(() => {
+    if (!(tonUsd > 0)) return formatTonAmount((plan.priceUsd / FALLBACK_TON_USD) * PRO_PAYMENT_TON_RATE_BUFFER);
+    return formatTonAmount((plan.priceUsd / tonUsd) * PRO_PAYMENT_TON_RATE_BUFFER);
+  }, [plan.priceUsd, tonUsd]);
+
+  const topUpTonAmount = useMemo(() => {
+    const fromInput = parseAmount(tonPayInput);
+    if (Number.isFinite(fromInput) && fromInput > 0) return formatTonAmount(fromInput);
+    return planTonAmount;
+  }, [planTonAmount, tonPayInput]);
+
+  const finalCta = useMemo(() => {
+    if (method === "builtin" && hasEnoughDllr) {
+      return {
+        kind: "pay_dllr" as const,
+        label: tf("pro.pay.final.payDllr", { amount: String(plan.priceUsd) }),
+      };
+    }
+    if (method === "tonconnect") {
+      return {
+        kind: "pay_ton" as const,
+        label: checkBusy || connectBusy
+          ? t("pro.pay.check.busy")
+          : tf("pro.pay.final.payTon", { amount: planTonAmount }),
+      };
+    }
+    // direct, or builtin top-up / check path
+    return {
+      kind: "check" as const,
+      label: checkBusy ? t("pro.pay.check.busy") : t("pro.pay.check.button"),
+    };
+  }, [
+    checkBusy,
+    connectBusy,
+    hasEnoughDllr,
+    method,
+    plan.priceUsd,
+    planTonAmount,
+    t,
+    tf,
+  ]);
+
+  const onFinalCta = useCallback(async () => {
+    if (finalCta.kind === "pay_dllr") {
+      onPayWithDllr();
+      return;
+    }
+    if (finalCta.kind === "pay_ton") {
+      // Prefer top-up amount when buying DLLR into built-in; else plan TON.
+      const tonAmt = parseAmount(topUpTonAmount);
+      if (!Number.isFinite(tonAmt) || tonAmt <= 0) {
+        setStatusMsg(t("pro.pay.topup.buyInvalid"));
+        return;
+      }
+      if (!ton.connected && !effectiveWalletKey) {
+        await openWalletPicker();
+        return;
+      }
+      if (!ton.connected) {
+        await openWalletPicker();
+        return;
+      }
+      setConnectBusy(true);
+      setStatusMsg(null);
+      try {
+        const nano = BigInt(Math.round(tonAmt * 1e9));
+        await ton.sendTransaction({
+          validUntil: Math.floor(Date.now() / 1000) + 600,
+          network: "-239",
+          messages: [{ address: paymentAddress, amount: nano.toString() }],
+        });
+        await runCheckPayment({
+          memoText: method === "tonconnect" ? directMemo : memo,
+          activateAfter: true,
+          fallbackDollars: plan.priceUsd,
+        });
+      } catch {
+        setStatusMsg(t("pro.pay.topup.buyCancelled"));
+      } finally {
+        setConnectBusy(false);
+      }
+      return;
+    }
+    // Check payment
+    if (method === "direct" || method === "tonconnect") {
+      await runCheckPayment({
+        memoText: directMemo,
+        activateAfter: true,
+        fallbackDollars: minDllrTopUpForPlanUsd(plan.priceUsd, dllrBalance),
+      });
+      return;
+    }
+    await runCheckPayment({
+      memoText: memo,
+      activateAfter: !hasEnoughDllr,
+      fallbackDollars: resolvedBuyDllr,
+    });
+  }, [
+    directMemo,
+    dllrBalance,
+    effectiveWalletKey,
+    finalCta.kind,
+    hasEnoughDllr,
+    memo,
+    method,
+    onPayWithDllr,
+    openWalletPicker,
+    paymentAddress,
+    plan.priceUsd,
+    resolvedBuyDllr,
+    runCheckPayment,
+    t,
+    ton,
+    topUpTonAmount,
+  ]);
+
   const rowStyle = {
     borderRadius: 14,
     borderWidth: 1,
@@ -574,41 +692,6 @@ export function ProPaymentMethodsDialog({
 
       {addressMemoBlock(memo, "memo")}
 
-      <Pressable
-        accessibilityRole="button"
-        disabled={checkBusy || !buyDllrValid}
-        onPress={() =>
-          void runCheckPayment({
-            memoText: memo,
-            activateAfter: !hasEnoughDllr,
-            fallbackDollars: resolvedBuyDllr,
-          })
-        }
-        style={({ pressed }) => ({
-          ...subRowStyle,
-          opacity: checkBusy || !buyDllrValid ? 0.5 : pressed ? 0.85 : 1,
-          alignItems: "center",
-          backgroundColor: colors.undercover,
-        })}
-      >
-        <Text style={{ color: colors.primary, fontSize: 14, fontWeight: "700", fontFamily: labelFont }}>
-          {checkBusy ? t("pro.pay.check.busy") : t("pro.pay.check.button")}
-        </Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
-        disabled={connectBusy || !buyDllrValid}
-        onPress={() => void onBuyDllrViaTonConnect()}
-        style={({ pressed }) => ({
-          ...subRowStyle,
-          opacity: connectBusy || !buyDllrValid ? 0.5 : pressed ? 0.85 : 1,
-          alignItems: "center",
-        })}
-      >
-        <Text style={{ color: colors.primary, fontSize: 14, fontWeight: "700", fontFamily: labelFont }}>
-          {ton.connected ? t("pro.pay.topup.buyWithTonconnect") : t("pro.pay.topup.connectToBuy")}
-        </Text>
-      </Pressable>
     </View>
   );
 
@@ -653,15 +736,15 @@ export function ProPaymentMethodsDialog({
           <HspScrollColumn
             style={{ flex: 1, minHeight: 0 }}
             containOverscroll
-            scrollIndicatorOverlaySeam
-            scrollIndicatorExtendTopPx={0}
+            // Keep thumb inside the shell so FloatingDialogBody overflow:hidden does not clip it.
+            scrollbarRightInsetPx={2}
+            scrollIndicatorOverlaySeam={false}
             contentContainerStyle={{
               paddingTop: 14,
               paddingBottom: 18,
               gap: 12,
               paddingHorizontal: dialogInsets.padX,
             }}
-            scrollbarRightInsetPx={0}
             indicatorColor={colors.scrollIndicator}
           >
             <View style={rowStyle}>
@@ -711,27 +794,6 @@ export function ProPaymentMethodsDialog({
                     >
                       {t("pro.pay.builtin.ready")}
                     </Text>
-                    <Pressable
-                      accessibilityRole="button"
-                      onPress={onPayWithDllr}
-                      style={({ pressed }) => ({
-                        ...subRowStyle,
-                        opacity: pressed ? 0.85 : 1,
-                        alignItems: "center",
-                        backgroundColor: colors.undercover,
-                      })}
-                    >
-                      <Text
-                        style={{
-                          color: colors.primary,
-                          fontSize: 14,
-                          fontWeight: "700",
-                          fontFamily: labelFont,
-                        }}
-                      >
-                        {tf("pro.pay.builtin.payCta", { price: priceLabel })}
-                      </Text>
-                    </Pressable>
                     <Text
                       style={{
                         color: colors.secondary,
@@ -784,34 +846,6 @@ export function ProPaymentMethodsDialog({
               {method === "direct" ? (
                 <View style={{ gap: 8, marginLeft: 32 }}>
                   {addressMemoBlock(directMemo, "directMemo")}
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={checkBusy}
-                    onPress={() =>
-                      void runCheckPayment({
-                        memoText: directMemo,
-                        activateAfter: true,
-                        fallbackDollars: minDllrTopUpForPlanUsd(plan.priceUsd, dllrBalance),
-                      })
-                    }
-                    style={({ pressed }) => ({
-                      ...subRowStyle,
-                      opacity: checkBusy ? 0.5 : pressed ? 0.85 : 1,
-                      alignItems: "center",
-                      backgroundColor: colors.undercover,
-                    })}
-                  >
-                    <Text
-                      style={{
-                        color: colors.primary,
-                        fontSize: 14,
-                        fontWeight: "700",
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {checkBusy ? t("pro.pay.check.busy") : t("pro.pay.check.button")}
-                    </Text>
-                  </Pressable>
                 </View>
               ) : null}
             </View>
@@ -947,34 +981,6 @@ export function ProPaymentMethodsDialog({
                       {t("get.connectAnotherWallet")}
                     </Text>
                   </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={checkBusy}
-                    onPress={() =>
-                      void runCheckPayment({
-                        memoText: directMemo,
-                        activateAfter: true,
-                        fallbackDollars: minDllrTopUpForPlanUsd(plan.priceUsd, dllrBalance),
-                      })
-                    }
-                    style={({ pressed }) => ({
-                      ...subRowStyle,
-                      opacity: checkBusy ? 0.5 : pressed ? 0.85 : 1,
-                      alignItems: "center",
-                      backgroundColor: colors.undercover,
-                    })}
-                  >
-                    <Text
-                      style={{
-                        color: colors.primary,
-                        fontSize: 14,
-                        fontWeight: "700",
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {checkBusy ? t("pro.pay.check.busy") : t("pro.pay.check.button")}
-                    </Text>
-                  </Pressable>
                 </View>
               ) : null}
             </View>
@@ -1005,45 +1011,41 @@ export function ProPaymentMethodsDialog({
             <View
               style={{
                 paddingHorizontal: dialogInsets.padX,
-                paddingTop: 12,
+                paddingTop: 14,
                 paddingBottom: dialogInsets.headerPadBottom + 6,
                 gap: 10,
+                alignItems: "center",
               }}
             >
-              <Pressable
-                accessibilityRole="button"
-                onPress={onBackToTariffs}
-                style={({ pressed }) => ({
-                  opacity: pressed ? 0.88 : 1,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor: colors.highlight,
-                  paddingVertical: 13,
-                  alignItems: "center",
-                  backgroundColor: colors.undercover,
-                })}
-              >
-                <Text
-                  style={{
-                    color: colors.primary,
-                    fontSize: 15,
-                    fontWeight: "700",
-                    fontFamily: labelFont,
-                  }}
-                >
-                  {t("pro.pay.backToTariffs")}
-                </Text>
-              </Pressable>
+              <ProSubscribeButton
+                label={finalCta.label}
+                onPress={() => void onFinalCta()}
+              />
               <Text
                 style={{
                   color: colors.secondary,
                   fontSize: 12,
                   lineHeight: 17,
                   textAlign: "center",
+                  alignSelf: "stretch",
                   fontFamily: labelFont,
                 }}
               >
-                {t("pro.pay.footer")}
+                {t("pro.pay.support.before")}
+                <Text
+                  onPress={() => {
+                    onClose();
+                    requestOpenSupportChat();
+                  }}
+                  style={{
+                    color: colors.primary,
+                    textDecorationLine: "underline",
+                    fontFamily: labelFont,
+                  }}
+                >
+                  {t("pro.pay.support.link")}
+                </Text>
+                {t("pro.pay.support.after")}
               </Text>
             </View>
           </View>

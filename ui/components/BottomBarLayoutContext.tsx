@@ -18,6 +18,12 @@ type BottomBarLayoutCtx = {
   /** Draft text in the AI/search field; persisted across breakpoint re-docks (footer ↔ split column). */
   draftText: string;
   setDraftText: (t: string) => void;
+  /**
+   * When the AI & Search column is mounted, it registers a submit handler so Enter/send
+   * applies the prompt in-column instead of navigating to `/ai`.
+   */
+  aiSearchSubmit: ((text: string) => void) | null;
+  setAiSearchSubmit: (fn: ((text: string) => void) | null) => void;
 };
 
 const BottomBarLayoutContext = createContext<BottomBarLayoutCtx | null>(null);
@@ -35,6 +41,12 @@ export function BottomBarLayoutProvider({ children }: { children: ReactNode }) {
   const setDraftText = useCallback((t: string) => {
     setDraftTextState((prev) => (prev === t ? prev : t));
   }, []);
+  const [aiSearchSubmit, setAiSearchSubmitState] = useState<((text: string) => void) | null>(
+    null,
+  );
+  const setAiSearchSubmit = useCallback((fn: ((text: string) => void) | null) => {
+    setAiSearchSubmitState(() => fn);
+  }, []);
   const value = useMemo(
     () => ({
       barHeight,
@@ -43,8 +55,19 @@ export function BottomBarLayoutProvider({ children }: { children: ReactNode }) {
       setFooterDockedToScreenEdge,
       draftText,
       setDraftText,
+      aiSearchSubmit,
+      setAiSearchSubmit,
     }),
-    [barHeight, setBarHeight, footerDockedToScreenEdge, setFooterDockedToScreenEdge, draftText, setDraftText],
+    [
+      barHeight,
+      setBarHeight,
+      footerDockedToScreenEdge,
+      setFooterDockedToScreenEdge,
+      draftText,
+      setDraftText,
+      aiSearchSubmit,
+      setAiSearchSubmit,
+    ],
   );
   return <BottomBarLayoutContext.Provider value={value}>{children}</BottomBarLayoutContext.Provider>;
 }

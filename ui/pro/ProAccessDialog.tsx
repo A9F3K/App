@@ -98,14 +98,14 @@ export function ProAccessDialog({ visible, onClose }: Props) {
             <HspScrollColumn
               style={{ flex: 1, minHeight: 0 }}
               containOverscroll
-              scrollIndicatorOverlaySeam
-              scrollIndicatorExtendTopPx={0}
+              // Keep thumb inside the shell so FloatingDialogBody overflow:hidden does not clip it.
+              scrollbarRightInsetPx={2}
+              scrollIndicatorOverlaySeam={false}
               contentContainerStyle={{
                 paddingTop: 14,
                 paddingBottom: 22,
                 gap: 22,
               }}
-              scrollbarRightInsetPx={0}
               indicatorColor={colors.scrollIndicator}
             >
               <View style={{ paddingHorizontal: dialogInsets.padX, gap: 6 }}>

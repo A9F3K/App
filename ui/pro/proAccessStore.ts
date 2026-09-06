@@ -44,9 +44,14 @@ export const PRO_ACCESS_FEATURES = [
     bodyKey: "pro.feature.proxyVpn.body",
   },
   {
-    id: "nftCollection",
-    titleKey: "pro.feature.nftCollection",
-    bodyKey: "pro.feature.nftCollection.body",
+    id: "blockchainChat",
+    titleKey: "pro.feature.blockchainChat",
+    bodyKey: "pro.feature.blockchainChat.body",
+  },
+  {
+    id: "menuCustomization",
+    titleKey: "pro.feature.menuCustomization",
+    bodyKey: "pro.feature.menuCustomization.body",
   },
   {
     id: "cashback",
@@ -54,19 +59,14 @@ export const PRO_ACCESS_FEATURES = [
     bodyKey: "pro.feature.cashback.body",
   },
   {
-    id: "blockchainChat",
-    titleKey: "pro.feature.blockchainChat",
-    bodyKey: "pro.feature.blockchainChat.body",
+    id: "nftCollection",
+    titleKey: "pro.feature.nftCollection",
+    bodyKey: "pro.feature.nftCollection.body",
   },
   {
     id: "unlimitedAccounts",
     titleKey: "pro.feature.unlimitedAccounts",
     bodyKey: "pro.feature.unlimitedAccounts.body",
-  },
-  {
-    id: "menuCustomization",
-    titleKey: "pro.feature.menuCustomization",
-    bodyKey: "pro.feature.menuCustomization.body",
   },
 ] as const;
 

@@ -9,6 +9,7 @@ import {
   StyleSheet,
   Text,
   View,
+  type GestureResponderEvent,
   type LayoutChangeEvent,
   type ViewStyle,
 } from "react-native";
@@ -24,6 +25,10 @@ import {
 import { layout, useColors } from "../../theme";
 import { ScrollIndicatorDragHandle } from "../ScrollIndicatorDragHandle";
 import { CHOOSE_CURRENCY_SUBHEADER_HEIGHT_PX } from "../swap/ChooseCurrencySubheader";
+import {
+  AiAgentTabContextMenu,
+  type AiAgentTabMenuAnchor,
+} from "./AiAgentTabContextMenu";
 
 const SCROLL_NATIVE_ID = "ai-agents-tabs-hscroll";
 const SCROLL_EPS = 2;
@@ -51,6 +56,14 @@ const SCROLL_TRAILING_SPACER_PX = RIGHT_OVERLAY_W_PX + LAST_TAB_GRADIENT_INDENT_
 
 export type AiAgentTab = {
   id: string;
+  /** Display title; empty falls back to localized "New Agent". */
+  title?: string;
+  /** `support` = human staff inbox (no AI replies). */
+  kind?: "agent" | "support";
+  started?: boolean;
+  messages?: import("./AiAgentChatThread").AiThreadMessage[];
+  messagesLoaded?: boolean;
+  sending?: boolean;
 };
 
 type Props = {
@@ -59,6 +72,8 @@ type Props = {
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onAddTab: () => void;
+  onRequestRename?: (id: string) => void;
+  onRequestDelete?: (id: string) => void;
   /**
    * When false, tabs omit the close control (single idle agent tab).
    * When true, every tab shows close (multiple tabs, or the sole tab has started).
@@ -119,6 +134,31 @@ function AgentBubbleIcon({ color, size = ICON_SIZE_PX }: { color: string; size?:
   );
 }
 
+function SupportHeadsetIcon({ color, size = ICON_SIZE_PX }: { color: string; size?: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+      <Path
+        d="M3.5 8.5V7a4.5 4.5 0 0 1 9 0v1.5"
+        stroke={color}
+        strokeWidth={1.25}
+        strokeLinecap="round"
+      />
+      <Path
+        d="M3.5 8.5h-1A1.5 1.5 0 0 0 1 10v1a1.5 1.5 0 0 0 1.5 1.5h1V8.5Zm9 0h1A1.5 1.5 0 0 1 15 10v1a1.5 1.5 0 0 1-1.5 1.5h-1V8.5Z"
+        stroke={color}
+        strokeWidth={1.25}
+        strokeLinejoin="round"
+      />
+      <Path
+        d="M12.5 12.5v.5a2 2 0 0 1-2 2H8"
+        stroke={color}
+        strokeWidth={1.25}
+        strokeLinecap="round"
+      />
+    </Svg>
+  );
+}
+
 function AgentPlusIcon({ color, size = 14 }: { color: string; size?: number }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 14 14" fill="none">
@@ -145,6 +185,8 @@ export function AiAgentsColumnHeader({
   onSelectTab,
   onCloseTab,
   onAddTab,
+  onRequestRename,
+  onRequestDelete,
   showCloseButtons = true,
 }: Props) {
   const { t } = useAppStrings();
@@ -165,6 +207,29 @@ export function AiAgentsColumnHeader({
   const [intrinsicRowW, setIntrinsicRowW] = useState(0);
   const [domHScrollSpanPx, setDomHScrollSpanPx] = useState(0);
   const [domScrollRangePx, setDomScrollRangePx] = useState(0);
+  const [menuVisible, setMenuVisible] = useState(false);
+  const [menuAnchor, setMenuAnchor] = useState<AiAgentTabMenuAnchor | null>(null);
+  const [menuTabId, setMenuTabId] = useState<string | null>(null);
+
+  const openTabMenu = useCallback((tabId: string, x: number, y: number) => {
+    setMenuTabId(tabId);
+    setMenuAnchor({ x, y });
+    setMenuVisible(true);
+  }, []);
+
+  const closeTabMenu = useCallback(() => {
+    setMenuVisible(false);
+    setMenuTabId(null);
+    setMenuAnchor(null);
+  }, []);
+
+  const onTabLongPress = useCallback(
+    (tabId: string, event: GestureResponderEvent) => {
+      const native = event.nativeEvent;
+      openTabMenu(tabId, native.pageX ?? 0, native.pageY ?? 0);
+    },
+    [openTabMenu],
+  );
 
   const scrollViewportW = layoutW;
   const stripContentWidthPx =
@@ -468,13 +533,42 @@ export function AiAgentsColumnHeader({
                 index < tabs.length - 1 && tabs[index + 1]!.id === activeTabId;
               const showInactiveDivider =
                 index < tabs.length - 1 && !active && !nextActive;
+              const label =
+                tab.kind === "support"
+                  ? t("ai.agents.support")
+                  : tab.title?.trim() || t("ai.agents.newAgent");
               return (
                 <View key={tab.id} style={styles.tabCluster}>
                   <Pressable
                     accessibilityRole="tab"
                     accessibilityState={{ selected: active }}
-                    accessibilityLabel={t("ai.agents.newAgent")}
+                    accessibilityLabel={label}
                     onPress={() => onSelectTab(tab.id)}
+                    onLongPress={(event) => onTabLongPress(tab.id, event)}
+                    delayLongPress={380}
+                    {...(Platform.OS === "web"
+                      ? ({
+                          onContextMenu: (event: {
+                            preventDefault?: () => void;
+                            stopPropagation?: () => void;
+                            clientX?: number;
+                            clientY?: number;
+                            nativeEvent?: { clientX?: number; clientY?: number };
+                          }) => {
+                            event.preventDefault?.();
+                            event.stopPropagation?.();
+                            const x =
+                              event.clientX ??
+                              event.nativeEvent?.clientX ??
+                              0;
+                            const y =
+                              event.clientY ??
+                              event.nativeEvent?.clientY ??
+                              0;
+                            openTabMenu(tab.id, x, y);
+                          },
+                        } as Record<string, unknown>)
+                      : {})}
                     style={[
                       styles.tab,
                       {
@@ -487,9 +581,13 @@ export function AiAgentsColumnHeader({
                       },
                     ]}
                   >
-                    <AgentBubbleIcon color={colors.primary} />
+                    {tab.kind === "support" ? (
+                      <SupportHeadsetIcon color={colors.primary} />
+                    ) : (
+                      <AgentBubbleIcon color={colors.primary} />
+                    )}
                     <Text style={[styles.tabLabel, { color: colors.primary }]} numberOfLines={1}>
-                      {t("ai.agents.newAgent")}
+                      {label}
                     </Text>
                     {showCloseButtons ? (
                       <Pressable
@@ -600,6 +698,19 @@ export function AiAgentsColumnHeader({
           </ScrollIndicatorDragHandle>
         ) : null}
       </View>
+
+      <AiAgentTabContextMenu
+        visible={menuVisible}
+        anchor={menuAnchor}
+        colors={colors}
+        onClose={closeTabMenu}
+        onRename={() => {
+          if (menuTabId) onRequestRename?.(menuTabId);
+        }}
+        onDelete={() => {
+          if (menuTabId) onRequestDelete?.(menuTabId);
+        }}
+      />
     </View>
   );
 }

@@ -44,9 +44,22 @@ const OPENAI = process.env.OPENAI?.trim() || "";
 
 const client = OPENAI ? new OpenAI({ apiKey: OPENAI }) : null;
 
+/** Pick a model for the agent column — light prompts stay cheap; complex ones use the flagship. */
+export function selectSmartChatModel(input: string): string {
+  const t = input.trim();
+  const len = t.length;
+  const complex =
+    len > 280 ||
+    /\b(analy[sz]e|compare|architect|debug|refactor|prove|derive|code|sql|contract|security|plan)\b/i.test(
+      t,
+    ) ||
+    (t.match(/\?/g) ?? []).length >= 2;
+  return complex ? "gpt-5.2" : "gpt-4.1-mini";
+}
+
 export async function callOpenAiChat(
   mode: AiMode,
-  params: AiRequestBase,
+  params: AiRequestBase & { model?: string },
 ): Promise<AiResponseBase> {
   if (!client) {
     return {
@@ -72,9 +85,13 @@ export async function callOpenAiChat(
       ? "You are a blockchain and token analyst. Answer clearly and briefly.\n\n"
       : "";
 
+  const model =
+    params.model?.trim() ||
+    (mode === "chat" ? selectSmartChatModel(trimmed) : "gpt-5.2");
+
   try {
     const response = await client.responses.create({
-      model: "gpt-5.2",
+      model,
       ...(params.instructions ? { instructions: params.instructions } : {}),
       input: `${prefix}${trimmed}`,
     });
@@ -85,6 +102,7 @@ export async function callOpenAiChat(
       mode,
       output_text: (response as any).output_text ?? undefined,
       usage: (response as any).usage ?? undefined,
+      meta: { ...(params as any).meta, model },
     };
   } catch (e: any) {
     const message =
@@ -94,6 +112,7 @@ export async function callOpenAiChat(
       provider: "openai",
       mode,
       error: message,
+      meta: { model },
     };
   }
 }

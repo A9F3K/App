@@ -513,16 +513,12 @@ export function HspScrollColumn({
         readShellFlexAvailableHeightPx(shellDom),
         readSplitColumnScrollHostHeightPx(shellDom),
       );
-      const portalsSeam =
-        scrollIndicatorOverlaySeam ??
-        (Platform.OS === "web" && scrollbarRightInsetPx <= 0);
       if (avail > 0) {
         shellDom.style.setProperty("height", `${avail}px`);
         shellDom.style.setProperty("max-height", `${avail}px`);
-        // Hidden only when the thumb is portaled — in-shell thumbs may overhang a chrome border.
-        if (portalsSeam) {
-          shellDom.style.setProperty("overflow", "hidden");
-        }
+        // Always clip the shell to the flex box so overflow is real (needed for dialogs).
+        // Portaled thumbs don't need overhang; in-shell thumbs use inset ≥ 0.
+        shellDom.style.setProperty("overflow", "hidden");
       } else {
         shellDom.style.removeProperty("height");
         shellDom.style.setProperty("max-height", "100%");

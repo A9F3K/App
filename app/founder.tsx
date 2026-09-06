@@ -15,6 +15,13 @@ import {
 } from "react-native";
 
 import { buildApiUrl } from "../api/_base";
+import {
+  fetchStaffSupportThread,
+  fetchStaffSupportThreads,
+  sendStaffSupportReply,
+  type SupportMessageDto,
+  type SupportThreadDto,
+} from "../api/supportClient";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../ui/fonts";
 import { useColors } from "../ui/theme";
 import { saveFounderPdf } from "../ui/founder/exportFounderPdf";
@@ -319,6 +326,11 @@ export default function FounderScreen() {
   const [probeBusy, setProbeBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [data, setData] = useState<FounderPayload | null>(null);
+  const [supportThreads, setSupportThreads] = useState<SupportThreadDto[]>([]);
+  const [supportThreadId, setSupportThreadId] = useState<string | null>(null);
+  const [supportMessages, setSupportMessages] = useState<SupportMessageDto[]>([]);
+  const [supportReply, setSupportReply] = useState("");
+  const [supportBusy, setSupportBusy] = useState(false);
 
   const font = Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR;
 
@@ -396,6 +408,45 @@ export default function FounderScreen() {
     });
     setData(null);
   }, []);
+
+  const loadSupport = useCallback(async () => {
+    const res = await fetchStaffSupportThreads();
+    if (res.ok && res.threads) setSupportThreads(res.threads);
+  }, []);
+
+  const openSupportThread = useCallback(async (threadId: string) => {
+    setSupportThreadId(threadId);
+    setSupportBusy(true);
+    try {
+      const res = await fetchStaffSupportThread(threadId);
+      if (res.ok && res.messages) setSupportMessages(res.messages);
+      void loadSupport();
+    } finally {
+      setSupportBusy(false);
+    }
+  }, [loadSupport]);
+
+  const onSupportReply = useCallback(async () => {
+    if (!supportThreadId || !supportReply.trim()) return;
+    setSupportBusy(true);
+    try {
+      const res = await sendStaffSupportReply(supportThreadId, supportReply.trim());
+      if (res.ok && res.message) {
+        setSupportMessages((prev) => [...prev, res.message!]);
+        setSupportReply("");
+        void loadSupport();
+      }
+    } finally {
+      setSupportBusy(false);
+    }
+  }, [loadSupport, supportReply, supportThreadId]);
+
+  useEffect(() => {
+    if (!data) return;
+    void loadSupport();
+    const id = setInterval(() => void loadSupport(), 20_000);
+    return () => clearInterval(id);
+  }, [data, loadSupport]);
 
   const onRunProbe = useCallback(async () => {
     setProbeBusy(true);
@@ -639,6 +690,129 @@ export default function FounderScreen() {
       {error ? (
         <Text style={{ color: "#FF5555", fontSize: 13, fontFamily: font }}>{error}</Text>
       ) : null}
+
+      <Card title="Support inbox" colors={colors}>
+        {supportThreads.length === 0 ? (
+          <Text style={{ color: colors.secondary, fontSize: 13, fontFamily: font }}>
+            No support threads yet.
+          </Text>
+        ) : (
+          <View style={{ gap: 10 }}>
+            <View style={{ gap: 6 }}>
+              {supportThreads.map((thread) => {
+                const active = thread.id === supportThreadId;
+                return (
+                  <Pressable
+                    key={thread.id}
+                    onPress={() => void openSupportThread(thread.id)}
+                    style={{
+                      borderWidth: 1,
+                      borderColor: active ? colors.primary : colors.highlight,
+                      borderRadius: 10,
+                      padding: 10,
+                      backgroundColor: active ? colors.undercover : "transparent",
+                      gap: 4,
+                    }}
+                  >
+                    <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+                      <Text style={{ color: colors.primary, fontWeight: "700", fontFamily: font }}>
+                        @{thread.username}
+                      </Text>
+                      {thread.unread_for_staff ? (
+                        <Text style={{ color: "#00E05A", fontSize: 11, fontWeight: "700", fontFamily: font }}>
+                          Unread
+                        </Text>
+                      ) : null}
+                    </View>
+                    <Text
+                      numberOfLines={1}
+                      style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}
+                    >
+                      {thread.last_preview || "—"}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {supportThreadId ? (
+              <View style={{ gap: 8, marginTop: 4 }}>
+                <View
+                  style={{
+                    maxHeight: 220,
+                    borderWidth: 1,
+                    borderColor: colors.highlight,
+                    borderRadius: 10,
+                    padding: 10,
+                    gap: 8,
+                  }}
+                >
+                  <ScrollView nestedScrollEnabled style={{ maxHeight: 200 }}>
+                    {supportMessages.map((m) => (
+                      <View
+                        key={m.id}
+                        style={{
+                          alignSelf: m.role === "user" ? "flex-end" : "flex-start",
+                          maxWidth: "92%",
+                          marginBottom: 8,
+                          paddingHorizontal: 10,
+                          paddingVertical: 8,
+                          borderRadius: 10,
+                          backgroundColor:
+                            m.role === "user" ? colors.undercover : "transparent",
+                          borderWidth: m.role === "staff" ? 1 : 0,
+                          borderColor: colors.highlight,
+                        }}
+                      >
+                        <Text style={{ color: colors.secondary, fontSize: 10, fontFamily: font }}>
+                          {m.role === "user" ? "User" : "Staff"}
+                        </Text>
+                        <Text style={{ color: colors.primary, fontSize: 13, fontFamily: font }}>
+                          {m.content}
+                        </Text>
+                      </View>
+                    ))}
+                  </ScrollView>
+                </View>
+                <TextInput
+                  value={supportReply}
+                  onChangeText={setSupportReply}
+                  placeholder="Reply to user…"
+                  placeholderTextColor={colors.secondary}
+                  multiline
+                  style={{
+                    borderWidth: 1,
+                    borderColor: colors.highlight,
+                    borderRadius: 10,
+                    padding: 10,
+                    minHeight: 64,
+                    color: colors.primary,
+                    fontFamily: font,
+                    textAlignVertical: "top",
+                  }}
+                />
+                <Pressable
+                  onPress={() => void onSupportReply()}
+                  disabled={supportBusy || !supportReply.trim()}
+                  style={{
+                    alignSelf: "flex-start",
+                    borderWidth: 1,
+                    borderColor: colors.highlight,
+                    borderRadius: 10,
+                    paddingHorizontal: 14,
+                    paddingVertical: 10,
+                    backgroundColor: colors.undercover,
+                    opacity: supportBusy || !supportReply.trim() ? 0.5 : 1,
+                  }}
+                >
+                  <Text style={{ color: "#00E05A", fontWeight: "700", fontFamily: font }}>
+                    {supportBusy ? "Sending…" : "Reply"}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : null}
+          </View>
+        )}
+      </Card>
 
       <Card title="Breakeven" colors={colors}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 16 }}>

@@ -132,7 +132,8 @@ export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
   const placeholderWeb = options?.placeholderText ?? t("global.bottomBar.placeholderWeb");
   const placeholderNative = options?.placeholderText ?? t("global.bottomBar.placeholderNative");
   const { themeBgReady, isInTelegram, layoutStartup } = useTelegram();
-  const { footerDockedToScreenEdge, draftText, setDraftText } = useBottomBarLayout();
+  const { footerDockedToScreenEdge, draftText, setDraftText, aiSearchSubmit } =
+    useBottomBarLayout();
   const useLocalDraft = options?.useLocalDraft ?? false;
   const controlledDraft = options?.onDraftChange != null;
   const value = controlledDraft
@@ -147,7 +148,7 @@ export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
       : setDraftText;
   const iconRotationDeg = options?.iconRotationDeg ?? 0;
   const sendAccessibilityLabel = options?.sendAccessibilityLabel;
-  const onSubmitOverride = options?.onSubmit;
+  const onSubmitOverride = options?.onSubmit ?? aiSearchSubmit ?? undefined;
   const onPasteImage = options?.onPasteImage;
   const allowEmptySubmit = options?.allowEmptySubmit ?? false;
   const { width: windowWidth } = useWindowDimensions();

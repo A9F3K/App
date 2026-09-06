@@ -516,6 +516,73 @@ async function runSchemaMigrations() {
     VALUES (1, 0)
     ON CONFLICT (id) DO NOTHING;
   `;
+
+  // AI agent column chats (tabs, soft-delete, share, likes).
+  await sql`
+    CREATE TABLE IF NOT EXISTS ai_agent_chats (
+      id UUID PRIMARY KEY,
+      owner_username TEXT NOT NULL,
+      title TEXT NOT NULL DEFAULT 'New Agent',
+      share_token TEXT UNIQUE,
+      deleted_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_ai_agent_chats_owner
+      ON ai_agent_chats(owner_username, deleted_at, updated_at DESC);
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS ai_agent_messages (
+      id UUID PRIMARY KEY,
+      chat_id UUID NOT NULL REFERENCES ai_agent_chats(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+      content TEXT NOT NULL,
+      model TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_ai_agent_messages_chat
+      ON ai_agent_messages(chat_id, created_at ASC);
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS ai_agent_message_likes (
+      message_id UUID NOT NULL REFERENCES ai_agent_messages(id) ON DELETE CASCADE,
+      username TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (message_id, username)
+    );
+  `;
+
+  // Support inbox (user ↔ staff).
+  await sql`
+    CREATE TABLE IF NOT EXISTS support_threads (
+      id UUID PRIMARY KEY,
+      username TEXT NOT NULL UNIQUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      unread_for_staff BOOLEAN NOT NULL DEFAULT FALSE
+    );
+  `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS support_messages (
+      id UUID PRIMARY KEY,
+      thread_id UUID NOT NULL REFERENCES support_threads(id) ON DELETE CASCADE,
+      role TEXT NOT NULL CHECK (role IN ('user', 'staff')),
+      content TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_support_messages_thread
+      ON support_messages(thread_id, created_at ASC);
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_support_threads_updated
+      ON support_threads(updated_at DESC);
+  `;
 }
 
 let schemaInitPromise: Promise<void> | null = null;
