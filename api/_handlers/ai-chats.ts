@@ -172,6 +172,25 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
           ? payload.expiresAt.trim()
           : null;
       const quota = await syncAiFreeQuotaPro({ username, expiresAt });
+      const recordSale = payload.recordSale === true;
+      if (recordSale && expiresAt) {
+        const planId =
+          typeof payload.planId === "string" ? payload.planId.trim().toLowerCase() : "month";
+        const priceUsd = Number(payload.priceUsd);
+        const months = Number(payload.months);
+        try {
+          const { recordProSale } = await import("../../database/proSales.js");
+          await recordProSale({
+            username,
+            planId,
+            priceUsd: Number.isFinite(priceUsd) && priceUsd >= 0 ? priceUsd : 0,
+            months: Number.isFinite(months) && months > 0 ? Math.trunc(months) : 1,
+            expiresAt,
+          });
+        } catch {
+          /* sales ledger should not block entitlement sync */
+        }
+      }
       return respond(res, { ok: true, quota }, 200);
     }
 

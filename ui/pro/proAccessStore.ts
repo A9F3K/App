@@ -95,6 +95,8 @@ type ProState = {
   active: boolean;
   planId: ProAccessPlanId | null;
   expiresAt: string | null;
+  /** Soft cancel: entitlement stays until expiresAt; UI treats renewal as stopped. */
+  cancelAtPeriodEnd: boolean;
 };
 
 /** Bumped so stub activations from `hsp_pro_access_v1` are dropped for every client. */
@@ -103,7 +105,12 @@ const LEGACY_STORAGE_KEYS = ["hsp_pro_access_v1"] as const;
 /** One-shot revoke of stub entitlements after payment UI replaced free activate. */
 const STUB_REVOKE_FLAG = "hsp_pro_access_stub_revoked_v1";
 const listeners = new Set<() => void>();
-let state: ProState = { active: false, planId: null, expiresAt: null };
+let state: ProState = {
+  active: false,
+  planId: null,
+  expiresAt: null,
+  cancelAtPeriodEnd: false,
+};
 let hydrated = false;
 
 function notify(): void {
@@ -131,7 +138,12 @@ function hydrate(): void {
     if (!stubRevoked) {
       localStorage.setItem(STUB_REVOKE_FLAG, "1");
       localStorage.removeItem(STORAGE_KEY);
-      state = { active: false, planId: null, expiresAt: null };
+      state = {
+        active: false,
+        planId: null,
+        expiresAt: null,
+        cancelAtPeriodEnd: false,
+      };
       return;
     }
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -144,13 +156,19 @@ function hydrate(): void {
           ? parsed.planId
           : null,
       expiresAt: typeof parsed.expiresAt === "string" ? parsed.expiresAt : null,
+      cancelAtPeriodEnd: Boolean(parsed.cancelAtPeriodEnd),
     };
     if (state.active && state.expiresAt && Date.parse(state.expiresAt) <= Date.now()) {
-      state = { active: false, planId: null, expiresAt: null };
+      state = {
+        active: false,
+        planId: null,
+        expiresAt: null,
+        cancelAtPeriodEnd: false,
+      };
       persist();
-    } else if (state.active) {
-      void syncProAccessQuotaToServer(state.expiresAt);
     }
+    // Do not push local Pro to the server on hydrate — that undoes founder revoke
+    // when the client still has a stale entitlement in localStorage.
   } catch {
     /* ignore */
   }
@@ -160,7 +178,12 @@ export function isProAccessActive(): boolean {
   hydrate();
   if (!state.active) return false;
   if (state.expiresAt && Date.parse(state.expiresAt) <= Date.now()) {
-    state = { active: false, planId: null, expiresAt: null };
+    state = {
+      active: false,
+      planId: null,
+      expiresAt: null,
+      cancelAtPeriodEnd: false,
+    };
     persist();
     notify();
     return false;
@@ -191,18 +214,50 @@ export function activateProAccess(planId: ProAccessPlanId): void {
     active: true,
     planId: plan.id,
     expiresAt: expires.toISOString(),
+    cancelAtPeriodEnd: false,
   };
   persist();
   notify();
-  void syncProAccessQuotaToServer(state.expiresAt);
+  void syncProAccessQuotaToServer(state.expiresAt, {
+    planId: plan.id,
+    priceUsd: plan.priceUsd,
+    months: plan.months,
+    recordSale: true,
+  });
   // Cashback is granted by the payment flow after a successful debit (hot balance).
+}
+
+/**
+ * Soft-cancel: keep Pro through the paid period; do not start another after expiry.
+ * (Prepaid product — no server charge is scheduled today; this is the user-facing cancel.)
+ */
+export function cancelProAccessAtPeriodEnd(): void {
+  hydrate();
+  if (!isProAccessActive() || state.cancelAtPeriodEnd) return;
+  state = { ...state, cancelAtPeriodEnd: true };
+  persist();
+  notify();
+}
+
+/** Undo a soft cancel while the period is still active. */
+export function resumeProAccessRenewal(): void {
+  hydrate();
+  if (!isProAccessActive() || !state.cancelAtPeriodEnd) return;
+  state = { ...state, cancelAtPeriodEnd: false };
+  persist();
+  notify();
 }
 
 /** Revoke Pro Access for this client (all messenger accounts share one entitlement). */
 export function clearProAccess(): void {
   hydrate();
-  if (!state.active && !state.planId && !state.expiresAt) return;
-  state = { active: false, planId: null, expiresAt: null };
+  if (!state.active && !state.planId && !state.expiresAt && !state.cancelAtPeriodEnd) return;
+  state = {
+    active: false,
+    planId: null,
+    expiresAt: null,
+    cancelAtPeriodEnd: false,
+  };
   persist();
   notify();
   void syncProAccessQuotaToServer(null);
@@ -212,7 +267,12 @@ export function clearProAccess(): void {
 export function reconcileProAccessFromServer(serverProActive: boolean): void {
   hydrate();
   if (!serverProActive && state.active) {
-    state = { active: false, planId: null, expiresAt: null };
+    state = {
+      active: false,
+      planId: null,
+      expiresAt: null,
+      cancelAtPeriodEnd: false,
+    };
     persist();
     notify();
   }

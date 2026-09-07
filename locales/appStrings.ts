@@ -265,9 +265,25 @@ const en = {
   "pro.sale.selected": "Selected",
   "pro.sale.tapToSelect": "Tap to select",
   "pro.sale.subscribe": "Subscribe · {{price}}",
+  "pro.sale.currentPlan": "{{plan}} · {{price}}",
+  "pro.sale.yourPlan": "Your plan",
+  "pro.sale.activeBadge": "Active",
   "pro.sale.activated": "Pro Access is active",
   "pro.sale.activatedHint": "Your {{plan}} plan is unlocked. Add unlimited messenger accounts anytime.",
   "pro.sale.activeUntil": "Active until {{date}}",
+  "pro.sale.manageTitle": "Your subscription",
+  "pro.sale.managePlanLine": "{{plan}} · {{price}}",
+  "pro.sale.changePlan": "Change plan",
+  "pro.sale.changePlanHint":
+    "Pick another tariff to switch. You’ll pay the new plan price and a fresh period starts from today.",
+  "pro.sale.switch": "Switch to {{plan}} · {{price}}",
+  "pro.sale.cancel": "Cancel subscription",
+  "pro.sale.cancelHint":
+    "Your current period remains. Pro stays available until {{date}}.",
+  "pro.sale.cancelledBadge": "Ends {{date}}",
+  "pro.sale.cancelledHint":
+    "Cancellation scheduled. You keep Pro until {{date}} — no further period after that.",
+  "pro.sale.resume": "Keep subscription",
   "pro.sale.footer":
     "Pro includes all AI models, unlimited messenger accounts, VPN & Proxy, and VIP features. Your plan renews until you cancel — cancel anytime before the next billing date.",
   "pro.sale.soonFooter":
@@ -1092,9 +1108,25 @@ const ru = {
   "pro.sale.selected": "Выбрано",
   "pro.sale.tapToSelect": "Нажмите, чтобы выбрать",
   "pro.sale.subscribe": "Подписаться · {{price}}",
+  "pro.sale.currentPlan": "{{plan}} · {{price}}",
+  "pro.sale.yourPlan": "Ваш тариф",
+  "pro.sale.activeBadge": "Активен",
   "pro.sale.activated": "Pro Access активирован",
   "pro.sale.activatedHint": "Тариф «{{plan}}» разблокирован. Добавляйте безлимитные аккаунты мессенджера.",
   "pro.sale.activeUntil": "Активен до {{date}}",
+  "pro.sale.manageTitle": "Ваша подписка",
+  "pro.sale.managePlanLine": "{{plan}} · {{price}}",
+  "pro.sale.changePlan": "Сменить тариф",
+  "pro.sale.changePlanHint":
+    "Выберите другой тариф. Оплачивается новая цена, и период начинается заново с сегодняшнего дня.",
+  "pro.sale.switch": "Перейти на {{plan}} · {{price}}",
+  "pro.sale.cancel": "Отменить подписку",
+  "pro.sale.cancelHint":
+    "Текущий период сохраняется. Pro доступен до {{date}}.",
+  "pro.sale.cancelledBadge": "До {{date}}",
+  "pro.sale.cancelledHint":
+    "Отмена запланирована. Pro остаётся до {{date}} — дальше период не продлевается.",
+  "pro.sale.resume": "Оставить подписку",
   "pro.sale.footer":
     "Pro включает все модели ИИ, безлимитные аккаунты мессенджера, VPN и Proxy и VIP-функции. Подписка продлевается, пока вы не отмените — отмена до следующего списания.",
   "pro.sale.soonFooter":
@@ -1882,9 +1914,25 @@ const zh = {
   "pro.sale.selected": "已选",
   "pro.sale.tapToSelect": "点按选择",
   "pro.sale.subscribe": "订阅 · {{price}}",
+  "pro.sale.currentPlan": "{{plan}} · {{price}}",
+  "pro.sale.yourPlan": "当前套餐",
+  "pro.sale.activeBadge": "已开通",
   "pro.sale.activated": "Pro Access 已开通",
   "pro.sale.activatedHint": "「{{plan}}」套餐已解锁。可随时添加无限 Messenger 账户。",
   "pro.sale.activeUntil": "有效期至 {{date}}",
+  "pro.sale.manageTitle": "你的订阅",
+  "pro.sale.managePlanLine": "{{plan}} · {{price}}",
+  "pro.sale.changePlan": "更换套餐",
+  "pro.sale.changePlanHint":
+    "选择其他套餐即可切换。将按新套餐价格付款，并从今天起重新计算周期。",
+  "pro.sale.switch": "切换到 {{plan}} · {{price}}",
+  "pro.sale.cancel": "取消订阅",
+  "pro.sale.cancelHint":
+    "当前周期保留。Pro 可用至 {{date}}。",
+  "pro.sale.cancelledBadge": "至 {{date}}",
+  "pro.sale.cancelledHint":
+    "已安排取消。Pro 保留至 {{date}}，之后不再续期。",
+  "pro.sale.resume": "保留订阅",
   "pro.sale.footer":
     "Pro 包含全部 AI 模型、无限消息账户、VPN 与 Proxy 以及 VIP 功能。订阅会自动续费，可在下一计费日前随时取消。",
   "pro.sale.soonFooter":

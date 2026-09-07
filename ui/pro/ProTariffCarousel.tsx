@@ -89,13 +89,20 @@ type Props = {
   planId: ProAccessPlanId;
   onSelectPlan: (id: ProAccessPlanId) => void;
   contentPadX: number;
+  /** Current subscribed plan — shows an Active badge on that card while browsing others. */
+  activePlanId?: ProAccessPlanId | null;
 };
 
 /**
  * Full-bleed tariff band: horizontal cards only on horizontal wheel/gesture;
  * vertical wheel is forwarded to the dialog body scroller.
  */
-export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) {
+export function ProTariffCarousel({
+  planId,
+  onSelectPlan,
+  contentPadX,
+  activePlanId = null,
+}: Props) {
   const colors = useColors();
   const { colorScheme } = useTelegram();
   const lightTheme = colorScheme === "light";
@@ -418,14 +425,20 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
                 key={plan.id}
                 plan={plan}
                 selected={plan.id === planId}
+                isActiveSubscription={activePlanId != null && plan.id === activePlanId}
                 widthPx={cardW}
                 materials={materials}
                 lightTheme={lightTheme}
                 title={t(planLabelKey(plan.id))}
                 perMonth={tf("pro.plan.perMonth", { price: formatUsd(plan.monthlyUsd) })}
                 bestValueLabel={plan.highlight ? t("pro.plan.bestValue") : null}
-                selectedLabel={t("pro.sale.selected")}
+                selectedLabel={
+                  activePlanId != null && plan.id === activePlanId && plan.id === planId
+                    ? t("pro.sale.yourPlan")
+                    : t("pro.sale.selected")
+                }
                 tapLabel={t("pro.sale.tapToSelect")}
+                activeBadgeLabel={t("pro.sale.activeBadge")}
                 onPress={() => {
                   if (suppressCardPressRef.current) return;
                   onSelectPlan(plan.id);
@@ -481,6 +494,7 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
 function TariffCard({
   plan,
   selected,
+  isActiveSubscription,
   widthPx,
   materials,
   lightTheme,
@@ -489,10 +503,12 @@ function TariffCard({
   bestValueLabel,
   selectedLabel,
   tapLabel,
+  activeBadgeLabel,
   onPress,
 }: {
   plan: ProAccessPlan;
   selected: boolean;
+  isActiveSubscription: boolean;
   widthPx: number;
   materials: ProAccessMaterials;
   lightTheme: boolean;
@@ -501,6 +517,7 @@ function TariffCard({
   bestValueLabel: string | null;
   selectedLabel: string;
   tapLabel: string;
+  activeBadgeLabel: string;
   onPress: () => void;
 }) {
   const [hover, setHover] = useState(false);
@@ -576,7 +593,32 @@ function TariffCard({
             >
               {title}
             </Text>
-            {bestValueLabel ? (
+            {isActiveSubscription ? (
+              <View
+                style={{
+                  paddingHorizontal: 7,
+                  paddingVertical: 2,
+                  borderRadius: 6,
+                  backgroundColor: lightTheme
+                    ? "rgba(0,200,80,0.18)"
+                    : "rgba(0,224,90,0.2)",
+                  borderWidth: 1,
+                  borderColor: HYPERLINKS_SPACE_LOGO_GREEN,
+                  flexShrink: 0,
+                }}
+              >
+                <Text
+                  style={{
+                    color: HYPERLINKS_SPACE_LOGO_GREEN,
+                    fontSize: 10,
+                    fontWeight: "700",
+                    letterSpacing: 0.3,
+                  }}
+                >
+                  {activeBadgeLabel}
+                </Text>
+              </View>
+            ) : bestValueLabel ? (
               <View
                 style={{
                   paddingHorizontal: 7,

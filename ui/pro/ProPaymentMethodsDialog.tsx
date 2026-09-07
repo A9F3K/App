@@ -911,17 +911,6 @@ export function ProPaymentMethodsDialog({
                   >
                     {t("pro.pay.builtin.ready")}
                   </Text>
-                  <Text
-                    style={{
-                      color: colors.secondary,
-                      fontSize: 12,
-                      lineHeight: 16,
-                      fontFamily: labelFont,
-                    }}
-                  >
-                    {t("pro.pay.topup.optionalMore")}
-                  </Text>
-                  {topUpPanel}
                 </View>
               ) : (
                 <View style={{ gap: 8 }}>

@@ -52,6 +52,7 @@ import {
   getFounderScreenTimeSnapshot,
   getFounderUserCounts,
 } from "../../database/founderMetrics.js";
+import { getProSalesSnapshot } from "../../database/proSales.js";
 import {
   calibrateFromEvidence,
   buildDailyUsageSeries,
@@ -195,7 +196,7 @@ async function buildPayload(probeOverride?: ReturnType<typeof buildConsumptionPr
     /* founder still returns with tablesExist=false */
   }
 
-  const [screenTime, users, vercel, railway, gcp, evidence, today, regression, snapshots] =
+  const [screenTime, users, vercel, railway, gcp, evidence, today, regression, snapshots, proSales] =
     await Promise.all([
       getFounderScreenTimeSnapshot(),
       getFounderUserCounts(),
@@ -206,6 +207,7 @@ async function buildPayload(probeOverride?: ReturnType<typeof buildConsumptionPr
       getTodayScreenRollup(),
       regressOnDemandPerScreenHour(),
       listFounderCostSnapshots(30).catch(() => []),
+      getProSalesSnapshot().catch(() => null),
     ]);
 
   const vercelFixed = vercel.source === "live" ? vercel.fixedUsdMonth : 0;
@@ -340,6 +342,7 @@ async function buildPayload(probeOverride?: ReturnType<typeof buildConsumptionPr
     proCatalog,
     catalogPlans,
     consumptionEconomics,
+    proSales,
     screenTimeHealth: {
       tablesExist: screenTime.tablesExist,
       hasSessions: screenTime.recentSessions.length > 0,

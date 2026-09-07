@@ -271,6 +271,25 @@ type FounderPayload = {
     aiRetailPer1kTokensUsd: number;
     note: string;
   } | null;
+  proSales?: {
+    tablesExist: boolean;
+    totalSales: number;
+    totalRevenueUsd: number;
+    activeSubscribers: number;
+    last7d: { sales: number; revenueUsd: number };
+    last30d: { sales: number; revenueUsd: number };
+    byPlan: Array<{ planId: "month" | "quarter" | "year"; sales: number; revenueUsd: number }>;
+    dailyLast30d: Array<{ day: string; sales: number; revenueUsd: number }>;
+    recent: Array<{
+      id: number;
+      username: string;
+      planId: "month" | "quarter" | "year";
+      priceUsd: number;
+      months: number;
+      expiresAt: string | null;
+      createdAt: string;
+    }>;
+  } | null;
 };
 
 function money(n: number): string {
@@ -354,6 +373,124 @@ function Metric({
       >
         {value}
       </Text>
+    </View>
+  );
+}
+
+/** Simple CSS-bar diagram for daily sales / revenue (no chart library). */
+function SalesDailyBars({
+  days,
+  mode,
+  colors,
+  font,
+}: {
+  days: Array<{ day: string; sales: number; revenueUsd: number }>;
+  mode: "sales" | "revenue";
+  colors: ReturnType<typeof useColors>;
+  font: string;
+}) {
+  const max = Math.max(
+    1,
+    ...days.map((d) => (mode === "sales" ? d.sales : d.revenueUsd)),
+  );
+  const chartH = 72;
+  return (
+    <View style={{ gap: 6 }}>
+      <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+        {mode === "sales" ? "Sales / day (30d UTC)" : "Revenue $ / day (30d UTC)"}
+      </Text>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "flex-end",
+          gap: 2,
+          height: chartH,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.highlight,
+          paddingTop: 4,
+        }}
+      >
+        {days.map((d) => {
+          const v = mode === "sales" ? d.sales : d.revenueUsd;
+          const h = Math.max(v > 0 ? 3 : 0, Math.round((v / max) * (chartH - 8)));
+          return (
+            <View
+              key={`${mode}-${d.day}`}
+              style={{
+                flex: 1,
+                height: h,
+                backgroundColor: v > 0 ? "#00E05A" : colors.highlight,
+                borderTopLeftRadius: 2,
+                borderTopRightRadius: 2,
+                opacity: v > 0 ? 0.9 : 0.35,
+              }}
+            />
+          );
+        })}
+      </View>
+      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+        <Text style={{ color: colors.secondary, fontSize: 10, fontFamily: font }}>
+          {days[0]?.day?.slice(5) ?? ""}
+        </Text>
+        <Text style={{ color: colors.secondary, fontSize: 10, fontFamily: font }}>
+          {days[days.length - 1]?.day?.slice(5) ?? ""}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function PlanMixBars({
+  byPlan,
+  colors,
+  font,
+}: {
+  byPlan: Array<{ planId: string; sales: number; revenueUsd: number }>;
+  colors: ReturnType<typeof useColors>;
+  font: string;
+}) {
+  const max = Math.max(1, ...byPlan.map((p) => p.sales));
+  const labels: Record<string, string> = {
+    month: "1 month",
+    quarter: "1 quarter",
+    year: "1 year",
+  };
+  return (
+    <View style={{ gap: 8 }}>
+      <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+        Plan mix (all time)
+      </Text>
+      {byPlan.map((p) => {
+        const pct = Math.round((p.sales / max) * 100);
+        return (
+          <View key={p.planId} style={{ gap: 4 }}>
+            <View style={{ flexDirection: "row", justifyContent: "space-between", gap: 8 }}>
+              <Text style={{ color: colors.primary, fontSize: 12, fontFamily: font }}>
+                {labels[p.planId] ?? p.planId}
+              </Text>
+              <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+                {p.sales} · {money(p.revenueUsd)}
+              </Text>
+            </View>
+            <View
+              style={{
+                height: 8,
+                borderRadius: 4,
+                backgroundColor: colors.highlight,
+                overflow: "hidden",
+              }}
+            >
+              <View
+                style={{
+                  width: `${pct}%`,
+                  height: "100%",
+                  backgroundColor: "#00E05A",
+                }}
+              />
+            </View>
+          </View>
+        );
+      })}
     </View>
   );
 }
@@ -1220,6 +1357,144 @@ export default function FounderScreen() {
             </Text>
           </Pressable>
         </View>
+      </Card>
+
+      <Card title="Pro sales · history & diagrams" colors={colors}>
+        <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, fontFamily: font }}>
+          Ledger of Pro Access activations (built-in DLLR and USDT flows). Counts update when a
+          user successfully activates; founder revoke does not delete history.
+        </Text>
+        {data.proSales?.tablesExist ? (
+          <>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 16 }}>
+              <Metric
+                label="Total sales"
+                value={String(data.proSales.totalSales)}
+                colors={colors}
+                emphasize
+              />
+              <Metric
+                label="Total revenue"
+                value={money(data.proSales.totalRevenueUsd)}
+                colors={colors}
+                emphasize
+              />
+              <Metric
+                label="Active subscribers"
+                value={String(data.proSales.activeSubscribers)}
+                colors={colors}
+              />
+              <Metric
+                label="Sales · 7d"
+                value={`${data.proSales.last7d.sales} · ${money(data.proSales.last7d.revenueUsd)}`}
+                colors={colors}
+              />
+              <Metric
+                label="Sales · 30d"
+                value={`${data.proSales.last30d.sales} · ${money(data.proSales.last30d.revenueUsd)}`}
+                colors={colors}
+              />
+            </View>
+
+            <View style={{ gap: 16, marginTop: 4 }}>
+              <SalesDailyBars
+                days={data.proSales.dailyLast30d}
+                mode="sales"
+                colors={colors}
+                font={font}
+              />
+              <SalesDailyBars
+                days={data.proSales.dailyLast30d}
+                mode="revenue"
+                colors={colors}
+                font={font}
+              />
+              <PlanMixBars byPlan={data.proSales.byPlan} colors={colors} font={font} />
+            </View>
+
+            <View style={{ gap: 8, marginTop: 8 }}>
+              <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+                Recent sales
+              </Text>
+              {data.proSales.recent.length === 0 ? (
+                <Text style={{ color: colors.secondary, fontSize: 13, fontFamily: font }}>
+                  No sales recorded yet. Complete a Pro purchase in the app to see history here.
+                </Text>
+              ) : (
+                <ScrollView horizontal showsHorizontalScrollIndicator>
+                  <View style={{ gap: 6, minWidth: 640 }}>
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        gap: 8,
+                        paddingBottom: 4,
+                        borderBottomWidth: 1,
+                        borderBottomColor: colors.highlight,
+                      }}
+                    >
+                      {(
+                        [
+                          ["When", 150],
+                          ["User", 180],
+                          ["Plan", 72],
+                          ["Price", 64],
+                          ["Expires", 110],
+                        ] as const
+                      ).map(([label, w]) => (
+                        <Text
+                          key={label}
+                          style={{
+                            width: w,
+                            color: colors.secondary,
+                            fontSize: 10,
+                            fontWeight: "700",
+                            fontFamily: font,
+                          }}
+                        >
+                          {label}
+                        </Text>
+                      ))}
+                    </View>
+                    {data.proSales.recent.map((row) => (
+                      <View key={row.id} style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+                        <Text
+                          style={{ width: 150, color: colors.primary, fontSize: 11, fontFamily: font }}
+                          numberOfLines={1}
+                        >
+                          {new Date(row.createdAt).toLocaleString()}
+                        </Text>
+                        <Text
+                          style={{ width: 180, color: colors.primary, fontSize: 11, fontFamily: font }}
+                          numberOfLines={1}
+                        >
+                          {row.username}
+                        </Text>
+                        <Text style={{ width: 72, color: colors.primary, fontSize: 11, fontFamily: font }}>
+                          {row.planId}
+                        </Text>
+                        <Text style={{ width: 64, color: colors.primary, fontSize: 11, fontFamily: font }}>
+                          {money(row.priceUsd)}
+                        </Text>
+                        <Text
+                          style={{ width: 110, color: colors.secondary, fontSize: 11, fontFamily: font }}
+                          numberOfLines={1}
+                        >
+                          {row.expiresAt
+                            ? new Date(row.expiresAt).toLocaleDateString()
+                            : "—"}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                </ScrollView>
+              )}
+            </View>
+          </>
+        ) : (
+          <Text style={{ color: "#FFB020", fontSize: 13, fontFamily: font }}>
+            Sales table unavailable — redeploy / migrate so `pro_sales` can be created.
+          </Text>
+        )}
       </Card>
 
       <Card title="Revoke Pro Access (test)" colors={colors}>

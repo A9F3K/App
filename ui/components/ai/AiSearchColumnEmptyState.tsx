@@ -23,14 +23,13 @@ import {
   getAiFreeQuotaSnapshot,
   isAiFreeLimitReached,
   refreshAiFreeQuotaFromServer,
-  syncProAccessQuotaToServer,
 } from "../../ai/aiFreeQuotaStore";
 import { requestOpenProAccess } from "../../pro/openProAccess";
 import {
   debitBuiltinDllrUsd,
   getBuiltinDllrBalanceUsd,
 } from "../../pro/dllrBalanceStore";
-import { getProAccessState, isProAccessActive, subscribeProAccess } from "../../pro/proAccessStore";
+import { isProAccessActive, subscribeProAccess } from "../../pro/proAccessStore";
 import { layout, typographyRect15, useColors } from "../../theme";
 import { useAuthenticatedHomeSplitLayoutMetrics } from "../AuthenticatedHomeSplitLayoutMetricsContext";
 import { useBottomBarLayout } from "../BottomBarLayoutContext";
@@ -608,8 +607,12 @@ export function AiSearchColumnEmptyState() {
       revealAbortRef.current?.abort();
 
       if (proActive) {
-        const pro = getProAccessState();
-        await syncProAccessQuotaToServer(pro.expiresAt);
+        // Pull server truth first so a founder revoke clears local Pro before we spend.
+        await refreshAiFreeQuotaFromServer();
+        if (!isProAccessActive()) {
+          setDraftText(trimmed);
+          return;
+        }
         const q = getAiFreeQuotaSnapshot();
         if (q.limitReached) {
           // Keep the prompt in the composer so the user can resend after enabling on-demand.

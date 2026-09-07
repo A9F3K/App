@@ -10,6 +10,8 @@ type Props = {
   label: string;
   onPress: () => void;
   disabled?: boolean;
+  /** Non-pressable status plate — full strength (e.g. active tariff). */
+  readOnly?: boolean;
 };
 
 const GREEN = HYPERLINKS_SPACE_LOGO_GREEN;
@@ -22,12 +24,18 @@ const RADIUS = 14;
 /**
  * AAA extruded logo-green subscribe CTA — sharp rims, dense metal, living specular.
  */
-export function ProSubscribeButton({ label, onPress, disabled = false }: Props) {
+export function ProSubscribeButton({
+  label,
+  onPress,
+  disabled = false,
+  readOnly = false,
+}: Props) {
   const { colorScheme } = useTelegram();
   const lightTheme = colorScheme === "light";
   const hostRef = useRef<View>(null);
   const [pressed, setPressed] = useState(false);
   const [hover, setHover] = useState(false);
+  const inert = disabled || readOnly;
 
   useEffect(() => {
     if (Platform.OS !== "web" || typeof document === "undefined") return;
@@ -223,14 +231,14 @@ export function ProSubscribeButton({ label, onPress, disabled = false }: Props) 
 
   return (
     <Pressable
-      accessibilityRole="button"
-      disabled={disabled}
-      onPress={onPress}
+      accessibilityRole={readOnly ? "text" : "button"}
+      disabled={inert}
+      onPress={readOnly ? undefined : onPress}
       onPressIn={() => {
-        if (!disabled) setPressed(true);
+        if (!inert) setPressed(true);
       }}
       onPressOut={() => setPressed(false)}
-      onHoverIn={Platform.OS === "web" ? () => setHover(true) : undefined}
+      onHoverIn={Platform.OS === "web" && !inert ? () => setHover(true) : undefined}
       onHoverOut={Platform.OS === "web" ? () => setHover(false) : undefined}
       style={{
         alignSelf: "center",
@@ -244,7 +252,7 @@ export function ProSubscribeButton({ label, onPress, disabled = false }: Props) 
         backgroundColor: GREEN,
         borderWidth: 1,
         borderColor: GREEN_LO,
-        opacity: disabled ? 0.45 : 1,
+        opacity: disabled && !readOnly ? 0.45 : 1,
         ...webChrome,
       }}
     >

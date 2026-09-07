@@ -221,11 +221,24 @@ export async function refreshAiFreeQuotaFromServer(): Promise<AiFreeQuota> {
   return getAiFreeQuotaSnapshot();
 }
 
-export async function syncProAccessQuotaToServer(expiresAt: string | null): Promise<void> {
+export async function syncProAccessQuotaToServer(
+  expiresAt: string | null,
+  opts?: {
+    planId?: string;
+    priceUsd?: number;
+    months?: number;
+    /** True only for a real purchase / activate — records a founder sales row. */
+    recordSale?: boolean;
+  },
+): Promise<void> {
   try {
     const res = await postAiAgentChatAction({
       action: "sync_pro",
       expiresAt,
+      ...(opts?.planId ? { planId: opts.planId } : {}),
+      ...(opts?.priceUsd != null ? { priceUsd: opts.priceUsd } : {}),
+      ...(opts?.months != null ? { months: opts.months } : {}),
+      ...(opts?.recordSale ? { recordSale: true } : {}),
     });
     if (res.ok && res.quota) {
       applyAiFreeQuotaFromServer(res.quota);
