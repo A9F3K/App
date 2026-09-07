@@ -13,6 +13,7 @@ import {
   type LayoutChangeEvent,
   type ViewStyle,
 } from "react-native";
+import { MdConstruction } from "react-icons/md";
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Path, Rect, Stop } from "react-native-svg";
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
@@ -42,13 +43,17 @@ const TAB_GAP_PX = 8;
 const ICON_SIZE_PX = 14;
 const CLOSE_HIT_PX = 16;
 const ADD_HIT_PX = 30;
+const TOOLS_HIT_PX = 30;
+const ICONS_GAP_PX = 2;
 /** Match main header right icons (`contentSideInsetPx`). */
 const ADD_RIGHT_INSET_PX = STRIP_PADDING_PX;
 /** 10px background fade immediately left of the solid mask. */
 const ADD_GRADIENT_W_PX = 10;
 /** Solid mask begins this many px left of the + icon. */
 const ADD_GAP_BEFORE_ICON_PX = 5;
-const ADD_SOLID_W_PX = ADD_GAP_BEFORE_ICON_PX + ADD_HIT_PX + ADD_RIGHT_INSET_PX;
+/** Tools sits at far right; + sits to its left. */
+const ADD_SOLID_W_PX =
+  ADD_GAP_BEFORE_ICON_PX + ADD_HIT_PX + ICONS_GAP_PX + TOOLS_HIT_PX + ADD_RIGHT_INSET_PX;
 const RIGHT_OVERLAY_W_PX = ADD_GRADIENT_W_PX + ADD_SOLID_W_PX;
 /** Last tab stops this many px before the gradient’s left edge at max scroll. */
 const LAST_TAB_GRADIENT_INDENT_PX = 15;
@@ -64,6 +69,8 @@ export type AiAgentTab = {
   messages?: import("./AiAgentChatThread").AiThreadMessage[];
   messagesLoaded?: boolean;
   sending?: boolean;
+  /** Unread staff replies waiting for the user (support tab only). */
+  unreadCount?: number;
 };
 
 type Props = {
@@ -72,6 +79,7 @@ type Props = {
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
   onAddTab: () => void;
+  onOpenTools?: () => void;
   onRequestRename?: (id: string) => void;
   onRequestDelete?: (id: string) => void;
   /**
@@ -167,6 +175,10 @@ function AgentPlusIcon({ color, size = 14 }: { color: string; size?: number }) {
   );
 }
 
+function AgentToolsIcon({ color, size = 14 }: { color: string; size?: number }) {
+  return <MdConstruction color={color} size={size} aria-hidden />;
+}
+
 function AgentCloseIcon({ color, size = 10 }: { color: string; size?: number }) {
   return (
     <Svg width={size} height={size} viewBox="0 0 10 10" fill="none">
@@ -185,6 +197,7 @@ export function AiAgentsColumnHeader({
   onSelectTab,
   onCloseTab,
   onAddTab,
+  onOpenTools,
   onRequestRename,
   onRequestDelete,
   showCloseButtons = true,
@@ -537,12 +550,19 @@ export function AiAgentsColumnHeader({
                 tab.kind === "support"
                   ? t("ai.agents.support")
                   : tab.title?.trim() || t("ai.agents.newAgent");
+              const unreadRaw =
+                typeof tab.unreadCount === "number" && Number.isFinite(tab.unreadCount)
+                  ? Math.max(0, Math.floor(tab.unreadCount))
+                  : 0;
+              const unreadLabel =
+                unreadRaw > 99 ? "99+" : unreadRaw > 0 ? String(unreadRaw) : "";
+              const a11yLabel = unreadLabel ? `${label}, ${unreadLabel}` : label;
               return (
                 <View key={tab.id} style={styles.tabCluster}>
                   <Pressable
                     accessibilityRole="tab"
                     accessibilityState={{ selected: active }}
-                    accessibilityLabel={label}
+                    accessibilityLabel={a11yLabel}
                     onPress={() => onSelectTab(tab.id)}
                     onLongPress={(event) => onTabLongPress(tab.id, event)}
                     delayLongPress={380}
@@ -589,6 +609,21 @@ export function AiAgentsColumnHeader({
                     <Text style={[styles.tabLabel, { color: colors.primary }]} numberOfLines={1}>
                       {label}
                     </Text>
+                    {unreadLabel ? (
+                      <View
+                        style={[
+                          styles.unreadBadge,
+                          { backgroundColor: colors.accent },
+                        ]}
+                      >
+                        <Text
+                          style={[styles.unreadBadgeLabel, { color: colors.primary }]}
+                          numberOfLines={1}
+                        >
+                          {unreadLabel}
+                        </Text>
+                      </View>
+                    ) : null}
                     {showCloseButtons ? (
                       <Pressable
                         accessibilityRole="button"
@@ -681,6 +716,14 @@ export function AiAgentsColumnHeader({
         >
           <AgentPlusIcon color={colors.primary} />
         </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={t("ai.tools.open")}
+          onPress={onOpenTools}
+          style={styles.toolsHit}
+        >
+          <AgentToolsIcon color={colors.primary} />
+        </Pressable>
       </View>
 
       <View pointerEvents="box-none" collapsable={false} style={[borderLineStyle, lineAxisLock]}>
@@ -766,6 +809,23 @@ const styles = StyleSheet.create({
     fontWeight: "400",
     includeFontPadding: false,
   },
+  unreadBadge: {
+    height: 16,
+    minWidth: 16,
+    paddingHorizontal: 4,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  unreadBadgeLabel: {
+    fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: "400",
+    includeFontPadding: false,
+    textAlign: "center",
+  },
   closeHit: {
     width: CLOSE_HIT_PX,
     height: CLOSE_HIT_PX,
@@ -808,9 +868,18 @@ const styles = StyleSheet.create({
   },
   addHit: {
     position: "absolute",
-    right: ADD_RIGHT_INSET_PX,
+    right: ADD_RIGHT_INSET_PX + TOOLS_HIT_PX + ICONS_GAP_PX,
     top: 0,
     width: ADD_HIT_PX,
+    height: CHOOSE_CURRENCY_SUBHEADER_HEIGHT_PX,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  toolsHit: {
+    position: "absolute",
+    right: ADD_RIGHT_INSET_PX,
+    top: 0,
+    width: TOOLS_HIT_PX,
     height: CHOOSE_CURRENCY_SUBHEADER_HEIGHT_PX,
     alignItems: "center",
     justifyContent: "center",

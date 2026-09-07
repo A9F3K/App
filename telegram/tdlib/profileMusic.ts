@@ -356,26 +356,30 @@ export async function streamLocalAudioFileToHttp(
         fs.closeSync(fd);
       }
       if (!opened) {
-        const isPartial = startAt > 0 || Boolean(range);
+        // Only advertise a known length / byte ranges when the file is fully on disk.
+        // Advertising Accept-Ranges (or Content-Length) while Telegram is still downloading
+        // makes Chromium issue mid-play Range requests against an incomplete stream and
+        // commonly ends in MEDIA_ERR_DECODE / PIPELINE_ERROR_DECODE.
+        const fullyOnDisk =
+          completed &&
+          total != null &&
+          total > 0 &&
+          diskSize >= total &&
+          diskSize > startAt;
+        const isPartial = fullyOnDisk && (startAt > 0 || Boolean(range));
         res.statusCode = isPartial ? 206 : 200;
         res.setHeader("Content-Type", mime);
         res.setHeader("Cache-Control", "private, max-age=60");
-        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Accept-Ranges", fullyOnDisk ? "bytes" : "none");
         res.setHeader("Content-Disposition", "inline");
         // Prevent proxies (incl. Vercel) from buffering the whole body before the client hears audio.
         res.setHeader("X-Accel-Buffering", "no");
-        if (total != null && total > 0) {
+        if (fullyOnDisk && total != null && total > 0) {
           const endByte = rangeEnd != null ? rangeEnd : total - 1;
           if (isPartial) {
             res.setHeader("Content-Range", `bytes ${startAt}-${endByte}/${total}`);
           }
-          // Only advertise Content-Length when the file is fully on disk. Otherwise chunked
-          // transfer lets the browser start decoding while Telegram is still downloading.
-          const fullyOnDisk =
-            completed && diskSize >= (total > 0 ? total : diskSize) && diskSize > startAt;
-          if (fullyOnDisk) {
-            res.setHeader("Content-Length", String(endByte - startAt + 1));
-          }
+          res.setHeader("Content-Length", String(endByte - startAt + 1));
         }
         opened = true;
       }

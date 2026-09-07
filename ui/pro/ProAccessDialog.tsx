@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Platform, Text, useWindowDimensions, View, type LayoutChangeEvent } from "react-native";
 
 import { useAppStrings } from "../../locales/AppStringsContext";
@@ -14,15 +14,20 @@ import { resolveFloatingDialogDefaultSize } from "../components/floatingDialogGe
 import { FloatingDialogScrollChromeProvider } from "../components/floatingDialogScrollChrome";
 import { HspScrollColumn } from "../components/HspScrollColumn";
 import { SmartGradientDivider } from "../components/smart/SmartGradientDivider";
-import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
 import {
   formatUsd,
+  getLaunchedProFeatures,
+  getProAccessPlans,
+  getProAccessState,
+  isProAccessActive,
   PRO_ACCESS_FEATURES,
-  PRO_ACCESS_PLANS,
+  subscribeProAccess,
   type ProAccessPlanId,
 } from "./proAccessStore";
+import { refreshProCatalogFromServer, subscribeProCatalog } from "./proCatalogStore";
 import { resolveProAccessMaterials } from "./proAccessMaterials";
 import { ProFeatureIcon } from "./ProFeatureIcon";
+import { ProSoonNameplate, PRO_SOON_NAMEPLATE_GAP_PX } from "./ProSoonNameplate";
 import { ProTariffCarousel } from "./ProTariffCarousel";
 import { ProSubscribeButton } from "./ProSubscribeButton";
 import { ProPaymentMethodsDialog } from "./ProPaymentMethodsDialog";
@@ -46,6 +51,18 @@ export function ProAccessDialog({ visible, onClose }: Props) {
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [headerExtendPx, setHeaderExtendPx] = useState(0);
   const [footerExtendPx, setFooterExtendPx] = useState(0);
+  const plans = useSyncExternalStore(subscribeProCatalog, getProAccessPlans, getProAccessPlans);
+  const launchedFeatures = useSyncExternalStore(
+    subscribeProCatalog,
+    getLaunchedProFeatures,
+    getLaunchedProFeatures,
+  );
+  const proActive = useSyncExternalStore(subscribeProAccess, isProAccessActive, () => false);
+  const proState = useSyncExternalStore(subscribeProAccess, getProAccessState, getProAccessState);
+  const launchedIds = useMemo(
+    () => new Set(launchedFeatures.map((f) => f.id)),
+    [launchedFeatures],
+  );
 
   const onFooterLayout = useCallback((e: LayoutChangeEvent) => {
     const h = e.nativeEvent.layout.height;
@@ -54,14 +71,20 @@ export function ProAccessDialog({ visible, onClose }: Props) {
 
   useEffect(() => {
     if (!visible) setPaymentOpen(false);
+    else void refreshProCatalogFromServer();
   }, [visible]);
+
+  useEffect(() => {
+    if (!visible || !proActive || !proState.planId) return;
+    setPlanId(proState.planId);
+  }, [visible, proActive, proState.planId]);
 
   const defaultSize = useMemo(
     () => resolveFloatingDialogDefaultSize(windowWidth, windowHeight, "pro"),
     [windowHeight, windowWidth],
   );
   const dialogInsets = resolveFloatingDialogInsets(windowHeight);
-  const selected = PRO_ACCESS_PLANS.find((p) => p.id === planId) ?? PRO_ACCESS_PLANS[0]!;
+  const selected = plans.find((p) => p.id === planId) ?? plans[0]!;
 
   const tariffsVisible = visible && !paymentOpen;
 
@@ -108,7 +131,7 @@ export function ProAccessDialog({ visible, onClose }: Props) {
             <HspScrollColumn
               style={{ flex: 1, minHeight: 0 }}
               containOverscroll
-              scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+              scrollbarRightInsetPx={2}
               scrollIndicatorOverlaySeam={false}
               contentContainerStyle={{
                 paddingTop: 14,
@@ -127,7 +150,7 @@ export function ProAccessDialog({ visible, onClose }: Props) {
                     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
                   }}
                 >
-                  {t("pro.sale.headline")}
+                  {proActive ? t("pro.sale.activated") : t("pro.sale.headline")}
                 </Text>
                 <Text
                   style={{
@@ -137,8 +160,32 @@ export function ProAccessDialog({ visible, onClose }: Props) {
                     fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
                   }}
                 >
-                  {t("pro.sale.subtitle")}
+                  {proActive
+                    ? tf("pro.sale.activatedHint", {
+                        plan: t(
+                          (proState.planId === "quarter"
+                            ? "pro.plan.quarter"
+                            : proState.planId === "year"
+                              ? "pro.plan.year"
+                              : "pro.plan.month") as AppStringKey,
+                        ),
+                      })
+                    : t("pro.sale.subtitle")}
                 </Text>
+                {proActive && proState.expiresAt ? (
+                  <Text
+                    style={{
+                      color: muted,
+                      fontSize: 13,
+                      lineHeight: 18,
+                      fontFamily: Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                    }}
+                  >
+                    {tf("pro.sale.activeUntil", {
+                      date: new Date(proState.expiresAt).toLocaleDateString(),
+                    })}
+                  </Text>
+                ) : null}
               </View>
 
               <ProTariffCarousel
@@ -148,54 +195,76 @@ export function ProAccessDialog({ visible, onClose }: Props) {
               />
 
               <View style={{ paddingHorizontal: dialogInsets.padX, gap: 16 }}>
-                {PRO_ACCESS_FEATURES.map((feature) => (
-                  <View
-                    key={feature.id}
-                    style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}
-                  >
+                {PRO_ACCESS_FEATURES.map((feature) => {
+                  const soon = !launchedIds.has(feature.id);
+                  return (
                     <View
-                      style={{
-                        width: 26,
-                        height: 24,
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                        marginTop: 0,
-                      }}
+                      key={feature.id}
+                      style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}
                     >
-                      <ProFeatureIcon
-                        id={feature.id}
-                        color={lightTheme ? materials.accent : colors.primary}
-                        size={24}
-                      />
-                    </View>
-                    <View style={{ flex: 1, gap: 3, minWidth: 0 }}>
-                      <Text
+                      <View
                         style={{
-                          color: ink,
-                          fontSize: 14,
-                          lineHeight: 24,
-                          fontWeight: "700",
-                          fontFamily:
-                            Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                          width: 26,
+                          height: 24,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                          marginTop: 0,
                         }}
                       >
-                        {t(feature.titleKey as AppStringKey)}
-                      </Text>
-                      <Text
-                        style={{
-                          color: muted,
-                          fontSize: 13,
-                          lineHeight: 18,
-                          fontFamily:
-                            Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
-                        }}
-                      >
-                        {t(feature.bodyKey as AppStringKey)}
-                      </Text>
+                        <ProFeatureIcon
+                          id={feature.id}
+                          color={
+                            soon
+                              ? muted
+                              : lightTheme
+                                ? materials.accent
+                                : colors.primary
+                          }
+                          size={24}
+                        />
+                      </View>
+                      <View style={{ flex: 1, gap: 3, minWidth: 0 }}>
+                        <View
+                          style={{
+                            flexDirection: "row",
+                            alignItems: "center",
+                            flexWrap: "wrap",
+                            gap: PRO_SOON_NAMEPLATE_GAP_PX,
+                            minHeight: 24,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              color: soon ? muted : ink,
+                              fontSize: 14,
+                              lineHeight: 24,
+                              fontWeight: "700",
+                              fontFamily:
+                                Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                            }}
+                          >
+                            {t(feature.titleKey as AppStringKey)}
+                          </Text>
+                          {soon ? (
+                            <ProSoonNameplate color={colors.secondary} lineHeightPx={24} />
+                          ) : null}
+                        </View>
+                        <Text
+                          style={{
+                            color: muted,
+                            fontSize: 13,
+                            lineHeight: 18,
+                            fontFamily:
+                              Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR,
+                          }}
+                        >
+                          {t(feature.bodyKey as AppStringKey)}
+                        </Text>
+                      </View>
                     </View>
-                  </View>
-                ))}
+                  );
+                })}
               </View>
             </HspScrollColumn>
 
@@ -221,6 +290,17 @@ export function ProAccessDialog({ visible, onClose }: Props) {
                   label={tf("pro.sale.subscribe", { price: formatUsd(selected.priceUsd) })}
                   onPress={onSubscribe}
                 />
+                <Text
+                  style={{
+                    color: muted,
+                    fontSize: 12,
+                    lineHeight: 17,
+                    textAlign: "center",
+                    alignSelf: "stretch",
+                  }}
+                >
+                  {t("pro.sale.soonFooter")}
+                </Text>
                 <Text
                   style={{
                     color: muted,

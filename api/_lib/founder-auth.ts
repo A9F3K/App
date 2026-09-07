@@ -6,6 +6,24 @@ import { createHash, timingSafeEqual } from "crypto";
 
 const COOKIE_NAME = "hsp_founder_session";
 
+/** Web Request or Node IncomingMessage (Vercel Node runtime). */
+type AnyRequest =
+  | Request
+  | { method?: string; headers?: Record<string, string | string[] | undefined>; url?: string };
+
+function getHeader(request: AnyRequest, name: string): string | null {
+  const lower = name.toLowerCase();
+  const webHeaders = (request as Request).headers as Headers | undefined;
+  if (webHeaders && typeof webHeaders.get === "function") {
+    return webHeaders.get(name);
+  }
+  const nodeHeaders = (request as { headers?: Record<string, string | string[] | undefined> }).headers;
+  if (!nodeHeaders) return null;
+  const raw = nodeHeaders[lower];
+  if (Array.isArray(raw)) return raw[0] ?? null;
+  return typeof raw === "string" ? raw : null;
+}
+
 function password(): string {
   return (process.env.FOUNDER_DASHBOARD_PASSWORD ?? "")
     .trim()
@@ -51,8 +69,8 @@ export function verifyFounderSessionToken(token: string | null | undefined): boo
   return timingSafeEqual(a, b);
 }
 
-export function readFounderCookie(request: Request): string | null {
-  const raw = request.headers.get("cookie") ?? "";
+export function readFounderCookie(request: AnyRequest): string | null {
+  const raw = getHeader(request, "cookie") ?? "";
   const parts = raw.split(";").map((p) => p.trim());
   for (const part of parts) {
     if (part.startsWith(`${COOKIE_NAME}=`)) {
@@ -62,13 +80,13 @@ export function readFounderCookie(request: Request): string | null {
   return null;
 }
 
-export function readFounderBearer(request: Request): string | null {
-  const h = request.headers.get("authorization") ?? "";
+export function readFounderBearer(request: AnyRequest): string | null {
+  const h = getHeader(request, "authorization") ?? "";
   const m = /^Bearer\s+(.+)$/i.exec(h.trim());
   return m?.[1]?.trim() || null;
 }
 
-export function isFounderAuthorized(request: Request): boolean {
+export function isFounderAuthorized(request: AnyRequest): boolean {
   if (!founderPasswordConfigured()) return false;
   const bearer = readFounderBearer(request);
   if (bearer && (verifyFounderPassword(bearer) || verifyFounderSessionToken(bearer))) {

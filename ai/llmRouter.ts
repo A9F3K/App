@@ -161,16 +161,73 @@ export function buildTinyModelOnlyAnswer(
   return lines.join("\n").trim();
 }
 
+export type LlmRoutePreference = {
+  /** auto = smart cheapest-sufficient; tinymodel = RAG only; model = fixed id. */
+  modelMode?: "auto" | "tinymodel" | "model";
+  /** Gateway (`provider/model`) or OpenAI model id when modelMode is `model`. */
+  modelId?: string | null;
+};
+
 /**
  * Pick backend + model. Prefer TinyModel-only when capable; else Gateway then OpenAI.
  */
 export function resolveLlmRoute(
   input: string,
   tinymodel?: TinyModelEnrichmentMeta | null,
-  opts?: { preferFrontier?: boolean; allowTinyOnly?: boolean },
+  opts?: {
+    preferFrontier?: boolean;
+    allowTinyOnly?: boolean;
+    preference?: LlmRoutePreference | null;
+  },
 ): LlmRouteDecision | { error: string } {
   const allowTiny = opts?.allowTinyOnly !== false;
   const preferFrontier = opts?.preferFrontier === true;
+  const pref = opts?.preference;
+  const mode = pref?.modelMode ?? "auto";
+  const forcedId = typeof pref?.modelId === "string" ? pref.modelId.trim() : "";
+
+  if (mode === "tinymodel") {
+    return {
+      backend: "tinymodel",
+      tier: "none",
+      model: "tinymodel/rag",
+      reason: "user_tinymodel_only",
+    };
+  }
+
+  if (mode === "model" && forcedId) {
+    const looksGateway = forcedId.includes("/");
+    if (looksGateway && isVercelGatewayConfigured()) {
+      return {
+        backend: "vercel_gateway",
+        tier: forcedId.includes("mini") ? "mini" : "frontier",
+        model: forcedId,
+        reason: "user_fixed_gateway_model",
+      };
+    }
+    if (isOpenAiConfigured()) {
+      const direct = looksGateway ? forcedId.split("/").pop() || forcedId : forcedId;
+      return {
+        backend: "openai",
+        tier: direct.includes("mini") ? "mini" : "frontier",
+        model: direct,
+        reason: "user_fixed_openai_model",
+      };
+    }
+    if (isVercelGatewayConfigured()) {
+      const gw = looksGateway ? forcedId : `openai/${forcedId}`;
+      return {
+        backend: "vercel_gateway",
+        tier: gw.includes("mini") ? "mini" : "frontier",
+        model: gw,
+        reason: "user_fixed_gateway_fallback",
+      };
+    }
+    return {
+      error:
+        "Selected model needs AI_GATEWAY_API_KEY or OPENAI configured on the server.",
+    };
+  }
 
   if (allowTiny && canAnswerWithTinyModel(input, tinymodel)) {
     return {
@@ -206,3 +263,28 @@ export function resolveLlmRoute(
       "No AI provider configured. Set AI_GATEWAY_API_KEY (Vercel AI Gateway), or OPENAI, and optionally TINYMODEL_API_URL for free program answers.",
   };
 }
+
+/** Curated models offered in the AI tools dialog (Gateway + OpenAI). */
+export const AI_TOOLS_MODEL_OPTIONS: Array<{
+  id: string;
+  label: string;
+  backend: "vercel_gateway" | "openai";
+}> = [
+  // Vercel AI Gateway — popular, well-known models for messenger, market, and in-app actions
+  // https://vercel.com/docs/ai-gateway · https://ai-gateway.vercel.sh/v1/models
+  { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", backend: "vercel_gateway" },
+  { id: "openai/gpt-5.2", label: "GPT-5.2", backend: "vercel_gateway" },
+  { id: "openai/gpt-6-astra", label: "GPT-6 Astra", backend: "vercel_gateway" },
+  { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5", backend: "vercel_gateway" },
+  { id: "anthropic/claude-sonnet-4.5", label: "Claude Sonnet 4.5", backend: "vercel_gateway" },
+  { id: "google/gemini-3.8-flash", label: "Gemini 3.8 Flash", backend: "vercel_gateway" },
+  { id: "google/gemini-2.5-pro", label: "Gemini 2.5 Pro", backend: "vercel_gateway" },
+  { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", backend: "vercel_gateway" },
+  { id: "alibaba/qwen3.8-max-0902", label: "Qwen3.8 Max", backend: "vercel_gateway" },
+  { id: "zai/glm-5.3", label: "GLM-5.3", backend: "vercel_gateway" },
+  { id: "spacexai/grok-4.3", label: "Grok 4.3", backend: "vercel_gateway" },
+  { id: "mistral/mistral-large-3", label: "Mistral Large 3", backend: "vercel_gateway" },
+  // Direct OpenAI fallbacks when Gateway is unavailable
+  { id: "gpt-5.2", label: "GPT-5.2 (OpenAI)", backend: "openai" },
+  { id: "gpt-4.1-mini", label: "GPT-4.1 Mini (OpenAI)", backend: "openai" },
+];

@@ -14,6 +14,8 @@ export type SupportThreadDto = {
   created_at: string;
   updated_at: string;
   unread_for_staff?: boolean;
+  unread_for_user?: boolean;
+  unread_for_user_count?: number;
   last_preview?: string | null;
 };
 
@@ -28,13 +30,16 @@ async function parseJson<T>(res: Response): Promise<T & { ok?: boolean; error?: 
   }
 }
 
-export async function fetchMySupportChat(): Promise<{
+export async function fetchMySupportChat(opts?: {
+  markRead?: boolean;
+}): Promise<{
   ok: boolean;
   thread?: SupportThreadDto;
   messages?: SupportMessageDto[];
   error?: string;
 }> {
-  const res = await fetch(buildApiUrl("/api/support"), {
+  const qs = opts?.markRead ? "?markRead=1" : "";
+  const res = await fetch(buildApiUrl(`/api/support${qs}`), {
     method: "GET",
     credentials: "include",
   });

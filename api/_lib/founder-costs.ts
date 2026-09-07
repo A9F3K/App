@@ -44,10 +44,21 @@ export type FounderCostInputs = {
   tdlibFixedUntilUsers: number;
 };
 
-export function resolveFounderTariffs(): FounderTariffs {
-  const monthUsd = envNum("PRO_TARIFF_MONTH_USD", 20);
-  const quarterTotalUsd = envNum("PRO_TARIFF_QUARTER_TOTAL_USD", 55.5);
-  const yearTotalUsd = envNum("PRO_TARIFF_YEAR_TOTAL_USD", 204);
+export function resolveFounderTariffs(): FounderTariffs;
+export function resolveFounderTariffs(fromCatalog: {
+  monthUsd: number;
+  quarterTotalUsd: number;
+  yearTotalUsd: number;
+}): FounderTariffs;
+export function resolveFounderTariffs(fromCatalog?: {
+  monthUsd: number;
+  quarterTotalUsd: number;
+  yearTotalUsd: number;
+}): FounderTariffs {
+  const monthUsd = fromCatalog?.monthUsd ?? envNum("PRO_TARIFF_MONTH_USD", 5);
+  const quarterTotalUsd =
+    fromCatalog?.quarterTotalUsd ?? envNum("PRO_TARIFF_QUARTER_TOTAL_USD", 14);
+  const yearTotalUsd = fromCatalog?.yearTotalUsd ?? envNum("PRO_TARIFF_YEAR_TOTAL_USD", 48);
   const mixMonth = envNum("FOUNDER_MIX_MONTH", 0.55);
   const mixQuarter = envNum("FOUNDER_MIX_QUARTER", 0.25);
   const mixYear = envNum("FOUNDER_MIX_YEAR", 0.2);

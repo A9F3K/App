@@ -25,7 +25,7 @@ import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../../scrollInd
 import { useTelegram } from "../Telegram";
 import { appModalSheetStyles } from "../AppModalSheet";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
-import { applyIndependentEdgeResize } from "../floatingDialogGeometry";
+import { applyIndependentEdgeResize, notifyFloatingDialogGeometryChanged } from "../floatingDialogGeometry";
 import { logPageDisplay } from "../../pageDisplayLog";
 import type { TelegramChatVoiceParticipant } from "../../telegram/fetchTelegramChatVoiceParticipants";
 import {
@@ -1438,6 +1438,11 @@ export function MessageChatVoicePopover({
       clampSheetOffset(prev, sheetSizeRef.current, windowWidth, windowHeight),
     );
   }, [clampSize, windowHeight, windowWidth]);
+
+  useLayoutEffect(() => {
+    if (Platform.OS !== "web") return;
+    notifyFloatingDialogGeometryChanged();
+  }, [sheetOffset.x, sheetOffset.y, sheetSize.width, sheetSize.height]);
 
   const activeEdges = useMemo(() => {
     const edges = new Set<Edge>();

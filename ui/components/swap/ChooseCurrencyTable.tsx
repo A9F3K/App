@@ -233,6 +233,15 @@ function CellContent({
     case "currency":
       return <CurrencyCell row={row} />;
     case "balance":
+      return (
+        <Text
+          style={[typographyAeroport15, styles.centeredCellText, styles.truncatedText, { color: colors.primary }]}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
+          {row.balance}
+        </Text>
+      );
     case "rate":
     case "networks":
     case "marketCap":
@@ -327,6 +336,79 @@ function ColumnShell({
   );
 }
 
+function WalletRowExpandPanel({
+  row,
+  onAction,
+}: {
+  row: ChooseCurrencyRow;
+  onAction: (action: "send" | "swap" | "get", row: ChooseCurrencyRow) => void;
+}) {
+  const colors = useColors();
+  const { t, tf } = useAppStrings();
+  const ledger = row.dllrLedger;
+
+  return (
+    <View
+      style={{
+        marginTop: 8,
+        paddingTop: 10,
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderTopColor: colors.highlight,
+        gap: 10,
+      }}
+    >
+      {ledger ? (
+        <Text
+          style={[
+            typographyAeroport15,
+            { color: colors.secondary, fontSize: 13, lineHeight: 18 },
+          ]}
+        >
+          {tf("wallet.dllr.hotFrozenDetail", {
+            hot: ledger.hot,
+            frozen: ledger.frozen,
+          })}
+        </Text>
+      ) : null}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        {(
+          [
+            ["send", "home.menu.send"],
+            ["swap", "home.menu.swap"],
+            ["get", "home.menu.get"],
+          ] as const
+        ).map(([action, labelKey]) => (
+          <Pressable
+            key={action}
+            accessibilityRole="button"
+            accessibilityLabel={t(labelKey)}
+            onPress={() => onAction(action, row)}
+            style={({ pressed }) => ({
+              paddingHorizontal: 14,
+              paddingVertical: 9,
+              borderRadius: 10,
+              borderWidth: 1,
+              borderColor: colors.highlight,
+              backgroundColor: colors.undercover,
+              opacity: pressed ? 0.88 : 1,
+            })}
+          >
+            <Text
+              style={[
+                typographyAeroport15,
+                typographySansSemibold,
+                { color: colors.primary, fontSize: 13 },
+              ]}
+            >
+              {t(labelKey)}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function DataRow({
   row,
   rank,
@@ -335,6 +417,9 @@ function DataRow({
   onPress,
   prefetchCharts,
   contentInsetPx,
+  expanded,
+  onToggleExpand,
+  onWalletAction,
 }: {
   row: ChooseCurrencyRow;
   rank: string;
@@ -343,11 +428,20 @@ function DataRow({
   onPress?: (row: ChooseCurrencyRow) => void;
   prefetchCharts: boolean;
   contentInsetPx: number;
+  expanded?: boolean;
+  onToggleExpand?: (row: ChooseCurrencyRow) => void;
+  onWalletAction?: (action: "send" | "swap" | "get", row: ChooseCurrencyRow) => void;
 }) {
   const colors = useColors();
   const { colorScheme } = useTelegram();
   const { width: windowWidth } = useWindowDimensions();
   const widePressHighlight = windowWidth > layout.authenticatedHome.firstBreakpoint;
+  const expandable = Boolean(onToggleExpand && onWalletAction);
+  const handlePress = expandable
+    ? () => onToggleExpand?.(row)
+    : onPress
+      ? () => onPress(row)
+      : undefined;
 
   const body = (
     <View style={styles.bodyRow}>
@@ -372,11 +466,17 @@ function DataRow({
     </View>
   );
 
+  const expand =
+    expandable && expanded && onWalletAction ? (
+      <WalletRowExpandPanel row={row} onAction={onWalletAction} />
+    ) : null;
+
   if (!widePressHighlight) {
     return (
       <Pressable
         accessibilityRole="button"
-        onPress={onPress ? () => onPress(row) : undefined}
+        accessibilityState={expandable ? { expanded: Boolean(expanded) } : undefined}
+        onPress={handlePress}
         style={{
           width: "100%",
           alignSelf: "stretch",
@@ -385,21 +485,21 @@ function DataRow({
         }}
       >
         {body}
+        {expand}
       </Pressable>
     );
   }
 
-  // Table is already full-bleed to the column edge; hover fills that width
-  // (messages bleed via negative margin from an inset parent).
   return (
     <Pressable
       accessibilityRole="button"
-      onPress={onPress ? () => onPress(row) : undefined}
+      accessibilityState={expandable ? { expanded: Boolean(expanded) } : undefined}
+      onPress={handlePress}
       style={({ pressed, hovered }) => {
         let backgroundColor = "transparent";
         if (pressed) {
           backgroundColor = aiPromptButtonActiveBackground(colors, colorScheme);
-        } else if (hovered) {
+        } else if (hovered || expanded) {
           backgroundColor = aiPromptButtonHoverBackground(colors, colorScheme);
         }
         return {
@@ -412,6 +512,7 @@ function DataRow({
       }}
     >
       {body}
+      {expand}
     </Pressable>
   );
 }
@@ -424,13 +525,18 @@ const MemoDataRow = memo(
     prev.row.marketCapUsd === next.row.marketCapUsd &&
     prev.row.volume === next.row.volume &&
     prev.row.balance === next.row.balance &&
+    prev.row.dllrLedger?.hot === next.row.dllrLedger?.hot &&
+    prev.row.dllrLedger?.frozen === next.row.dllrLedger?.frozen &&
     prev.row.rate === next.row.rate &&
     prev.rank === next.rank &&
     prev.isLast === next.isLast &&
     prev.onPress === next.onPress &&
     prev.prefetchCharts === next.prefetchCharts &&
     prev.visibleColumns === next.visibleColumns &&
-    prev.contentInsetPx === next.contentInsetPx,
+    prev.contentInsetPx === next.contentInsetPx &&
+    prev.expanded === next.expanded &&
+    prev.onToggleExpand === next.onToggleExpand &&
+    prev.onWalletAction === next.onWalletAction,
 );
 
 type Props = {
@@ -440,6 +546,11 @@ type Props = {
   loadError?: string | null;
   onLoadMore?: () => void;
   onSelectRow?: (row: ChooseCurrencyRow) => void;
+  /**
+   * Wallet dialog: tap row to expand Send / Swap / Get (and DLLR Hot/Frozen).
+   * When set, overrides {@link onSelectRow} for row presses.
+   */
+  onWalletAction?: (action: "send" | "swap" | "get", row: ChooseCurrencyRow) => void;
   /** Measured middle split-column width (px); authoritative on wide home. */
   columnShellWidthPx?: number;
   /** When false, skip DYOR sparkline prefetch (panel hidden via display:none). */
@@ -466,6 +577,7 @@ export function ChooseCurrencyTable({
   loadError = null,
   onLoadMore,
   onSelectRow,
+  onWalletAction,
   columnShellWidthPx = 0,
   prefetchCharts = true,
   visibleColumnKeys,
@@ -483,6 +595,22 @@ export function ChooseCurrencyTable({
   const shellRef = useRef<View>(null);
   const [scroll, setScroll] = useState({ layoutH: 0, contentH: 0, scrollY: 0 });
   const [shellLayoutH, setShellLayoutH] = useState(0);
+  const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
+
+  const onToggleExpand = useCallback((row: ChooseCurrencyRow) => {
+    setExpandedRowKey((current) => (current === row.rowKey ? null : row.rowKey));
+  }, []);
+
+  useEffect(() => {
+    if (!onWalletAction) setExpandedRowKey(null);
+  }, [onWalletAction]);
+
+  useEffect(() => {
+    if (!expandedRowKey) return;
+    if (!rows.some((row) => row.rowKey === expandedRowKey)) {
+      setExpandedRowKey(null);
+    }
+  }, [expandedRowKey, rows]);
 
   const setShellNodeRef = useCallback(
     (node: View | null) => {
@@ -863,12 +991,24 @@ export function ChooseCurrencyTable({
         rank={String(index + 1)}
         visibleColumns={visibleColumns}
         isLast={index >= rows.length - 1}
-        onPress={onSelectRow}
+        onPress={onWalletAction ? undefined : onSelectRow}
+        onToggleExpand={onWalletAction ? onToggleExpand : undefined}
+        onWalletAction={onWalletAction}
+        expanded={onWalletAction ? expandedRowKey === item.rowKey : false}
         prefetchCharts={prefetchCharts}
         contentInsetPx={insetX}
       />
     ),
-    [insetX, onSelectRow, prefetchCharts, rows.length, visibleColumns],
+    [
+      expandedRowKey,
+      insetX,
+      onSelectRow,
+      onToggleExpand,
+      onWalletAction,
+      prefetchCharts,
+      rows.length,
+      visibleColumns,
+    ],
   );
 
   const keyExtractor = useCallback((item: ChooseCurrencyRow) => item.rowKey, []);
@@ -919,7 +1059,7 @@ export function ChooseCurrencyTable({
         data={rows as ChooseCurrencyRow[]}
         keyExtractor={keyExtractor}
         renderItem={renderItem}
-        extraData={visibleColumns}
+        extraData={{ visibleColumns, expandedRowKey }}
         style={styles.list}
         contentContainerStyle={[
           styles.listContent,

@@ -9,6 +9,7 @@ import { withAlpha } from "./proAccessMaterials";
 type Props = {
   label: string;
   onPress: () => void;
+  disabled?: boolean;
 };
 
 const GREEN = HYPERLINKS_SPACE_LOGO_GREEN;
@@ -21,7 +22,7 @@ const RADIUS = 14;
 /**
  * AAA extruded logo-green subscribe CTA — sharp rims, dense metal, living specular.
  */
-export function ProSubscribeButton({ label, onPress }: Props) {
+export function ProSubscribeButton({ label, onPress, disabled = false }: Props) {
   const { colorScheme } = useTelegram();
   const lightTheme = colorScheme === "light";
   const hostRef = useRef<View>(null);
@@ -223,8 +224,11 @@ export function ProSubscribeButton({ label, onPress }: Props) {
   return (
     <Pressable
       accessibilityRole="button"
+      disabled={disabled}
       onPress={onPress}
-      onPressIn={() => setPressed(true)}
+      onPressIn={() => {
+        if (!disabled) setPressed(true);
+      }}
       onPressOut={() => setPressed(false)}
       onHoverIn={Platform.OS === "web" ? () => setHover(true) : undefined}
       onHoverOut={Platform.OS === "web" ? () => setHover(false) : undefined}
@@ -240,6 +244,7 @@ export function ProSubscribeButton({ label, onPress }: Props) {
         backgroundColor: GREEN,
         borderWidth: 1,
         borderColor: GREEN_LO,
+        opacity: disabled ? 0.45 : 1,
         ...webChrome,
       }}
     >

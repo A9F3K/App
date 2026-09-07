@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Platform,
   Text,
@@ -15,8 +15,22 @@ import {
 import {
   fetchMySupportChat,
   sendSupportUserMessage,
+  type SupportMessageDto,
 } from "../../../api/supportClient";
 import { useAppStrings } from "../../../locales/AppStringsContext";
+import {
+  applyAiFreeQuotaFromServer,
+  getAiFreeQuotaSnapshot,
+  isAiFreeLimitReached,
+  refreshAiFreeQuotaFromServer,
+  syncProAccessQuotaToServer,
+} from "../../ai/aiFreeQuotaStore";
+import { requestOpenProAccess } from "../../pro/openProAccess";
+import {
+  debitBuiltinDllrUsd,
+  getBuiltinDllrBalanceUsd,
+} from "../../pro/dllrBalanceStore";
+import { getProAccessState, isProAccessActive, subscribeProAccess } from "../../pro/proAccessStore";
 import { layout, typographyRect15, useColors } from "../../theme";
 import { useAuthenticatedHomeSplitLayoutMetrics } from "../AuthenticatedHomeSplitLayoutMetricsContext";
 import { useBottomBarLayout } from "../BottomBarLayoutContext";
@@ -26,6 +40,8 @@ import { AiAgentChatThread, type AiThreadMessage } from "./AiAgentChatThread";
 import { AiAgentRenameDialog } from "./AiAgentRenameDialog";
 import { AiAgentsColumnHeader, type AiAgentTab } from "./AiAgentsColumnHeader";
 import { AiSearchPromptButton } from "./AiSearchPromptButton";
+import { AiToolsDialog } from "./AiToolsDialog";
+import { typewriterReveal } from "./typewriterReveal";
 
 const TOP_GAP_PX = 20;
 const PARAGRAPH_GAP_PX = 15;
@@ -43,6 +59,7 @@ const PREMADE_PROMPT_KEYS = [
 
 const CLAIMED_CHAT_STORAGE_KEY = "hsp_ai_claimed_chat_id";
 const SUPPORT_TAB_ID = "support-inbox";
+const SUPPORT_POLL_MS = 15_000;
 
 function newAgentTabId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -76,6 +93,32 @@ function mapDtoMessages(rows: AiAgentMessageDto[]): AiThreadMessage[] {
       likedByMe: Boolean(m.liked_by_me),
       likeCount: Number(m.like_count ?? 0),
     }));
+}
+
+function mapSupportMessages(rows: SupportMessageDto[] | undefined): AiThreadMessage[] {
+  return (rows ?? []).map((m) => ({
+    id: m.id,
+    role: m.role === "staff" ? ("assistant" as const) : ("user" as const),
+    content: m.content,
+  }));
+}
+
+function supportUnreadFromThread(thread: {
+  unread_for_user_count?: number;
+  unread_for_user?: boolean;
+} | null | undefined): number {
+  const raw = thread?.unread_for_user_count;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Math.max(0, Math.floor(raw));
+  }
+  return thread?.unread_for_user ? 1 : 0;
+}
+
+/** Keep Support as the second tab (index 1) when a staff reply arrives. */
+function placeSupportTabSecond(tabs: AiAgentTab[], supportTab: AiAgentTab): AiAgentTab[] {
+  const rest = tabs.filter((tab) => tab.id !== SUPPORT_TAB_ID);
+  if (rest.length === 0) return [supportTab];
+  return [rest[0]!, supportTab, ...rest.slice(1)];
 }
 
 /** Default empty-state body shared by every idle agent tab. */
@@ -145,13 +188,22 @@ export function AiSearchColumnEmptyState() {
   const splitMetrics = useAuthenticatedHomeSplitLayoutMetrics();
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
   const scrollRef = useRef<HspScrollColumnHandle>(null);
+  const revealAbortRef = useRef<AbortController | null>(null);
   const [columnWidth, setColumnWidth] = useState(0);
   const [headerHeightPx, setHeaderHeightPx] = useState(0);
   const [viewportHeightPx, setViewportHeightPx] = useState(0);
   const [tabs, setTabs] = useState<AiAgentTab[]>(() => [createIdleTab()]);
   const [activeTabId, setActiveTabId] = useState(() => tabs[0]!.id);
   const [renameTabId, setRenameTabId] = useState<string | null>(null);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const hydratedRef = useRef(false);
+  const activeTabIdRef = useRef(activeTabId);
+  activeTabIdRef.current = activeTabId;
+  const proActive = useSyncExternalStore(subscribeProAccess, isProAccessActive, () => false);
+
+  useEffect(() => {
+    void refreshAiFreeQuotaFromServer();
+  }, []);
 
   const contentInset = layout.contentSideInsetPx;
   const scrollShellBleed = { marginHorizontal: -contentInset };
@@ -177,6 +229,66 @@ export function AiSearchColumnEmptyState() {
       scrollRef.current?.syncScrollMetricsFromDom();
       requestAnimationFrame(() => scrollRef.current?.syncScrollMetricsFromDom());
     });
+  }, []);
+
+  const scrollAiThreadToEnd = useCallback(() => {
+    const pin = () => {
+      scrollRef.current?.scrollToEnd();
+      if (Platform.OS === "web") {
+        scrollRef.current?.syncScrollMetricsFromDom();
+      }
+    };
+    requestAnimationFrame(() => {
+      pin();
+      requestAnimationFrame(pin);
+    });
+  }, []);
+
+  const updateAssistantPartial = useCallback(
+    (tabId: string, messageId: string, partial: string, done: boolean) => {
+      setTabs((current) =>
+        current.map((tab) => {
+          if (tab.id !== tabId) return tab;
+          return {
+            ...tab,
+            messages: (tab.messages ?? []).map((m) =>
+              m.id === messageId
+                ? { ...m, content: partial, streaming: !done }
+                : m,
+            ),
+          };
+        }),
+      );
+      scrollAiThreadToEnd();
+    },
+    [scrollAiThreadToEnd],
+  );
+
+  const revealAssistantMessage = useCallback(
+    async (tabId: string, messageId: string, fullText: string) => {
+      revealAbortRef.current?.abort();
+      const ac = new AbortController();
+      revealAbortRef.current = ac;
+      await typewriterReveal(
+        fullText,
+        (partial) => {
+          if (ac.signal.aborted) return;
+          updateAssistantPartial(tabId, messageId, partial, false);
+        },
+        { signal: ac.signal, charsPerSec: 96 },
+      );
+      if (revealAbortRef.current === ac) {
+        revealAbortRef.current = null;
+      }
+      updateAssistantPartial(tabId, messageId, fullText, true);
+    },
+    [updateAssistantPartial],
+  );
+
+  useEffect(() => {
+    return () => {
+      revealAbortRef.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -215,18 +327,62 @@ export function AiSearchColumnEmptyState() {
         messagesLoaded: false,
       }));
       if (!cancelled) {
-        setTabs(nextTabs);
-        setActiveTabId(
-          focusId && nextTabs.some((t) => t.id === focusId)
-            ? focusId
-            : nextTabs[0]!.id,
-        );
+        setTabs((current) => {
+          const support = current.find((tab) => tab.id === SUPPORT_TAB_ID);
+          if (!support) return nextTabs;
+          const unread = Math.max(0, Math.floor(support.unreadCount ?? 0));
+          return unread > 0
+            ? placeSupportTabSecond(nextTabs, support)
+            : [...nextTabs, support];
+        });
+        setActiveTabId((prev) => {
+          if (prev === SUPPORT_TAB_ID) return prev;
+          if (focusId && nextTabs.some((t) => t.id === focusId)) return focusId;
+          return nextTabs[0]!.id;
+        });
       }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const applySupportChatSnapshot = useCallback(
+    (
+      res: Awaited<ReturnType<typeof fetchMySupportChat>>,
+      opts?: { reopenIfUnread?: boolean },
+    ) => {
+      if (!res.ok) return;
+      const messages = mapSupportMessages(res.messages);
+      const unreadCount = supportUnreadFromThread(res.thread);
+      const reopenIfUnread = opts?.reopenIfUnread !== false;
+
+      setTabs((current) => {
+        const existing = current.find((tab) => tab.id === SUPPORT_TAB_ID);
+        const supportTab: AiAgentTab = {
+          id: SUPPORT_TAB_ID,
+          kind: "support",
+          title: t("ai.agents.support"),
+          started: messages.length > 0 || Boolean(existing?.started),
+          messages,
+          messagesLoaded: true,
+          unreadCount,
+          sending: existing?.sending,
+        };
+        if (!existing) {
+          if (!reopenIfUnread || unreadCount <= 0) return current;
+          return placeSupportTabSecond(current, supportTab);
+        }
+        const prevUnread = Math.max(0, Math.floor(existing.unreadCount ?? 0));
+        const incomingReply = unreadCount > prevUnread;
+        if (incomingReply || (unreadCount > 0 && reopenIfUnread)) {
+          return placeSupportTabSecond(current, supportTab);
+        }
+        return current.map((tab) => (tab.id === SUPPORT_TAB_ID ? supportTab : tab));
+      });
+    },
+    [t],
+  );
 
   const openSupportTab = useCallback(() => {
     setTabs((current) => {
@@ -241,59 +397,54 @@ export function AiSearchColumnEmptyState() {
           started: false,
           messages: [],
           messagesLoaded: false,
+          unreadCount: 0,
         },
       ];
     });
     setActiveTabId(SUPPORT_TAB_ID);
     void (async () => {
-      const res = await fetchMySupportChat();
-      if (!res.ok) return;
-      const messages: AiThreadMessage[] = (res.messages ?? []).map((m) => ({
-        id: m.id,
-        role: m.role === "staff" ? ("assistant" as const) : ("user" as const),
-        content: m.content,
-      }));
-      setTabs((current) =>
-        current.map((tab) =>
-          tab.id === SUPPORT_TAB_ID
-            ? {
-                ...tab,
-                kind: "support",
-                title: t("ai.agents.support"),
-                started: messages.length > 0,
-                messages,
-                messagesLoaded: true,
-              }
-            : tab,
-        ),
-      );
+      const res = await fetchMySupportChat({ markRead: true });
+      applySupportChatSnapshot(res, { reopenIfUnread: true });
     })();
-  }, [t]);
+  }, [applySupportChatSnapshot, t]);
 
   useEffect(() => subscribeOpenSupportChat(openSupportTab), [openSupportTab]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const sync = async () => {
+      const viewingSupport = activeTabIdRef.current === SUPPORT_TAB_ID;
+      const res = await fetchMySupportChat({ markRead: viewingSupport });
+      if (cancelled) return;
+      applySupportChatSnapshot(res, { reopenIfUnread: true });
+    };
+    void sync();
+    const timer = setInterval(() => {
+      void sync();
+    }, SUPPORT_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [applySupportChatSnapshot]);
+
+  const onSelectTab = useCallback(
+    (id: string) => {
+      setActiveTabId(id);
+      if (id !== SUPPORT_TAB_ID) return;
+      void (async () => {
+        const res = await fetchMySupportChat({ markRead: true });
+        applySupportChatSnapshot(res, { reopenIfUnread: true });
+      })();
+    },
+    [applySupportChatSnapshot],
+  );
+
   const loadMessagesForTab = useCallback(async (chatId: string) => {
     if (chatId === SUPPORT_TAB_ID) {
-      const res = await fetchMySupportChat();
-      if (!res.ok) return;
-      const messages: AiThreadMessage[] = (res.messages ?? []).map((m) => ({
-        id: m.id,
-        role: m.role === "staff" ? ("assistant" as const) : ("user" as const),
-        content: m.content,
-      }));
-      setTabs((current) =>
-        current.map((tab) =>
-          tab.id === chatId
-            ? {
-                ...tab,
-                kind: "support",
-                messages,
-                messagesLoaded: true,
-                started: messages.length > 0,
-              }
-            : tab,
-        ),
-      );
+      const viewing = activeTabIdRef.current === SUPPORT_TAB_ID;
+      const res = await fetchMySupportChat({ markRead: viewing });
+      applySupportChatSnapshot(res, { reopenIfUnread: true });
       return;
     }
     const res = await postAiAgentChatAction({
@@ -319,7 +470,7 @@ export function AiSearchColumnEmptyState() {
           : tab,
       ),
     );
-  }, []);
+  }, [applySupportChatSnapshot]);
 
   useEffect(() => {
     const tab = tabs.find((t) => t.id === activeTabId);
@@ -410,12 +561,13 @@ export function AiSearchColumnEmptyState() {
               sending: true,
               messagesLoaded: true,
               messages: [
-                ...tab.messages,
+                ...(tab.messages ?? []),
                 { id: tempUserId, role: "user" as const, content: trimmed },
               ],
             };
           }),
         );
+        scrollAiThreadToEnd();
         const res = await sendSupportUserMessage(trimmed);
         setTabs((current) =>
           current.map((tab) => {
@@ -425,7 +577,7 @@ export function AiSearchColumnEmptyState() {
                 ...tab,
                 sending: false,
                 messages: [
-                  ...tab.messages.filter((m) => m.id !== tempUserId),
+                  ...(tab.messages ?? []).filter((m) => m.id !== tempUserId),
                   { id: tempUserId, role: "user", content: trimmed },
                   {
                     id: `local-err-${Date.now()}`,
@@ -439,7 +591,7 @@ export function AiSearchColumnEmptyState() {
               ...tab,
               sending: false,
               messages: [
-                ...tab.messages.filter((m) => m.id !== tempUserId),
+                ...(tab.messages ?? []).filter((m) => m.id !== tempUserId),
                 {
                   id: res.message!.id,
                   role: "user",
@@ -449,6 +601,34 @@ export function AiSearchColumnEmptyState() {
             };
           }),
         );
+        scrollAiThreadToEnd();
+        return;
+      }
+
+      revealAbortRef.current?.abort();
+
+      if (proActive) {
+        const pro = getProAccessState();
+        await syncProAccessQuotaToServer(pro.expiresAt);
+        const q = getAiFreeQuotaSnapshot();
+        if (q.limitReached) {
+          // Keep the prompt in the composer so the user can resend after enabling on-demand.
+          setDraftText(trimmed);
+          setToolsOpen(true);
+          return;
+        }
+        if (q.onDemandRequired && q.onDemandEnabled) {
+          const estimate =
+            Math.round(((800 / 1000) * q.onDemandUsdPer1kTokens) * 1e6) / 1e6;
+          if (getBuiltinDllrBalanceUsd() + 1e-9 < estimate) {
+            setDraftText(trimmed);
+            setToolsOpen(true);
+            return;
+          }
+        }
+      } else if (isAiFreeLimitReached()) {
+        setDraftText(trimmed);
+        requestOpenProAccess();
         return;
       }
 
@@ -461,12 +641,13 @@ export function AiSearchColumnEmptyState() {
             sending: true,
             messagesLoaded: true,
             messages: [
-              ...tab.messages,
+              ...(tab.messages ?? []),
               { id: tempUserId, role: "user" as const, content: trimmed },
             ],
           };
         }),
       );
+      scrollAiThreadToEnd();
 
       const res = await postAiAgentChatAction({
         action: "send",
@@ -475,7 +656,59 @@ export function AiSearchColumnEmptyState() {
         input: trimmed,
       });
 
+      if (res.quota) {
+        applyAiFreeQuotaFromServer(res.quota);
+      }
+
+      if (
+        res.ok &&
+        res.billingLane === "on_demand" &&
+        typeof res.costUsd === "number" &&
+        res.costUsd > 0
+      ) {
+        debitBuiltinDllrUsd(res.costUsd);
+      }
+
       if (!res.ok) {
+        const errCode = String(res.error ?? "");
+        const needsPro =
+          errCode === "free_ai_limit" ||
+          errCode === "ai_capacity" ||
+          errCode === "ai_not_configured";
+        if (needsPro) {
+          setDraftText(trimmed);
+          requestOpenProAccess();
+          setTabs((current) =>
+            current.map((tab) => {
+              if (tab.id !== tabId) return tab;
+              return {
+                ...tab,
+                sending: false,
+                messages: (tab.messages ?? []).filter((m) => m.id !== tempUserId),
+              };
+            }),
+          );
+          return;
+        }
+        if (errCode === "pro_ai_limit") {
+          setDraftText(trimmed);
+          setToolsOpen(true);
+          setTabs((current) =>
+            current.map((tab) => {
+              if (tab.id !== tabId) return tab;
+              return {
+                ...tab,
+                sending: false,
+                messages: (tab.messages ?? []).filter((m) => m.id !== tempUserId),
+              };
+            }),
+          );
+          return;
+        }
+        const userFacing =
+          errCode === "ai_capacity" || errCode === "ai_not_configured"
+            ? t("ai.capacity.body")
+            : t("ai.errorGeneric");
         setTabs((current) =>
           current.map((tab) => {
             if (tab.id !== tabId) return tab;
@@ -483,17 +716,18 @@ export function AiSearchColumnEmptyState() {
               ...tab,
               sending: false,
               messages: [
-                ...tab.messages.filter((m) => m.id !== tempUserId),
+                ...(tab.messages ?? []).filter((m) => m.id !== tempUserId),
                 { id: tempUserId, role: "user", content: trimmed },
                 {
                   id: `local-err-${Date.now()}`,
                   role: "assistant",
-                  content: String(res.error ?? t("ai.errorGeneric")),
+                  content: userFacing,
                 },
               ],
             };
           }),
         );
+        scrollAiThreadToEnd();
         return;
       }
 
@@ -502,11 +736,17 @@ export function AiSearchColumnEmptyState() {
       const assistantMessage = res.assistantMessage as AiAgentMessageDto | undefined;
       const serverChatId = typeof chat?.id === "string" ? chat.id : tabId;
       const title = typeof chat?.title === "string" ? chat.title : undefined;
+      const assistantFull =
+        typeof assistantMessage?.content === "string" ? assistantMessage.content : "";
+      const assistantId =
+        typeof assistantMessage?.id === "string"
+          ? assistantMessage.id
+          : `local-assistant-${Date.now()}`;
 
       setTabs((current) =>
         current.map((tab) => {
           if (tab.id !== tabId) return tab;
-          const withoutTemp = tab.messages.filter((m) => m.id !== tempUserId);
+          const withoutTemp = (tab.messages ?? []).filter((m) => m.id !== tempUserId);
           const nextMessages: AiThreadMessage[] = [...withoutTemp];
           if (userMessage) {
             nextMessages.push({
@@ -517,14 +757,15 @@ export function AiSearchColumnEmptyState() {
           } else {
             nextMessages.push({ id: tempUserId, role: "user", content: trimmed });
           }
-          if (assistantMessage) {
+          if (assistantMessage || assistantFull) {
             nextMessages.push({
-              id: assistantMessage.id,
+              id: assistantId,
               role: "assistant",
-              content: assistantMessage.content,
-              model: assistantMessage.model,
+              content: "",
+              model: assistantMessage?.model,
               likedByMe: false,
               likeCount: 0,
+              streaming: true,
             });
           }
           return {
@@ -541,8 +782,13 @@ export function AiSearchColumnEmptyState() {
       if (serverChatId !== tabId) {
         setActiveTabId(serverChatId);
       }
+      scrollAiThreadToEnd();
+
+      if (assistantMessage || assistantFull) {
+        await revealAssistantMessage(serverChatId, assistantId, assistantFull);
+      }
     },
-    [activeTabId, t, tabs],
+    [activeTabId, proActive, revealAssistantMessage, scrollAiThreadToEnd, setDraftText, t, tabs],
   );
 
   useEffect(() => {
@@ -572,9 +818,10 @@ export function AiSearchColumnEmptyState() {
         <AiAgentsColumnHeader
           tabs={tabs}
           activeTabId={activeTabId}
-          onSelectTab={setActiveTabId}
+          onSelectTab={onSelectTab}
           onCloseTab={onCloseTab}
           onAddTab={onAddTab}
+          onOpenTools={() => setToolsOpen(true)}
           onRequestRename={(id) => setRenameTabId(id)}
           onRequestDelete={onDeleteTab}
           showCloseButtons={showCloseButtons}
@@ -624,6 +871,7 @@ export function AiSearchColumnEmptyState() {
           if (renameTabId) onRenameTab(renameTabId, title);
         }}
       />
+      <AiToolsDialog visible={toolsOpen} onClose={() => setToolsOpen(false)} />
     </View>
   );
 }

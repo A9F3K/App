@@ -28,6 +28,25 @@ import {
   fetchGcpUsageBreakdown,
   fetchRailwayUsageBreakdown,
 } from "../_lib/founder-provider-costs.js";
+import {
+  getAiLimitsConfig,
+  updateAiLimitsConfig,
+} from "../../database/aiLimitsConfig.js";
+import { syncAiFreeQuotaPro } from "../../database/aiFreeQuota.js";
+import { findUsernamesByWalletAddress } from "../../database/wallets.js";
+import {
+  getProCatalogConfig,
+  updateProCatalogConfig,
+} from "../../database/proCatalogConfig.js";
+import {
+  buildProPlansFromCatalog,
+  computeLaunchDiscountUsd,
+  computeProMonthPrice,
+  retailFromCogs,
+  type ProCatalogConfig,
+  type ProFeatureEnabledMap,
+  type ProFeatureWeightMap,
+} from "../../shared/proCatalog.js";
 import { parseRequestJsonBody } from "../_lib/parse-request-body.js";
 import {
   getFounderScreenTimeSnapshot,
@@ -231,12 +250,23 @@ async function buildPayload(probeOverride?: ReturnType<typeof buildConsumptionPr
     regressionUsdPerActiveHour: regression,
   });
 
+  const proCatalog = await getProCatalogConfig().catch(() => null);
+  const catalogPlans = proCatalog ? buildProPlansFromCatalog(proCatalog) : null;
+  const tariffsOverride = catalogPlans
+    ? {
+        monthUsd: catalogPlans[0]!.priceUsd,
+        quarterTotalUsd: catalogPlans[1]!.priceUsd,
+        yearTotalUsd: catalogPlans[2]!.priceUsd,
+      }
+    : null;
+
   const model = buildFounderModelBundle(screenTime, {
     vercel,
     probe,
     calibration,
     railwayTotalUsdMonth: railway.totalUsdMonth,
     gcpUsdMonth: gcp.usdMonth,
+    tariffsOverride,
   });
   const providers = await probeProviderCosts(model.costs, vercel);
   const enrichedProviders = providers.map((p) => {
@@ -274,6 +304,27 @@ async function buildPayload(probeOverride?: ReturnType<typeof buildConsumptionPr
     gcpByDay: gcp.byDay ?? [],
   });
 
+  const aiLimits = await getAiLimitsConfig().catch(() => null);
+  const margin = proCatalog?.targetProfitMargin ?? 0.5;
+  const aiCogsPer1k = aiLimits?.onDemandUsdPer1kTokens ?? 0.002;
+  const consumptionEconomics = proCatalog
+    ? {
+        targetProfitMargin: margin,
+        profitMarginUsd: proCatalog.profitMarginUsd,
+        monthPriceUsd: computeProMonthPrice(proCatalog),
+        launchDiscountUsd: computeLaunchDiscountUsd(proCatalog),
+        fullMonthListUsd: proCatalog.fullMonthListUsd,
+        screenTimeCogsPerActiveHourUsd: calibration.onDemandUsdPerActiveHour,
+        screenTimeRetailPerActiveHourUsd: retailFromCogs(
+          calibration.onDemandUsdPerActiveHour,
+          margin,
+        ),
+        aiCogsPer1kTokensUsd: aiCogsPer1k,
+        aiRetailPer1kTokensUsd: retailFromCogs(aiCogsPer1k, margin),
+        note: "Users pay DLLR for screen-time (Vercel/Railway/GCP) and AI. Retail = COGS ÷ (1 − margin). Plan price = enabled features + profit margin $.",
+      }
+    : null;
+
   return {
     ok: true as const,
     generatedAt: new Date().toISOString(),
@@ -285,6 +336,10 @@ async function buildPayload(probeOverride?: ReturnType<typeof buildConsumptionPr
     gcpUsage: gcp,
     dailyUsage,
     model,
+    aiLimits,
+    proCatalog,
+    catalogPlans,
+    consumptionEconomics,
     screenTimeHealth: {
       tablesExist: screenTime.tablesExist,
       hasSessions: screenTime.recentSessions.length > 0,
@@ -322,6 +377,16 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
       password?: unknown;
       action?: unknown;
       minutes?: unknown;
+      freeTokenLimit?: unknown;
+      proMonthlyTokenLimit?: unknown;
+      onDemandUsdPer1kTokens?: unknown;
+      targetProfitMargin?: unknown;
+      quarterDiscountPct?: unknown;
+      yearDiscountPct?: unknown;
+      featureEnabled?: unknown;
+      featureWeights?: unknown;
+      applyMarginToOnDemand?: unknown;
+      walletAddress?: unknown;
     }>(request);
     const action =
       typeof body.action === "string" ? body.action.trim().toLowerCase() : "login";
@@ -332,6 +397,109 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
         { ok: true, loggedOut: true },
         200,
         { "Set-Cookie": buildFounderSessionClearCookie() },
+      );
+    }
+
+    if (action === "save_ai_limits") {
+      if (!isFounderAuthorized(request)) {
+        return respond(res, { ok: false, error: "unauthorized" }, 401);
+      }
+      const aiLimits = await updateAiLimitsConfig({
+        freeTokenLimit:
+          typeof body.freeTokenLimit === "number" ? body.freeTokenLimit : undefined,
+        proMonthlyTokenLimit:
+          typeof body.proMonthlyTokenLimit === "number"
+            ? body.proMonthlyTokenLimit
+            : undefined,
+        onDemandUsdPer1kTokens:
+          typeof body.onDemandUsdPer1kTokens === "number"
+            ? body.onDemandUsdPer1kTokens
+            : undefined,
+      });
+      return respond(res, { ok: true, aiLimits }, 200);
+    }
+
+    if (action === "save_pro_catalog") {
+      if (!isFounderAuthorized(request)) {
+        return respond(res, { ok: false, error: "unauthorized" }, 401);
+      }
+      const patch: Partial<ProCatalogConfig> = {};
+      if (typeof body.profitMarginUsd === "number") {
+        patch.profitMarginUsd = body.profitMarginUsd;
+      } else if (typeof body.targetProfitMargin === "number") {
+        // Legacy: percent margin only — keep as COGS margin; dollar margin unchanged.
+        patch.targetProfitMargin = body.targetProfitMargin;
+      }
+      if (typeof body.quarterDiscountPct === "number") {
+        patch.quarterDiscountPct = body.quarterDiscountPct;
+      }
+      if (typeof body.yearDiscountPct === "number") {
+        patch.yearDiscountPct = body.yearDiscountPct;
+      }
+      if (body.featureEnabled && typeof body.featureEnabled === "object") {
+        patch.featureEnabled = body.featureEnabled as Partial<ProFeatureEnabledMap>;
+      }
+      if (body.featureWeights && typeof body.featureWeights === "object") {
+        patch.featureWeights = body.featureWeights as Partial<ProFeatureWeightMap>;
+      }
+      const proCatalog = await updateProCatalogConfig(patch);
+      let aiLimits = await getAiLimitsConfig().catch(() => null);
+      if (body.applyMarginToOnDemand === true) {
+        // Baseline provider COGS → retail DLLR rate with target margin.
+        const providerCogsPer1k = 0.001;
+        aiLimits = await updateAiLimitsConfig({
+          onDemandUsdPer1kTokens: retailFromCogs(
+            providerCogsPer1k,
+            proCatalog.targetProfitMargin,
+          ),
+        });
+      }
+      const plans = buildProPlansFromCatalog(proCatalog);
+      return respond(
+        res,
+        {
+          ok: true,
+          proCatalog,
+          catalogPlans: plans,
+          aiLimits,
+          monthPriceUsd: computeProMonthPrice(proCatalog),
+          launchDiscountUsd: computeLaunchDiscountUsd(proCatalog),
+        },
+        200,
+      );
+    }
+
+    if (action === "revoke_pro_by_wallet") {
+      if (!isFounderAuthorized(request)) {
+        return respond(res, { ok: false, error: "unauthorized" }, 401);
+      }
+      const walletAddress =
+        typeof body.walletAddress === "string" ? body.walletAddress.trim() : "";
+      if (!walletAddress) {
+        return respond(res, { ok: false, error: "wallet_address_required" }, 400);
+      }
+      const usernames = await findUsernamesByWalletAddress(walletAddress);
+      if (usernames.length === 0) {
+        return respond(
+          res,
+          { ok: false, error: "wallet_not_found", walletAddress },
+          404,
+        );
+      }
+      const revoked: string[] = [];
+      for (const username of usernames) {
+        await syncAiFreeQuotaPro({ username, expiresAt: null });
+        revoked.push(username);
+      }
+      return respond(
+        res,
+        {
+          ok: true,
+          walletAddress,
+          revokedUsernames: revoked,
+          count: revoked.length,
+        },
+        200,
       );
     }
 

@@ -314,6 +314,7 @@ function FeedFeedRow({
           loadEnabled={!isProxyAvatar || Boolean(isActive)}
           fetchPriority={isActive ? "high" : "normal"}
           imageContentFit={iconContentFit}
+          framed={false}
         />
       </View>
       <View style={{ width: MESSAGE_ICON_TEXT_GAP_PX }} />

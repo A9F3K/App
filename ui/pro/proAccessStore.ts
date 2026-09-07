@@ -1,74 +1,92 @@
 /**
  * Pro Access plans and entitlement.
  *
- * Unit economics (single power user today → must profit from month 1):
- * - Railway TDLib gateway 24/7 ≈ $8–15
- * - Vercel serverless + bandwidth ≈ $5–20
- * - AI model usage ≈ $8–20
- * Worst-case COGS ≈ $40 / user / month at n=1; falls toward ~$6–10 as users share infra.
- *
- * Longer terms use a modest per-month discount vs month-to-month.
+ * Pricing comes from the Pro catalog (per-feature $ + launch flags):
+ * - Month charge = sum(enabled features) + profit margin $
+ * - Launch: AI only → AI feature price; enabling features raises the sum
+ * - Consumption economics (screen-time + AI) use derived margin % on COGS
  */
 
 import { Platform } from "react-native";
 
+import { syncProAccessQuotaToServer } from "../ai/aiFreeQuotaStore";
+import {
+  DEFAULT_PRO_CATALOG,
+  buildProPlansFromCatalog,
+  type ProCatalogPlan,
+  type ProFeatureId,
+} from "../../shared/proCatalog";
+import { getProCatalogPlans, isProFeatureEnabled, subscribeProCatalog } from "./proCatalogStore";
+
 export type ProAccessPlanId = "month" | "quarter" | "year";
 
-export type ProAccessPlan = {
-  id: ProAccessPlanId;
-  months: number;
-  /** Total billed for the full term. */
-  priceUsd: number;
-  /** Per-month equivalent (shown above the billed total). */
-  monthlyUsd: number;
-  /** Full-term list price before discount (strikethrough on multi-month cards). */
-  listPriceUsd?: number;
-  highlight?: boolean;
-};
+export type ProAccessPlan = ProCatalogPlan;
 
-export const PRO_ACCESS_PLANS: readonly ProAccessPlan[] = [
-  { id: "month", months: 1, priceUsd: 20, monthlyUsd: 20 },
-  { id: "quarter", months: 3, priceUsd: 55.5, monthlyUsd: 18.5, listPriceUsd: 60 },
-  { id: "year", months: 12, priceUsd: 204, monthlyUsd: 17, listPriceUsd: 240, highlight: true },
-] as const;
+/** Live plans from catalog (defaults to AI-only $5 until /api/pro-catalog loads). */
+export function getProAccessPlans(): readonly ProAccessPlan[] {
+  return getProCatalogPlans();
+}
+
+/** @deprecated Prefer {@link getProAccessPlans} — kept for static imports; mirrors current catalog. */
+export const PRO_ACCESS_PLANS: readonly ProAccessPlan[] = buildProPlansFromCatalog(DEFAULT_PRO_CATALOG);
 
 export const PRO_ACCESS_FEATURES = [
   {
-    id: "aiModels",
+    id: "aiModels" as const satisfies ProFeatureId,
     titleKey: "pro.feature.aiModels",
     bodyKey: "pro.feature.aiModels.body",
   },
   {
-    id: "proxyVpn",
+    id: "proxyVpn" as const satisfies ProFeatureId,
     titleKey: "pro.feature.proxyVpn",
     bodyKey: "pro.feature.proxyVpn.body",
   },
   {
-    id: "blockchainChat",
+    id: "blockchainChat" as const satisfies ProFeatureId,
     titleKey: "pro.feature.blockchainChat",
     bodyKey: "pro.feature.blockchainChat.body",
   },
   {
-    id: "menuCustomization",
+    id: "menuCustomization" as const satisfies ProFeatureId,
     titleKey: "pro.feature.menuCustomization",
     bodyKey: "pro.feature.menuCustomization.body",
   },
   {
-    id: "cashback",
+    id: "cashback" as const satisfies ProFeatureId,
     titleKey: "pro.feature.cashback",
     bodyKey: "pro.feature.cashback.body",
   },
   {
-    id: "nftCollection",
+    id: "nftCollection" as const satisfies ProFeatureId,
     titleKey: "pro.feature.nftCollection",
     bodyKey: "pro.feature.nftCollection.body",
   },
   {
-    id: "unlimitedAccounts",
+    id: "unlimitedAccounts" as const satisfies ProFeatureId,
     titleKey: "pro.feature.unlimitedAccounts",
     bodyKey: "pro.feature.unlimitedAccounts.body",
   },
 ] as const;
+
+/** Features currently launched (visible in the Pro sale dialog). */
+let launchedProFeaturesCache: (typeof PRO_ACCESS_FEATURES)[number][] = [];
+
+function rebuildLaunchedProFeaturesCache(): void {
+  launchedProFeaturesCache = PRO_ACCESS_FEATURES.filter((f) => isProFeatureEnabled(f.id));
+}
+
+// Keep a stable snapshot for useSyncExternalStore (new arrays every read → React #185).
+subscribeProCatalog(rebuildLaunchedProFeaturesCache);
+rebuildLaunchedProFeaturesCache();
+
+export function getLaunchedProFeatures(): readonly (typeof PRO_ACCESS_FEATURES)[number][] {
+  return launchedProFeaturesCache;
+}
+
+/** True when Pro is active and the feature has been launched by the founder. */
+export function hasProFeature(id: ProFeatureId): boolean {
+  return isProAccessActive() && isProFeatureEnabled(id);
+}
 
 /** @deprecated Prefer {@link PRO_ACCESS_FEATURES}. */
 export const PRO_ACCESS_FEATURE_KEYS = PRO_ACCESS_FEATURES.map((f) => f.titleKey);
@@ -130,6 +148,8 @@ function hydrate(): void {
     if (state.active && state.expiresAt && Date.parse(state.expiresAt) <= Date.now()) {
       state = { active: false, planId: null, expiresAt: null };
       persist();
+    } else if (state.active) {
+      void syncProAccessQuotaToServer(state.expiresAt);
     }
   } catch {
     /* ignore */
@@ -163,7 +183,8 @@ export function subscribeProAccess(listener: () => void): () => void {
 
 export function activateProAccess(planId: ProAccessPlanId): void {
   hydrate();
-  const plan = PRO_ACCESS_PLANS.find((p) => p.id === planId) ?? PRO_ACCESS_PLANS[0]!;
+  const plans = getProAccessPlans();
+  const plan = plans.find((p) => p.id === planId) ?? plans[0]!;
   const expires = new Date();
   expires.setMonth(expires.getMonth() + plan.months);
   state = {
@@ -173,6 +194,8 @@ export function activateProAccess(planId: ProAccessPlanId): void {
   };
   persist();
   notify();
+  void syncProAccessQuotaToServer(state.expiresAt);
+  // Cashback is granted by the payment flow after a successful debit (hot balance).
 }
 
 /** Revoke Pro Access for this client (all messenger accounts share one entitlement). */
@@ -182,6 +205,17 @@ export function clearProAccess(): void {
   state = { active: false, planId: null, expiresAt: null };
   persist();
   notify();
+  void syncProAccessQuotaToServer(null);
+}
+
+/** When the server reports Pro inactive (e.g. founder revoke), drop local entitlement. */
+export function reconcileProAccessFromServer(serverProActive: boolean): void {
+  hydrate();
+  if (!serverProActive && state.active) {
+    state = { active: false, planId: null, expiresAt: null };
+    persist();
+    notify();
+  }
 }
 
 export function formatUsd(amount: number): string {

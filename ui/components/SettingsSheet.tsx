@@ -1,4 +1,7 @@
+import { useEffect } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
+import { useSyncExternalStore } from "react";
+
 import { useAuth } from "../../auth/AuthContext";
 import { useAppStrings } from "../../locales/AppStringsContext";
 import { typographyRect15, useColors, type ThemeName } from "../theme";
@@ -6,6 +9,15 @@ import { getDeployVersion, getVercelDeploymentId } from "../vercelDeployId";
 import { useTelegram } from "./Telegram";
 import { AppModalSheet, appModalSheetStyles } from "./AppModalSheet";
 import { useSettingsSheet } from "../settings/SettingsContext";
+import {
+  getAiFreeQuotaSnapshot,
+  refreshAiFreeQuotaFromServer,
+  saveAiToolsPrefs,
+  subscribeAiFreeQuota,
+} from "../ai/aiFreeQuotaStore";
+import { formatDllrAmount } from "../ai/aiConsumptionDllr";
+import { requestOpenProAccess } from "../pro/openProAccess";
+import { isProAccessActive, subscribeProAccess } from "../pro/proAccessStore";
 
 type ThemeChoice = "auto" | ThemeName;
 
@@ -67,6 +79,12 @@ export function SettingsSheet() {
   const vercelDeploymentId = getVercelDeploymentId();
   const deployVersion = getDeployVersion();
   const themeChoice: ThemeChoice = manualTheme ?? "auto";
+  const quota = useSyncExternalStore(
+    subscribeAiFreeQuota,
+    getAiFreeQuotaSnapshot,
+    getAiFreeQuotaSnapshot,
+  );
+  const proActive = useSyncExternalStore(subscribeProAccess, isProAccessActive, () => false);
   const deployMetaStyle = {
     color: colors.secondary,
     fontSize: 12,
@@ -75,9 +93,18 @@ export function SettingsSheet() {
     textAlign: "left" as const,
   };
 
+  useEffect(() => {
+    if (!settingsSheetVisible || !isAuthenticated) return;
+    void refreshAiFreeQuotaFromServer();
+  }, [settingsSheetVisible, isAuthenticated]);
+
   const selectTheme = (choice: ThemeChoice) => {
     setManualTheme(choice === "auto" ? null : choice);
   };
+
+  const dllrRatio =
+    quota.dllrLimit > 0 ? Math.min(1, Math.max(0, quota.dllrUsed / quota.dllrLimit)) : 0;
+  const allowanceExhausted = quota.limitReached;
 
   return (
     <AppModalSheet
@@ -95,6 +122,100 @@ export function SettingsSheet() {
         >
           {tf("home.wallet.loggedInAs", { username: telegramUsername })}
         </Text>
+      ) : null}
+
+      {isAuthenticated ? (
+        <>
+          <Text
+            style={[appModalSheetStyles.section, { color: colors.primary, marginTop: 4 }]}
+            accessibilityRole="header"
+          >
+            {t("settings.consumption")}
+          </Text>
+          <Text
+            style={{
+              color: colors.secondary,
+              fontSize: 12,
+              lineHeight: 16,
+              marginBottom: 8,
+              textAlign: "left",
+            }}
+          >
+            {t("settings.consumptionHint")}
+          </Text>
+          <View
+            style={{
+              height: 8,
+              borderRadius: 4,
+              overflow: "hidden",
+              backgroundColor: colors.undercover,
+              marginBottom: 6,
+            }}
+          >
+            <View
+              style={{
+                height: "100%",
+                width: `${Math.round(dllrRatio * 100)}%`,
+                backgroundColor: colors.primary,
+                borderRadius: 4,
+              }}
+            />
+          </View>
+          <Text
+            style={[
+              typographyRect15,
+              { color: colors.primary, textAlign: "left", marginBottom: 8 },
+            ]}
+          >
+            {tf("ai.tools.usageValues", {
+              used: formatDllrAmount(quota.dllrUsed),
+              limit: formatDllrAmount(quota.dllrLimit),
+            })}
+          </Text>
+          {!proActive && allowanceExhausted ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                closeSettingsSheet();
+                requestOpenProAccess();
+              }}
+              style={({ pressed }) => ({
+                alignSelf: "stretch",
+                alignItems: "center",
+                paddingVertical: 10,
+                marginBottom: 8,
+                borderRadius: 10,
+                backgroundColor: colors.primary,
+                opacity: pressed ? 0.88 : 1,
+              })}
+            >
+              <Text style={{ color: colors.background, fontWeight: "700", fontSize: 14 }}>
+                {t("ai.tools.buyProCta")}
+              </Text>
+            </Pressable>
+          ) : null}
+          {proActive && allowanceExhausted && !quota.onDemandEnabled ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                void saveAiToolsPrefs({ onDemandEnabled: true });
+              }}
+              style={({ pressed }) => ({
+                alignSelf: "stretch",
+                alignItems: "center",
+                paddingVertical: 10,
+                marginBottom: 8,
+                borderRadius: 10,
+                backgroundColor: colors.primary,
+                opacity: pressed ? 0.88 : 1,
+              })}
+            >
+              <Text style={{ color: colors.background, fontWeight: "700", fontSize: 14 }}>
+                {t("ai.tools.enableOnDemandCta")}
+              </Text>
+            </Pressable>
+          ) : null}
+        </>
       ) : null}
 
       <Text

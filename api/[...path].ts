@@ -22,6 +22,7 @@ import releasesHandler from './_handlers/releases.js';
 import screenTimeHandler from './_handlers/screen-time.js';
 import founderHandler from './_handlers/founder.js';
 import aiChatsHandler from './_handlers/ai-chats.js';
+import proCatalogHandler from './_handlers/pro-catalog.js';
 import supportHandler from './_handlers/support.js';
 import swapCoffeeTokensHandler from './_handlers/swap-coffee-tokens.js';
 import tonAccountHoldingsHandler from './_handlers/ton-account-holdings.js';
@@ -108,6 +109,7 @@ const ROUTES: Record<string, ApiHandler> = {
   feed: feedHandler as ApiHandler,
   ai: aiHandler as ApiHandler,
   'ai-chats': aiChatsHandler as ApiHandler,
+  'pro-catalog': proCatalogHandler as ApiHandler,
   support: supportHandler as ApiHandler,
   blockchain: blockchainHandler as ApiHandler,
   telegram: telegramHandler as ApiHandler,

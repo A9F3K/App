@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -31,10 +31,11 @@ import {
 } from "./proAccessMaterials";
 import {
   formatUsd,
-  PRO_ACCESS_PLANS,
+  getProAccessPlans,
   type ProAccessPlan,
   type ProAccessPlanId,
 } from "./proAccessStore";
+import { subscribeProCatalog } from "./proCatalogStore";
 
 const CARD_GAP_PX = 10;
 const CARD_MIN_W_PX = 156;
@@ -103,18 +104,22 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
     [colors, lightTheme],
   );
   const { t, tf } = useAppStrings();
+  const plans = useSyncExternalStore(subscribeProCatalog, getProAccessPlans, getProAccessPlans);
   const scrollRef = useRef<ScrollView>(null);
   const bandRef = useRef<View>(null);
   const [viewportW, setViewportW] = useState(0);
   const [contentW, setContentW] = useState(0);
   const [scrollX, setScrollX] = useState(0);
+  const [grabbing, setGrabbing] = useState(false);
+  /** After a drag-scroll, ignore the synthetic click on tariff cards. */
+  const suppressCardPressRef = useRef(false);
 
   const cardW = Math.max(
     CARD_MIN_W_PX,
     Math.min(200, Math.round((viewportW || 320) * 0.58)),
   );
   const estimatedContentW =
-    PRO_ACCESS_PLANS.length * cardW + (PRO_ACCESS_PLANS.length - 1) * CARD_GAP_PX + contentPadX * 2;
+    plans.length * cardW + (plans.length - 1) * CARD_GAP_PX + contentPadX * 2;
   const contentSpan = Math.max(contentW, estimatedContentW);
   const scrollRange = Math.max(0, contentSpan - viewportW);
   const overflows = scrollRange > SCROLL_EPS;
@@ -204,6 +209,113 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
     return () => root.removeEventListener("wheel", onWheel, true);
   }, [overflows]);
 
+  /** Web: click-drag the tariff strip to scroll (same idea as TradeCollectionCarousel). */
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof document === "undefined" || !overflows) return;
+    const root = bandRef.current as unknown as HTMLElement | null;
+    if (!root) return;
+
+    const ACTIVATE_DX_PX = 8;
+    let tracking = false;
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let startScroll = 0;
+    let pointerId: number | null = null;
+    let host: HTMLElement | null = null;
+
+    const setSelectLock = (locked: boolean) => {
+      const style = document.documentElement.style as CSSStyleDeclaration & {
+        webkitUserSelect?: string;
+      };
+      if (locked) {
+        style.userSelect = "none";
+        style.webkitUserSelect = "none";
+      } else {
+        style.userSelect = "";
+        style.webkitUserSelect = "";
+      }
+    };
+
+    const hScroll = () => pickWebHorizontalScrollEl(root);
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.button != null && e.button !== 0) return;
+      const el = hScroll();
+      if (!el) return;
+      tracking = true;
+      dragging = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      startScroll = el.scrollLeft;
+      pointerId = e.pointerId;
+      host = e.currentTarget as HTMLElement;
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (!tracking) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!dragging) {
+        if (Math.abs(dx) < ACTIVATE_DX_PX && Math.abs(dy) < ACTIVATE_DX_PX) return;
+        if (Math.abs(dy) >= Math.abs(dx)) {
+          tracking = false;
+          return;
+        }
+        dragging = true;
+        setGrabbing(true);
+        setSelectLock(true);
+        suppressCardPressRef.current = true;
+        try {
+          host?.setPointerCapture?.(pointerId ?? e.pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+      e.preventDefault();
+      const el = hScroll();
+      if (!el) return;
+      const max = Math.max(0, el.scrollWidth - el.clientWidth);
+      const next = Math.max(0, Math.min(max, startScroll - dx));
+      el.scrollLeft = next;
+      setScrollX(Math.round(next));
+    };
+
+    const endDrag = () => {
+      if (!tracking && !dragging) return;
+      tracking = false;
+      if (dragging) {
+        dragging = false;
+        setGrabbing(false);
+        setSelectLock(false);
+        // Keep suppress for the click that follows pointerup.
+        window.setTimeout(() => {
+          suppressCardPressRef.current = false;
+        }, 0);
+      }
+      try {
+        if (host && pointerId != null) host.releasePointerCapture?.(pointerId);
+      } catch {
+        /* ignore */
+      }
+      host = null;
+      pointerId = null;
+    };
+
+    root.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", endDrag);
+    window.addEventListener("pointercancel", endDrag);
+    return () => {
+      root.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", endDrag);
+      window.removeEventListener("pointercancel", endDrag);
+      setSelectLock(false);
+      setGrabbing(false);
+    };
+  }, [overflows]);
+
   const undercoverStyle = useMemo((): ViewStyle => {
     return {
       borderRadius: 0,
@@ -242,7 +354,19 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
         {t("pro.sale.choosePlan")}
       </Text>
 
-      <View ref={bandRef} onLayout={onViewportLayout} style={undercoverStyle}>
+      <View
+        ref={bandRef}
+        onLayout={onViewportLayout}
+        style={[
+          undercoverStyle,
+          Platform.OS === "web"
+            ? ({
+                cursor: grabbing ? "grabbing" : overflows ? "grab" : "default",
+                touchAction: "pan-y",
+              } as object)
+            : null,
+        ]}
+      >
         <View
           style={{
             overflow: "hidden",
@@ -289,7 +413,7 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
                 } as object)
               : null)}
           >
-            {PRO_ACCESS_PLANS.map((plan) => (
+            {plans.map((plan) => (
               <TariffCard
                 key={plan.id}
                 plan={plan}
@@ -302,7 +426,10 @@ export function ProTariffCarousel({ planId, onSelectPlan, contentPadX }: Props) 
                 bestValueLabel={plan.highlight ? t("pro.plan.bestValue") : null}
                 selectedLabel={t("pro.sale.selected")}
                 tapLabel={t("pro.sale.tapToSelect")}
-                onPress={() => onSelectPlan(plan.id)}
+                onPress={() => {
+                  if (suppressCardPressRef.current) return;
+                  onSelectPlan(plan.id);
+                }}
               />
             ))}
           </ScrollView>

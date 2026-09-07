@@ -309,3 +309,24 @@ export async function registerWallet(
 
   return wallet;
 }
+
+/** Resolve telegram usernames that registered a given wallet address (any chain/net). */
+export async function findUsernamesByWalletAddress(
+  walletAddress: string,
+): Promise<string[]> {
+  const address = normalizeAddress(walletAddress);
+  if (!address) return [];
+  const rows = (await sql`
+    SELECT DISTINCT telegram_username
+    FROM wallets
+    WHERE lower(wallet_address) = lower(${address})
+    ORDER BY telegram_username ASC
+    LIMIT 50;
+  `) as Array<{ telegram_username?: unknown }>;
+  const out: string[] = [];
+  for (const row of rows) {
+    const u = normalizeUsername(row.telegram_username);
+    if (u) out.push(u);
+  }
+  return out;
+}

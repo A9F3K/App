@@ -21,6 +21,8 @@ import {
 } from "./walletBalanceRefresh";
 import {
   getBuiltinDllrBalanceUsd,
+  getBuiltinDllrFrozenUsd,
+  getBuiltinDllrHotUsd,
   subscribeBuiltinDllrBalance,
 } from "../pro/dllrBalanceStore";
 
@@ -112,14 +114,33 @@ export function useWalletHeldCurrencyRows(
     getBuiltinDllrBalanceUsd,
     getBuiltinDllrBalanceUsd,
   );
+  const dllrHotUsd = useSyncExternalStore(
+    subscribeBuiltinDllrBalance,
+    getBuiltinDllrHotUsd,
+    getBuiltinDllrHotUsd,
+  );
+  const dllrFrozenUsd = useSyncExternalStore(
+    subscribeBuiltinDllrBalance,
+    getBuiltinDllrFrozenUsd,
+    getBuiltinDllrFrozenUsd,
+  );
   const accountCreationDllrRow = useMemo(() => {
     const base = buildChooseCurrencyDllrRow(locale);
     const bal =
       dllrBalanceUsd >= 10
         ? dllrBalanceUsd.toFixed(0)
         : dllrBalanceUsd.toFixed(2).replace(/\.?0+$/, "");
-    return { ...base, balance: bal || "0" };
-  }, [dllrBalanceUsd, locale]);
+    const fmt = (n: number) =>
+      n >= 10 ? n.toFixed(0) : n.toFixed(2).replace(/\.?0+$/, "") || "0";
+    return {
+      ...base,
+      balance: bal || "0",
+      dllrLedger: {
+        hot: fmt(dllrHotUsd),
+        frozen: fmt(dllrFrozenUsd),
+      },
+    };
+  }, [dllrBalanceUsd, dllrFrozenUsd, dllrHotUsd, locale]);
   const [heldRows, setHeldRows] = useState<readonly ChooseCurrencyRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

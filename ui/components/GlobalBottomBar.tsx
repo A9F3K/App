@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Keyboard,
   Platform,
@@ -25,6 +25,8 @@ import { BottomBarHeightReporter, useBottomBarLayout } from "./BottomBarLayoutCo
 import { getBottomBarMetrics } from "./bottomBarMetrics";
 import { getPrimaryTextColorFromLaunch } from "./telegramWebApp";
 import { useAppStrings } from "../../locales/AppStringsContext";
+import { AiFreeLimitBanner } from "./ai/AiFreeLimitBanner";
+import { isAiFreeLimitReached, subscribeAiFreeQuota } from "../ai/aiFreeQuotaStore";
 
 const {
   lineHeight: LINE_HEIGHT,
@@ -153,6 +155,13 @@ export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
   const onSubmitOverride = options?.onSubmit ?? aiSearchSubmit ?? undefined;
   const onPasteImage = options?.onPasteImage;
   const allowEmptySubmit = options?.allowEmptySubmit ?? false;
+  const showAiFreeLimitBanner = !useLocalDraft;
+  const aiLimitReached = useSyncExternalStore(
+    subscribeAiFreeQuota,
+    isAiFreeLimitReached,
+    () => false,
+  );
+  const aiFreeLimitActive = showAiFreeLimitBanner && aiLimitReached;
   const { width: windowWidth } = useWindowDimensions();
   const backgroundColor = themeBgReady ? colors.background : "transparent";
   const launchPrimary =
@@ -188,6 +197,7 @@ export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
         onSubmitOverride={onSubmitOverride}
         onPasteImage={onPasteImage}
         allowEmptySubmit={allowEmptySubmit}
+        showAiFreeLimitBanner={aiFreeLimitActive}
       />
     );
   }
@@ -208,6 +218,7 @@ export function GlobalBottomBar(options?: GlobalBottomBarOptions) {
       iconRotationDeg={iconRotationDeg}
       sendAccessibilityLabel={sendAccessibilityLabel}
       onSubmitOverride={onSubmitOverride}
+      showAiFreeLimitBanner={aiFreeLimitActive}
     />
   );
 }
@@ -311,6 +322,7 @@ function WebBottomBar({
   onSubmitOverride,
   onPasteImage,
   allowEmptySubmit = false,
+  showAiFreeLimitBanner = false,
 }: {
   backgroundColor: string;
   inputColor: string;
@@ -328,6 +340,7 @@ function WebBottomBar({
   onSubmitOverride?: (text: string) => void;
   onPasteImage?: (event: { clipboardData?: DataTransfer | null }) => boolean | Promise<boolean>;
   allowEmptySubmit?: boolean;
+  showAiFreeLimitBanner?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -337,9 +350,14 @@ function WebBottomBar({
   const [contentHeight, setContentHeight] = useState(LINE_HEIGHT);
   const [domMirrorHeight, setDomMirrorHeight] = useState<number | null>(null);
   const [resizeNonce, setResizeNonce] = useState(0);
+  const [bannerHeightPx, setBannerHeightPx] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const domMirrorRef = useRef<HTMLDivElement | null>(null);
   const wasNearBottomBeforeInputRef = useRef(true);
+
+  useEffect(() => {
+    if (!showAiFreeLimitBanner) setBannerHeightPx(0);
+  }, [showAiFreeLimitBanner]);
 
   const measureAndResize = useCallback(() => {
     const el = textareaRef.current;
@@ -556,7 +574,22 @@ function WebBottomBar({
         },
       ]}
     >
-      <BottomBarHeightReporter height={metrics.barHeight} />
+      <BottomBarHeightReporter height={metrics.barHeight + bannerHeightPx} />
+      {showAiFreeLimitBanner ? (
+        <View
+          onLayout={(e) => {
+            const h = Math.round(e.nativeEvent.layout.height);
+            setBannerHeightPx((prev) => (prev === h ? prev : h));
+          }}
+          style={[
+            styles.container,
+            { paddingTop: 10, paddingBottom: 0 },
+            contentMaxWidth != null ? { maxWidth: contentMaxWidth, alignSelf: "center" as const } : null,
+          ]}
+        >
+          <AiFreeLimitBanner visible />
+        </View>
+      ) : null}
       <View
         style={[
           styles.container,
@@ -659,6 +692,7 @@ function NativeBottomBar({
   iconRotationDeg = 0,
   sendAccessibilityLabel,
   onSubmitOverride,
+  showAiFreeLimitBanner = false,
 }: {
   backgroundColor: string;
   inputColor: string;
@@ -674,6 +708,7 @@ function NativeBottomBar({
   iconRotationDeg?: number;
   sendAccessibilityLabel?: string;
   onSubmitOverride?: (text: string) => void;
+  showAiFreeLimitBanner?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -682,6 +717,11 @@ function NativeBottomBar({
   const [contentHeight, setContentHeight] = useState<number>(LINE_HEIGHT);
   const [mirrorHeight, setMirrorHeight] = useState<number | null>(null);
   const [inputAreaWidth, setInputAreaWidth] = useState<number | null>(null);
+  const [bannerHeightPx, setBannerHeightPx] = useState(0);
+
+  useEffect(() => {
+    if (!showAiFreeLimitBanner) setBannerHeightPx(0);
+  }, [showAiFreeLimitBanner]);
   const [scrollY, setScrollY] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
   const scrollYRef = useRef(0);
@@ -773,7 +813,7 @@ function NativeBottomBar({
       style={[
         styles.wrapper,
         {
-          height: metrics.barHeight,
+          height: metrics.barHeight + bannerHeightPx,
           backgroundColor,
           borderTopWidth: 1,
           borderTopColor: topBorderColor,
@@ -782,7 +822,22 @@ function NativeBottomBar({
         },
       ]}
     >
-      <BottomBarHeightReporter height={metrics.barHeight} />
+      <BottomBarHeightReporter height={metrics.barHeight + bannerHeightPx} />
+      {showAiFreeLimitBanner ? (
+        <View
+          onLayout={(e) => {
+            const h = Math.round(e.nativeEvent.layout.height);
+            setBannerHeightPx((prev) => (prev === h ? prev : h));
+          }}
+          style={[
+            styles.container,
+            { paddingTop: 10, paddingBottom: 0 },
+            contentMaxWidth != null ? { maxWidth: contentMaxWidth, alignSelf: "center" as const } : null,
+          ]}
+        >
+          <AiFreeLimitBanner visible />
+        </View>
+      ) : null}
       <View
         style={[
           styles.container,

@@ -13,6 +13,7 @@ import {
   listSupportMessages,
   listSupportThreadsForStaff,
   markSupportThreadReadByStaff,
+  markSupportThreadReadByUser,
 } from "../../database/supportChats.js";
 
 type NodeRes = {
@@ -71,6 +72,12 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
       const username = await telegramUsernameFromSessionCookie(request);
       if (!username) return respond(res, { ok: false, error: "unauthorized" }, 401);
       const thread = await ensureSupportThreadForUser(username);
+      const markRead = url.searchParams.get("markRead") === "1";
+      if (markRead) {
+        await markSupportThreadReadByUser(thread.id);
+        thread.unread_for_user = false;
+        thread.unread_for_user_count = 0;
+      }
       const messages = await listSupportMessages(thread.id);
       return respond(res, { ok: true, thread, messages }, 200);
     }

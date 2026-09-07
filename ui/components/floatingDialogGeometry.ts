@@ -237,3 +237,15 @@ export function writeFloatingDialogStoredOffset(
     // ignore
   }
 }
+
+/** Fired when a floating sheet’s translate/size changes (ResizeObserver misses CSS transform moves). */
+export const HSP_FLOATING_DIALOG_GEOMETRY_EVENT = "hsp-floating-dialog-geometry";
+
+/**
+ * Notify fixed scroll thumbs to remeasure.
+ * Dispatches on `window` — listeners attach there; non-bubbling `document` events never reach them.
+ */
+export function notifyFloatingDialogGeometryChanged(): void {
+  if (Platform.OS !== "web" || typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(HSP_FLOATING_DIALOG_GEOMETRY_EVENT));
+}

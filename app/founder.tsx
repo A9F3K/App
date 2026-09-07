@@ -22,6 +22,15 @@ import {
   type SupportMessageDto,
   type SupportThreadDto,
 } from "../api/supportClient";
+import {
+  DEFAULT_PRO_FEATURE_WEIGHTS,
+  PRO_FEATURE_IDS,
+  normalizeFeatureWeights,
+  profitMarginFraction,
+  sumFeatureWeights,
+  type ProFeatureId,
+  type ProFeatureWeightMap,
+} from "../shared/proCatalog";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../ui/fonts";
 import { useColors } from "../ui/theme";
 import { saveFounderPdf } from "../ui/founder/exportFounderPdf";
@@ -229,6 +238,39 @@ type FounderPayload = {
     totalUsd: number;
     byService: Array<{ name: string; usd: number; kind: string }>;
   };
+  aiLimits?: {
+    freeTokenLimit: number;
+    proMonthlyTokenLimit: number;
+    onDemandUsdPer1kTokens: number;
+  } | null;
+  proCatalog?: {
+    targetProfitMargin: number;
+    profitMarginUsd: number;
+    quarterDiscountPct: number;
+    yearDiscountPct: number;
+    featureWeights: Record<string, number>;
+    featureEnabled: Record<string, boolean>;
+    fullMonthListUsd: number;
+  } | null;
+  catalogPlans?: Array<{
+    id: string;
+    months: number;
+    priceUsd: number;
+    monthlyUsd: number;
+    listPriceUsd?: number;
+  }> | null;
+  consumptionEconomics?: {
+    targetProfitMargin: number;
+    profitMarginUsd?: number;
+    monthPriceUsd: number;
+    launchDiscountUsd: number;
+    fullMonthListUsd: number;
+    screenTimeCogsPerActiveHourUsd: number;
+    screenTimeRetailPerActiveHourUsd: number;
+    aiCogsPer1kTokensUsd: number;
+    aiRetailPer1kTokensUsd: number;
+    note: string;
+  } | null;
 };
 
 function money(n: number): string {
@@ -325,6 +367,21 @@ export default function FounderScreen() {
   const [loading, setLoading] = useState(true);
   const [probeBusy, setProbeBusy] = useState(false);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [aiFreeLimitDraft, setAiFreeLimitDraft] = useState("");
+  const [aiProMonthlyDraft, setAiProMonthlyDraft] = useState("");
+  const [aiOnDemandRateDraft, setAiOnDemandRateDraft] = useState("");
+  const [aiLimitsBusy, setAiLimitsBusy] = useState(false);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [marginDraft, setMarginDraft] = useState("0");
+  const [quarterDiscDraft, setQuarterDiscDraft] = useState("10");
+  const [yearDiscDraft, setYearDiscDraft] = useState("20");
+  const [featureEnabledDraft, setFeatureEnabledDraft] = useState<Record<string, boolean>>({});
+  const [featureWeightsDraft, setFeatureWeightsDraft] = useState<ProFeatureWeightMap>({
+    ...DEFAULT_PRO_FEATURE_WEIGHTS,
+  });
+  const [revokeWalletDraft, setRevokeWalletDraft] = useState("");
+  const [revokeBusy, setRevokeBusy] = useState(false);
+  const [revokeMsg, setRevokeMsg] = useState<string | null>(null);
   const [data, setData] = useState<FounderPayload | null>(null);
   const [supportThreads, setSupportThreads] = useState<SupportThreadDto[]>([]);
   const [supportThreadId, setSupportThreadId] = useState<string | null>(null);
@@ -336,26 +393,26 @@ export default function FounderScreen() {
 
   const loadSession = useCallback(async (opts?: { soft?: boolean }) => {
     if (!opts?.soft) setLoading(true);
-    setError(null);
+    if (!opts?.soft) setError(null);
     try {
       const res = await fetch(buildApiUrl("/api/founder"), {
         method: "GET",
         credentials: "include",
       });
+      // Only a real auth failure should clear the dashboard (avoid soft-refresh 5xx → logout).
       if (res.status === 401) {
         setData(null);
         return;
       }
       const json = (await res.json()) as FounderPayload | { ok: false; error?: string };
       if (!res.ok || !json.ok) {
-        setData(null);
         setError("error" in json ? String(json.error) : "Failed to load");
         return;
       }
       setData(json);
+      setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "network_error");
-      if (!opts?.soft) setData(null);
     } finally {
       if (!opts?.soft) setLoading(false);
     }
@@ -471,6 +528,177 @@ export default function FounderScreen() {
     }
   }, []);
 
+  const onSaveAiLimits = useCallback(async () => {
+    setAiLimitsBusy(true);
+    setError(null);
+    try {
+      const freeTokenLimit = Number(aiFreeLimitDraft);
+      const proMonthlyTokenLimit = Number(aiProMonthlyDraft);
+      const onDemandUsdPer1kTokens = Number(aiOnDemandRateDraft);
+      const res = await fetch(buildApiUrl("/api/founder"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_ai_limits",
+          freeTokenLimit,
+          proMonthlyTokenLimit,
+          onDemandUsdPer1kTokens,
+        }),
+      });
+      const json = (await res.json()) as
+        | { ok: true; aiLimits: NonNullable<FounderPayload["aiLimits"]> }
+        | { ok: false; error?: string };
+      if (!res.ok || !json.ok) {
+        setError("error" in json ? String(json.error) : "save_ai_limits_failed");
+        return;
+      }
+      setData((prev) => (prev ? { ...prev, aiLimits: json.aiLimits } : prev));
+      setAiFreeLimitDraft(String(json.aiLimits.freeTokenLimit));
+      setAiProMonthlyDraft(String(json.aiLimits.proMonthlyTokenLimit));
+      setAiOnDemandRateDraft(String(json.aiLimits.onDemandUsdPer1kTokens));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "save_ai_limits_failed");
+    } finally {
+      setAiLimitsBusy(false);
+    }
+  }, [aiFreeLimitDraft, aiOnDemandRateDraft, aiProMonthlyDraft]);
+
+  useEffect(() => {
+    if (!data?.aiLimits) return;
+    setAiFreeLimitDraft(String(data.aiLimits.freeTokenLimit));
+    setAiProMonthlyDraft(String(data.aiLimits.proMonthlyTokenLimit));
+    setAiOnDemandRateDraft(String(data.aiLimits.onDemandUsdPer1kTokens));
+  }, [data?.aiLimits]);
+
+  useEffect(() => {
+    if (!data?.proCatalog) return;
+    setMarginDraft(String(data.proCatalog.profitMarginUsd ?? 0));
+    setQuarterDiscDraft(String(data.proCatalog.quarterDiscountPct));
+    setYearDiscDraft(String(data.proCatalog.yearDiscountPct));
+    setFeatureEnabledDraft({ ...data.proCatalog.featureEnabled });
+    setFeatureWeightsDraft(normalizeFeatureWeights(data.proCatalog.featureWeights));
+  }, [data?.proCatalog]);
+
+  const onChangeFeatureWeight = useCallback((id: ProFeatureId, raw: string) => {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) return;
+    setFeatureWeightsDraft((prev) => normalizeFeatureWeights({ ...prev, [id]: n }));
+  }, []);
+
+  const catalogPreview = useMemo(() => {
+    const weights = normalizeFeatureWeights(featureWeightsDraft);
+    const enabledSum = sumFeatureWeights(
+      weights,
+      featureEnabledDraft as Record<ProFeatureId, boolean>,
+    );
+    const allSum = sumFeatureWeights(weights);
+    const marginUsd = Math.max(0, Number(marginDraft) || 0);
+    const monthCharge = Math.round((enabledSum + marginUsd) * 100) / 100;
+    const fullList = Math.round((allSum + marginUsd) * 100) / 100;
+    const marginPct = profitMarginFraction(enabledSum, marginUsd) * 100;
+    return { enabledSum, allSum, marginUsd, monthCharge, fullList, marginPct };
+  }, [featureEnabledDraft, featureWeightsDraft, marginDraft]);
+
+  const onSaveProCatalog = useCallback(
+    async (opts?: { applyMarginToOnDemand?: boolean }) => {
+      setCatalogBusy(true);
+      setError(null);
+      try {
+        const marginUsd = Number(marginDraft);
+        const weights = normalizeFeatureWeights(featureWeightsDraft);
+        const res = await fetch(buildApiUrl("/api/founder"), {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "save_pro_catalog",
+            profitMarginUsd: Number.isFinite(marginUsd) ? Math.max(0, marginUsd) : undefined,
+            quarterDiscountPct: Number(quarterDiscDraft),
+            yearDiscountPct: Number(yearDiscDraft),
+            featureEnabled: featureEnabledDraft,
+            featureWeights: weights,
+            applyMarginToOnDemand: opts?.applyMarginToOnDemand === true,
+          }),
+        });
+        const json = (await res.json()) as
+          | {
+              ok: true;
+              proCatalog: NonNullable<FounderPayload["proCatalog"]>;
+              catalogPlans: NonNullable<FounderPayload["catalogPlans"]>;
+              aiLimits?: FounderPayload["aiLimits"];
+            }
+          | { ok: false; error?: string };
+        if (!res.ok || !json.ok) {
+          setError("error" in json ? String(json.error) : "save_pro_catalog_failed");
+          return;
+        }
+        setData((prev) =>
+          prev
+            ? {
+                ...prev,
+                proCatalog: json.proCatalog,
+                catalogPlans: json.catalogPlans,
+                ...(json.aiLimits ? { aiLimits: json.aiLimits } : {}),
+              }
+            : prev,
+        );
+        // Refresh full payload so tariffs / consumption economics stay in sync.
+        void loadSession({ soft: true });
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "save_pro_catalog_failed");
+      } finally {
+        setCatalogBusy(false);
+      }
+    },
+    [
+      featureEnabledDraft,
+      featureWeightsDraft,
+      loadSession,
+      marginDraft,
+      quarterDiscDraft,
+      yearDiscDraft,
+    ],
+  );
+
+  const onRevokeProByWallet = useCallback(async () => {
+    const walletAddress = revokeWalletDraft.trim();
+    if (!walletAddress) {
+      setRevokeMsg("Enter a registration wallet address.");
+      return;
+    }
+    setRevokeBusy(true);
+    setRevokeMsg(null);
+    setError(null);
+    try {
+      const res = await fetch(buildApiUrl("/api/founder"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "revoke_pro_by_wallet",
+          walletAddress,
+        }),
+      });
+      const json = (await res.json()) as
+        | { ok: true; revokedUsernames: string[]; count: number }
+        | { ok: false; error?: string };
+      if (!res.ok || !json.ok) {
+        setRevokeMsg(
+          "error" in json ? String(json.error ?? "revoke_failed") : "revoke_failed",
+        );
+        return;
+      }
+      setRevokeMsg(
+        `Revoked Pro for ${json.count} user(s): ${json.revokedUsernames.join(", ")}`,
+      );
+    } catch (e) {
+      setRevokeMsg(e instanceof Error ? e.message : "revoke_failed");
+    } finally {
+      setRevokeBusy(false);
+    }
+  }, [revokeWalletDraft]);
+
   const onSavePdf = useCallback(() => {
     if (!data) return;
     setPdfBusy(true);
@@ -545,7 +773,7 @@ export default function FounderScreen() {
       >
         <View style={{ width: "100%", maxWidth: 420, gap: 14 }}>
           <Text style={{ color: colors.primary, fontSize: 28, fontWeight: "800", fontFamily: font }}>
-            Founder
+            Founder's
           </Text>
           <Text style={{ color: colors.secondary, fontSize: 14, lineHeight: 20, fontFamily: font }}>
             Financial model, screen-time telemetry, and scale plan. Password from
@@ -591,7 +819,7 @@ export default function FounderScreen() {
     );
   }
 
-  const { model, screenTime, users, providers, screenTimeHealth, vercelUsage, dailyUsage, railwayUsage, gcpUsage } =
+  const { model, screenTime, users, providers, screenTimeHealth, vercelUsage, dailyUsage, railwayUsage, gcpUsage, aiLimits } =
     data;
   const probe = model.consumptionProbe;
   const calibration = model.calibration;
@@ -602,7 +830,7 @@ export default function FounderScreen() {
       style={{ flex: 1, backgroundColor: colors.background }}
       contentContainerStyle={{
         paddingHorizontal: narrow ? 14 : 28,
-        paddingTop: 20,
+        paddingTop: 12,
         paddingBottom: 48,
         gap: 16,
         maxWidth: 1100,
@@ -620,7 +848,7 @@ export default function FounderScreen() {
       >
         <View style={{ gap: 4 }}>
           <Text style={{ color: colors.primary, fontSize: 28, fontWeight: "800", fontFamily: font }}>
-            Founder model
+            Founder's
           </Text>
           <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
             Updated {new Date(data.generatedAt).toLocaleString()}
@@ -690,6 +918,358 @@ export default function FounderScreen() {
       {error ? (
         <Text style={{ color: "#FF5555", fontSize: 13, fontFamily: font }}>{error}</Text>
       ) : null}
+
+      <Card title="AI DLLR limits (overall consumption)" colors={colors}>
+        <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, fontFamily: font, marginBottom: 12 }}>
+          Free lifetime DLLR budget, Pro monthly included DLLR, and on-demand rate after the Pro cap
+          (tokens × rate). Users see overall consumption in DLLR; Pro can continue from the built-in wallet.
+        </Text>
+        <View style={{ flexDirection: narrow ? "column" : "row", gap: 12, marginBottom: 12 }}>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+              Free DLLR (token units)
+            </Text>
+            <TextInput
+              value={aiFreeLimitDraft || String(aiLimits?.freeTokenLimit ?? "")}
+              onChangeText={setAiFreeLimitDraft}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: colors.highlight,
+                color: colors.primary,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                fontFamily: font,
+                fontSize: 14,
+              }}
+            />
+            <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: font }}>
+              ≈ $
+              {(
+                ((Number(aiFreeLimitDraft || aiLimits?.freeTokenLimit || 0) || 0) / 1000) *
+                (Number(aiOnDemandRateDraft || aiLimits?.onDemandUsdPer1kTokens || 0.002) || 0.002)
+              ).toFixed(4)}{" "}
+              DLLR
+            </Text>
+          </View>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+              Pro monthly DLLR (token units)
+            </Text>
+            <TextInput
+              value={aiProMonthlyDraft || String(aiLimits?.proMonthlyTokenLimit ?? "")}
+              onChangeText={setAiProMonthlyDraft}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: colors.highlight,
+                color: colors.primary,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                fontFamily: font,
+                fontSize: 14,
+              }}
+            />
+            <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: font }}>
+              ≈ $
+              {(
+                ((Number(aiProMonthlyDraft || aiLimits?.proMonthlyTokenLimit || 0) || 0) / 1000) *
+                (Number(aiOnDemandRateDraft || aiLimits?.onDemandUsdPer1kTokens || 0.002) || 0.002)
+              ).toFixed(4)}{" "}
+              DLLR
+            </Text>
+          </View>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>$ / 1k on-demand</Text>
+            <TextInput
+              value={aiOnDemandRateDraft || String(aiLimits?.onDemandUsdPer1kTokens ?? "")}
+              onChangeText={setAiOnDemandRateDraft}
+              keyboardType="decimal-pad"
+              style={{
+                borderWidth: 1,
+                borderColor: colors.highlight,
+                color: colors.primary,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                fontFamily: font,
+                fontSize: 14,
+              }}
+            />
+          </View>
+        </View>
+        <Pressable
+          onPress={() => void onSaveAiLimits()}
+          disabled={aiLimitsBusy}
+          style={({ pressed }) => ({
+            alignSelf: "flex-start",
+            opacity: aiLimitsBusy ? 0.6 : pressed ? 0.85 : 1,
+            backgroundColor: colors.primary,
+            paddingHorizontal: 14,
+            paddingVertical: 10,
+          })}
+        >
+          <Text style={{ color: colors.background, fontWeight: "700", fontSize: 13, fontFamily: font }}>
+            {aiLimitsBusy ? "Saving…" : "Save AI limits"}
+          </Text>
+        </Pressable>
+      </Card>
+
+      <Card title="Pro catalog · feature launch & pricing" colors={colors}>
+        <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, fontFamily: font, marginBottom: 12 }}>
+          Set each feature price in dollars (cent precision, min $0.01). AI models alone is the launch
+          price. Month charge = sum of checked features + profit margin ($). Enabling more features raises
+          the charged price.
+        </Text>
+        <View style={{ gap: 8, marginBottom: 14 }}>
+          {(
+            [
+              ["aiModels", "AI models"],
+              ["proxyVpn", "Proxy & VPN"],
+              ["blockchainChat", "Blockchain chat"],
+              ["unlimitedAccounts", "Unlimited messenger accounts"],
+              ["cashback", "DLLR cashback"],
+              ["nftCollection", "NFT collection"],
+              ["menuCustomization", "Menu customization"],
+            ] as const
+          ).map(([id, label]) => {
+            const weight = featureWeightsDraft[id] ?? 0;
+            const checked = featureEnabledDraft[id] === true;
+            return (
+              <View
+                key={id}
+                style={{ flexDirection: "row", alignItems: "center", gap: 10 }}
+              >
+                <Pressable
+                  onPress={() =>
+                    setFeatureEnabledDraft((prev) => ({
+                      ...prev,
+                      [id]: !prev[id],
+                      ...(id === "aiModels" ? { aiModels: true } : null),
+                    }))
+                  }
+                  style={{ flexDirection: "row", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}
+                >
+                  <View
+                    style={{
+                      width: 18,
+                      height: 18,
+                      borderWidth: 1,
+                      borderColor: colors.highlight,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: checked ? colors.undercover : "transparent",
+                    }}
+                  >
+                    {checked ? (
+                      <Text style={{ color: colors.primary, fontSize: 12, lineHeight: 14 }}>✓</Text>
+                    ) : null}
+                  </View>
+                  <Text style={{ color: colors.primary, fontSize: 14, fontFamily: font, flex: 1 }}>
+                    {label}
+                  </Text>
+                </Pressable>
+                <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>$</Text>
+                <TextInput
+                  value={String(weight)}
+                  onChangeText={(raw) => onChangeFeatureWeight(id, raw)}
+                  keyboardType="numeric"
+                  style={{
+                    width: 72,
+                    borderWidth: 1,
+                    borderColor: colors.highlight,
+                    color: colors.primary,
+                    paddingHorizontal: 8,
+                    paddingVertical: 6,
+                    fontFamily: font,
+                    fontSize: 14,
+                    textAlign: "center",
+                  }}
+                />
+              </View>
+            );
+          })}
+          <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: font, marginTop: 4 }}>
+            Checked features: ${catalogPreview.enabledSum.toFixed(2)} · All features: $
+            {catalogPreview.allSum.toFixed(2)} · Month charge: ${catalogPreview.monthCharge.toFixed(2)}
+          </Text>
+        </View>
+        <View style={{ flexDirection: narrow ? "column" : "row", gap: 12, marginBottom: 12 }}>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+              Profit margin ($)
+            </Text>
+            <TextInput
+              value={marginDraft}
+              onChangeText={setMarginDraft}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: colors.highlight,
+                color: colors.primary,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                fontFamily: font,
+                fontSize: 14,
+              }}
+            />
+            <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: font }}>
+              ≈ {catalogPreview.marginPct.toFixed(1)}% of month charge (profit ÷ price)
+            </Text>
+          </View>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+              Quarter discount %
+            </Text>
+            <TextInput
+              value={quarterDiscDraft}
+              onChangeText={setQuarterDiscDraft}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: colors.highlight,
+                color: colors.primary,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                fontFamily: font,
+                fontSize: 14,
+              }}
+            />
+          </View>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+              Year discount %
+            </Text>
+            <TextInput
+              value={yearDiscDraft}
+              onChangeText={setYearDiscDraft}
+              keyboardType="numeric"
+              style={{
+                borderWidth: 1,
+                borderColor: colors.highlight,
+                color: colors.primary,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                fontFamily: font,
+                fontSize: 14,
+              }}
+            />
+          </View>
+        </View>
+        {data?.catalogPlans || data?.consumptionEconomics ? (
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 16, marginBottom: 12 }}>
+            <Metric
+              label="Month charge"
+              value={money(data.consumptionEconomics?.monthPriceUsd ?? data.catalogPlans?.[0]?.priceUsd ?? catalogPreview.monthCharge)}
+              colors={colors}
+              emphasize
+            />
+            <Metric
+              label="Profit margin"
+              value={`${money(data.proCatalog?.profitMarginUsd ?? catalogPreview.marginUsd)} · ${((data.proCatalog?.targetProfitMargin ?? catalogPreview.marginPct / 100) * 100).toFixed(1)}%`}
+              colors={colors}
+            />
+            <Metric
+              label="List (all features)"
+              value={money(data.consumptionEconomics?.fullMonthListUsd ?? catalogPreview.fullList)}
+              colors={colors}
+            />
+            <Metric
+              label="Quarter / Year"
+              value={`${money(data.catalogPlans?.[1]?.priceUsd ?? 0)} / ${money(data.catalogPlans?.[2]?.priceUsd ?? 0)}`}
+              colors={colors}
+            />
+          </View>
+        ) : null}
+        {data?.consumptionEconomics ? (
+          <Text style={{ color: colors.secondary, fontSize: 12, lineHeight: 17, fontFamily: font, marginBottom: 12 }}>
+            {data.consumptionEconomics.note} Screen-time COGS{" "}
+            {money(data.consumptionEconomics.screenTimeCogsPerActiveHourUsd)}/h → retail{" "}
+            {money(data.consumptionEconomics.screenTimeRetailPerActiveHourUsd)}/h. AI COGS{" "}
+            {money(data.consumptionEconomics.aiCogsPer1kTokensUsd)}/1k → retail{" "}
+            {money(data.consumptionEconomics.aiRetailPer1kTokensUsd)}/1k.
+          </Text>
+        ) : null}
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+          <Pressable
+            onPress={() => void onSaveProCatalog()}
+            disabled={catalogBusy}
+            style={({ pressed }) => ({
+              opacity: catalogBusy ? 0.6 : pressed ? 0.85 : 1,
+              backgroundColor: colors.primary,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            })}
+          >
+            <Text style={{ color: colors.background, fontWeight: "700", fontSize: 13, fontFamily: font }}>
+              {catalogBusy ? "Saving…" : "Save catalog & tariffs"}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => void onSaveProCatalog({ applyMarginToOnDemand: true })}
+            disabled={catalogBusy}
+            style={({ pressed }) => ({
+              opacity: catalogBusy ? 0.6 : pressed ? 0.85 : 1,
+              borderWidth: 1,
+              borderColor: colors.highlight,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            })}
+          >
+            <Text style={{ color: colors.primary, fontWeight: "700", fontSize: 13, fontFamily: font }}>
+              Save + apply margin to AI on-demand rate
+            </Text>
+          </Pressable>
+        </View>
+      </Card>
+
+      <Card title="Revoke Pro Access (test)" colors={colors}>
+        <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, fontFamily: font, marginBottom: 12 }}>
+          Clear server-side Pro for the account that registered the given built-in wallet address.
+          The user’s next quota refresh drops local Pro entitlement.
+        </Text>
+        <View style={{ gap: 6, marginBottom: 12, maxWidth: narrow ? undefined : 480 }}>
+          <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+            Registration wallet address
+          </Text>
+          <TextInput
+            value={revokeWalletDraft}
+            onChangeText={setRevokeWalletDraft}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="UQ…"
+            placeholderTextColor={colors.secondary}
+            style={{
+              borderWidth: 1,
+              borderColor: colors.highlight,
+              color: colors.primary,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              fontFamily: font,
+              fontSize: 13,
+            }}
+          />
+        </View>
+        <Pressable
+          onPress={() => void onRevokeProByWallet()}
+          disabled={revokeBusy}
+          style={({ pressed }) => ({
+            alignSelf: "flex-start",
+            opacity: revokeBusy ? 0.6 : pressed ? 0.85 : 1,
+            backgroundColor: colors.primary,
+            paddingHorizontal: 14,
+            paddingVertical: 10,
+          })}
+        >
+          <Text style={{ color: colors.background, fontWeight: "700", fontSize: 13, fontFamily: font }}>
+            {revokeBusy ? "Revoking…" : "Revoke Pro by wallet"}
+          </Text>
+        </Pressable>
+        {revokeMsg ? (
+          <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font, marginTop: 10 }}>
+            {revokeMsg}
+          </Text>
+        ) : null}
+      </Card>
 
       <Card title="Support inbox" colors={colors}>
         {supportThreads.length === 0 ? (
@@ -1257,9 +1837,9 @@ export default function FounderScreen() {
         ) : null}
       </Card>
 
-      <Card title="Tariffs (from env / defaults)" colors={colors}>
+      <Card title="Tariffs (from Pro catalog)" colors={colors}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 16 }}>
-          <Metric label="Month" value={money(model.tariffs.monthUsd)} colors={colors} />
+          <Metric label="Month" value={money(model.tariffs.monthUsd)} colors={colors} emphasize />
           <Metric label="Quarter total" value={money(model.tariffs.quarterTotalUsd)} colors={colors} />
           <Metric label="Year total" value={money(model.tariffs.yearTotalUsd)} colors={colors} />
           <Metric

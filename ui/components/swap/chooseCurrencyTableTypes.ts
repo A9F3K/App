@@ -27,6 +27,10 @@ export type ChooseCurrencyRow = {
     icon: ChooseCurrencyIconSource | null;
   };
   balance: string;
+  /**
+   * DLLR-only ledger shown inside the wallet-dialog expand panel (not under the balance cell).
+   */
+  dllrLedger?: { hot: string; frozen: string };
   rate: string;
   networks: string;
   marketCap: string;

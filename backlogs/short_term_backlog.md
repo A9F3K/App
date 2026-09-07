@@ -1,6 +1,14 @@
+Transfer TON paid for dllrs to USDT
+On-demand usage — AI tools dialog + Pro monthly cap + DLLR on-demand (shipped)
+AI on Pro isn't unlimited — monthly Pro token budget + founder-tunable limits (shipped)
+overall consumtion (?)
+Noise canceling in settings
+Database cleanup
 Sale with the discount, some features as for to launch
 Menu setup demo.
 When you buy dllrs, when you have 20 on balance, the system automatically buys a subscription, 1 remains on the balance. As well 21 dllr is the minimum amount to buy for the balance, this info should be included.
+
+Subscription for packages @&*#^%(!
 
 inner support chat
 

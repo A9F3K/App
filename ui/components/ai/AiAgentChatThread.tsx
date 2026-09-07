@@ -14,6 +14,8 @@ export type AiThreadMessage = {
   model?: string | null;
   likedByMe?: boolean;
   likeCount?: number;
+  /** True while the message is still typewriter-revealing. */
+  streaming?: boolean;
 };
 
 const ICON = 18;
@@ -175,7 +177,7 @@ export function AiAgentChatThread({
             ) : (
               <View style={{ width: "100%", maxWidth: "100%" }}>
                 <Text style={bodyStyle}>{m.content}</Text>
-                {showActions ? (
+                {showActions && !m.streaming ? (
                 <View
                   style={{
                     flexDirection: "row",

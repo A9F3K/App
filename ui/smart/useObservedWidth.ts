@@ -12,32 +12,34 @@ export function useObservedWidth(scope: string) {
   const [widthPx, setWidthPx] = useState(0);
   const [probeNode, setProbeNode] = useState<HTMLElement | null>(null);
   const lastLoggedWidthRef = useRef<number | null>(null);
+  const widthPxRef = useRef(0);
+  const probeNodeRef = useRef<HTMLElement | null>(null);
+  const windowWidthRef = useRef(windowWidth);
+  probeNodeRef.current = probeNode;
+  windowWidthRef.current = windowWidth;
 
-  const reportWidth = useCallback(
-    (width: number, source: WidthSource) => {
-      const rounded = Math.round(width);
-      setWidthPx((current) => {
-        // Split-pane remounts briefly report 0×0; keep the last real width so
-        // column layouts / scroll indicators do not collapse mid-resize.
-        if (rounded <= 0 && current > 0) {
-          return current;
-        }
-        if (current === rounded) {
-          return current;
-        }
-        logPageDisplay("smart_observed_width", {
-          scope,
-          source,
-          widthPx: rounded,
-          prevWidthPx: current > 0 ? current : null,
-          windowWidth: Math.round(windowWidth),
-          probeAttached: Boolean(probeNode),
-        });
-        return rounded;
-      });
-    },
-    [probeNode, scope, windowWidth],
-  );
+  const reportWidth = useCallback((width: number, source: WidthSource) => {
+    const rounded = Math.round(width);
+    const current = widthPxRef.current;
+    // Split-pane remounts briefly report 0×0; keep the last real width so
+    // column layouts / scroll indicators do not collapse mid-resize.
+    if (rounded <= 0 && current > 0) {
+      return;
+    }
+    if (current === rounded) {
+      return;
+    }
+    widthPxRef.current = rounded;
+    setWidthPx(rounded);
+    logPageDisplay("smart_observed_width", {
+      scope,
+      source,
+      widthPx: rounded,
+      prevWidthPx: current > 0 ? current : null,
+      windowWidth: Math.round(windowWidthRef.current),
+      probeAttached: Boolean(probeNodeRef.current),
+    });
+  }, [scope]);
 
   const onLayout = useCallback(
     (event: LayoutChangeEvent) => {

@@ -2,7 +2,7 @@ import * as Clipboard from "expo-clipboard";
 import { usePathname, useRouter } from "expo-router";
 import { useAuth } from "../../auth/AuthContext";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Pressable, StyleSheet, Text, useWindowDimensions, View, Platform } from "react-native";
+import { Pressable, StyleSheet, Text, useWindowDimensions, View, Platform, type LayoutRectangle } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import {
   authenticatedHomeWideMenuColumnWidthPx,
@@ -32,9 +32,11 @@ import type { AppStringKey } from "../../locales/appStrings";
 import { openAuthenticatedHomeRightPanel } from "../authenticatedHomeRightPanel";
 import { openSwapCurrenciesBrowse } from "../swap/swapCurrencyPicker";
 import { focusAuthenticatedHomeMiddleColumnOnHeaderPanel } from "../authenticatedHomeSelectedChat";
-import { UndercoverProButton, UndercoverWalletButton } from "./swap/SwapFormIcons";
 import { TonviewerExplorerButton } from "./TonviewerExplorerButton";
+import { SwitchWalletMenu } from "./wallet/SwitchWalletMenu";
+import { UndercoverProButton, UndercoverWalletButton } from "./swap/SwapFormIcons";
 import { ProAccessDialog } from "../pro/ProAccessDialog";
+import { subscribeOpenProAccess } from "../pro/openProAccess";
 import { isProAccessActive, subscribeProAccess } from "../pro/proAccessStore";
 import { trimWalletAddress, walletAddressHeaderSnippet } from "../wallet/walletAddressFormat";
 import {
@@ -295,11 +297,25 @@ export function HomeAuthenticatedHeaderRow({
   /** Measured shell width — matches the header column, not always the browser window (`useWindowDimensions` can stay wide on web). */
   const [measuredWidth, setMeasuredWidth] = useState<number | null>(null);
   const [proDialogOpen, setProDialogOpen] = useState(false);
+  const [switchWalletOpen, setSwitchWalletOpen] = useState(false);
+  const [switchWalletAnchor, setSwitchWalletAnchor] = useState<LayoutRectangle | null>(null);
+  const switchWalletRef = useRef<View>(null);
   const proSubscribed = useSyncExternalStore(
     subscribeProAccess,
     isProAccessActive,
     () => false,
   );
+
+  useEffect(() => {
+    return subscribeOpenProAccess(() => setProDialogOpen(true));
+  }, []);
+
+  const openSwitchWalletMenu = useCallback(() => {
+    switchWalletRef.current?.measureInWindow((x, y, width, height) => {
+      setSwitchWalletAnchor({ x, y, width, height });
+      setSwitchWalletOpen(true);
+    });
+  }, []);
   const liveViewportWidthPx = readAuthenticatedHomeLayoutWidthPx(windowWidth);
   const widthForLayout = Math.min(
     measuredWidth ?? liveViewportWidthPx,
@@ -434,47 +450,49 @@ export function HomeAuthenticatedHeaderRow({
   );
 
   const switchWalletRow = (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={t("home.header.switchWalletA11y")}
-      disabled={!onBalancePress}
-      hitSlop={AH.headerPressableHitSlop}
-      onPress={onBalancePress}
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "flex-start",
-        gap: 6,
-        flexShrink: 1,
-        minWidth: 0,
-        height: HEADER_CONTROL_ROW_PX,
-      }}
-    >
-      <Text
-        numberOfLines={1}
-        style={[
-          homeHeaderProfileNameText,
-          {
-            color: colors.primary,
-            lineHeight: HEADER_CONTROL_ROW_PX,
-            textAlign: "left",
-          },
-        ]}
-      >
-        {t("home.header.switchWallet")}
-      </Text>
-      <View
+    <View ref={switchWalletRef} collapsable={false}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={t("home.header.switchWalletA11y")}
+        accessibilityState={{ expanded: switchWalletOpen }}
+        hitSlop={AH.headerPressableHitSlop}
+        onPress={openSwitchWalletMenu}
         style={{
-          width: 16,
-          height: HEADER_CONTROL_ROW_PX,
+          flexDirection: "row",
           alignItems: "center",
-          justifyContent: "center",
-          ...uiIconButtonVerticalCompensationTransform,
+          justifyContent: "flex-start",
+          gap: 6,
+          flexShrink: 1,
+          minWidth: 0,
+          height: HEADER_CONTROL_ROW_PX,
         }}
       >
-        <HeaderSwitchWalletIcon color={menuIconStrokeColor(colors, "highlight")} size={16} />
-      </View>
-    </Pressable>
+        <Text
+          numberOfLines={1}
+          style={[
+            homeHeaderProfileNameText,
+            {
+              color: colors.primary,
+              lineHeight: HEADER_CONTROL_ROW_PX,
+              textAlign: "left",
+            },
+          ]}
+        >
+          {t("home.header.switchWallet")}
+        </Text>
+        <View
+          style={{
+            width: 16,
+            height: HEADER_CONTROL_ROW_PX,
+            alignItems: "center",
+            justifyContent: "center",
+            ...uiIconButtonVerticalCompensationTransform,
+          }}
+        >
+          <HeaderSwitchWalletIcon color={menuIconStrokeColor(colors, "highlight")} size={16} />
+        </View>
+      </Pressable>
+    </View>
   );
 
   const handleMenuKeyPress = useCallback(
@@ -645,7 +663,7 @@ export function HomeAuthenticatedHeaderRow({
     <>
     {/* Outer shell: full width; marginBottom = gap under header+divider before body (see theme `headerRowMarginBottom`). */}
     <View
-      style={{ width: "100%", marginBottom: AH.headerRowMarginBottom, overflow: "hidden" }}
+      style={{ width: "100%", marginBottom: AH.headerRowMarginBottom, overflow: "visible" }}
       onLayout={(e) => {
         const w = Math.round(e.nativeEvent.layout.width);
         setMeasuredWidth((prev) => {
@@ -671,7 +689,7 @@ export function HomeAuthenticatedHeaderRow({
               paddingTop: WIDE_HEADER_PAD_PX,
               paddingBottom: WIDE_HEADER_PAD_PX,
               gap: WIDE_HEADER_MID_GAP_PX,
-              overflow: "hidden",
+              overflow: "visible",
             }}
           >
             {/*
@@ -741,6 +759,12 @@ export function HomeAuthenticatedHeaderRow({
       ) : null}
     </View>
     <ProAccessDialog visible={proDialogOpen} onClose={() => setProDialogOpen(false)} />
+    <SwitchWalletMenu
+      visible={switchWalletOpen}
+      anchor={switchWalletAnchor}
+      builtinAddress={trimmed}
+      onClose={() => setSwitchWalletOpen(false)}
+    />
     </>
   );
 }

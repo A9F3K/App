@@ -18,6 +18,18 @@ import {
   softDeleteAiAgentChat,
   toggleAiAgentMessageLike,
 } from "../../database/aiAgentChats.js";
+import {
+  canStartAiFreeTurn,
+  consumeAiFreeTokens,
+  ensureAiFreeQuotaTable,
+  estimateTextTokens,
+  getAiFreeQuota,
+  syncAiFreeQuotaPro,
+  updateAiUserPrefs,
+  type AiModelMode,
+} from "../../database/aiFreeQuota.js";
+import { AI_TOOLS_MODEL_OPTIONS } from "../../ai/llmRouter.js";
+import { toPublicAiErrorCode } from "../../ai/publicAiErrors.js";
 
 type NodeRes = {
   setHeader(name: string, value: string): void;
@@ -71,6 +83,7 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
   try {
     try {
       await ensureAiAgentChatTables();
+      await ensureAiFreeQuotaTable();
     } catch {
       /* tables may already exist from migrate */
     }
@@ -148,6 +161,44 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
     const username = await telegramUsernameFromSessionCookie(request);
     if (!username) return respond(res, { ok: false, error: "unauthorized" }, 401);
 
+    if (action === "quota") {
+      const quota = await getAiFreeQuota(username);
+      return respond(res, { ok: true, quota, models: AI_TOOLS_MODEL_OPTIONS }, 200);
+    }
+
+    if (action === "sync_pro") {
+      const expiresAt =
+        typeof payload.expiresAt === "string" && payload.expiresAt.trim()
+          ? payload.expiresAt.trim()
+          : null;
+      const quota = await syncAiFreeQuotaPro({ username, expiresAt });
+      return respond(res, { ok: true, quota }, 200);
+    }
+
+    if (action === "prefs") {
+      const modelModeRaw =
+        typeof payload.modelMode === "string" ? payload.modelMode.trim().toLowerCase() : "";
+      const modelMode: AiModelMode | undefined =
+        modelModeRaw === "auto" || modelModeRaw === "tinymodel" || modelModeRaw === "model"
+          ? modelModeRaw
+          : undefined;
+      const modelId =
+        payload.modelId === null
+          ? null
+          : typeof payload.modelId === "string"
+            ? payload.modelId
+            : undefined;
+      const onDemandEnabled =
+        typeof payload.onDemandEnabled === "boolean" ? payload.onDemandEnabled : undefined;
+      const quota = await updateAiUserPrefs({
+        username,
+        ...(modelMode !== undefined ? { modelMode } : {}),
+        ...(modelId !== undefined ? { modelId } : {}),
+        ...(onDemandEnabled !== undefined ? { onDemandEnabled } : {}),
+      });
+      return respond(res, { ok: true, quota, models: AI_TOOLS_MODEL_OPTIONS }, 200);
+    }
+
     if (action === "create") {
       const clientId = typeof payload.clientId === "string" ? payload.clientId : undefined;
       const title = typeof payload.title === "string" ? payload.title : undefined;
@@ -216,6 +267,19 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
       const input = String(payload.input ?? "").trim();
       if (!input) return respond(res, { ok: false, error: "input_required" }, 400);
 
+      const gate = await canStartAiFreeTurn(username);
+      if (!gate.ok) {
+        return respond(
+          res,
+          {
+            ok: false,
+            error: gate.reason ?? "free_ai_limit",
+            quota: gate.quota,
+          },
+          402,
+        );
+      }
+
       let chat = chatId ? await getAiAgentChatById(chatId) : null;
       if (chat && (chat.owner_username !== username || chat.deleted_at)) {
         return respond(res, { ok: false, error: "not_found" }, 404);
@@ -247,6 +311,10 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
         .slice(0, -1)
         .map((m) => `${m.role}: ${m.content}`)
         .join("\n");
+      const routePreference = {
+        modelMode: gate.quota.modelMode,
+        modelId: gate.quota.modelId,
+      };
       const ai = await transmit({
         mode: "chat",
         input,
@@ -258,13 +326,15 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
         instructions:
           "You are the Hyperlinks Space Program AI assistant in the AI & Search column. " +
           "Answer clearly and helpfully. Prefer concise Markdown-friendly prose.",
+        routePreference,
       });
 
       if (!ai.ok || !ai.output_text?.trim()) {
+        const code = toPublicAiErrorCode(ai.error ?? "ai_unavailable");
         return respond(
           res,
-          { ok: false, error: ai.error ?? "ai_failed", chatId: chat.id },
-          500,
+          { ok: false, error: code, chatId: chat.id },
+          code === "ai_capacity" ? 503 : 500,
         );
       }
 
@@ -275,13 +345,30 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
         model: String(ai.meta?.model ?? ai.provider),
       });
 
-      const nextTitle = await suggestTitle(input, chat.title);
+      const usageTotal =
+        typeof ai.usage?.total_tokens === "number" && ai.usage.total_tokens > 0
+          ? Math.round(ai.usage.total_tokens)
+          : estimateTextTokens(input, ai.output_text);
+      // Title suggestion is a tiny extra call when a paid backend is configured.
+      const titleTokens = 80;
+      const billedTokens = usageTotal + titleTokens;
+
+      let nextTitle = chat.title;
+      try {
+        nextTitle = await suggestTitle(input, chat.title);
+      } catch {
+        /* title is optional — never fail the turn on provider rate limits */
+        nextTitle = input.trim().slice(0, 48) || chat.title;
+      }
       const renamed =
         (await renameAiAgentChat({
           chatId: chat.id,
           ownerUsername: username,
           title: nextTitle,
         })) ?? chat;
+
+      const consumed = await consumeAiFreeTokens({ username, tokens: billedTokens });
+      const quota = consumed ?? (await getAiFreeQuota(username));
 
       return respond(
         res,
@@ -291,6 +378,10 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
           userMessage,
           assistantMessage: assistant,
           model: String(ai.meta?.model ?? ai.provider),
+          tokensBilled: billedTokens,
+          billingLane: consumed?.billedLane ?? gate.quota.billingLane,
+          costUsd: consumed?.costUsd ?? 0,
+          quota,
         },
         200,
       );
@@ -298,8 +389,8 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
 
     return respond(res, { ok: false, error: "unknown_action" }, 400);
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : "internal_error";
-    return respond(res, { ok: false, error: message }, 500);
+    const code = toPublicAiErrorCode(e);
+    return respond(res, { ok: false, error: code }, code === "ai_capacity" ? 503 : 500);
   }
 }
 

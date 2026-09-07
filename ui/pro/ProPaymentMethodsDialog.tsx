@@ -1,6 +1,13 @@
 import * as Clipboard from "expo-clipboard";
 import { Image } from "expo-image";
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import {
   Platform,
   Pressable,
@@ -24,27 +31,32 @@ import { HspScrollColumn } from "../components/HspScrollColumn";
 import { HeaderIconCopy } from "../components/icons/HeaderActionIcons";
 import { SmartGradientDivider } from "../components/smart/SmartGradientDivider";
 import { MusicBackChevronIcon } from "../components/music/MusicControlIcons";
-import { SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX } from "../scrollIndicatorPx";
 import { useTonConnectSession } from "../ton/TonConnectProvider";
-import { fetchTonapiAccountHoldings } from "../ton/fetchTonapiAccountHoldings";
+import { buildGetTopUpTransaction } from "../ton/buildGetTopUpTransaction";
+import { SWAP_USDT_TOKEN } from "../swap/swapPairTypes";
 import {
   creditBuiltinDllrUsd,
+  creditProCashbackDllrUsd,
   debitBuiltinDllrUsd,
   getBuiltinDllrBalanceUsd,
+  getBuiltinDllrFrozenUsd,
+  getBuiltinDllrHotUsd,
+  PRO_CASHBACK_DLLR_USD,
   subscribeBuiltinDllrBalance,
 } from "./dllrBalanceStore";
 import {
   activateProAccess,
   formatUsd,
-  PRO_ACCESS_PLANS,
+  getProAccessPlans,
   type ProAccessPlanId,
 } from "./proAccessStore";
+import { isProFeatureEnabled, subscribeProCatalog } from "./proCatalogStore";
 import { resolveProPaymentTonAddress } from "./proPaymentConfig";
+import { waitForProUsdtPayment } from "./waitForProUsdtPayment";
 import {
   createProPaymentMemo,
   minDllrTopUpForPlanUsd,
   parseDllrUsdFromProPaymentMemo,
-  PRO_PAYMENT_TON_RATE_BUFFER,
   PRO_TOPUP_RESIDUAL_DLLR_USD,
 } from "./proPaymentMemo";
 import { ProSubscribeButton } from "./ProSubscribeButton";
@@ -59,7 +71,6 @@ type Props = {
   onBackToTariffs: () => void;
 };
 
-const FALLBACK_TON_USD = 5;
 const COPY_ICON_PX = 18;
 
 function middleEllipsis(address: string, head = 6, tail = 6): string {
@@ -77,11 +88,10 @@ function parseAmount(raw: string): number {
   return Number.isFinite(n) ? n : NaN;
 }
 
-function formatTonAmount(n: number): string {
+function formatUsdtAmount(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "0";
-  if (n >= 100) return n.toFixed(2);
-  if (n >= 1) return n.toFixed(3).replace(/\.?0+$/, "");
-  return n.toFixed(4).replace(/\.?0+$/, "");
+  if (Number.isInteger(n)) return String(n);
+  return n.toFixed(2).replace(/\.?0+$/, "");
 }
 
 function MethodRadio({ selected, color }: { selected: boolean; color: string }) {
@@ -106,6 +116,30 @@ function MethodRadio({ selected, color }: { selected: boolean; color: string }) 
   );
 }
 
+/** Accordion affordance — avoids empty radios before a method is chosen. */
+function MethodExpandChevron({
+  expanded,
+  color,
+}: {
+  expanded: boolean;
+  color: string;
+}) {
+  return (
+    <View
+      style={{
+        width: 28,
+        height: 28,
+        borderRadius: 8,
+        alignItems: "center",
+        justifyContent: "center",
+        transform: [{ rotate: expanded ? "90deg" : "0deg" }],
+      }}
+    >
+      <Text style={{ color, fontSize: 22, fontWeight: "700", lineHeight: 24 }}>›</Text>
+    </View>
+  );
+}
+
 function CopyableValueRow({
   label,
   value,
@@ -116,6 +150,7 @@ function CopyableValueRow({
   colors,
   labelFont,
   mono,
+  chainBadge,
 }: {
   label: string;
   value: string;
@@ -123,9 +158,10 @@ function CopyableValueRow({
   onCopy: () => void;
   copyLabel: string;
   copiedLabel: string;
-  colors: { primary: string; secondary: string; highlight: string; background: string };
+  colors: { primary: string; secondary: string; highlight: string; background: string; undercover?: string };
   labelFont: string;
   mono?: boolean;
+  chainBadge?: string;
 }) {
   return (
     <View
@@ -139,7 +175,33 @@ function CopyableValueRow({
         gap: 6,
       }}
     >
-      <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: labelFont }}>{label}</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: labelFont, flex: 1 }}>
+          {label}
+        </Text>
+        {chainBadge ? (
+          <View
+            style={{
+              paddingHorizontal: 8,
+              paddingVertical: 3,
+              borderRadius: 6,
+              backgroundColor: colors.undercover ?? colors.highlight,
+            }}
+          >
+            <Text
+              style={{
+                color: colors.primary,
+                fontSize: 11,
+                fontWeight: "700",
+                fontFamily: labelFont,
+                letterSpacing: 0.3,
+              }}
+            >
+              {chainBadge}
+            </Text>
+          </View>
+        ) : null}
+      </View>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <Text
           selectable
@@ -155,29 +217,32 @@ function CopyableValueRow({
                 : FONT_UI_SANS_REGULAR
               : labelFont,
           }}
+          numberOfLines={2}
         >
-          {value}
+          {value || "—"}
         </Text>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={copied ? copiedLabel : copyLabel}
           onPress={onCopy}
           hitSlop={8}
-          style={{ width: 28, height: 28, alignItems: "center", justifyContent: "center" }}
+          style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}
         >
-          <HeaderIconCopy
-            color={copied ? colors.primary : colors.secondary}
-            size={COPY_ICON_PX}
-          />
+          <HeaderIconCopy color={colors.primary} size={COPY_ICON_PX} />
         </Pressable>
       </View>
+      {copied ? (
+        <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: labelFont }}>
+          {copiedLabel}
+        </Text>
+      ) : null}
     </View>
   );
 }
 
 /**
- * Payment ways for Pro Access — built-in DLLR (with inline top-up), direct TON + memo/check,
- * or TonConnect. Does not grant entitlement until DLLR pay or confirmed transfer.
+ * Payment ways for Pro Access — built-in DLLR, direct USDT (TON) + memo/check,
+ * or TonConnect USDT jetton transfer (same mechanics as Get).
  */
 export function ProPaymentMethodsDialog({
   visible,
@@ -194,16 +259,26 @@ export function ProPaymentMethodsDialog({
     getBuiltinDllrBalanceUsd,
     getBuiltinDllrBalanceUsd,
   );
-  const [method, setMethod] = useState<PaymentMethodId>("builtin");
+  const dllrHot = useSyncExternalStore(
+    subscribeBuiltinDllrBalance,
+    getBuiltinDllrHotUsd,
+    getBuiltinDllrHotUsd,
+  );
+  const dllrFrozen = useSyncExternalStore(
+    subscribeBuiltinDllrBalance,
+    getBuiltinDllrFrozenUsd,
+    getBuiltinDllrFrozenUsd,
+  );
+  /** No method expanded until the user taps a preview row. */
+  const [method, setMethod] = useState<PaymentMethodId | null>(null);
   const [headerExtendPx, setHeaderExtendPx] = useState(0);
   const [footerExtendPx, setFooterExtendPx] = useState(0);
-  const [copiedField, setCopiedField] = useState<"address" | "memo" | "directMemo" | null>(null);
+  const [copiedField, setCopiedField] = useState<
+    "address" | "memo" | "directMemo" | "amount" | null
+  >(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [selectedWalletKey, setSelectedWalletKey] = useState<string | null>(null);
-  const [tonUsd, setTonUsd] = useState(FALLBACK_TON_USD);
-  const [dllrBuyInput, setDllrBuyInput] = useState("");
-  const [tonPayInput, setTonPayInput] = useState("");
-  const [editingField, setEditingField] = useState<"dllr" | "ton" | null>(null);
+  const [usdtPayInput, setUsdtPayInput] = useState("");
   const [memo, setMemo] = useState("");
   const [directMemo, setDirectMemo] = useState("");
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -219,7 +294,11 @@ export function ProPaymentMethodsDialog({
     [windowHeight, windowWidth],
   );
   const dialogInsets = resolveFloatingDialogInsets(windowHeight);
-  const plan = PRO_ACCESS_PLANS.find((p) => p.id === planId) ?? PRO_ACCESS_PLANS[0]!;
+  const plan = useSyncExternalStore(
+    subscribeProCatalog,
+    () => getProAccessPlans().find((p) => p.id === planId) ?? getProAccessPlans()[0]!,
+    () => getProAccessPlans().find((p) => p.id === planId) ?? getProAccessPlans()[0]!,
+  );
   const planLabel = t(
     plan.id === "month"
       ? "pro.plan.month"
@@ -228,93 +307,80 @@ export function ProPaymentMethodsDialog({
         : "pro.plan.year",
   );
   const priceLabel = formatUsd(plan.priceUsd);
+  /** Instant pay when total DLLR (hot + frozen) covers the plan. */
   const hasEnoughDllr = dllrBalance + 1e-9 >= plan.priceUsd;
-  /** e.g. $20 plan + $1 residual − balance → buy enough that 1 DLLR remains after subscribe. */
+  /** e.g. $20 plan + $1 residual − total balance → buy enough that 1 DLLR remains after subscribe. */
   const minTopUpUsd = hasEnoughDllr
     ? 0.01
     : minDllrTopUpForPlanUsd(plan.priceUsd, dllrBalance);
   const paymentAddress = resolveProPaymentTonAddress();
   const labelFont = Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR;
 
-  const flashCopied = useCallback((field: "address" | "memo" | "directMemo") => {
+  const flashCopied = useCallback((field: "address" | "memo" | "directMemo" | "amount") => {
     setCopiedField(field);
     setTimeout(() => setCopiedField((cur) => (cur === field ? null : cur)), 1200);
   }, []);
 
   const copyText = useCallback(
-    async (value: string, field: "address" | "memo" | "directMemo") => {
+    async (value: string, field: "address" | "memo" | "directMemo" | "amount") => {
       await Clipboard.setStringAsync(value);
       flashCopied(field);
     },
     [flashCopied],
   );
 
-  useEffect(() => {
-    if (!visible) return;
-    const seed = hasEnoughDllr
-      ? Math.max(1, minTopUpUsd)
-      : minTopUpUsd;
-    setDllrBuyInput(String(seed));
-    setEditingField(null);
-    setStatusMsg(null);
-    setMemo(createProPaymentMemo(plan.id, seed));
-    setDirectMemo(
-      createProPaymentMemo(
-        plan.id,
-        minDllrTopUpForPlanUsd(plan.priceUsd, dllrBalance),
-      ),
-    );
-  }, [visible, planId, hasEnoughDllr, minTopUpUsd, plan.id, plan.priceUsd, dllrBalance]);
+  const seedAmountsForMethod = useCallback(
+    (id: PaymentMethodId) => {
+      // Direct / TonConnect: pay the plan in USDT on TON (1 USDT ≈ 1 DLLR).
+      // Built-in wallet: top up only what is still needed for the plan.
+      const planUsdt = plan.priceUsd;
+      const topUpSeed = hasEnoughDllr ? Math.max(1, minTopUpUsd) : minTopUpUsd;
+      const seed = id === "direct" || id === "tonconnect" ? planUsdt : topUpSeed;
+      setUsdtPayInput(formatUsdtAmount(seed));
+      setMemo(createProPaymentMemo(plan.id, seed));
+      setDirectMemo(createProPaymentMemo(plan.id, planUsdt));
+    },
+    [hasEnoughDllr, minTopUpUsd, plan.id, plan.priceUsd],
+  );
 
-  // Keep memo DLLR cents in sync with the buy amount (new nonce when amount changes).
-  useEffect(() => {
-    if (!visible || editingField === "ton") return;
-    const dllr = parseAmount(dllrBuyInput);
-    if (!Number.isFinite(dllr) || dllr <= 0) return;
-    const locked = parseDllrUsdFromProPaymentMemo(memo);
-    if (locked != null && Math.abs(locked - dllr) < 0.005) return;
-    setMemo(createProPaymentMemo(plan.id, dllr));
-  }, [dllrBuyInput, editingField, memo, plan.id, visible]);
-
-  useEffect(() => {
-    if (!visible) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const holdings = await fetchTonapiAccountHoldings(
-          ton.friendlyAddress || ton.address || "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
-        );
-        const px = holdings.tonPriceUsd;
-        if (!cancelled && px != null && px > 0) setTonUsd(px);
-      } catch {
-        /* keep fallback */
+  const selectMethod = useCallback(
+    (id: PaymentMethodId) => {
+      setStatusMsg(null);
+      if (method === id) {
+        setMethod(null);
+        return;
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [ton.address, ton.friendlyAddress, visible]);
+      setMethod(id);
+      seedAmountsForMethod(id);
+    },
+    [method, seedAmountsForMethod],
+  );
 
   useEffect(() => {
-    if (editingField === "ton") return;
-    const dllr = parseAmount(dllrBuyInput);
-    if (!Number.isFinite(dllr) || dllr <= 0 || tonUsd <= 0) {
-      if (editingField !== "dllr") setTonPayInput("");
-      return;
+    if (!visible) return;
+    setMethod(null);
+    setStatusMsg(null);
+    setCopiedField(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open/plan only
+  }, [visible, planId]);
+
+  // Keep memos in sync with the USDT amount (1 USDT ≈ 1 DLLR).
+  useEffect(() => {
+    if (!visible) return;
+    const usdt = parseAmount(usdtPayInput);
+    if (!Number.isFinite(usdt) || usdt <= 0) return;
+    const next = createProPaymentMemo(plan.id, usdt);
+    const lockedMemo = parseDllrUsdFromProPaymentMemo(memo);
+    if (lockedMemo == null || Math.abs(lockedMemo - usdt) >= 0.005) {
+      setMemo(next);
     }
-    // Buffer TON so a brief rate dip cannot under-credit the locked DLLR.
-    setTonPayInput(formatTonAmount((dllr / tonUsd) * PRO_PAYMENT_TON_RATE_BUFFER));
-  }, [dllrBuyInput, tonUsd, editingField]);
-
-  useEffect(() => {
-    if (editingField !== "ton") return;
-    const tonAmt = parseAmount(tonPayInput);
-    if (!Number.isFinite(tonAmt) || tonAmt <= 0 || tonUsd <= 0) return;
-    // Invert buffer: DLLR locked = TON sent / buffer * rate.
-    const dllr =
-      Math.round(((tonAmt / PRO_PAYMENT_TON_RATE_BUFFER) * tonUsd) * 100) / 100;
-    setDllrBuyInput(String(dllr));
-  }, [tonPayInput, tonUsd, editingField]);
+    if (method === "direct" || method === "tonconnect") {
+      const lockedDirect = parseDllrUsdFromProPaymentMemo(directMemo);
+      if (lockedDirect == null || Math.abs(lockedDirect - usdt) >= 0.005) {
+        setDirectMemo(next);
+      }
+    }
+  }, [directMemo, memo, method, plan.id, usdtPayInput, visible]);
 
   const wallets = useMemo(() => {
     const list = [...ton.rememberedWallets];
@@ -374,13 +440,25 @@ export function ProPaymentMethodsDialog({
       return;
     }
     activateProAccess(plan.id);
-    setStatusMsg(t("pro.pay.builtin.paid"));
-    setTimeout(() => onClose(), 600);
-  }, [onClose, plan.id, plan.priceUsd, t]);
+    if (isProFeatureEnabled("cashback")) {
+      creditProCashbackDllrUsd(PRO_CASHBACK_DLLR_USD);
+      setStatusMsg(
+        tf("pro.pay.builtin.paidCashback", { cashback: formatUsd(PRO_CASHBACK_DLLR_USD) }),
+      );
+    } else {
+      setStatusMsg(t("pro.pay.builtin.paid"));
+    }
+    setTimeout(() => onClose(), 700);
+  }, [onClose, plan.id, plan.priceUsd, t, tf]);
 
-  const resolvedBuyDllr = parseAmount(dllrBuyInput);
-  const buyDllrValid =
-    Number.isFinite(resolvedBuyDllr) && resolvedBuyDllr + 1e-9 >= minTopUpUsd;
+  const resolvedUsdt = parseAmount(usdtPayInput);
+  const usdtPayMin =
+    method === "direct" || method === "tonconnect"
+      ? plan.priceUsd
+      : hasEnoughDllr
+        ? 0.01
+        : minTopUpUsd;
+  const usdtPayValid = Number.isFinite(resolvedUsdt) && resolvedUsdt + 1e-9 >= usdtPayMin;
 
   const runCheckPayment = useCallback(
     async (opts: { memoText: string; activateAfter?: boolean; fallbackDollars?: number }) => {
@@ -389,7 +467,6 @@ export function ProPaymentMethodsDialog({
         setStatusMsg(t("pro.pay.check.memoRequired"));
         return;
       }
-      // Credit the DLLR locked in the memo — rate moves cannot shrink the top-up.
       const fromMemo = parseDllrUsdFromProPaymentMemo(memoText);
       const dollars = fromMemo ?? opts.fallbackDollars ?? NaN;
       if (!Number.isFinite(dollars) || dollars <= 0) {
@@ -397,9 +474,22 @@ export function ProPaymentMethodsDialog({
         return;
       }
       setCheckBusy(true);
-      setStatusMsg(null);
+      setStatusMsg(t("pro.pay.check.waiting"));
       try {
-        await new Promise((r) => setTimeout(r, 400));
+        // TON finality ~1s; TonAPI index lag usually a few seconds — soft ~8s / hard ~25s.
+        const wait = await waitForProUsdtPayment({
+          paymentAddress,
+          expectedUsd: dollars,
+          requireIndexed: false,
+          onTick: (elapsedMs) => {
+            if (elapsedMs >= 1500) {
+              setStatusMsg(t("pro.pay.check.waiting"));
+            }
+          },
+        });
+        if (wait.confirmed) {
+          setStatusMsg(t("pro.pay.check.confirmed"));
+        }
         creditBuiltinDllrUsd(dollars);
         const shouldActivate =
           opts.activateAfter ||
@@ -407,12 +497,18 @@ export function ProPaymentMethodsDialog({
         if (shouldActivate && getBuiltinDllrBalanceUsd() + 1e-9 >= plan.priceUsd) {
           if (debitBuiltinDllrUsd(plan.priceUsd)) {
             activateProAccess(plan.id);
-            setStatusMsg(
-              tf("pro.pay.check.creditedAndActivatedLeft", {
-                amount: formatUsd(dollars),
-                left: formatUsd(PRO_TOPUP_RESIDUAL_DLLR_USD),
-              }),
-            );
+            if (isProFeatureEnabled("cashback")) {
+              creditProCashbackDllrUsd(PRO_CASHBACK_DLLR_USD);
+              setStatusMsg(
+                tf("pro.pay.check.creditedAndActivatedLeft", {
+                  amount: formatUsd(dollars),
+                  left: formatUsd(PRO_TOPUP_RESIDUAL_DLLR_USD),
+                  cashback: formatUsd(PRO_CASHBACK_DLLR_USD),
+                }),
+              );
+            } else {
+              setStatusMsg(t("pro.pay.check.creditedAndActivated"));
+            }
             setTimeout(() => onClose(), 700);
             return;
           }
@@ -422,180 +518,139 @@ export function ProPaymentMethodsDialog({
         setCheckBusy(false);
       }
     },
-    [hasEnoughDllr, onClose, plan.id, plan.priceUsd, t, tf],
+    [hasEnoughDllr, onClose, paymentAddress, plan.id, plan.priceUsd, t, tf],
   );
 
-  const onBuyDllrViaTonConnect = useCallback(async () => {
-    if (!buyDllrValid) {
-      setStatusMsg(t("pro.pay.topup.buyInvalid"));
-      return;
-    }
-    const tonAmt = parseAmount(tonPayInput);
-    if (!Number.isFinite(tonAmt) || tonAmt <= 0) {
-      setStatusMsg(t("pro.pay.topup.buyInvalid"));
-      return;
-    }
-    if (!ton.connected) {
-      await openWalletPicker();
-      return;
-    }
-    setConnectBusy(true);
-    setStatusMsg(null);
-    try {
-      const nano = BigInt(Math.round(tonAmt * 1e9));
-      await ton.sendTransaction({
-        validUntil: Math.floor(Date.now() / 1000) + 600,
-        network: "-239",
-        messages: [{ address: paymentAddress, amount: nano.toString() }],
-      });
-      // Credit locked memo amount (not live rate).
-      await runCheckPayment({
-        memoText: memo,
-        activateAfter: !hasEnoughDllr,
-        fallbackDollars: resolvedBuyDllr,
-      });
-    } catch {
-      setStatusMsg(t("pro.pay.topup.buyCancelled"));
-    } finally {
-      setConnectBusy(false);
-    }
-  }, [
-    buyDllrValid,
-    hasEnoughDllr,
-    memo,
-    openWalletPicker,
-    paymentAddress,
-    resolvedBuyDllr,
-    runCheckPayment,
-    t,
-    ton,
-    tonPayInput,
-  ]);
-
-  const planTonAmount = useMemo(() => {
-    if (!(tonUsd > 0)) return formatTonAmount((plan.priceUsd / FALLBACK_TON_USD) * PRO_PAYMENT_TON_RATE_BUFFER);
-    return formatTonAmount((plan.priceUsd / tonUsd) * PRO_PAYMENT_TON_RATE_BUFFER);
-  }, [plan.priceUsd, tonUsd]);
-
-  const topUpTonAmount = useMemo(() => {
-    const fromInput = parseAmount(tonPayInput);
-    if (Number.isFinite(fromInput) && fromInput > 0) return formatTonAmount(fromInput);
-    return planTonAmount;
-  }, [planTonAmount, tonPayInput]);
-
-  const finalCta = useMemo(() => {
-    if (method === "builtin" && hasEnoughDllr) {
-      return {
-        kind: "pay_dllr" as const,
-        label: tf("pro.pay.final.payDllr", { amount: String(plan.priceUsd) }),
-      };
-    }
-    if (method === "tonconnect") {
-      return {
-        kind: "pay_ton" as const,
-        label: checkBusy || connectBusy
-          ? t("pro.pay.check.busy")
-          : tf("pro.pay.final.payTon", { amount: planTonAmount }),
-      };
-    }
-    // direct, or builtin top-up / check path
-    return {
-      kind: "check" as const,
-      label: checkBusy ? t("pro.pay.check.busy") : t("pro.pay.check.button"),
-    };
-  }, [
-    checkBusy,
-    connectBusy,
-    hasEnoughDllr,
-    method,
-    plan.priceUsd,
-    planTonAmount,
-    t,
-    tf,
-  ]);
-
-  const onFinalCta = useCallback(async () => {
-    if (finalCta.kind === "pay_dllr") {
-      onPayWithDllr();
-      return;
-    }
-    if (finalCta.kind === "pay_ton") {
-      // Prefer top-up amount when buying DLLR into built-in; else plan TON.
-      const tonAmt = parseAmount(topUpTonAmount);
-      if (!Number.isFinite(tonAmt) || tonAmt <= 0) {
+  const sendUsdtViaTonConnect = useCallback(
+    async (opts: { amountUsd: number; memoText: string; activateAfter: boolean }) => {
+      if (!Number.isFinite(opts.amountUsd) || opts.amountUsd <= 0) {
         setStatusMsg(t("pro.pay.topup.buyInvalid"));
         return;
       }
-      if (!ton.connected && !effectiveWalletKey) {
+      if (!ton.connected || !ton.address) {
         await openWalletPicker();
         return;
       }
-      if (!ton.connected) {
-        await openWalletPicker();
+      if (!paymentAddress.trim()) {
+        setStatusMsg(t("pro.pay.direct.addressPending"));
         return;
       }
       setConnectBusy(true);
       setStatusMsg(null);
       try {
-        const nano = BigInt(Math.round(tonAmt * 1e9));
-        await ton.sendTransaction({
-          validUntil: Math.floor(Date.now() / 1000) + 600,
-          network: "-239",
-          messages: [{ address: paymentAddress, amount: nano.toString() }],
+        const request = await buildGetTopUpTransaction({
+          amount: formatUsdtAmount(opts.amountUsd),
+          token: SWAP_USDT_TOKEN,
+          fromWalletAddress: ton.address,
+          toBuiltInWalletAddress: paymentAddress,
         });
+        await ton.sendTransaction(request);
         await runCheckPayment({
-          memoText: method === "tonconnect" ? directMemo : memo,
-          activateAfter: true,
-          fallbackDollars: plan.priceUsd,
+          memoText: opts.memoText,
+          activateAfter: opts.activateAfter,
+          fallbackDollars: opts.amountUsd,
         });
       } catch {
         setStatusMsg(t("pro.pay.topup.buyCancelled"));
       } finally {
         setConnectBusy(false);
       }
+    },
+    [openWalletPicker, paymentAddress, runCheckPayment, t, ton],
+  );
+
+  const payUsdtAmount = useMemo(() => {
+    const fromInput = parseAmount(usdtPayInput);
+    if (Number.isFinite(fromInput) && fromInput > 0) return formatUsdtAmount(fromInput);
+    return formatUsdtAmount(plan.priceUsd);
+  }, [plan.priceUsd, usdtPayInput]);
+
+  const finalCta = useMemo(() => {
+    if (method == null) {
+      return {
+        kind: "pick" as const,
+        label: t("pro.pay.final.chooseMethod"),
+        disabled: true,
+      };
+    }
+    if (method === "builtin" && hasEnoughDllr) {
+      return {
+        kind: "pay_dllr" as const,
+        label: tf("pro.pay.final.payDllr", { amount: String(plan.priceUsd) }),
+        disabled: false,
+      };
+    }
+    if (method === "tonconnect") {
+      return {
+        kind: "pay_usdt" as const,
+        label:
+          checkBusy || connectBusy
+            ? t("pro.pay.check.busy")
+            : tf("pro.pay.final.payUsdt", { amount: formatUsdtAmount(plan.priceUsd) }),
+        disabled: checkBusy || connectBusy || !paymentAddress.trim(),
+      };
+    }
+    if (method === "builtin" && !hasEnoughDllr) {
+      return {
+        kind: "pay_usdt" as const,
+        label:
+          checkBusy || connectBusy
+            ? t("pro.pay.check.busy")
+            : tf("pro.pay.final.payUsdt", { amount: payUsdtAmount }),
+        disabled: checkBusy || connectBusy || !usdtPayValid,
+      };
+    }
+    return {
+      kind: "check" as const,
+      label: checkBusy ? t("pro.pay.check.busy") : t("pro.pay.check.button"),
+      disabled: checkBusy,
+    };
+  }, [
+    checkBusy,
+    connectBusy,
+    hasEnoughDllr,
+    method,
+    payUsdtAmount,
+    plan.priceUsd,
+    t,
+    tf,
+    usdtPayValid,
+  ]);
+
+  const onFinalCta = useCallback(async () => {
+    if (finalCta.kind === "pick" || method == null) return;
+    if (finalCta.kind === "pay_dllr") {
+      onPayWithDllr();
       return;
     }
-    // Check payment
-    if (method === "direct" || method === "tonconnect") {
-      await runCheckPayment({
-        memoText: directMemo,
-        activateAfter: true,
-        fallbackDollars: minDllrTopUpForPlanUsd(plan.priceUsd, dllrBalance),
+    if (finalCta.kind === "pay_usdt") {
+      const amount =
+        method === "tonconnect" ? plan.priceUsd : parseAmount(payUsdtAmount);
+      await sendUsdtViaTonConnect({
+        amountUsd: amount,
+        memoText: method === "tonconnect" ? directMemo : memo,
+        activateAfter: method === "tonconnect" || !hasEnoughDllr,
       });
       return;
     }
     await runCheckPayment({
-      memoText: memo,
-      activateAfter: !hasEnoughDllr,
-      fallbackDollars: resolvedBuyDllr,
+      memoText: method === "direct" ? directMemo : memo,
+      activateAfter: method === "direct",
+      fallbackDollars: method === "direct" ? plan.priceUsd : resolvedUsdt,
     });
   }, [
     directMemo,
-    dllrBalance,
-    effectiveWalletKey,
     finalCta.kind,
     hasEnoughDllr,
     memo,
     method,
     onPayWithDllr,
-    openWalletPicker,
-    paymentAddress,
+    payUsdtAmount,
     plan.priceUsd,
-    resolvedBuyDllr,
+    resolvedUsdt,
     runCheckPayment,
-    t,
-    ton,
-    topUpTonAmount,
+    sendUsdtViaTonConnect,
   ]);
-
-  const rowStyle = {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.highlight,
-    backgroundColor: colors.undercover,
-    padding: 14,
-    gap: 10,
-  } as const;
 
   const subRowStyle = {
     borderRadius: 10,
@@ -614,7 +669,11 @@ export function ProPaymentMethodsDialog({
     paddingVertical: 10,
   } as const;
 
-  const addressMemoBlock = (memoValue: string, memoField: "memo" | "directMemo") => (
+  const addressMemoBlock = (
+    memoValue: string,
+    memoField: "memo" | "directMemo",
+    opts?: { showAmount?: boolean },
+  ) => (
     <View style={{ gap: 8 }}>
       <CopyableValueRow
         label={t("pro.pay.direct.addressLabel")}
@@ -626,7 +685,22 @@ export function ProPaymentMethodsDialog({
         colors={colors}
         labelFont={labelFont}
         mono
+        chainBadge={t("pro.pay.direct.chain")}
       />
+      {opts?.showAmount !== false ? (
+        <CopyableValueRow
+          label={t("pro.pay.direct.amountLabel")}
+          value={formatUsdtAmount(plan.priceUsd)}
+          copied={copiedField === "amount"}
+          onCopy={() => void copyText(formatUsdtAmount(plan.priceUsd), "amount")}
+          copyLabel={t("pro.pay.direct.amountCopy")}
+          copiedLabel={t("pro.pay.direct.copied")}
+          colors={colors}
+          labelFont={labelFont}
+          mono
+          chainBadge="USDT"
+        />
+      ) : null}
       <CopyableValueRow
         label={t("pro.pay.memo.label")}
         value={memoValue}
@@ -645,7 +719,7 @@ export function ProPaymentMethodsDialog({
   );
 
   const topUpPanel = (
-    <View style={{ gap: 10, marginLeft: 32 }}>
+    <View style={{ gap: 10 }}>
       <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, fontFamily: labelFont }}>
         {hasEnoughDllr
           ? t("pro.pay.topup.anyAmountHint")
@@ -655,53 +729,99 @@ export function ProPaymentMethodsDialog({
               left: formatUsd(PRO_TOPUP_RESIDUAL_DLLR_USD),
             })}
       </Text>
-      <View style={{ flexDirection: "row", gap: 8 }}>
-        <View style={{ flex: 1, gap: 4 }}>
-          <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: labelFont }}>
-            {t("pro.pay.topup.dllrLabel")}
-          </Text>
-          <TextInput
-            value={dllrBuyInput}
-            onChangeText={(v) => {
-              setEditingField("dllr");
-              setDllrBuyInput(v);
-            }}
-            onFocus={() => setEditingField("dllr")}
-            keyboardType="decimal-pad"
-            placeholder={String(minTopUpUsd)}
-            placeholderTextColor={colors.secondary}
-            style={inputStyle}
-          />
-        </View>
-        <View style={{ flex: 1, gap: 4 }}>
-          <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: labelFont }}>
-            {t("pro.pay.topup.tonLabel")}
-          </Text>
-          <TextInput
-            value={tonPayInput}
-            onChangeText={(v) => {
-              setEditingField("ton");
-              setTonPayInput(v);
-            }}
-            onFocus={() => setEditingField("ton")}
-            keyboardType="decimal-pad"
-            placeholder="0"
-            placeholderTextColor={colors.secondary}
-            style={inputStyle}
-          />
-        </View>
+      <View style={{ gap: 4 }}>
+        <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: labelFont }}>
+          {t("pro.pay.topup.usdtLabel")}
+        </Text>
+        <TextInput
+          value={usdtPayInput}
+          onChangeText={setUsdtPayInput}
+          keyboardType="decimal-pad"
+          placeholder={String(minTopUpUsd)}
+          placeholderTextColor={colors.secondary}
+          style={inputStyle}
+        />
       </View>
       <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: labelFont }}>
-        {tf("pro.pay.topup.rateHintBuffered", {
-          rate: formatUsd(tonUsd),
-          buffer: `${Math.round((PRO_PAYMENT_TON_RATE_BUFFER - 1) * 100)}%`,
-        })}
+        {t("pro.pay.topup.usdtHint")}
       </Text>
-
-      {addressMemoBlock(memo, "memo")}
-
+      {addressMemoBlock(memo, "memo", { showAmount: false })}
     </View>
   );
+
+  const methodTile = (
+    id: PaymentMethodId,
+    title: string,
+    shortHint: string,
+    body: ReactNode,
+  ) => {
+    const expanded = method === id;
+    return (
+      <View
+        style={{
+          borderRadius: 14,
+          borderWidth: expanded ? 2 : 1,
+          borderColor: expanded ? colors.primary : colors.highlight,
+          backgroundColor: colors.undercover,
+          overflow: "hidden",
+        }}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ expanded }}
+          onPress={() => selectMethod(id)}
+          style={({ pressed }) => ({
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 12,
+            paddingHorizontal: 16,
+            paddingVertical: 16,
+            opacity: pressed ? 0.88 : 1,
+            backgroundColor: expanded ? colors.background : "transparent",
+          })}
+        >
+          <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
+            <Text
+              style={{
+                color: colors.primary,
+                fontSize: 16,
+                fontWeight: "700",
+                fontFamily: labelFont,
+              }}
+            >
+              {title}
+            </Text>
+            <Text
+              style={{
+                color: colors.secondary,
+                fontSize: 13,
+                lineHeight: 18,
+                fontFamily: labelFont,
+              }}
+              numberOfLines={expanded ? 4 : 2}
+            >
+              {shortHint}
+            </Text>
+          </View>
+          <MethodExpandChevron expanded={expanded} color={colors.secondary} />
+        </Pressable>
+        {expanded ? (
+          <View
+            style={{
+              gap: 12,
+              paddingHorizontal: 16,
+              paddingBottom: 16,
+              paddingTop: 4,
+              borderTopWidth: 1,
+              borderTopColor: colors.highlight,
+            }}
+          >
+            {body}
+          </View>
+        ) : null}
+      </View>
+    );
+  };
 
   return (
     <FloatingDialogShell
@@ -722,7 +842,7 @@ export function ProPaymentMethodsDialog({
             insets={dialogInsets}
             onClose={onClose}
             closeLabel={t("common.close")}
-            title={t("pro.pay.title")}
+            title={method != null ? t("pro.pay.titlePay") : t("pro.pay.title")}
             subtitle={tf("pro.pay.subtitle", { plan: planLabel, price: priceLabel })}
             onHeightChange={setHeaderExtendPx}
             leading={
@@ -747,7 +867,7 @@ export function ProPaymentMethodsDialog({
           <HspScrollColumn
             style={{ flex: 1, minHeight: 0 }}
             containOverscroll
-            scrollbarRightInsetPx={SCROLL_INDICATOR_OVERLAY_CHROME_BORDER_INSET_PX}
+            scrollbarRightInsetPx={2}
             scrollIndicatorOverlaySeam={false}
             contentContainerStyle={{
               paddingTop: 14,
@@ -757,24 +877,15 @@ export function ProPaymentMethodsDialog({
             }}
             indicatorColor={colors.scrollIndicator}
           >
-            <View style={rowStyle}>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setMethod("builtin")}
-                style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}
-              >
-                <MethodRadio selected={method === "builtin"} color={colors.primary} />
-                <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
-                  <Text
-                    style={{
-                      color: colors.primary,
-                      fontSize: 15,
-                      fontWeight: "700",
-                      fontFamily: labelFont,
-                    }}
-                  >
-                    {t("pro.pay.method.builtin")}
-                  </Text>
+            {methodTile(
+              "builtin",
+              t("pro.pay.method.builtin"),
+              tf("pro.pay.method.builtinShort", {
+                balance: formatUsd(dllrBalance),
+                price: priceLabel,
+              }),
+              hasEnoughDllr ? (
+                <View style={{ gap: 8 }}>
                   <Text
                     style={{
                       color: colors.secondary,
@@ -785,61 +896,11 @@ export function ProPaymentMethodsDialog({
                   >
                     {tf("pro.pay.method.builtinHint", {
                       balance: formatUsd(dllrBalance),
+                      hot: formatUsd(dllrHot),
+                      frozen: formatUsd(dllrFrozen),
                       price: priceLabel,
                     })}
                   </Text>
-                </View>
-              </Pressable>
-
-              {method === "builtin" ? (
-                hasEnoughDllr ? (
-                  <View style={{ gap: 8, marginLeft: 32 }}>
-                    <Text
-                      style={{
-                        color: colors.secondary,
-                        fontSize: 13,
-                        lineHeight: 18,
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {t("pro.pay.builtin.ready")}
-                    </Text>
-                    <Text
-                      style={{
-                        color: colors.secondary,
-                        fontSize: 12,
-                        lineHeight: 16,
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {t("pro.pay.topup.optionalMore")}
-                    </Text>
-                    {topUpPanel}
-                  </View>
-                ) : (
-                  topUpPanel
-                )
-              ) : null}
-            </View>
-
-            <View style={rowStyle}>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setMethod("direct")}
-                style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}
-              >
-                <MethodRadio selected={method === "direct"} color={colors.primary} />
-                <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
-                  <Text
-                    style={{
-                      color: colors.primary,
-                      fontSize: 15,
-                      fontWeight: "700",
-                      fontFamily: labelFont,
-                    }}
-                  >
-                    {t("pro.pay.method.direct")}
-                  </Text>
                   <Text
                     style={{
                       color: colors.secondary,
@@ -848,36 +909,22 @@ export function ProPaymentMethodsDialog({
                       fontFamily: labelFont,
                     }}
                   >
-                    {tf("pro.pay.method.directHint", { price: priceLabel })}
+                    {t("pro.pay.builtin.ready")}
                   </Text>
-                </View>
-              </Pressable>
-
-              {method === "direct" ? (
-                <View style={{ gap: 8, marginLeft: 32 }}>
-                  {addressMemoBlock(directMemo, "directMemo")}
-                </View>
-              ) : null}
-            </View>
-
-            <View style={rowStyle}>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setMethod("tonconnect")}
-                style={{ flexDirection: "row", alignItems: "flex-start", gap: 12 }}
-              >
-                <MethodRadio selected={method === "tonconnect"} color={colors.primary} />
-                <View style={{ flex: 1, gap: 4, minWidth: 0 }}>
                   <Text
                     style={{
-                      color: colors.primary,
-                      fontSize: 15,
-                      fontWeight: "700",
+                      color: colors.secondary,
+                      fontSize: 12,
+                      lineHeight: 16,
                       fontFamily: labelFont,
                     }}
                   >
-                    {t("pro.pay.method.tonconnect")}
+                    {t("pro.pay.topup.optionalMore")}
                   </Text>
+                  {topUpPanel}
+                </View>
+              ) : (
+                <View style={{ gap: 8 }}>
                   <Text
                     style={{
                       color: colors.secondary,
@@ -886,114 +933,168 @@ export function ProPaymentMethodsDialog({
                       fontFamily: labelFont,
                     }}
                   >
-                    {t("pro.pay.method.tonconnectHint")}
-                  </Text>
-                </View>
-              </Pressable>
-
-              {method === "tonconnect" ? (
-                <View style={{ gap: 8, marginLeft: 32 }}>
-                  {wallets.length === 0 ? (
-                    <Text
-                      style={{
-                        color: colors.secondary,
-                        fontSize: 13,
-                        lineHeight: 18,
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {t("pro.pay.tonconnect.empty")}
-                    </Text>
-                  ) : (
-                    wallets.map((wallet) => {
-                      const key = (wallet.friendlyAddress || wallet.address).trim();
-                      const keyNorm = key.toLowerCase();
-                      const selected = effectiveWalletKey === keyNorm;
-                      const label =
-                        wallet.name?.trim() ||
-                        middleEllipsis(wallet.friendlyAddress || wallet.address);
-                      return (
-                        <Pressable
-                          key={keyNorm}
-                          accessibilityRole="button"
-                          onPress={() => void selectRememberedWallet(keyNorm)}
-                          style={{
-                            ...subRowStyle,
-                            flexDirection: "row",
-                            alignItems: "center",
-                            gap: 10,
-                            borderColor: selected ? colors.primary : colors.highlight,
-                          }}
-                        >
-                          {wallet.imageUrl ? (
-                            <Image
-                              source={{ uri: wallet.imageUrl }}
-                              style={{ width: 22, height: 22, borderRadius: 6 }}
-                            />
-                          ) : (
-                            <View
-                              style={{
-                                width: 22,
-                                height: 22,
-                                borderRadius: 6,
-                                backgroundColor: colors.highlight,
-                              }}
-                            />
-                          )}
-                          <View style={{ flex: 1, minWidth: 0 }}>
-                            <Text
-                              numberOfLines={1}
-                              style={{
-                                color: colors.primary,
-                                fontSize: 13,
-                                fontWeight: "600",
-                                fontFamily: labelFont,
-                              }}
-                            >
-                              {label}
-                            </Text>
-                            <Text
-                              numberOfLines={1}
-                              style={{
-                                color: colors.secondary,
-                                fontSize: 11,
-                                fontFamily:
-                                  Platform.OS === "web" ? WEB_UI_MONO_STACK : FONT_UI_SANS_REGULAR,
-                              }}
-                            >
-                              {middleEllipsis(wallet.friendlyAddress || wallet.address)}
-                            </Text>
-                          </View>
-                          <MethodRadio selected={selected} color={colors.primary} />
-                        </Pressable>
-                      );
-                    })
-                  )}
-                  {addressMemoBlock(directMemo, "directMemo")}
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={connectBusy}
-                    onPress={() => void openWalletPicker()}
-                    style={({ pressed }) => ({
-                      ...subRowStyle,
-                      opacity: connectBusy ? 0.55 : pressed ? 0.85 : 1,
-                      alignItems: "center",
+                    {tf("pro.pay.method.builtinHint", {
+                      balance: formatUsd(dllrBalance),
+                      hot: formatUsd(dllrHot),
+                      frozen: formatUsd(dllrFrozen),
+                      price: priceLabel,
                     })}
-                  >
-                    <Text
-                      style={{
-                        color: colors.primary,
-                        fontSize: 14,
-                        fontWeight: "700",
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {t("get.connectAnotherWallet")}
-                    </Text>
-                  </Pressable>
+                  </Text>
+                  {topUpPanel}
                 </View>
-              ) : null}
-            </View>
+              ),
+            )}
+
+            {methodTile(
+              "direct",
+              t("pro.pay.method.direct"),
+              tf("pro.pay.method.directShort", { price: priceLabel }),
+              <View style={{ gap: 8 }}>
+                <Text
+                  style={{
+                    color: colors.secondary,
+                    fontSize: 13,
+                    lineHeight: 18,
+                    fontFamily: labelFont,
+                  }}
+                >
+                  {tf("pro.pay.method.directHint", { price: priceLabel })}
+                </Text>
+                {addressMemoBlock(directMemo, "directMemo")}
+              </View>,
+            )}
+
+            {methodTile(
+              "tonconnect",
+              t("pro.pay.method.tonconnect"),
+              t("pro.pay.method.tonconnectShort"),
+              <View style={{ gap: 10 }}>
+                <Text
+                  style={{
+                    color: colors.secondary,
+                    fontSize: 13,
+                    lineHeight: 18,
+                    fontFamily: labelFont,
+                  }}
+                >
+                  {t("pro.pay.method.tonconnectHint")}
+                </Text>
+                <CopyableValueRow
+                  label={t("pro.pay.direct.amountLabel")}
+                  value={formatUsdtAmount(plan.priceUsd)}
+                  copied={copiedField === "amount"}
+                  onCopy={() => void copyText(formatUsdtAmount(plan.priceUsd), "amount")}
+                  copyLabel={t("pro.pay.direct.amountCopy")}
+                  copiedLabel={t("pro.pay.direct.copied")}
+                  colors={colors}
+                  labelFont={labelFont}
+                  mono
+                  chainBadge="USDT"
+                />
+                <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: labelFont }}>
+                  {t("pro.pay.topup.usdtHint")}
+                </Text>
+                {wallets.length === 0 ? (
+                  <Text
+                    style={{
+                      color: colors.secondary,
+                      fontSize: 13,
+                      lineHeight: 18,
+                      fontFamily: labelFont,
+                    }}
+                  >
+                    {t("pro.pay.tonconnect.empty")}
+                  </Text>
+                ) : (
+                  wallets.map((wallet) => {
+                    const key = (wallet.friendlyAddress || wallet.address).trim();
+                    const keyNorm = key.toLowerCase();
+                    const selected = effectiveWalletKey === keyNorm;
+                    const label =
+                      wallet.name?.trim() ||
+                      middleEllipsis(wallet.friendlyAddress || wallet.address);
+                    return (
+                      <Pressable
+                        key={keyNorm}
+                        accessibilityRole="button"
+                        onPress={() => void selectRememberedWallet(keyNorm)}
+                        style={{
+                          ...subRowStyle,
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 10,
+                          borderColor: selected ? colors.primary : colors.highlight,
+                        }}
+                      >
+                        {wallet.imageUrl ? (
+                          <Image
+                            source={{ uri: wallet.imageUrl }}
+                            style={{ width: 22, height: 22, borderRadius: 6 }}
+                          />
+                        ) : (
+                          <View
+                            style={{
+                              width: 22,
+                              height: 22,
+                              borderRadius: 6,
+                              backgroundColor: colors.highlight,
+                            }}
+                          />
+                        )}
+                        <View style={{ flex: 1, minWidth: 0 }}>
+                          <Text
+                            numberOfLines={1}
+                            style={{
+                              color: colors.primary,
+                              fontSize: 13,
+                              fontWeight: "600",
+                              fontFamily: labelFont,
+                            }}
+                          >
+                            {label}
+                          </Text>
+                          <Text
+                            numberOfLines={1}
+                            style={{
+                              color: colors.secondary,
+                              fontSize: 11,
+                              fontFamily:
+                                Platform.OS === "web" ? WEB_UI_MONO_STACK : FONT_UI_SANS_REGULAR,
+                            }}
+                          >
+                            {middleEllipsis(wallet.friendlyAddress || wallet.address)}
+                          </Text>
+                        </View>
+                        <MethodRadio selected={selected} color={colors.primary} />
+                      </Pressable>
+                    );
+                  })
+                )}
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={connectBusy}
+                  onPress={() => void openWalletPicker()}
+                  style={({ pressed }) => ({
+                    ...subRowStyle,
+                    opacity: connectBusy ? 0.55 : pressed ? 0.85 : 1,
+                    alignItems: "center",
+                  })}
+                >
+                  <Text
+                    style={{
+                      color: colors.primary,
+                      fontSize: 14,
+                      fontWeight: "700",
+                      fontFamily: labelFont,
+                    }}
+                  >
+                    {ton.connected
+                      ? t("get.connectAnotherWallet")
+                      : t("pro.pay.topup.connectToBuy")}
+                  </Text>
+                </Pressable>
+              </View>,
+            )}
 
             {statusMsg ? (
               <Text
@@ -1030,6 +1131,7 @@ export function ProPaymentMethodsDialog({
             >
               <ProSubscribeButton
                 label={finalCta.label}
+                disabled={finalCta.disabled}
                 onPress={() => void onFinalCta()}
               />
               <Text
@@ -1042,22 +1144,75 @@ export function ProPaymentMethodsDialog({
                   fontFamily: labelFont,
                 }}
               >
-                {t("pro.pay.support.before")}
+                {t("pro.pay.footer")}
+              </Text>
+              <View
+                style={{
+                  flexDirection: "row",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  alignSelf: "stretch",
+                  gap: 4,
+                }}
+              >
                 <Text
+                  style={{
+                    color: colors.secondary,
+                    fontSize: 12,
+                    lineHeight: 16,
+                    fontFamily: labelFont,
+                  }}
+                >
+                  {t("pro.pay.support.before")}
+                </Text>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t("pro.pay.support.link")}
+                  hitSlop={4}
                   onPress={() => {
                     onClose();
                     requestOpenSupportChat();
                   }}
+                  style={({ pressed }) => ({
+                    height: 16,
+                    paddingHorizontal: 6,
+                    borderRadius: 8,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: pressed
+                      ? colors.highlight
+                      : colors.undercover,
+                    flexShrink: 0,
+                  })}
+                >
+                  <Text
+                    style={{
+                      color: colors.primary,
+                      fontSize: 10,
+                      lineHeight: 12,
+                      fontWeight: "400",
+                      fontFamily: labelFont,
+                      ...(Platform.OS === "android"
+                        ? { includeFontPadding: false }
+                        : null),
+                    }}
+                    numberOfLines={1}
+                  >
+                    {t("pro.pay.support.link")}
+                  </Text>
+                </Pressable>
+                <Text
                   style={{
-                    color: colors.primary,
-                    textDecorationLine: "underline",
+                    color: colors.secondary,
+                    fontSize: 12,
+                    lineHeight: 16,
                     fontFamily: labelFont,
                   }}
                 >
-                  {t("pro.pay.support.link")}
+                  {t("pro.pay.support.after")}
                 </Text>
-                {t("pro.pay.support.after")}
-              </Text>
+              </View>
             </View>
           </View>
         </FloatingDialogBody>

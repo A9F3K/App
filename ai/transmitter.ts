@@ -6,6 +6,7 @@ import {
 } from "./llmRouter.js";
 import { enrichWithTinyModel, type TinyModelEnrichmentMeta } from "./tinymodel.js";
 import { actionsFromRouteHint } from "./intentActions.js";
+import { toPublicAiErrorCode } from "./publicAiErrors.js";
 import {
   getTokenBySymbol,
   normalizeSymbol,
@@ -25,6 +26,11 @@ export type AiRequest = AiRequestBase & {
    * TinyModel enrichment always uses `input` (latest user text only).
    */
   llmInput?: string;
+  /** User tools-dialog preference (auto / Tiny Model / fixed model). */
+  routePreference?: {
+    modelMode?: "auto" | "tinymodel" | "model";
+    modelId?: string | null;
+  } | null;
 };
 
 export type AiResponse = AiResponseBase;
@@ -292,12 +298,29 @@ export async function transmit(request: AiRequest): Promise<AiResponse> {
     input,
   );
 
-  if (enrichment && canAnswerWithTinyModel(request.input, tinymodel)) {
-    const result = tinyOnlyResponse(request, enrichment);
-    if (result.ok && result.output_text && thread) {
-      await persistAssistantMessage(thread, result.output_text);
+  const pref = request.routePreference;
+  const forceTiny = pref?.modelMode === "tinymodel";
+  if (
+    forceTiny ||
+    (pref?.modelMode !== "model" &&
+      enrichment &&
+      canAnswerWithTinyModel(request.input, tinymodel))
+  ) {
+    if (forceTiny && !enrichment) {
+      return {
+        ok: false,
+        provider: "tinymodel",
+        mode,
+        error: toPublicAiErrorCode("ai_unavailable"),
+      };
     }
-    return result;
+    if (enrichment) {
+      const result = tinyOnlyResponse(request, enrichment);
+      if (result.ok && result.output_text && thread) {
+        await persistAssistantMessage(thread, result.output_text);
+      }
+      return result;
+    }
   }
 
   const result = await callOpenAiChat(mode, {
@@ -306,7 +329,23 @@ export async function transmit(request: AiRequest): Promise<AiResponse> {
     context: request.context,
     instructions: request.instructions,
     tinymodel,
+    routePreference: pref,
   });
+
+  if (!result.ok && enrichment) {
+    // Provider rate-limit / outage: answer from program knowledge when we have any context.
+    const degraded = tinyOnlyResponse(request, enrichment);
+    if (degraded.ok && degraded.output_text?.trim()) {
+      if (thread) await persistAssistantMessage(thread, degraded.output_text);
+      return {
+        ...degraded,
+        meta: {
+          ...(degraded.meta ?? {}),
+          degraded_from: result.error ?? "ai_unavailable",
+        },
+      };
+    }
+  }
 
   if (result.ok && result.output_text && thread) {
     await persistAssistantMessage(thread, result.output_text);
@@ -314,6 +353,7 @@ export async function transmit(request: AiRequest): Promise<AiResponse> {
   const actions = actionsFromRouteHint(tinymodel?.route);
   return {
     ...result,
+    error: result.ok ? result.error : toPublicAiErrorCode(result.error),
     ...(actions.length > 0 ? { actions } : {}),
     meta: {
       ...(result.meta ?? {}),
@@ -434,13 +474,30 @@ export async function transmitStream(
     input,
   );
 
-  if (enrichment && canAnswerWithTinyModel(request.input, tinymodel)) {
-    const result = tinyOnlyResponse(request, enrichment);
-    if (result.ok && result.output_text) {
-      await onDelta(result.output_text);
-      if (thread) await persistAssistantMessage(thread, result.output_text);
+  const pref = request.routePreference;
+  const forceTiny = pref?.modelMode === "tinymodel";
+  if (
+    forceTiny ||
+    (pref?.modelMode !== "model" &&
+      enrichment &&
+      canAnswerWithTinyModel(request.input, tinymodel))
+  ) {
+    if (forceTiny && !enrichment) {
+      return {
+        ok: false,
+        provider: "tinymodel",
+        mode,
+        error: toPublicAiErrorCode("ai_unavailable"),
+      };
     }
-    return result;
+    if (enrichment) {
+      const result = tinyOnlyResponse(request, enrichment);
+      if (result.ok && result.output_text) {
+        await onDelta(result.output_text);
+        if (thread) await persistAssistantMessage(thread, result.output_text);
+      }
+      return result;
+    }
   }
 
   const result = await callOpenAiChatStream(
@@ -451,10 +508,26 @@ export async function transmitStream(
       context: request.context,
       instructions: request.instructions,
       tinymodel,
+      routePreference: pref,
     },
     onDelta,
     opts,
   );
+
+  if (!result.ok && enrichment) {
+    const degraded = tinyOnlyResponse(request, enrichment);
+    if (degraded.ok && degraded.output_text?.trim()) {
+      await onDelta(degraded.output_text);
+      if (thread) await persistAssistantMessage(thread, degraded.output_text);
+      return {
+        ...degraded,
+        meta: {
+          ...(degraded.meta ?? {}),
+          degraded_from: result.error ?? "ai_unavailable",
+        },
+      };
+    }
+  }
 
   if (result.ok && result.output_text && thread) {
     await persistAssistantMessage(thread, result.output_text);
@@ -462,6 +535,7 @@ export async function transmitStream(
   const actions = actionsFromRouteHint(tinymodel?.route);
   return {
     ...result,
+    error: result.ok ? result.error : toPublicAiErrorCode(result.error),
     ...(actions.length > 0 ? { actions } : {}),
     meta: {
       ...(result.meta ?? {}),

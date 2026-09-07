@@ -12,6 +12,7 @@ import {
   snapScrollIndicatorCoordPx,
 } from "../scrollIndicatorPx";
 import { layout } from "../theme";
+import { HSP_FLOATING_DIALOG_GEOMETRY_EVENT } from "./floatingDialogGeometry";
 import { peekTopFloatingSurfaceZ } from "./floatingSurfaceStack";
 import { ScrollIndicatorDragHandle } from "./ScrollIndicatorDragHandle";
 import { useTelegram } from "./Telegram";
@@ -127,6 +128,8 @@ export function HspVerticalScrollIndicator({
   const [dialogChrome, setDialogChrome] = useState<{
     box: DialogChromeBox;
   } | null>(null);
+  /** Bumps on geometry events so portaled thumbs re-read live rects after CSS transform moves. */
+  const [geometryEpoch, setGeometryEpoch] = useState(0);
 
   const applySeamBox = useCallback(
     (x: number, y: number, w: number, h: number): boolean => {
@@ -211,6 +214,7 @@ export function HspVerticalScrollIndicator({
     }
     const onWin = () => {
       syncSeamBox();
+      setGeometryEpoch((n) => n + 1);
     };
     let ro: ResizeObserver | null = null;
     const observeShell = () => {
@@ -248,6 +252,7 @@ export function HspVerticalScrollIndicator({
 
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
+    window.addEventListener(HSP_FLOATING_DIALOG_GEOMETRY_EVENT, onWin);
     const visualViewport = window.visualViewport;
     visualViewport?.addEventListener("resize", onWin);
     visualViewport?.addEventListener("scroll", onWin);
@@ -257,6 +262,7 @@ export function HspVerticalScrollIndicator({
       cancelAnimationFrame(rafId);
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
+      window.removeEventListener(HSP_FLOATING_DIALOG_GEOMETRY_EVENT, onWin);
       visualViewport?.removeEventListener("resize", onWin);
       visualViewport?.removeEventListener("scroll", onWin);
       ro?.disconnect();
@@ -270,6 +276,7 @@ export function HspVerticalScrollIndicator({
     }
     const onWin = () => {
       syncDialogChrome();
+      setGeometryEpoch((n) => n + 1);
     };
     let ro: ResizeObserver | null = null;
     const observe = () => {
@@ -303,6 +310,7 @@ export function HspVerticalScrollIndicator({
 
     window.addEventListener("resize", onWin);
     window.addEventListener("scroll", onWin, true);
+    window.addEventListener(HSP_FLOATING_DIALOG_GEOMETRY_EVENT, onWin);
     const visualViewport = window.visualViewport;
     visualViewport?.addEventListener("resize", onWin);
     visualViewport?.addEventListener("scroll", onWin);
@@ -312,6 +320,7 @@ export function HspVerticalScrollIndicator({
       cancelAnimationFrame(rafId);
       window.removeEventListener("resize", onWin);
       window.removeEventListener("scroll", onWin, true);
+      window.removeEventListener(HSP_FLOATING_DIALOG_GEOMETRY_EVENT, onWin);
       visualViewport?.removeEventListener("resize", onWin);
       visualViewport?.removeEventListener("scroll", onWin);
       ro?.disconnect();
@@ -356,7 +365,7 @@ export function HspVerticalScrollIndicator({
           ),
         }
       : null;
-  const activeBox = seamBox ?? fallbackBox;
+  const activeBox = fallbackBox ?? seamBox;
   const columnRightPx = activeBox?.rightPx ?? shellRightPx ?? viewportRightPx ?? 0;
   const flushRight = isSplitColumnFlushRight(shellDom);
   const atViewportRightEdge =
@@ -446,8 +455,8 @@ export function HspVerticalScrollIndicator({
     const bodyRect = body?.getBoundingClientRect();
     const sheetRect = sheet?.getBoundingClientRect();
     const shellRectNow = shellDomNow?.getBoundingClientRect();
-    const box: DialogChromeBox | null = dialogChrome?.box
-      ?? (bodyRect && sheetRect && bodyRect.height > 0 && sheetRect.width > 0
+    const box: DialogChromeBox | null =
+      bodyRect && sheetRect && bodyRect.height > 0 && sheetRect.width > 0
         ? {
             topPx: snapScrollIndicatorCoordPx(bodyRect.top),
             heightPx: snapScrollIndicatorCoordPx(Math.max(trackH, bodyRect.height)),
@@ -461,7 +470,7 @@ export function HspVerticalScrollIndicator({
               ),
               rightPx: snapScrollIndicatorCoordPx(shellRectNow.right),
             }
-          : null);
+          : dialogChrome?.box ?? null;
     if (box) {
       const portalZ = Math.max(DIALOG_BODY_PORTAL_Z_FLOOR, peekTopFloatingSurfaceZ() + 1);
       const portalLeft = snapScrollIndicatorCoordPx(box.rightPx - DIALOG_THUMB_CROSS_AXIS_PX);
@@ -469,7 +478,7 @@ export function HspVerticalScrollIndicator({
         <View
           pointerEvents="none"
           {...({
-            dataSet: { hspDialogScrollIndicator: "1" },
+            dataSet: { hspDialogScrollIndicator: "1", geometryEpoch: String(geometryEpoch) },
           } as object)}
           style={{
             position: "fixed" as unknown as "absolute",

@@ -46,7 +46,12 @@ export function AiChatPanel({ initialPrompt, screenRoute }: Props) {
         });
 
         if (!res.ok) {
-          setError(res.error ?? t("ai.errorGeneric"));
+          const code = String(res.error ?? "");
+          if (code === "ai_capacity" || code === "free_ai_limit" || code === "ai_not_configured") {
+            setError(t("ai.capacity.body"));
+          } else {
+            setError(t("ai.errorGeneric"));
+          }
           return;
         }
 

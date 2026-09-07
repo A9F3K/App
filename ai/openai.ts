@@ -10,6 +10,11 @@ import {
   type LlmBackend,
 } from "./llmRouter.js";
 import type { TinyModelEnrichmentMeta } from "./tinymodel.js";
+import {
+  classifyAiProviderError,
+  isAiCapacityError,
+  toPublicAiErrorCode,
+} from "./publicAiErrors.js";
 
 export type AiMode = "chat" | "token_info";
 
@@ -107,6 +112,10 @@ export async function callOpenAiChat(
     preferFrontier?: boolean;
     /** Skip gateway and use OpenAI only (rare). */
     forceOpenAi?: boolean;
+    routePreference?: {
+      modelMode?: "auto" | "tinymodel" | "model";
+      modelId?: string | null;
+    } | null;
   },
 ): Promise<AiResponseBase> {
   const trimmed = params.input?.trim();
@@ -131,6 +140,7 @@ export async function callOpenAiChat(
     : resolveLlmRoute(trimmed, params.tinymodel, {
         preferFrontier: params.preferFrontier || mode === "token_info",
         allowTinyOnly: false,
+        preference: params.routePreference,
       });
 
   if ("error" in route) {
@@ -138,7 +148,7 @@ export async function callOpenAiChat(
       ok: false,
       provider: isVercelGatewayConfigured() ? "vercel_gateway" : "openai",
       mode,
-      error: route.error,
+      error: toPublicAiErrorCode(route.error),
     };
   }
 
@@ -175,13 +185,30 @@ export async function callOpenAiChat(
       ok: false,
       provider: "openai",
       mode,
-      error:
-        "No AI provider configured. Set AI_GATEWAY_API_KEY (Vercel AI Gateway) or OPENAI on the server.",
+      error: "ai_not_configured",
     };
   }
 
-  let lastError = "Failed to call AI provider.";
-  for (const attempt of attempts) {
+  // Prefer primary route, then a cheap Gateway mini, then OpenAI direct (already listed).
+  const seen = new Set<string>();
+  const uniqueAttempts: typeof attempts = [];
+  for (const a of attempts) {
+    const key = `${a.backend}:${a.model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueAttempts.push(a);
+  }
+  if (isVercelGatewayConfigured()) {
+    const gw = gatewayClient();
+    const cheap = process.env.AI_GATEWAY_MINI_MODEL?.trim() || "openai/gpt-4.1-mini";
+    if (gw && !seen.has(`vercel_gateway:${cheap}`)) {
+      uniqueAttempts.push({ backend: "vercel_gateway", client: gw, model: cheap });
+    }
+  }
+
+  let lastError = "ai_unavailable";
+  let sawCapacity = false;
+  for (const attempt of uniqueAttempts) {
     try {
       const { output_text, usage } = await runResponsesCreate(attempt.client, {
         model: attempt.model,
@@ -189,7 +216,7 @@ export async function callOpenAiChat(
         instructions: params.instructions,
       });
       if (!output_text?.trim()) {
-        lastError = `${attempt.backend} returned no text.`;
+        lastError = "ai_unavailable";
         continue;
       }
       return {
@@ -206,26 +233,34 @@ export async function callOpenAiChat(
         },
       };
     } catch (e: unknown) {
-      lastError =
-        e instanceof Error
-          ? e.message
-          : `Failed to call ${attempt.backend}. Check env and network.`;
+      const classified = classifyAiProviderError(e);
+      if (classified.rateLimited || isAiCapacityError(e)) sawCapacity = true;
+      lastError = classified.code;
+      // Try next backend/model — never surface vendor messages.
+      continue;
     }
   }
 
   return {
     ok: false,
-    provider: attempts[0]?.backend ?? "openai",
+    provider: uniqueAttempts[0]?.backend ?? "openai",
     mode,
-    error: lastError,
-    meta: { attempted: attempts.map((a) => a.backend) },
+    error: sawCapacity ? "ai_capacity" : toPublicAiErrorCode(lastError),
+    meta: { attempted: uniqueAttempts.map((a) => a.backend) },
   };
 }
 
 /** Call with streaming; Gateway first, then OpenAI. */
 export async function callOpenAiChatStream(
   mode: AiMode,
-  params: AiRequestBase & { tinymodel?: TinyModelEnrichmentMeta; preferFrontier?: boolean },
+  params: AiRequestBase & {
+    tinymodel?: TinyModelEnrichmentMeta;
+    preferFrontier?: boolean;
+    routePreference?: {
+      modelMode?: "auto" | "tinymodel" | "model";
+      modelId?: string | null;
+    } | null;
+  },
   onDelta: (text: string) => void | Promise<void>,
   opts?: { isCancelled?: () => boolean; getAbortSignal?: () => Promise<boolean> },
 ): Promise<AiResponseBase> {
@@ -242,13 +277,14 @@ export async function callOpenAiChatStream(
   const route = resolveLlmRoute(trimmed, params.tinymodel, {
     preferFrontier: params.preferFrontier || mode === "token_info",
     allowTinyOnly: false,
+    preference: params.routePreference,
   });
   if ("error" in route) {
     return {
       ok: false,
       provider: "openai",
       mode,
-      error: route.error,
+      error: toPublicAiErrorCode(route.error),
     };
   }
 
@@ -285,12 +321,12 @@ export async function callOpenAiChatStream(
       ok: false,
       provider: "openai",
       mode,
-      error:
-        "No AI provider configured. Set AI_GATEWAY_API_KEY (Vercel AI Gateway) or OPENAI on the server.",
+      error: "ai_not_configured",
     };
   }
 
-  let lastError = "Failed to stream AI response.";
+  let lastError = "ai_unavailable";
+  let sawCapacity = false;
   for (const attempt of attempts) {
     try {
       const stream = attempt.client.responses.stream({
@@ -343,7 +379,7 @@ export async function callOpenAiChatStream(
         output_text = parts.join("");
       }
       if (output_text == null || String(output_text).trim() === "") {
-        lastError = `${attempt.backend} returned no text.`;
+        lastError = "ai_unavailable";
         continue;
       }
       return {
@@ -355,10 +391,10 @@ export async function callOpenAiChatStream(
         meta: { model: attempt.model, backend: attempt.backend },
       };
     } catch (e: unknown) {
-      lastError =
-        e instanceof Error
-          ? e.message
-          : `Failed to stream ${attempt.backend}. Check env and network.`;
+      const classified = classifyAiProviderError(e);
+      if (classified.rateLimited || isAiCapacityError(e)) sawCapacity = true;
+      lastError = classified.code;
+      continue;
     }
   }
 
@@ -366,7 +402,7 @@ export async function callOpenAiChatStream(
     ok: false,
     provider: attempts[0]?.backend ?? "openai",
     mode,
-    error: lastError,
+    error: sawCapacity ? "ai_capacity" : toPublicAiErrorCode(lastError),
   };
 }
 

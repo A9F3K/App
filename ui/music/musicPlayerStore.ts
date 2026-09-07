@@ -303,6 +303,29 @@ export function seekMusicRatio(ratio: number): void {
   });
 }
 
+/** Seek to an absolute time (seconds) and keep / resume playback. */
+export function seekMusicSeconds(seconds: number, playing = true): void {
+  if (!snapshot.visible || snapshot.tracks.length === 0) return;
+  const track = snapshot.tracks[snapshot.index];
+  const duration =
+    snapshot.duration > 0
+      ? snapshot.duration
+      : Number(track?.duration_sec) > 0
+        ? Number(track?.duration_sec)
+        : 0;
+  const next =
+    duration > 0
+      ? Math.max(0, Math.min(duration, seconds))
+      : Math.max(0, seconds);
+  setSnapshot({
+    currentTime: next,
+    duration: duration > 0 ? duration : snapshot.duration,
+    seekTo: next,
+    seekSeq: snapshot.seekSeq + 1,
+    playing,
+  });
+}
+
 export function reportMusicTime(currentTime: number, duration: number): void {
   const nextDuration =
     Number.isFinite(duration) && duration > 0 ? duration : snapshot.duration;

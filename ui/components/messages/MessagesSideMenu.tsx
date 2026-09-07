@@ -44,10 +44,13 @@ import {
 } from "../../messages/messengerAccountsStore";
 import {
   isProAccessActive,
+  hasProFeature,
   subscribeProAccess,
 } from "../../pro/proAccessStore";
+import { subscribeProCatalog } from "../../pro/proCatalogStore";
 import { AccountLimitReachedDialog } from "../../pro/AccountLimitReachedDialog";
 import { ProAccessDialog } from "../../pro/ProAccessDialog";
+import { subscribeOpenProAccess } from "../../pro/openProAccess";
 import { FloatingDialogCloseButton } from "../FloatingDialogCloseButton";
 import {
   allocateFloatingSurfaceId,
@@ -290,8 +293,18 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
     isProAccessActive,
     isProAccessActive,
   );
+  const unlimitedAccounts = useSyncExternalStore(
+    subscribeProCatalog,
+    () => hasProFeature("unlimitedAccounts"),
+    () => hasProFeature("unlimitedAccounts"),
+  );
   const [limitDialogOpen, setLimitDialogOpen] = useState(false);
   const [proDialogOpen, setProDialogOpen] = useState(false);
+
+  useEffect(() => {
+    return subscribeOpenProAccess(() => setProDialogOpen(true));
+  }, []);
+
   const [mounted, setMounted] = useState(visible);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [accountsExpanded, setAccountsExpanded] = useState(false);
@@ -519,12 +532,12 @@ export function MessagesSideMenu({ visible, onClose }: Props) {
 
   const handleAddAccount = useCallback(() => {
     const count = Math.max(connectedAccounts.length, storedAccounts.length);
-    if (!proActive && count >= FREE_MESSENGER_ACCOUNT_LIMIT) {
+    if (!unlimitedAccounts && count >= FREE_MESSENGER_ACCOUNT_LIMIT) {
       setLimitDialogOpen(true);
       return;
     }
     openConnectSheet({ addAccount: true });
-  }, [connectedAccounts.length, openConnectSheet, proActive, storedAccounts.length]);
+  }, [connectedAccounts.length, openConnectSheet, storedAccounts.length, unlimitedAccounts]);
 
   const handleSwitchAccount = useCallback(
     async (account: { key: string; slot: number; active: boolean }) => {

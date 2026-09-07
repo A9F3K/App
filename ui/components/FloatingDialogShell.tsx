@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -24,6 +25,7 @@ import {
   cursorForFloatingDialogHandle,
   edgesForFloatingDialogHandle,
   FLOATING_DIALOG_HANDLES,
+  notifyFloatingDialogGeometryChanged,
   readFloatingDialogStoredOffset,
   readFloatingDialogStoredSize,
   writeFloatingDialogStoredOffset,
@@ -457,6 +459,13 @@ export function FloatingDialogShell({
       clampFloatingDialogOffset(prev, sheetSizeRef.current, windowWidth, windowHeight),
     );
   }, [clampSize, windowHeight, windowWidth]);
+
+  // Transform moves do not fire ResizeObserver — tell fixed scroll thumbs to remeasure
+  // after the translate is committed to the DOM (layout effect = before paint).
+  useLayoutEffect(() => {
+    if (!visible || Platform.OS !== "web") return;
+    notifyFloatingDialogGeometryChanged();
+  }, [visible, sheetOffset.x, sheetOffset.y, sheetSize.width, sheetSize.height]);
 
   const endDrag = useCallback(() => {
     const drag = dragRef.current;

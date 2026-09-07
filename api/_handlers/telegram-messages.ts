@@ -1129,15 +1129,20 @@ async function finishBinaryStream(
 ): Promise<Response | void> {
   const status = upstream.status || 200;
   const mime = upstream.headers.get("Content-Type") || "audio/mpeg";
+  const contentLength = upstream.headers.get("Content-Length");
+  // Only advertise byte ranges when the upstream body has a known length. Progressive
+  // Telegram downloads often omit Content-Length; claiming Accept-Ranges: bytes then
+  // causes Chromium mid-play Range fetches that decode-fail (PIPELINE_ERROR_DECODE).
+  const acceptRanges =
+    contentLength && upstream.headers.get("Accept-Ranges") === "bytes" ? "bytes" : "none";
   const headers = new Headers({
     "Content-Type": mime,
     "Cache-Control": cacheControl,
-    "Accept-Ranges": upstream.headers.get("Accept-Ranges") || "bytes",
+    "Accept-Ranges": acceptRanges,
     "X-Accel-Buffering": "no",
   });
   const contentRange = upstream.headers.get("Content-Range");
-  if (contentRange) headers.set("Content-Range", contentRange);
-  const contentLength = upstream.headers.get("Content-Length");
+  if (contentRange && acceptRanges === "bytes") headers.set("Content-Range", contentRange);
   if (contentLength) headers.set("Content-Length", contentLength);
   applyAuthApiCors(request, headers);
   if (res) {

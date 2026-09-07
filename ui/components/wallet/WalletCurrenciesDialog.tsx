@@ -1,10 +1,12 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useWindowDimensions } from "react-native";
 
 import { useAppStrings } from "../../../locales/AppStringsContext";
+import { openAuthenticatedHomeRightPanel } from "../../authenticatedHomeRightPanel";
 import { useWalletHeldCurrencyRows } from "../../wallet/useWalletHeldCurrencyRows";
-import { getInitDataString } from "../telegramWebApp";
 import { formatWalletDialogSubtitle } from "../../wallet/formatWalletDialogSubtitle";
+import type { ChooseCurrencyRow } from "../swap/chooseCurrencyTableTypes";
+import { getInitDataString } from "../telegramWebApp";
 import { resolveFloatingDialogInsets } from "../floatingDialogChrome";
 import { resolveFloatingDialogDefaultSize } from "../floatingDialogGeometry";
 import { FloatingDialogShell } from "../FloatingDialogShell";
@@ -42,6 +44,14 @@ export function WalletCurrenciesDialog({
   const title = titleProp ?? t("home.header.walletCurrenciesTitle");
   const subtitle = formatWalletDialogSubtitle(displayName, walletAddress, t, tf);
 
+  const onWalletAction = useCallback(
+    (action: "send" | "swap" | "get", _row: ChooseCurrencyRow) => {
+      openAuthenticatedHomeRightPanel(action);
+      onClose();
+    },
+    [onClose],
+  );
+
   return (
     <FloatingDialogShell
       visible={visible}
@@ -69,6 +79,7 @@ export function WalletCurrenciesDialog({
           prefetchCharts={false}
           listEmptyMessage={t("home.header.walletCurrenciesEmpty")}
           contentInsetPx={dialogInsets.padX}
+          onWalletAction={onWalletAction}
         />
       </FloatingDialogBody>
     </FloatingDialogShell>

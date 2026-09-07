@@ -349,9 +349,16 @@ export function buildFounderModelBundle(
     calibration?: FounderCalibrationResult | null;
     railwayTotalUsdMonth?: number | null;
     gcpUsdMonth?: number | null;
+    tariffsOverride?: {
+      monthUsd: number;
+      quarterTotalUsd: number;
+      yearTotalUsd: number;
+    } | null;
   },
 ) {
-  const tariffs = resolveFounderTariffs();
+  const tariffs = opts?.tariffsOverride
+    ? resolveFounderTariffs(opts.tariffsOverride)
+    : resolveFounderTariffs();
   const costs = resolveFounderCostInputs();
   const vercel = opts?.vercel ?? null;
   const probe = opts?.probe ?? null;
