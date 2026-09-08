@@ -105,6 +105,8 @@ export function SettingsSheet() {
   const dllrRatio =
     quota.dllrLimit > 0 ? Math.min(1, Math.max(0, quota.dllrUsed / quota.dllrLimit)) : 0;
   const allowanceExhausted = quota.limitReached;
+  const usedPercent = Math.round(dllrRatio * 100);
+  const showAntiDdos = isAuthenticated && !proActive;
 
   return (
     <AppModalSheet
@@ -130,7 +132,7 @@ export function SettingsSheet() {
             style={[appModalSheetStyles.section, { color: colors.primary, marginTop: 4 }]}
             accessibilityRole="header"
           >
-            {t("settings.consumption")}
+            {showAntiDdos ? t("settings.antiDdos") : t("settings.consumption")}
           </Text>
           <Text
             style={{
@@ -141,7 +143,7 @@ export function SettingsSheet() {
               textAlign: "left",
             }}
           >
-            {t("settings.consumptionHint")}
+            {showAntiDdos ? t("settings.antiDdosHint") : t("settings.consumptionHint")}
           </Text>
           <View
             style={{
@@ -155,7 +157,7 @@ export function SettingsSheet() {
             <View
               style={{
                 height: "100%",
-                width: `${Math.round(dllrRatio * 100)}%`,
+                width: `${usedPercent}%`,
                 backgroundColor: colors.primary,
                 borderRadius: 4,
               }}
@@ -167,10 +169,12 @@ export function SettingsSheet() {
               { color: colors.primary, textAlign: "left", marginBottom: 8 },
             ]}
           >
-            {tf("ai.tools.usageValues", {
-              used: formatDllrAmount(quota.dllrUsed),
-              limit: formatDllrAmount(quota.dllrLimit),
-            })}
+            {showAntiDdos
+              ? tf("settings.antiDdosPercent", { percent: usedPercent })
+              : tf("ai.tools.usageValues", {
+                  used: formatDllrAmount(quota.dllrUsed),
+                  limit: formatDllrAmount(quota.dllrLimit),
+                })}
           </Text>
           {!proActive && allowanceExhausted ? (
             <Pressable

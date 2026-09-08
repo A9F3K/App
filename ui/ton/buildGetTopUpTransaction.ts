@@ -17,23 +17,36 @@ export type TonConnectTransactionRequest = {
 const TONCONNECT_MAINNET = "-239";
 const JETTON_TRANSFER_OP = 0x0f8a7ea5;
 
+function buildTextCommentCell(comment: string) {
+  return beginCell().storeUint(0, 32).storeStringTail(comment).endCell();
+}
+
 function buildJettonTransferBody(params: {
   toOwner: Address;
   amount: bigint;
   responseOwner: Address;
   forwardTonAmount?: bigint;
   queryId?: bigint;
+  /** On-chain memo (jetton forward comment) for payment matching. */
+  comment?: string;
 }) {
-  return beginCell()
+  const builder = beginCell()
     .storeUint(JETTON_TRANSFER_OP, 32)
     .storeUint(params.queryId ?? 0n, 64)
     .storeCoins(params.amount)
     .storeAddress(params.toOwner)
     .storeAddress(params.responseOwner)
     .storeBit(0)
-    .storeCoins(params.forwardTonAmount ?? toNano("0.001"))
-    .storeBit(0)
-    .endCell();
+    .storeCoins(params.forwardTonAmount ?? toNano("0.05"));
+
+  const comment = params.comment?.trim() ?? "";
+  if (comment) {
+    // either_forward_payload as a reference cell (text comment op 0).
+    builder.storeBit(1).storeRef(buildTextCommentCell(comment));
+  } else {
+    builder.storeBit(0);
+  }
+  return builder.endCell();
 }
 
 /** Build a TonConnect request that tops up the app built-in wallet from a connected external wallet. */
@@ -42,6 +55,8 @@ export async function buildGetTopUpTransaction(opts: {
   token: SwapPairToken;
   fromWalletAddress: string;
   toBuiltInWalletAddress: string;
+  /** Optional on-chain memo / comment (used for Pro USDT payment verification). */
+  comment?: string;
 }): Promise<TonConnectTransactionRequest> {
   const deposit = opts.toBuiltInWalletAddress.trim();
   const from = opts.fromWalletAddress.trim();
@@ -57,6 +72,7 @@ export async function buildGetTopUpTransaction(opts: {
   const depositAddr = Address.parse(deposit);
   const fromAddr = Address.parse(from);
   const validUntil = Math.floor(Date.now() / 1000) + 300;
+  const comment = opts.comment?.trim() ?? "";
 
   if (isNativeTonToken(opts.token)) {
     // Non-bounceable: first native top-up must land on an uninitialized built-in
@@ -68,6 +84,9 @@ export async function buildGetTopUpTransaction(opts: {
         {
           address: depositAddr.toString({ urlSafe: true, bounceable: false }),
           amount: units.toString(),
+          ...(comment
+            ? { payload: buildTextCommentCell(comment).toBoc().toString("base64") }
+            : null),
         },
       ],
     };
@@ -83,6 +102,7 @@ export async function buildGetTopUpTransaction(opts: {
     toOwner: depositAddr,
     amount: units,
     responseOwner: fromAddr,
+    comment: comment || undefined,
   });
 
   return {
@@ -91,7 +111,7 @@ export async function buildGetTopUpTransaction(opts: {
     messages: [
       {
         address: senderJettonWallet,
-        amount: toNano("0.05").toString(),
+        amount: toNano("0.08").toString(),
         payload: body.toBoc().toString("base64"),
       },
     ],

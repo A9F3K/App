@@ -7,6 +7,12 @@ import { postAiAgentChatAction } from "../../api/aiAgentChatsClient";
 
 import { tokensToDllr } from "./aiConsumptionDllr";
 
+/** Free lifetime ≈ 1 DLLR at $0.002 / 1k tokens. */
+const DEFAULT_FREE_TOKEN_LIMIT = 500_000;
+/** Pro monthly ≈ 5 DLLR at $0.002 / 1k tokens. */
+const DEFAULT_PRO_MONTHLY_TOKEN_LIMIT = 2_500_000;
+const DEFAULT_ON_DEMAND_USD_PER_1K = 0.002;
+
 export type AiModelMode = "auto" | "tinymodel" | "model";
 
 export type AiFreeQuota = {
@@ -28,6 +34,8 @@ export type AiFreeQuota = {
   billingLane: "free" | "pro" | "on_demand";
   dllrUsed: number;
   dllrLimit: number;
+  /** ISO expiry when Pro is active on the server. */
+  proExpiresAt: string | null;
 };
 
 export type AiToolsModelOption = {
@@ -40,23 +48,24 @@ const STORAGE_KEY = "hsp.ai_free_quota.v2";
 const listeners = new Set<() => void>();
 let snapshot: AiFreeQuota = {
   tokensUsed: 0,
-  tokenLimit: 4500,
-  tokensRemaining: 4500,
+  tokenLimit: DEFAULT_FREE_TOKEN_LIMIT,
+  tokensRemaining: DEFAULT_FREE_TOKEN_LIMIT,
   proUnlimited: false,
   proActive: false,
   limitReached: false,
   proTokensUsedMonth: 0,
-  proMonthlyLimit: 200_000,
-  proTokensRemaining: 200_000,
+  proMonthlyLimit: DEFAULT_PRO_MONTHLY_TOKEN_LIMIT,
+  proTokensRemaining: DEFAULT_PRO_MONTHLY_TOKEN_LIMIT,
   monthKey: "",
   onDemandEnabled: false,
   onDemandRequired: false,
-  onDemandUsdPer1kTokens: 0.002,
+  onDemandUsdPer1kTokens: DEFAULT_ON_DEMAND_USD_PER_1K,
   modelMode: "auto",
   modelId: null,
   billingLane: "free",
   dllrUsed: 0,
-  dllrLimit: tokensToDllr(250_000, 0.002),
+  dllrLimit: tokensToDllr(DEFAULT_FREE_TOKEN_LIMIT, DEFAULT_ON_DEMAND_USD_PER_1K),
+  proExpiresAt: null,
 };
 let modelOptions: AiToolsModelOption[] = [];
 let hydrated = false;
@@ -89,16 +98,21 @@ function hydrate(): void {
 }
 
 function normalizeQuota(raw: Partial<AiFreeQuota> | null | undefined): AiFreeQuota {
-  const tokenLimit =
-    typeof raw?.tokenLimit === "number" && raw.tokenLimit > 0 ? Math.round(raw.tokenLimit) : 4500;
+  let tokenLimit =
+    typeof raw?.tokenLimit === "number" && raw.tokenLimit > 0
+      ? Math.round(raw.tokenLimit)
+      : DEFAULT_FREE_TOKEN_LIMIT;
+  // Migrate legacy tiny client defaults (pre–1 DLLR / 5 DLLR).
+  if (tokenLimit === 4500) tokenLimit = DEFAULT_FREE_TOKEN_LIMIT;
   const tokensUsed =
     typeof raw?.tokensUsed === "number" && raw.tokensUsed >= 0 ? Math.round(raw.tokensUsed) : 0;
   const proActive = Boolean(raw?.proActive ?? raw?.proUnlimited);
   const proUnlimited = proActive;
-  const proMonthlyLimit =
+  let proMonthlyLimit =
     typeof raw?.proMonthlyLimit === "number" && raw.proMonthlyLimit > 0
       ? Math.round(raw.proMonthlyLimit)
-      : 200_000;
+      : DEFAULT_PRO_MONTHLY_TOKEN_LIMIT;
+  if (proMonthlyLimit === 200_000) proMonthlyLimit = DEFAULT_PRO_MONTHLY_TOKEN_LIMIT;
   const proTokensUsedMonth =
     typeof raw?.proTokensUsedMonth === "number" && raw.proTokensUsedMonth >= 0
       ? Math.round(raw.proTokensUsedMonth)
@@ -112,7 +126,7 @@ function normalizeQuota(raw: Partial<AiFreeQuota> | null | undefined): AiFreeQuo
   const onDemandUsdPer1kTokens =
     typeof raw?.onDemandUsdPer1kTokens === "number" && raw.onDemandUsdPer1kTokens > 0
       ? raw.onDemandUsdPer1kTokens
-      : 0.002;
+      : DEFAULT_ON_DEMAND_USD_PER_1K;
   const modelModeRaw = typeof raw?.modelMode === "string" ? raw.modelMode : "auto";
   const modelMode: AiModelMode =
     modelModeRaw === "tinymodel" || modelModeRaw === "model" ? modelModeRaw : "auto";
@@ -139,12 +153,19 @@ function normalizeQuota(raw: Partial<AiFreeQuota> | null | undefined): AiFreeQuo
     typeof raw?.dllrLimit === "number" && Number.isFinite(raw.dllrLimit) && raw.dllrLimit > 0
       ? raw.dllrLimit
       : tokensToDllr(proActive ? proMonthlyLimit : tokenLimit, onDemandUsdPer1kTokens);
+  const proExpiresAt =
+    typeof raw?.proExpiresAt === "string" &&
+    raw.proExpiresAt.trim() &&
+    Date.parse(raw.proExpiresAt) > Date.now()
+      ? raw.proExpiresAt.trim()
+      : null;
+  const effectiveProActive = Boolean(raw?.proActive ?? raw?.proUnlimited) || proExpiresAt != null;
   return {
     tokensUsed,
     tokenLimit,
     tokensRemaining,
-    proUnlimited,
-    proActive,
+    proUnlimited: effectiveProActive,
+    proActive: effectiveProActive,
     limitReached,
     proTokensUsedMonth,
     proMonthlyLimit,
@@ -158,6 +179,7 @@ function normalizeQuota(raw: Partial<AiFreeQuota> | null | undefined): AiFreeQuo
     billingLane,
     dllrUsed,
     dllrLimit,
+    proExpiresAt,
   };
 }
 
@@ -190,7 +212,9 @@ export function applyAiFreeQuotaFromServer(raw: unknown): AiFreeQuota {
   notify();
   try {
     void import("../pro/proAccessStore").then((m) => {
-      m.reconcileProAccessFromServer(snapshot.proActive);
+      m.reconcileProAccessFromServer(snapshot.proActive, {
+        expiresAt: snapshot.proExpiresAt,
+      });
     });
   } catch {
     /* ignore */
@@ -229,8 +253,10 @@ export async function syncProAccessQuotaToServer(
     months?: number;
     /** True only for a real purchase / activate — records a founder sales row. */
     recordSale?: boolean;
+    /** Issued HSP2 memo — marked activated after successful sync. */
+    paymentMemo?: string;
   },
-): Promise<void> {
+): Promise<boolean> {
   try {
     const res = await postAiAgentChatAction({
       action: "sync_pro",
@@ -239,13 +265,37 @@ export async function syncProAccessQuotaToServer(
       ...(opts?.priceUsd != null ? { priceUsd: opts.priceUsd } : {}),
       ...(opts?.months != null ? { months: opts.months } : {}),
       ...(opts?.recordSale ? { recordSale: true } : {}),
+      ...(opts?.paymentMemo ? { paymentMemo: opts.paymentMemo } : {}),
     });
     if (res.ok && res.quota) {
       applyAiFreeQuotaFromServer(res.quota);
+      return true;
+    }
+    return false;
+  } catch {
+    /* offline / unauthorized — local Pro still gates UI; caller may retry */
+    return false;
+  }
+}
+
+/** Ask the server for a unique Pro payment memo bound to this signed-in user. */
+export async function issueProPaymentMemoFromServer(opts: {
+  planId: string;
+  priceUsd: number;
+}): Promise<string | null> {
+  try {
+    const res = await postAiAgentChatAction({
+      action: "issue_pro_payment_memo",
+      planId: opts.planId,
+      priceUsd: opts.priceUsd,
+    });
+    if (res.ok && typeof res.memo === "string" && res.memo.trim()) {
+      return res.memo.trim();
     }
   } catch {
-    /* offline / unauthorized — local Pro still gates UI */
+    /* fall through */
   }
+  return null;
 }
 
 export async function saveAiToolsPrefs(opts: {

@@ -166,6 +166,30 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
       return respond(res, { ok: true, quota, models: AI_TOOLS_MODEL_OPTIONS }, 200);
     }
 
+    if (action === "issue_pro_payment_memo") {
+      const planId =
+        typeof payload.planId === "string" ? payload.planId.trim().toLowerCase() : "month";
+      const priceUsd = Number(payload.priceUsd);
+      if (!Number.isFinite(priceUsd) || priceUsd <= 0) {
+        return respond(res, { ok: false, error: "invalid_price" }, 400);
+      }
+      const { issueProPaymentMemo } = await import("../../database/proPaymentMemos.js");
+      const row = await issueProPaymentMemo({ username, planId, priceUsd });
+      if (!row) return respond(res, { ok: false, error: "memo_issue_failed" }, 500);
+      return respond(
+        res,
+        {
+          ok: true,
+          memo: row.memo,
+          planId: row.planId,
+          priceUsd: row.priceUsd,
+          months: row.months,
+          createdAt: row.createdAt,
+        },
+        200,
+      );
+    }
+
     if (action === "sync_pro") {
       const expiresAt =
         typeof payload.expiresAt === "string" && payload.expiresAt.trim()
@@ -173,6 +197,10 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
           : null;
       const quota = await syncAiFreeQuotaPro({ username, expiresAt });
       const recordSale = payload.recordSale === true;
+      const paymentMemo =
+        typeof payload.paymentMemo === "string" && payload.paymentMemo.trim()
+          ? payload.paymentMemo.trim()
+          : null;
       if (recordSale && expiresAt) {
         const planId =
           typeof payload.planId === "string" ? payload.planId.trim().toLowerCase() : "month";
@@ -189,6 +217,19 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
           });
         } catch {
           /* sales ledger should not block entitlement sync */
+        }
+      }
+      if (paymentMemo && expiresAt) {
+        try {
+          const { markProPaymentMemoActivated, getProPaymentMemo } = await import(
+            "../../database/proPaymentMemos.js"
+          );
+          const existing = await getProPaymentMemo(paymentMemo);
+          if (existing && existing.username === username) {
+            await markProPaymentMemoActivated(paymentMemo);
+          }
+        } catch {
+          /* memo ledger should not block entitlement sync */
         }
       }
       return respond(res, { ok: true, quota }, 200);

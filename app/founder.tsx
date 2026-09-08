@@ -31,9 +31,17 @@ import {
   type ProFeatureId,
   type ProFeatureWeightMap,
 } from "../shared/proCatalog";
+import { dllrToTokens, formatDllrAmount, tokensToDllr } from "../ui/ai/aiConsumptionDllr";
 import { FONT_UI_SANS_REGULAR, WEB_UI_SANS_STACK } from "../ui/fonts";
 import { useColors } from "../ui/theme";
 import { saveFounderPdf } from "../ui/founder/exportFounderPdf";
+
+function dllrDraftFromTokens(tokens: number, usdPer1k: number): string {
+  const d = tokensToDllr(tokens, usdPer1k);
+  if (!Number.isFinite(d) || d <= 0) return "";
+  if (Math.abs(d - Math.round(d)) < 1e-6) return String(Math.round(d));
+  return String(Math.round(d * 1000) / 1000);
+}
 
 type FounderPayload = {
   ok: true;
@@ -517,6 +525,22 @@ export default function FounderScreen() {
     ...DEFAULT_PRO_FEATURE_WEIGHTS,
   });
   const [revokeWalletDraft, setRevokeWalletDraft] = useState("");
+  const [grantUsernameDraft, setGrantUsernameDraft] = useState("");
+  const [grantPlanId, setGrantPlanId] = useState<"month" | "quarter" | "year">("month");
+  const [grantPriceDraft, setGrantPriceDraft] = useState("");
+  const [grantMemoDraft, setGrantMemoDraft] = useState("");
+  const [proMemos, setProMemos] = useState<
+    Array<{
+      memo: string;
+      username: string;
+      planId: string;
+      priceUsd: number;
+      months: number;
+      status: string;
+      createdAt: string;
+      activatedAt: string | null;
+    }>
+  >([]);
   const [revokeBusy, setRevokeBusy] = useState(false);
   const [revokeMsg, setRevokeMsg] = useState<string | null>(null);
   const [data, setData] = useState<FounderPayload | null>(null);
@@ -669,9 +693,19 @@ export default function FounderScreen() {
     setAiLimitsBusy(true);
     setError(null);
     try {
-      const freeTokenLimit = Number(aiFreeLimitDraft);
-      const proMonthlyTokenLimit = Number(aiProMonthlyDraft);
       const onDemandUsdPer1kTokens = Number(aiOnDemandRateDraft);
+      const rate =
+        Number.isFinite(onDemandUsdPer1kTokens) && onDemandUsdPer1kTokens > 0
+          ? onDemandUsdPer1kTokens
+          : 0.002;
+      const freeDllr = Number(aiFreeLimitDraft);
+      const proDllr = Number(aiProMonthlyDraft);
+      if (!Number.isFinite(freeDllr) || freeDllr <= 0 || !Number.isFinite(proDllr) || proDllr <= 0) {
+        setError("Enter positive DLLR amounts for free and Pro monthly limits");
+        return;
+      }
+      const freeTokenLimit = dllrToTokens(freeDllr, rate);
+      const proMonthlyTokenLimit = dllrToTokens(proDllr, rate);
       const res = await fetch(buildApiUrl("/api/founder"), {
         method: "POST",
         credentials: "include",
@@ -680,7 +714,7 @@ export default function FounderScreen() {
           action: "save_ai_limits",
           freeTokenLimit,
           proMonthlyTokenLimit,
-          onDemandUsdPer1kTokens,
+          onDemandUsdPer1kTokens: rate,
         }),
       });
       const json = (await res.json()) as
@@ -691,8 +725,15 @@ export default function FounderScreen() {
         return;
       }
       setData((prev) => (prev ? { ...prev, aiLimits: json.aiLimits } : prev));
-      setAiFreeLimitDraft(String(json.aiLimits.freeTokenLimit));
-      setAiProMonthlyDraft(String(json.aiLimits.proMonthlyTokenLimit));
+      setAiFreeLimitDraft(
+        dllrDraftFromTokens(json.aiLimits.freeTokenLimit, json.aiLimits.onDemandUsdPer1kTokens),
+      );
+      setAiProMonthlyDraft(
+        dllrDraftFromTokens(
+          json.aiLimits.proMonthlyTokenLimit,
+          json.aiLimits.onDemandUsdPer1kTokens,
+        ),
+      );
       setAiOnDemandRateDraft(String(json.aiLimits.onDemandUsdPer1kTokens));
     } catch (e) {
       setError(e instanceof Error ? e.message : "save_ai_limits_failed");
@@ -703,9 +744,10 @@ export default function FounderScreen() {
 
   useEffect(() => {
     if (!data?.aiLimits) return;
-    setAiFreeLimitDraft(String(data.aiLimits.freeTokenLimit));
-    setAiProMonthlyDraft(String(data.aiLimits.proMonthlyTokenLimit));
-    setAiOnDemandRateDraft(String(data.aiLimits.onDemandUsdPer1kTokens));
+    const rate = data.aiLimits.onDemandUsdPer1kTokens;
+    setAiFreeLimitDraft(dllrDraftFromTokens(data.aiLimits.freeTokenLimit, rate));
+    setAiProMonthlyDraft(dllrDraftFromTokens(data.aiLimits.proMonthlyTokenLimit, rate));
+    setAiOnDemandRateDraft(String(rate));
   }, [data?.aiLimits]);
 
   useEffect(() => {
@@ -731,8 +773,8 @@ export default function FounderScreen() {
     );
     const allSum = sumFeatureWeights(weights);
     const marginUsd = Math.max(0, Number(marginDraft) || 0);
-    const monthCharge = Math.round((enabledSum + marginUsd) * 100) / 100;
-    const fullList = Math.round((allSum + marginUsd) * 100) / 100;
+    const monthCharge = Math.round((enabledSum + marginUsd) * 1000) / 1000;
+    const fullList = Math.round((allSum + marginUsd) * 1000) / 1000;
     const marginPct = profitMarginFraction(enabledSum, marginUsd) * 100;
     return { enabledSum, allSum, marginUsd, monthCharge, fullList, marginPct };
   }, [featureEnabledDraft, featureWeightsDraft, marginDraft]);
@@ -829,14 +871,190 @@ export default function FounderScreen() {
       setRevokeMsg(
         `Revoked Pro for ${json.count} user(s): ${json.revokedUsernames.join(", ")}`,
       );
+      void loadSession({ soft: true });
     } catch (e) {
       setRevokeMsg(e instanceof Error ? e.message : "revoke_failed");
     } finally {
       setRevokeBusy(false);
     }
-  }, [revokeWalletDraft]);
+  }, [loadSession, revokeWalletDraft]);
 
-  const onSavePdf = useCallback(() => {
+  const onGrantProByWallet = useCallback(async () => {
+    const walletAddress = revokeWalletDraft.trim();
+    const username = grantUsernameDraft.trim().replace(/^@/, "");
+    if (!walletAddress && !username) {
+      setRevokeMsg("Enter a registration wallet address (or username).");
+      return;
+    }
+    const months = grantPlanId === "year" ? 12 : grantPlanId === "quarter" ? 3 : 1;
+    const catalogPrice = data?.catalogPlans?.find((p) => p.id === grantPlanId)?.priceUsd;
+    const priceTyped = Number(grantPriceDraft.trim());
+    const priceUsd = grantPriceDraft.trim()
+      ? Number.isFinite(priceTyped) && priceTyped >= 0
+        ? priceTyped
+        : 0
+      : catalogPrice != null && Number.isFinite(catalogPrice)
+        ? catalogPrice
+        : 0;
+    setRevokeBusy(true);
+    setRevokeMsg(null);
+    setError(null);
+    try {
+      const res = await fetch(buildApiUrl("/api/founder"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "grant_pro_by_wallet",
+          walletAddress: walletAddress || undefined,
+          username: username || undefined,
+          months,
+          planId: grantPlanId,
+          priceUsd,
+        }),
+      });
+      const json = (await res.json()) as
+        | {
+            ok: true;
+            grantedUsernames: string[];
+            count: number;
+            expiresAt: string;
+            months: number;
+            planId: string;
+          }
+        | { ok: false; error?: string; hint?: string };
+      if (!res.ok || !json.ok) {
+        const hint = "hint" in json && json.hint ? ` — ${json.hint}` : "";
+        setRevokeMsg(
+          ("error" in json ? String(json.error ?? "grant_failed") : "grant_failed") + hint,
+        );
+        return;
+      }
+      setRevokeMsg(
+        `Granted Pro (${json.planId}, ${json.months} mo) for ${json.count} user(s): ${json.grantedUsernames.join(", ")} · until ${new Date(json.expiresAt).toLocaleString()}`,
+      );
+      void loadSession({ soft: true });
+    } catch (e) {
+      setRevokeMsg(e instanceof Error ? e.message : "grant_failed");
+    } finally {
+      setRevokeBusy(false);
+    }
+  }, [data?.catalogPlans, grantPlanId, grantPriceDraft, grantUsernameDraft, loadSession, revokeWalletDraft]);
+
+  const refreshProMemos = useCallback(async () => {
+    try {
+      const res = await fetch(buildApiUrl("/api/founder"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "list_pro_payment_memos" }),
+      });
+      const json = (await res.json()) as
+        | { ok: true; memos: typeof proMemos }
+        | { ok: false; error?: string };
+      if (res.ok && json.ok) setProMemos(json.memos);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const onLookupProMemo = useCallback(async () => {
+    const memo = grantMemoDraft.trim();
+    if (!memo) {
+      setRevokeMsg("Enter a payment memo (HSP2-…).");
+      return;
+    }
+    setRevokeBusy(true);
+    setRevokeMsg(null);
+    try {
+      const res = await fetch(buildApiUrl("/api/founder"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "lookup_pro_payment_memo", memo }),
+      });
+      const json = (await res.json()) as
+        | {
+            ok: true;
+            memo: {
+              memo: string;
+              username: string;
+              planId: string;
+              priceUsd: number;
+              months: number;
+              status: string;
+              createdAt: string;
+            };
+          }
+        | { ok: false; error?: string };
+      if (!res.ok || !json.ok) {
+        setRevokeMsg("error" in json ? String(json.error ?? "memo_not_found") : "memo_not_found");
+        return;
+      }
+      setGrantUsernameDraft(json.memo.username);
+      setGrantPlanId(
+        json.memo.planId === "quarter" || json.memo.planId === "year" || json.memo.planId === "month"
+          ? json.memo.planId
+          : "month",
+      );
+      setGrantPriceDraft(String(json.memo.priceUsd));
+      setRevokeMsg(
+        `Memo ${json.memo.memo} → @${json.memo.username} · ${json.memo.planId} · $${json.memo.priceUsd} · ${json.memo.status}`,
+      );
+    } catch (e) {
+      setRevokeMsg(e instanceof Error ? e.message : "lookup_failed");
+    } finally {
+      setRevokeBusy(false);
+    }
+  }, [grantMemoDraft]);
+
+  const onGrantProByMemo = useCallback(async () => {
+    const memo = grantMemoDraft.trim();
+    if (!memo) {
+      setRevokeMsg("Enter a payment memo (HSP2-…).");
+      return;
+    }
+    setRevokeBusy(true);
+    setRevokeMsg(null);
+    try {
+      const res = await fetch(buildApiUrl("/api/founder"), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "grant_pro_by_memo", memo }),
+      });
+      const json = (await res.json()) as
+        | {
+            ok: true;
+            grantedUsernames: string[];
+            expiresAt: string;
+            planId: string;
+            months: number;
+            priceUsd: number;
+          }
+        | { ok: false; error?: string };
+      if (!res.ok || !json.ok) {
+        setRevokeMsg("error" in json ? String(json.error ?? "grant_failed") : "grant_failed");
+        return;
+      }
+      setRevokeMsg(
+        `Granted Pro from memo for ${json.grantedUsernames.join(", ")} · ${json.planId} · $${json.priceUsd} · until ${new Date(json.expiresAt).toLocaleString()}`,
+      );
+      void loadSession({ soft: true });
+      void refreshProMemos();
+    } catch (e) {
+      setRevokeMsg(e instanceof Error ? e.message : "grant_failed");
+    } finally {
+      setRevokeBusy(false);
+    }
+  }, [grantMemoDraft, loadSession, refreshProMemos]);
+
+  useEffect(() => {
+    if (!data) return;
+    void refreshProMemos();
+  }, [data, refreshProMemos]);
+
+  const onSavePdf = useCallback(async () => {
     if (!data) return;
     setPdfBusy(true);
     setError(null);
@@ -1056,20 +1274,22 @@ export default function FounderScreen() {
         <Text style={{ color: "#FF5555", fontSize: 13, fontFamily: font }}>{error}</Text>
       ) : null}
 
-      <Card title="AI DLLR limits (overall consumption)" colors={colors}>
+      <Card title="AI DLLR limits (anti-DDOS + Pro)" colors={colors}>
         <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, fontFamily: font, marginBottom: 12 }}>
-          Free lifetime DLLR budget, Pro monthly included DLLR, and on-demand rate after the Pro cap
-          (tokens × rate). Users see overall consumption in DLLR; Pro can continue from the built-in wallet.
+          Free lifetime anti-DDOS budget (default 1 DLLR), Pro monthly included DLLR (default 5), and
+          on-demand rate after the Pro cap. Stored as token budgets using the on-demand rate.
         </Text>
         <View style={{ flexDirection: narrow ? "column" : "row", gap: 12, marginBottom: 12 }}>
           <View style={{ flex: 1, gap: 6 }}>
             <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
-              Free DLLR (token units)
+              Free DLLR (lifetime)
             </Text>
             <TextInput
-              value={aiFreeLimitDraft || String(aiLimits?.freeTokenLimit ?? "")}
+              value={aiFreeLimitDraft}
               onChangeText={setAiFreeLimitDraft}
-              keyboardType="numeric"
+              keyboardType="decimal-pad"
+              placeholder="1"
+              placeholderTextColor={colors.secondary}
               style={{
                 borderWidth: 1,
                 borderColor: colors.highlight,
@@ -1081,22 +1301,24 @@ export default function FounderScreen() {
               }}
             />
             <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: font }}>
-              ≈ $
-              {(
-                ((Number(aiFreeLimitDraft || aiLimits?.freeTokenLimit || 0) || 0) / 1000) *
-                (Number(aiOnDemandRateDraft || aiLimits?.onDemandUsdPer1kTokens || 0.002) || 0.002)
-              ).toFixed(4)}{" "}
-              DLLR
+              ≈{" "}
+              {dllrToTokens(
+                Number(aiFreeLimitDraft) || 0,
+                Number(aiOnDemandRateDraft) || aiLimits?.onDemandUsdPer1kTokens || 0.002,
+              ).toLocaleString()}{" "}
+              tokens
             </Text>
           </View>
           <View style={{ flex: 1, gap: 6 }}>
             <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
-              Pro monthly DLLR (token units)
+              Pro monthly DLLR
             </Text>
             <TextInput
-              value={aiProMonthlyDraft || String(aiLimits?.proMonthlyTokenLimit ?? "")}
+              value={aiProMonthlyDraft}
               onChangeText={setAiProMonthlyDraft}
-              keyboardType="numeric"
+              keyboardType="decimal-pad"
+              placeholder="5"
+              placeholderTextColor={colors.secondary}
               style={{
                 borderWidth: 1,
                 borderColor: colors.highlight,
@@ -1108,12 +1330,12 @@ export default function FounderScreen() {
               }}
             />
             <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: font }}>
-              ≈ $
-              {(
-                ((Number(aiProMonthlyDraft || aiLimits?.proMonthlyTokenLimit || 0) || 0) / 1000) *
-                (Number(aiOnDemandRateDraft || aiLimits?.onDemandUsdPer1kTokens || 0.002) || 0.002)
-              ).toFixed(4)}{" "}
-              DLLR
+              ≈{" "}
+              {dllrToTokens(
+                Number(aiProMonthlyDraft) || 0,
+                Number(aiOnDemandRateDraft) || aiLimits?.onDemandUsdPer1kTokens || 0.002,
+              ).toLocaleString()}{" "}
+              tokens
             </Text>
           </View>
           <View style={{ flex: 1, gap: 6 }}>
@@ -1132,6 +1354,10 @@ export default function FounderScreen() {
                 fontSize: 14,
               }}
             />
+            <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: font }}>
+              Preview: {formatDllrAmount(Number(aiFreeLimitDraft) || 0)} free ·{" "}
+              {formatDllrAmount(Number(aiProMonthlyDraft) || 0)} Pro / mo
+            </Text>
           </View>
         </View>
         <Pressable
@@ -1153,9 +1379,9 @@ export default function FounderScreen() {
 
       <Card title="Pro catalog · feature launch & pricing" colors={colors}>
         <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, fontFamily: font, marginBottom: 12 }}>
-          Set each feature price in dollars (cent precision, min $0.01). AI models alone is the launch
-          price. Month charge = sum of checked features + profit margin ($). Enabling more features raises
-          the charged price.
+          Set each feature price in dollars (millicent precision, min $0.001). AI models alone is the
+          launch price. Month charge = sum of checked features + profit margin ($). Enabling more
+          features raises the charged price.
         </Text>
         <View style={{ gap: 8, marginBottom: 14 }}>
           {(
@@ -1226,8 +1452,9 @@ export default function FounderScreen() {
             );
           })}
           <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: font, marginTop: 4 }}>
-            Checked features: ${catalogPreview.enabledSum.toFixed(2)} · All features: $
-            {catalogPreview.allSum.toFixed(2)} · Month charge: ${catalogPreview.monthCharge.toFixed(2)}
+            Checked features: ${catalogPreview.enabledSum.toFixed(3).replace(/\.?0+$/, "")} · All
+            features: ${catalogPreview.allSum.toFixed(3).replace(/\.?0+$/, "")} · Month charge: $
+            {catalogPreview.monthCharge.toFixed(3).replace(/\.?0+$/, "")}
           </Text>
         </View>
         <View style={{ flexDirection: narrow ? "column" : "row", gap: 12, marginBottom: 12 }}>
@@ -1497,21 +1724,106 @@ export default function FounderScreen() {
         )}
       </Card>
 
-      <Card title="Revoke Pro Access (test)" colors={colors}>
+      <Card title="Grant / revoke Pro by wallet" colors={colors}>
         <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, fontFamily: font, marginBottom: 12 }}>
-          Clear server-side Pro for the account that registered the given built-in wallet address.
-          The user’s next quota refresh drops local Pro entitlement.
+          Grant or clear server-side Pro for the built-in wallet stored at registration. TonConnect
+          payer addresses are not in this table — if lookup fails, use the account username.
         </Text>
-        <View style={{ gap: 6, marginBottom: 12, maxWidth: narrow ? undefined : 480 }}>
+        <View
+          style={{
+            flexDirection: narrow ? "column" : "row",
+            gap: 12,
+            marginBottom: 12,
+            maxWidth: narrow ? undefined : 720,
+          }}
+        >
+          <View style={{ flex: 2, gap: 6 }}>
+            <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+              Registration wallet address
+            </Text>
+            <TextInput
+              value={revokeWalletDraft}
+              onChangeText={setRevokeWalletDraft}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="UQ…"
+              placeholderTextColor={colors.secondary}
+              style={{
+                borderWidth: 1,
+                borderColor: colors.highlight,
+                color: colors.primary,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                fontFamily: font,
+                fontSize: 13,
+              }}
+            />
+          </View>
+          <View style={{ flex: 1, gap: 6 }}>
+            <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+              Username (optional fallback)
+            </Text>
+            <TextInput
+              value={grantUsernameDraft}
+              onChangeText={setGrantUsernameDraft}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="@user"
+              placeholderTextColor={colors.secondary}
+              style={{
+                borderWidth: 1,
+                borderColor: colors.highlight,
+                color: colors.primary,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                fontFamily: font,
+                fontSize: 13,
+              }}
+            />
+          </View>
+        </View>
+        <View style={{ gap: 6, marginBottom: 12 }}>
+          <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>Plan</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {(
+              [
+                ["month", "Month · 1"],
+                ["quarter", "Quarter · 3"],
+                ["year", "Year · 12"],
+              ] as const
+            ).map(([id, label]) => {
+              const selected = grantPlanId === id;
+              const planPrice = data.catalogPlans?.find((p) => p.id === id)?.priceUsd;
+              return (
+                <Pressable
+                  key={id}
+                  onPress={() => setGrantPlanId(id)}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: selected ? colors.primary : colors.highlight,
+                    backgroundColor: selected ? colors.undercover : "transparent",
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                  }}
+                >
+                  <Text style={{ color: colors.primary, fontWeight: "700", fontSize: 12, fontFamily: font }}>
+                    {label}
+                    {planPrice != null ? ` · ${money(planPrice)}` : ""}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+        <View style={{ gap: 6, marginBottom: 12, maxWidth: narrow ? undefined : 200 }}>
           <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
-            Registration wallet address
+            Ledger price USD (blank = catalog)
           </Text>
           <TextInput
-            value={revokeWalletDraft}
-            onChangeText={setRevokeWalletDraft}
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder="UQ…"
+            value={grantPriceDraft}
+            onChangeText={setGrantPriceDraft}
+            keyboardType="numeric"
+            placeholder="catalog"
             placeholderTextColor={colors.secondary}
             style={{
               borderWidth: 1,
@@ -1524,26 +1836,181 @@ export default function FounderScreen() {
             }}
           />
         </View>
-        <Pressable
-          onPress={() => void onRevokeProByWallet()}
-          disabled={revokeBusy}
-          style={({ pressed }) => ({
-            alignSelf: "flex-start",
-            opacity: revokeBusy ? 0.6 : pressed ? 0.85 : 1,
-            backgroundColor: colors.primary,
-            paddingHorizontal: 14,
-            paddingVertical: 10,
-          })}
-        >
-          <Text style={{ color: colors.background, fontWeight: "700", fontSize: 13, fontFamily: font }}>
-            {revokeBusy ? "Revoking…" : "Revoke Pro by wallet"}
-          </Text>
-        </Pressable>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10 }}>
+          <Pressable
+            onPress={() => void onGrantProByWallet()}
+            disabled={revokeBusy}
+            style={({ pressed }) => ({
+              alignSelf: "flex-start",
+              opacity: revokeBusy ? 0.6 : pressed ? 0.85 : 1,
+              backgroundColor: colors.primary,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            })}
+          >
+            <Text style={{ color: colors.background, fontWeight: "700", fontSize: 13, fontFamily: font }}>
+              {revokeBusy ? "Working…" : `Grant Pro · ${grantPlanId}`}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => void onRevokeProByWallet()}
+            disabled={revokeBusy}
+            style={({ pressed }) => ({
+              alignSelf: "flex-start",
+              opacity: revokeBusy ? 0.6 : pressed ? 0.85 : 1,
+              borderWidth: 1,
+              borderColor: colors.highlight,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            })}
+          >
+            <Text style={{ color: colors.secondary, fontWeight: "700", fontSize: 13, fontFamily: font }}>
+              {revokeBusy ? "Working…" : "Revoke Pro"}
+            </Text>
+          </Pressable>
+        </View>
         {revokeMsg ? (
           <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font, marginTop: 10 }}>
             {revokeMsg}
           </Text>
         ) : null}
+      </Card>
+
+      <Card title="Pro payment memos" colors={colors}>
+        <Text style={{ color: colors.secondary, fontSize: 13, lineHeight: 18, fontFamily: font, marginBottom: 12 }}>
+          Each payment attempt issues a unique HSP2 memo bound to the signed-in user. Paste a memo to
+          look up who paid, or grant Pro from that memo after a sync failure.
+        </Text>
+        <View style={{ gap: 6, marginBottom: 12, maxWidth: narrow ? undefined : 560 }}>
+          <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+            Payment memo
+          </Text>
+          <TextInput
+            value={grantMemoDraft}
+            onChangeText={setGrantMemoDraft}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="HSP2-month-5000-…"
+            placeholderTextColor={colors.secondary}
+            style={{
+              borderWidth: 1,
+              borderColor: colors.highlight,
+              color: colors.primary,
+              paddingHorizontal: 10,
+              paddingVertical: 8,
+              fontFamily: font,
+              fontSize: 13,
+            }}
+          />
+        </View>
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+          <Pressable
+            onPress={() => void onLookupProMemo()}
+            disabled={revokeBusy}
+            style={({ pressed }) => ({
+              opacity: revokeBusy ? 0.6 : pressed ? 0.85 : 1,
+              borderWidth: 1,
+              borderColor: colors.highlight,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            })}
+          >
+            <Text style={{ color: colors.secondary, fontWeight: "700", fontSize: 13, fontFamily: font }}>
+              Look up memo
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => void onGrantProByMemo()}
+            disabled={revokeBusy}
+            style={({ pressed }) => ({
+              opacity: revokeBusy ? 0.6 : pressed ? 0.85 : 1,
+              backgroundColor: colors.primary,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            })}
+          >
+            <Text style={{ color: colors.background, fontWeight: "700", fontSize: 13, fontFamily: font }}>
+              Grant Pro from memo
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => void refreshProMemos()}
+            disabled={revokeBusy}
+            style={({ pressed }) => ({
+              opacity: revokeBusy ? 0.6 : pressed ? 0.85 : 1,
+              borderWidth: 1,
+              borderColor: colors.highlight,
+              paddingHorizontal: 14,
+              paddingVertical: 10,
+            })}
+          >
+            <Text style={{ color: colors.secondary, fontWeight: "700", fontSize: 13, fontFamily: font }}>
+              Refresh list
+            </Text>
+          </Pressable>
+        </View>
+        {proMemos.length === 0 ? (
+          <Text style={{ color: colors.secondary, fontSize: 12, fontFamily: font }}>
+            No issued memos yet (table creates on first payment attempt).
+          </Text>
+        ) : (
+          <ScrollView horizontal style={{ maxWidth: "100%" }}>
+            <View style={{ gap: 4, minWidth: 720 }}>
+              <View style={{ flexDirection: "row", gap: 8, marginBottom: 4 }}>
+                <Text style={{ width: 200, color: colors.secondary, fontSize: 11, fontFamily: font }}>
+                  Memo
+                </Text>
+                <Text style={{ width: 140, color: colors.secondary, fontSize: 11, fontFamily: font }}>
+                  User
+                </Text>
+                <Text style={{ width: 64, color: colors.secondary, fontSize: 11, fontFamily: font }}>
+                  Plan
+                </Text>
+                <Text style={{ width: 56, color: colors.secondary, fontSize: 11, fontFamily: font }}>
+                  $
+                </Text>
+                <Text style={{ width: 80, color: colors.secondary, fontSize: 11, fontFamily: font }}>
+                  Status
+                </Text>
+                <Text style={{ width: 120, color: colors.secondary, fontSize: 11, fontFamily: font }}>
+                  Created
+                </Text>
+              </View>
+              {proMemos.slice(0, 30).map((row) => (
+                <Pressable
+                  key={row.memo}
+                  onPress={() => setGrantMemoDraft(row.memo)}
+                  style={{ flexDirection: "row", gap: 8, paddingVertical: 3 }}
+                >
+                  <Text
+                    style={{ width: 200, color: colors.primary, fontSize: 11, fontFamily: font }}
+                    numberOfLines={1}
+                  >
+                    {row.memo}
+                  </Text>
+                  <Text
+                    style={{ width: 140, color: colors.primary, fontSize: 11, fontFamily: font }}
+                    numberOfLines={1}
+                  >
+                    {row.username}
+                  </Text>
+                  <Text style={{ width: 64, color: colors.primary, fontSize: 11, fontFamily: font }}>
+                    {row.planId}
+                  </Text>
+                  <Text style={{ width: 56, color: colors.primary, fontSize: 11, fontFamily: font }}>
+                    {row.priceUsd}
+                  </Text>
+                  <Text style={{ width: 80, color: colors.secondary, fontSize: 11, fontFamily: font }}>
+                    {row.status}
+                  </Text>
+                  <Text style={{ width: 120, color: colors.secondary, fontSize: 11, fontFamily: font }}>
+                    {new Date(row.createdAt).toLocaleString()}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </ScrollView>
+        )}
       </Card>
 
       <Card title="Support inbox" colors={colors}>

@@ -66,9 +66,10 @@ const en = {
   "ai.tools.title": "AI tools",
   "ai.tools.subtitle": "Model routing and overall DLLR consumption for AI & Search.",
   "ai.tools.open": "AI tools",
-  "ai.tools.usageFree": "Free overall consumption",
+  "ai.tools.usageFree": "Anti-DDOS limit (free)",
   "ai.tools.usagePro": "Pro monthly consumption",
   "ai.tools.usageValues": "{{used}} / {{limit}} DLLR",
+  "ai.tools.usagePercent": "{{percent}}%",
   "ai.tools.onDemand": "On-demand usage",
   "ai.tools.onDemandHint":
     "After the included monthly budget, charge ~${{rate}} per 1k tokens from DLLR hot ({{balance}}$ available).",
@@ -99,9 +100,13 @@ const en = {
   "settings.themeDark": "Dark",
   "settings.themeLight": "Light",
   "settings.themeA11y": "Choose interface theme: Auto follows Telegram or system default",
+  "settings.antiDdos": "Anti-DDOS limit",
+  "settings.antiDdosHint":
+    "Free plans include a lifetime overall consumption cap that protects shared capacity from abuse. Upgrade to Pro for a monthly included budget.",
+  "settings.antiDdosPercent": "{{percent}}%",
   "settings.consumption": "Overall consumption",
   "settings.consumptionHint":
-    "Service spend in DLLR (AI providers and app infrastructure). Free and Pro include a budget; Pro can continue on-demand from your built-in wallet.",
+    "Service spend in DLLR (AI providers and app infrastructure). Pro includes a monthly budget and can continue on-demand from your built-in wallet.",
 
   "debug.api": "api:",
   "debug.fetchMs": "fetchMs:",
@@ -276,14 +281,14 @@ const en = {
   "pro.sale.changePlan": "Change plan",
   "pro.sale.changePlanHint": "Select another plan to switch. New period starts after payment.",
   "pro.sale.switch": "Switch to {{plan}} · {{price}}",
-  "pro.sale.cancel": "Cancel",
+  "pro.sale.cancel": "Cancel renewal",
   "pro.sale.cancelHint":
     "Your current period remains. Pro stays available until {{date}}.",
-  "pro.sale.cancelledBadge": "Cancelling",
+  "pro.sale.cancelledBadge": "No renewal",
   "pro.sale.cancelledUntil": "Ends {{date}} · period kept",
   "pro.sale.cancelledHint":
     "Cancellation scheduled. You keep Pro until {{date}} — no further period after that.",
-  "pro.sale.resume": "Keep",
+  "pro.sale.resume": "Keep renewing",
   "pro.sale.footer":
     "Pro includes all AI models, unlimited messenger accounts, VPN & Proxy, and VIP features. Your plan renews until you cancel — cancel anytime before the next billing date.",
   "pro.sale.soonFooter":
@@ -334,6 +339,8 @@ const en = {
   "pro.pay.memo.copy": "Copy memo",
   "pro.pay.memo.lockHint":
     "Include this memo with your USDT transfer so we can match the payment to your account.",
+  "pro.pay.memo.autoHint":
+    "This memo is attached automatically in the TonConnect transfer for verification.",
   "pro.pay.check.button": "Check Payment",
   "pro.pay.check.busy": "Checking…",
   "pro.pay.check.waiting": "Waiting for TON confirmation (usually a few seconds)…",
@@ -344,6 +351,12 @@ const en = {
   "pro.pay.check.creditedAndActivated": "Payment confirmed. Pro Access is active.",
   "pro.pay.check.creditedAndActivatedLeft":
     "Added {{amount}} Dollars, subscribed, {{left}} frozen left · {{cashback}} Hot cashback.",
+  "pro.pay.check.notFound":
+    "Payment not seen on-chain yet. Send USDT with the memo, then tap Check Payment again.",
+  "pro.pay.success.title": "Pro Access unlocked",
+  "pro.pay.success.body": "{{plan}} is active · {{price}} paid. Welcome aboard.",
+  "pro.pay.success.cashback": "{{cashback}} cashback credited to Hot balance.",
+  "pro.pay.success.done": "Continue",
   "pro.pay.final.chooseMethod": "Choose a payment method",
   "pro.pay.final.payDllr": "Pay · {{amount}} DLLR",
   "pro.pay.final.payTon": "Pay · {{amount}} TON",
@@ -385,6 +398,7 @@ const en = {
   "pro.pay.method.tonconnectHint":
     "Same as Get top-up: connect a TON wallet and send USDT in one tap to buy this plan. USDT on TON only.",
   "pro.pay.tonconnect.empty": "No wallets yet. Connect one to pay with USDT on TON.",
+  "pro.pay.tonconnect.connect": "Connect wallet",
   "pro.plan.month": "1 month",
   "pro.plan.quarter": "1 quarter",
   "pro.plan.year": "1 year",
@@ -909,9 +923,10 @@ const ru = {
   "ai.tools.title": "Инструменты ИИ",
   "ai.tools.subtitle": "Маршрутизация моделей и общий расход DLLR для AI & Search.",
   "ai.tools.open": "Инструменты ИИ",
-  "ai.tools.usageFree": "Общий расход (бесплатно)",
+  "ai.tools.usageFree": "Анти-DDOS лимит (бесплатно)",
   "ai.tools.usagePro": "Месячный расход Pro",
   "ai.tools.usageValues": "{{used}} / {{limit}} DLLR",
+  "ai.tools.usagePercent": "{{percent}}%",
   "ai.tools.onDemand": "On-demand",
   "ai.tools.onDemandHint":
     "После включённого бюджета — ≈${{rate}} за 1k токенов с горячего DLLR (доступно {{balance}}$).",
@@ -942,9 +957,13 @@ const ru = {
   "settings.themeDark": "Тёмная",
   "settings.themeLight": "Светлая",
   "settings.themeA11y": "Выберите тему интерфейса: Авто следует Telegram или системной по умолчанию",
+  "settings.antiDdos": "Анти-DDOS лимит",
+  "settings.antiDdosHint":
+    "На бесплатном плане действует пожизненный лимит общего расхода — защита общей ёмкости от злоупотреблений. Pro даёт ежемесячный включённый бюджет.",
+  "settings.antiDdosPercent": "{{percent}}%",
   "settings.consumption": "Общий расход",
   "settings.consumptionHint":
-    "Расход сервиса в DLLR (ИИ-провайдеры и инфраструктура). Free и Pro включают бюджет; Pro может продолжать on-demand со встроенного кошелька.",
+    "Расход сервиса в DLLR (ИИ-провайдеры и инфраструктура). Pro включает месячный бюджет и может продолжать on-demand со встроенного кошелька.",
 
   "debug.api": "api:",
   "debug.fetchMs": "fetchMs:",
@@ -1120,14 +1139,14 @@ const ru = {
   "pro.sale.changePlan": "Сменить тариф",
   "pro.sale.changePlanHint": "Выберите другой тариф — новый период после оплаты.",
   "pro.sale.switch": "Перейти на {{plan}} · {{price}}",
-  "pro.sale.cancel": "Отменить",
+  "pro.sale.cancel": "Не продлять",
   "pro.sale.cancelHint":
     "Текущий период сохраняется. Pro доступен до {{date}}.",
-  "pro.sale.cancelledBadge": "Отмена",
+  "pro.sale.cancelledBadge": "Без продления",
   "pro.sale.cancelledUntil": "До {{date}} · период сохранён",
   "pro.sale.cancelledHint":
     "Отмена запланирована. Pro остаётся до {{date}} — дальше период не продлевается.",
-  "pro.sale.resume": "Оставить",
+  "pro.sale.resume": "Продлевать",
   "pro.sale.footer":
     "Pro включает все модели ИИ, безлимитные аккаунты мессенджера, VPN и Proxy и VIP-функции. Подписка продлевается, пока вы не отмените — отмена до следующего списания.",
   "pro.sale.soonFooter":
@@ -1176,6 +1195,8 @@ const ru = {
   "pro.pay.memo.copy": "Скопировать memo",
   "pro.pay.memo.lockHint":
     "Укажите этот memo в переводе USDT, чтобы мы сопоставили платёж с вашим аккаунтом.",
+  "pro.pay.memo.autoHint":
+    "Memo автоматически прикрепляется к переводу через TonConnect для проверки.",
   "pro.pay.check.button": "Проверить платёж",
   "pro.pay.check.busy": "Проверка…",
   "pro.pay.check.waiting": "Ожидание подтверждения в TON (обычно несколько секунд)…",
@@ -1186,6 +1207,12 @@ const ru = {
   "pro.pay.check.creditedAndActivated": "Платёж подтверждён. Pro Access активен.",
   "pro.pay.check.creditedAndActivatedLeft":
     "Добавлено {{amount}} Dollars, подписка оформлена, Frozen {{left}} · кешбэк Hot {{cashback}}.",
+  "pro.pay.check.notFound":
+    "Платёж пока не виден в сети. Отправьте USDT с memo, затем нажмите «Проверить платёж» снова.",
+  "pro.pay.success.title": "Pro Access открыт",
+  "pro.pay.success.body": "{{plan}} активен · оплачено {{price}}. Добро пожаловать.",
+  "pro.pay.success.cashback": "Кешбэк {{cashback}} зачислен на Hot.",
+  "pro.pay.success.done": "Продолжить",
   "pro.pay.final.chooseMethod": "Выберите способ оплаты",
   "pro.pay.final.payDllr": "Оплатить · {{amount}} DLLR",
   "pro.pay.final.payTon": "Оплатить · {{amount}} TON",
@@ -1229,6 +1256,7 @@ const ru = {
   "pro.pay.method.tonconnectHint":
     "Как пополнение на Get: подключите TON-кошелёк и отправьте USDT одним нажатием, чтобы купить тариф. Только USDT в сети TON.",
   "pro.pay.tonconnect.empty": "Кошельков пока нет. Подключите один, чтобы оплатить USDT в сети TON.",
+  "pro.pay.tonconnect.connect": "Подключить кошелёк",
   "pro.plan.month": "1 месяц",
   "pro.plan.quarter": "1 квартал",
   "pro.plan.year": "1 год",
@@ -1749,9 +1777,10 @@ const zh = {
   "ai.tools.title": "AI 工具",
   "ai.tools.subtitle": "为 AI 与搜索设置模型路由与整体 DLLR 消耗。",
   "ai.tools.open": "AI 工具",
-  "ai.tools.usageFree": "免费整体消耗",
+  "ai.tools.usageFree": "Anti-DDOS 限额（免费）",
   "ai.tools.usagePro": "Pro 每月消耗",
   "ai.tools.usageValues": "{{used}} / {{limit}} DLLR",
+  "ai.tools.usagePercent": "{{percent}}%",
   "ai.tools.onDemand": "按需用量",
   "ai.tools.onDemandHint": "超出包含预算后，按约 ${{rate}} / 1k tokens 从 DLLR 热余额扣费（可用 {{balance}}$）。",
   "ai.tools.buyProCta": "购买 Pro 订阅",
@@ -1779,9 +1808,13 @@ const zh = {
   "settings.themeDark": "深色",
   "settings.themeLight": "浅色",
   "settings.themeA11y": "选择界面主题：自动跟随 Telegram 或系统默认",
+  "settings.antiDdos": "Anti-DDOS 限额",
+  "settings.antiDdosHint":
+    "免费计划包含终身总体消耗上限，用于保护共享容量、防止滥用。升级 Pro 可获得每月包含额度。",
+  "settings.antiDdosPercent": "{{percent}}%",
   "settings.consumption": "整体消耗",
   "settings.consumptionHint":
-    "以 DLLR 计的服务消耗（AI 供应商与应用基础设施）。Free 与 Pro 含预算；Pro 可从内置钱包按需继续。",
+    "以 DLLR 计的服务消耗（AI 供应商与应用基础设施）。Pro 含每月预算，并可从内置钱包按需继续。",
   "debug.api": "api:",
   "debug.fetchMs": "fetchMs:",
   "debug.hasWebAppLine": "hasWebAppApi: {{has}} · inTelegram: {{in}}",
@@ -1927,14 +1960,14 @@ const zh = {
   "pro.sale.changePlan": "更换套餐",
   "pro.sale.changePlanHint": "选择其他套餐即可切换，付款后重新起算周期。",
   "pro.sale.switch": "切换到 {{plan}} · {{price}}",
-  "pro.sale.cancel": "取消",
+  "pro.sale.cancel": "不续费",
   "pro.sale.cancelHint":
     "当前周期保留。Pro 可用至 {{date}}。",
-  "pro.sale.cancelledBadge": "将取消",
+  "pro.sale.cancelledBadge": "不续费",
   "pro.sale.cancelledUntil": "至 {{date}} · 周期保留",
   "pro.sale.cancelledHint":
     "已安排取消。Pro 保留至 {{date}}，之后不再续期。",
-  "pro.sale.resume": "保留",
+  "pro.sale.resume": "继续续费",
   "pro.sale.footer":
     "Pro 包含全部 AI 模型、无限消息账户、VPN 与 Proxy 以及 VIP 功能。订阅会自动续费，可在下一计费日前随时取消。",
   "pro.sale.soonFooter":
@@ -1980,6 +2013,7 @@ const zh = {
   "pro.pay.memo.copy": "复制备注",
   "pro.pay.memo.lockHint":
     "转账 USDT 时请附带此备注，以便我们将付款匹配到你的账户。",
+  "pro.pay.memo.autoHint": "TonConnect 转账会自动附带此备注以便核验。",
   "pro.pay.check.button": "检查支付",
   "pro.pay.check.busy": "检查中…",
   "pro.pay.check.waiting": "正在等待 TON 确认（通常几秒）…",
@@ -1990,6 +2024,11 @@ const zh = {
   "pro.pay.check.creditedAndActivated": "支付已确认。Pro Access 已开通。",
   "pro.pay.check.creditedAndActivatedLeft":
     "已增加 {{amount}} Dollars 并完成订阅，Frozen 保留 {{left}} · Hot 返现 {{cashback}}。",
+  "pro.pay.check.notFound": "链上尚未看到付款。请附带备注发送 USDT，然后再次点「检查支付」。",
+  "pro.pay.success.title": "Pro Access 已开通",
+  "pro.pay.success.body": "{{plan}} 已生效 · 已支付 {{price}}。欢迎使用。",
+  "pro.pay.success.cashback": "返现 {{cashback}} 已计入 Hot 余额。",
+  "pro.pay.success.done": "继续",
   "pro.pay.final.chooseMethod": "请选择支付方式",
   "pro.pay.final.payDllr": "支付 · {{amount}} DLLR",
   "pro.pay.final.payTon": "支付 · {{amount}} TON",
@@ -2032,6 +2071,7 @@ const zh = {
   "pro.pay.method.tonconnectHint":
     "与 Get 充值相同：连接 TON 钱包，一键发送 USDT 购买套餐。仅支持 TON 链上的 USDT。",
   "pro.pay.tonconnect.empty": "还没有钱包。连接一个以用 USDT（TON）支付。",
+  "pro.pay.tonconnect.connect": "连接钱包",
   "pro.plan.month": "1 个月",
   "pro.plan.quarter": "1 个季度",
   "pro.plan.year": "1 年",

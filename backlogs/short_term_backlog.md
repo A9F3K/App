@@ -1,3 +1,7 @@
+chat history, ai chats analisis
+wallet connect
+sharing copiing, like
+Check sell, sell
 Check limits
 overall consumtion (?)
 Transfer TON paid for dllrs to USDT

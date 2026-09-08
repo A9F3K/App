@@ -52,7 +52,7 @@ import {
   getFounderScreenTimeSnapshot,
   getFounderUserCounts,
 } from "../../database/founderMetrics.js";
-import { getProSalesSnapshot } from "../../database/proSales.js";
+import { getProSalesSnapshot, recordProSale } from "../../database/proSales.js";
 import {
   calibrateFromEvidence,
   buildDailyUsageSeries,
@@ -501,6 +501,164 @@ async function handler(request: Request, res?: NodeRes): Promise<Response | void
           walletAddress,
           revokedUsernames: revoked,
           count: revoked.length,
+        },
+        200,
+      );
+    }
+
+    if (action === "grant_pro_by_wallet") {
+      if (!isFounderAuthorized(request)) {
+        return respond(res, { ok: false, error: "unauthorized" }, 401);
+      }
+      const walletAddress =
+        typeof body.walletAddress === "string" ? body.walletAddress.trim() : "";
+      const usernameRaw =
+        typeof body.username === "string" ? body.username.trim().replace(/^@/, "") : "";
+      const planIdRaw =
+        typeof body.planId === "string" ? body.planId.trim().toLowerCase() : "month";
+      const planId =
+        planIdRaw === "quarter" || planIdRaw === "year" || planIdRaw === "month"
+          ? planIdRaw
+          : "month";
+      const planMonths = planId === "year" ? 12 : planId === "quarter" ? 3 : 1;
+      const monthsRaw = typeof body.months === "number" ? body.months : Number(body.months);
+      const months =
+        Number.isFinite(monthsRaw) && monthsRaw > 0
+          ? Math.min(36, Math.trunc(monthsRaw))
+          : planMonths;
+      const priceUsdRaw = typeof body.priceUsd === "number" ? body.priceUsd : Number(body.priceUsd);
+      const priceUsd =
+        Number.isFinite(priceUsdRaw) && priceUsdRaw >= 0 ? priceUsdRaw : 0;
+
+      let usernames: string[] = [];
+      if (walletAddress) {
+        usernames = await findUsernamesByWalletAddress(walletAddress);
+      }
+      if (usernames.length === 0 && usernameRaw) {
+        usernames = [usernameRaw.toLowerCase()];
+      }
+      if (!walletAddress && !usernameRaw) {
+        return respond(
+          res,
+          { ok: false, error: "wallet_or_username_required" },
+          400,
+        );
+      }
+      if (usernames.length === 0) {
+        return respond(
+          res,
+          {
+            ok: false,
+            error: "wallet_not_found",
+            walletAddress: walletAddress || null,
+            hint: "Use the built-in wallet stored at registration, not a TonConnect payer address. Or pass the account username.",
+          },
+          404,
+        );
+      }
+      const expires = new Date();
+      expires.setMonth(expires.getMonth() + months);
+      const expiresAt = expires.toISOString();
+      const granted: string[] = [];
+      for (const username of usernames) {
+        await syncAiFreeQuotaPro({ username, expiresAt });
+        try {
+          await recordProSale({
+            username,
+            planId,
+            priceUsd,
+            months,
+            expiresAt,
+          });
+        } catch {
+          /* sales ledger should not block entitlement */
+        }
+        granted.push(username);
+      }
+      return respond(
+        res,
+        {
+          ok: true,
+          walletAddress: walletAddress || null,
+          grantedUsernames: granted,
+          count: granted.length,
+          expiresAt,
+          planId,
+          months,
+          priceUsd,
+        },
+        200,
+      );
+    }
+
+    if (action === "lookup_pro_payment_memo") {
+      if (!isFounderAuthorized(request)) {
+        return respond(res, { ok: false, error: "unauthorized" }, 401);
+      }
+      const memo = typeof body.memo === "string" ? body.memo.trim() : "";
+      if (!memo) {
+        return respond(res, { ok: false, error: "memo_required" }, 400);
+      }
+      const { getProPaymentMemo } = await import("../../database/proPaymentMemos.js");
+      const row = await getProPaymentMemo(memo);
+      if (!row) {
+        return respond(res, { ok: false, error: "memo_not_found", memo }, 404);
+      }
+      return respond(res, { ok: true, memo: row }, 200);
+    }
+
+    if (action === "list_pro_payment_memos") {
+      if (!isFounderAuthorized(request)) {
+        return respond(res, { ok: false, error: "unauthorized" }, 401);
+      }
+      const { listRecentProPaymentMemos } = await import("../../database/proPaymentMemos.js");
+      const memos = await listRecentProPaymentMemos(50);
+      return respond(res, { ok: true, memos }, 200);
+    }
+
+    if (action === "grant_pro_by_memo") {
+      if (!isFounderAuthorized(request)) {
+        return respond(res, { ok: false, error: "unauthorized" }, 401);
+      }
+      const memo = typeof body.memo === "string" ? body.memo.trim() : "";
+      if (!memo) {
+        return respond(res, { ok: false, error: "memo_required" }, 400);
+      }
+      const {
+        getProPaymentMemo,
+        markProPaymentMemoActivated,
+      } = await import("../../database/proPaymentMemos.js");
+      const row = await getProPaymentMemo(memo);
+      if (!row) {
+        return respond(res, { ok: false, error: "memo_not_found", memo }, 404);
+      }
+      const expires = new Date();
+      expires.setMonth(expires.getMonth() + row.months);
+      const expiresAt = expires.toISOString();
+      await syncAiFreeQuotaPro({ username: row.username, expiresAt });
+      try {
+        await recordProSale({
+          username: row.username,
+          planId: row.planId,
+          priceUsd: row.priceUsd,
+          months: row.months,
+          expiresAt,
+        });
+      } catch {
+        /* sales ledger should not block entitlement */
+      }
+      await markProPaymentMemoActivated(memo);
+      return respond(
+        res,
+        {
+          ok: true,
+          memo,
+          grantedUsernames: [row.username],
+          count: 1,
+          expiresAt,
+          planId: row.planId,
+          months: row.months,
+          priceUsd: row.priceUsd,
         },
         200,
       );

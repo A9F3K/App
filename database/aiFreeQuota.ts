@@ -46,6 +46,8 @@ export type AiFreeQuotaSnapshot = {
   dllrUsed: number;
   /** Included DLLR budget for the active lane. */
   dllrLimit: number;
+  /** ISO expiry when Pro is active; null when free / revoked. */
+  proExpiresAt: string | null;
 };
 
 export type AiRoutePreference = {
@@ -189,6 +191,7 @@ function toSnapshot(
       limits.onDemandUsdPer1kTokens,
     ),
     dllrLimit: estimateOnDemandUsd(tokenLimit, limits.onDemandUsdPer1kTokens),
+    proExpiresAt: proActive ? proExpiresAt : null,
   };
 }
 

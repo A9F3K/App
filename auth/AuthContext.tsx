@@ -169,9 +169,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         logPageDisplay("auth_bootstrap_signed_in", {
           elapsedMs: Date.now() - startedAt,
         });
-        // Reconcile local Pro entitlement with server (founder revoke, expiry).
-        void import("../ui/ai/aiFreeQuotaStore").then((m) => {
-          void m.refreshAiFreeQuotaFromServer();
+        // Reconcile local Pro with server; finish any interrupted post-payment sync first.
+        void import("../ui/pro/proAccessStore").then(async (pro) => {
+          await pro.flushProAccessServerSync();
+          void import("../ui/ai/aiFreeQuotaStore").then((m) => {
+            void m.refreshAiFreeQuotaFromServer();
+          });
         });
       }
       if (!cancelled) {

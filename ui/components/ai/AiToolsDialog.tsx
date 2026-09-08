@@ -238,10 +238,12 @@ export function AiToolsDialog({ visible, onClose }: Props) {
                 fontFamily: font,
               }}
             >
-              {tf("ai.tools.usageValues", {
-                used: formatDllrAmount(dllrUsed),
-                limit: formatDllrAmount(dllrLimit),
-              })}
+              {quota.proActive
+                ? tf("ai.tools.usageValues", {
+                    used: formatDllrAmount(dllrUsed),
+                    limit: formatDllrAmount(dllrLimit),
+                  })
+                : tf("ai.tools.usagePercent", { percent: Math.round(ratio * 100) })}
             </Text>
 
             {!quota.proActive && allowanceExhausted ? (

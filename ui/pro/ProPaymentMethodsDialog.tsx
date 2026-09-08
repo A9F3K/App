@@ -4,11 +4,13 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
 import {
+  Modal,
   Platform,
   Pressable,
   Text,
@@ -16,6 +18,7 @@ import {
   useWindowDimensions,
   View,
   type LayoutChangeEvent,
+  type LayoutRectangle,
 } from "react-native";
 
 import { useAppStrings } from "../../locales/AppStringsContext";
@@ -31,6 +34,7 @@ import { HspScrollColumn } from "../components/HspScrollColumn";
 import { HeaderIconCopy } from "../components/icons/HeaderActionIcons";
 import { SmartGradientDivider } from "../components/smart/SmartGradientDivider";
 import { MusicBackChevronIcon } from "../components/music/MusicControlIcons";
+import { SwapSelectChevron } from "../components/swap/SwapFormIcons";
 import { useTonConnectSession } from "../ton/TonConnectProvider";
 import { buildGetTopUpTransaction } from "../ton/buildGetTopUpTransaction";
 import { SWAP_USDT_TOKEN } from "../swap/swapPairTypes";
@@ -45,21 +49,27 @@ import {
   subscribeBuiltinDllrBalance,
 } from "./dllrBalanceStore";
 import {
-  activateProAccess,
+  activateProAccessAsync,
   formatUsd,
   getProAccessPlans,
   type ProAccessPlanId,
 } from "./proAccessStore";
 import { isProFeatureEnabled, subscribeProCatalog } from "./proCatalogStore";
 import { resolveProPaymentTonAddress } from "./proPaymentConfig";
-import { waitForProUsdtPayment } from "./waitForProUsdtPayment";
+import {
+  isProPaymentMemoConsumed,
+  markProPaymentMemoConsumed,
+  waitForProUsdtPayment,
+} from "./waitForProUsdtPayment";
 import {
   createProPaymentMemo,
   minDllrTopUpForPlanUsd,
   parseDllrUsdFromProPaymentMemo,
   PRO_TOPUP_RESIDUAL_DLLR_USD,
 } from "./proPaymentMemo";
+import { issueProPaymentMemoFromServer } from "../ai/aiFreeQuotaStore";
 import { ProSubscribeButton } from "./ProSubscribeButton";
+import { ProPaymentSuccessDialog } from "./ProPaymentSuccessDialog";
 import { requestOpenSupportChat } from "../support/openSupportChat";
 
 type PaymentMethodId = "builtin" | "direct" | "tonconnect";
@@ -91,7 +101,8 @@ function parseAmount(raw: string): number {
 function formatUsdtAmount(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "0";
   if (Number.isInteger(n)) return String(n);
-  return n.toFixed(2).replace(/\.?0+$/, "");
+  const digits = n < 0.01 ? 3 : 2;
+  return n.toFixed(digits).replace(/\.?0+$/, "");
 }
 
 function MethodRadio({ selected, color }: { selected: boolean; color: string }) {
@@ -281,8 +292,17 @@ export function ProPaymentMethodsDialog({
   const [usdtPayInput, setUsdtPayInput] = useState("");
   const [memo, setMemo] = useState("");
   const [directMemo, setDirectMemo] = useState("");
+  /** Unix seconds — only USDT credits at/after this time can confirm a payment. */
+  const [paymentWatchSinceUnix, setPaymentWatchSinceUnix] = useState(() =>
+    Math.floor(Date.now() / 1000),
+  );
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [checkBusy, setCheckBusy] = useState(false);
+  const [successOpen, setSuccessOpen] = useState(false);
+  const [successCashback, setSuccessCashback] = useState<number | null>(null);
+  const [walletMenuOpen, setWalletMenuOpen] = useState(false);
+  const [walletMenuAnchor, setWalletMenuAnchor] = useState<LayoutRectangle | null>(null);
+  const walletChipRef = useRef<View>(null);
 
   const onFooterLayout = useCallback((e: LayoutChangeEvent) => {
     const h = e.nativeEvent.layout.height;
@@ -311,7 +331,7 @@ export function ProPaymentMethodsDialog({
   const hasEnoughDllr = dllrBalance + 1e-9 >= plan.priceUsd;
   /** e.g. $20 plan + $1 residual − total balance → buy enough that 1 DLLR remains after subscribe. */
   const minTopUpUsd = hasEnoughDllr
-    ? 0.01
+    ? 0.001
     : minDllrTopUpForPlanUsd(plan.priceUsd, dllrBalance);
   const paymentAddress = resolveProPaymentTonAddress();
   const labelFont = Platform.OS === "web" ? WEB_UI_SANS_STACK : FONT_UI_SANS_REGULAR;
@@ -329,6 +349,18 @@ export function ProPaymentMethodsDialog({
     [flashCopied],
   );
 
+  const issueBoundMemo = useCallback(
+    async (dllrUsd: number): Promise<string> => {
+      const fromServer = await issueProPaymentMemoFromServer({
+        planId: plan.id,
+        priceUsd: dllrUsd,
+      });
+      // Offline fallback still produces a valid on-chain comment; server bind happens on next online issue.
+      return fromServer || createProPaymentMemo(plan.id, dllrUsd);
+    },
+    [plan.id],
+  );
+
   const seedAmountsForMethod = useCallback(
     (id: PaymentMethodId) => {
       // Direct / TonConnect: pay the plan in USDT on TON (1 USDT ≈ 1 DLLR).
@@ -337,15 +369,29 @@ export function ProPaymentMethodsDialog({
       const topUpSeed = hasEnoughDllr ? Math.max(1, minTopUpUsd) : minTopUpUsd;
       const seed = id === "direct" || id === "tonconnect" ? planUsdt : topUpSeed;
       setUsdtPayInput(formatUsdtAmount(seed));
-      setMemo(createProPaymentMemo(plan.id, seed));
-      setDirectMemo(createProPaymentMemo(plan.id, planUsdt));
+      setMemo("");
+      setDirectMemo("");
+      // Ignore older treasury credits (e.g. before founder revoke) for this attempt.
+      setPaymentWatchSinceUnix(Math.floor(Date.now() / 1000) - 2);
+      void (async () => {
+        if (id === "direct" || id === "tonconnect") {
+          const m = await issueBoundMemo(planUsdt);
+          setMemo(m);
+          setDirectMemo(m);
+        } else {
+          const m = await issueBoundMemo(seed);
+          setMemo(m);
+          setDirectMemo(await issueBoundMemo(planUsdt));
+        }
+      })();
     },
-    [hasEnoughDllr, minTopUpUsd, plan.id, plan.priceUsd],
+    [hasEnoughDllr, issueBoundMemo, minTopUpUsd, plan.id, plan.priceUsd],
   );
 
   const selectMethod = useCallback(
     (id: PaymentMethodId) => {
       setStatusMsg(null);
+      setWalletMenuOpen(false);
       if (method === id) {
         setMethod(null);
         return;
@@ -361,26 +407,36 @@ export function ProPaymentMethodsDialog({
     setMethod(null);
     setStatusMsg(null);
     setCopiedField(null);
+    setSuccessOpen(false);
+    setSuccessCashback(null);
+    setWalletMenuOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open/plan only
   }, [visible, planId]);
 
-  // Keep memos in sync with the USDT amount (1 USDT ≈ 1 DLLR).
+  // Keep memos in sync with the USDT amount (1 USDT ≈ 1 DLLR) via server-issued unique memos.
   useEffect(() => {
     if (!visible) return;
     const usdt = parseAmount(usdtPayInput);
     if (!Number.isFinite(usdt) || usdt <= 0) return;
-    const next = createProPaymentMemo(plan.id, usdt);
     const lockedMemo = parseDllrUsdFromProPaymentMemo(memo);
-    if (lockedMemo == null || Math.abs(lockedMemo - usdt) >= 0.005) {
-      setMemo(next);
-    }
-    if (method === "direct" || method === "tonconnect") {
-      const lockedDirect = parseDllrUsdFromProPaymentMemo(directMemo);
-      if (lockedDirect == null || Math.abs(lockedDirect - usdt) >= 0.005) {
-        setDirectMemo(next);
-      }
-    }
-  }, [directMemo, memo, method, plan.id, usdtPayInput, visible]);
+    const needMemo =
+      lockedMemo == null || Math.abs(lockedMemo - usdt) >= 0.005;
+    const lockedDirect = parseDllrUsdFromProPaymentMemo(directMemo);
+    const needDirect =
+      (method === "direct" || method === "tonconnect") &&
+      (lockedDirect == null || Math.abs(lockedDirect - usdt) >= 0.005);
+    if (!needMemo && !needDirect) return;
+    let cancelled = false;
+    void (async () => {
+      const next = await issueBoundMemo(usdt);
+      if (cancelled) return;
+      if (needMemo) setMemo(next);
+      if (needDirect) setDirectMemo(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [directMemo, issueBoundMemo, memo, method, usdtPayInput, visible]);
 
   const wallets = useMemo(() => {
     const list = [...ton.rememberedWallets];
@@ -434,92 +490,140 @@ export function ProPaymentMethodsDialog({
     [openWalletPicker, ton.address, ton.friendlyAddress],
   );
 
-  const onPayWithDllr = useCallback(() => {
+  const finishActivated = useCallback(
+    (cashback: number | null) => {
+      setSuccessCashback(cashback);
+      setSuccessOpen(true);
+      setStatusMsg(null);
+    },
+    [],
+  );
+
+  const onPayWithDllr = useCallback(async () => {
     if (!debitBuiltinDllrUsd(plan.priceUsd)) {
       setStatusMsg(t("pro.pay.builtin.payFailed"));
       return;
     }
-    activateProAccess(plan.id);
+    setStatusMsg(t("pro.pay.check.confirmed"));
+    await activateProAccessAsync(plan.id);
     if (isProFeatureEnabled("cashback")) {
       creditProCashbackDllrUsd(PRO_CASHBACK_DLLR_USD);
-      setStatusMsg(
-        tf("pro.pay.builtin.paidCashback", { cashback: formatUsd(PRO_CASHBACK_DLLR_USD) }),
-      );
+      finishActivated(PRO_CASHBACK_DLLR_USD);
     } else {
-      setStatusMsg(t("pro.pay.builtin.paid"));
+      finishActivated(null);
     }
-    setTimeout(() => onClose(), 700);
-  }, [onClose, plan.id, plan.priceUsd, t, tf]);
+  }, [finishActivated, plan.id, plan.priceUsd, t]);
 
   const resolvedUsdt = parseAmount(usdtPayInput);
   const usdtPayMin =
     method === "direct" || method === "tonconnect"
       ? plan.priceUsd
       : hasEnoughDllr
-        ? 0.01
+        ? 0.001
         : minTopUpUsd;
   const usdtPayValid = Number.isFinite(resolvedUsdt) && resolvedUsdt + 1e-9 >= usdtPayMin;
 
   const runCheckPayment = useCallback(
-    async (opts: { memoText: string; activateAfter?: boolean; fallbackDollars?: number }) => {
+    async (opts: {
+      memoText: string;
+      activateAfter?: boolean;
+      fallbackDollars?: number;
+      sinceUnix?: number;
+      signal?: AbortSignal;
+    }) => {
       const memoText = opts.memoText.trim();
       if (!memoText) {
         setStatusMsg(t("pro.pay.check.memoRequired"));
-        return;
+        return false;
+      }
+      if (isProPaymentMemoConsumed(memoText)) {
+        setStatusMsg(t("pro.pay.check.notFound"));
+        return false;
       }
       const fromMemo = parseDllrUsdFromProPaymentMemo(memoText);
       const dollars = fromMemo ?? opts.fallbackDollars ?? NaN;
       if (!Number.isFinite(dollars) || dollars <= 0) {
         setStatusMsg(t("pro.pay.check.invalidAmount"));
-        return;
+        return false;
       }
       setCheckBusy(true);
       setStatusMsg(t("pro.pay.check.waiting"));
       try {
-        // TON finality ~1s; TonAPI index lag usually a few seconds — soft ~8s / hard ~25s.
         const wait = await waitForProUsdtPayment({
           paymentAddress,
           expectedUsd: dollars,
-          requireIndexed: false,
-          onTick: (elapsedMs) => {
-            if (elapsedMs >= 1500) {
-              setStatusMsg(t("pro.pay.check.waiting"));
-            }
+          memo: memoText,
+          sinceUnix: opts.sinceUnix ?? paymentWatchSinceUnix,
+          signal: opts.signal,
+          onTick: () => {
+            setStatusMsg(t("pro.pay.check.waiting"));
           },
         });
-        if (wait.confirmed) {
-          setStatusMsg(t("pro.pay.check.confirmed"));
+        if (opts.signal?.aborted) return false;
+        if (!wait.confirmed) {
+          setStatusMsg(t("pro.pay.check.notFound"));
+          return false;
         }
+        // Burn this memo so the same on-chain credit cannot unlock Pro again after revoke.
+        markProPaymentMemoConsumed(memoText);
+        setStatusMsg(t("pro.pay.check.confirmed"));
         creditBuiltinDllrUsd(dollars);
         const shouldActivate =
           opts.activateAfter ||
           (!hasEnoughDllr && getBuiltinDllrBalanceUsd() + 1e-9 >= plan.priceUsd);
         if (shouldActivate && getBuiltinDllrBalanceUsd() + 1e-9 >= plan.priceUsd) {
           if (debitBuiltinDllrUsd(plan.priceUsd)) {
-            activateProAccess(plan.id);
+            // Await server sync before success UI so a disconnect mid-dialog cannot drop Pro.
+            await activateProAccessAsync(plan.id, { paymentMemo: memoText });
             if (isProFeatureEnabled("cashback")) {
               creditProCashbackDllrUsd(PRO_CASHBACK_DLLR_USD);
-              setStatusMsg(
-                tf("pro.pay.check.creditedAndActivatedLeft", {
-                  amount: formatUsd(dollars),
-                  left: formatUsd(PRO_TOPUP_RESIDUAL_DLLR_USD),
-                  cashback: formatUsd(PRO_CASHBACK_DLLR_USD),
-                }),
-              );
+              finishActivated(PRO_CASHBACK_DLLR_USD);
             } else {
-              setStatusMsg(t("pro.pay.check.creditedAndActivated"));
+              finishActivated(null);
             }
-            setTimeout(() => onClose(), 700);
-            return;
+            return true;
           }
         }
         setStatusMsg(tf("pro.pay.check.credited", { amount: formatUsd(dollars) }));
+        return true;
       } finally {
         setCheckBusy(false);
       }
     },
-    [hasEnoughDllr, onClose, paymentAddress, plan.id, plan.priceUsd, t, tf],
+    [
+      finishActivated,
+      hasEnoughDllr,
+      paymentAddress,
+      paymentWatchSinceUnix,
+      plan.id,
+      plan.priceUsd,
+      t,
+      tf,
+    ],
   );
+
+  // Direct transfer: start waiting as soon as the method (and memo) is shown.
+  useEffect(() => {
+    if (!visible || method !== "direct") return;
+    const memoText = directMemo.trim();
+    if (!memoText || !paymentAddress.trim() || successOpen) return;
+    const ac = new AbortController();
+    const timer = setTimeout(() => {
+      void runCheckPayment({
+        memoText,
+        activateAfter: true,
+        fallbackDollars: plan.priceUsd,
+        sinceUnix: paymentWatchSinceUnix,
+        signal: ac.signal,
+      });
+    }, 600);
+    return () => {
+      clearTimeout(timer);
+      ac.abort();
+    };
+    // Restart only when opening Direct or when the locked memo/plan changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, method, directMemo, paymentAddress, plan.priceUsd]);
 
   const sendUsdtViaTonConnect = useCallback(
     async (opts: { amountUsd: number; memoText: string; activateAfter: boolean }) => {
@@ -538,17 +642,21 @@ export function ProPaymentMethodsDialog({
       setConnectBusy(true);
       setStatusMsg(null);
       try {
+        const sinceUnix = Math.floor(Date.now() / 1000) - 2;
+        setPaymentWatchSinceUnix(sinceUnix);
         const request = await buildGetTopUpTransaction({
           amount: formatUsdtAmount(opts.amountUsd),
           token: SWAP_USDT_TOKEN,
           fromWalletAddress: ton.address,
           toBuiltInWalletAddress: paymentAddress,
+          comment: opts.memoText.trim() || undefined,
         });
         await ton.sendTransaction(request);
         await runCheckPayment({
           memoText: opts.memoText,
           activateAfter: opts.activateAfter,
           fallbackDollars: opts.amountUsd,
+          sinceUnix,
         });
       } catch {
         setStatusMsg(t("pro.pay.topup.buyCancelled"));
@@ -558,6 +666,23 @@ export function ProPaymentMethodsDialog({
     },
     [openWalletPicker, paymentAddress, runCheckPayment, t, ton],
   );
+
+  const openWalletMenu = useCallback(() => {
+    ton.refreshRememberedWallets();
+    walletChipRef.current?.measureInWindow((x, y, width, height) => {
+      setWalletMenuAnchor({ x, y, width, height });
+      setWalletMenuOpen(true);
+    });
+  }, [ton]);
+
+  const selectedWallet = useMemo(() => {
+    if (!effectiveWalletKey) return null;
+    return (
+      wallets.find(
+        (w) => (w.friendlyAddress || w.address).trim().toLowerCase() === effectiveWalletKey,
+      ) ?? null
+    );
+  }, [effectiveWalletKey, wallets]);
 
   const payUsdtAmount = useMemo(() => {
     const fromInput = parseAmount(usdtPayInput);
@@ -620,7 +745,7 @@ export function ProPaymentMethodsDialog({
   const onFinalCta = useCallback(async () => {
     if (finalCta.kind === "pick" || method == null) return;
     if (finalCta.kind === "pay_dllr") {
-      onPayWithDllr();
+      await onPayWithDllr();
       return;
     }
     if (finalCta.kind === "pay_usdt") {
@@ -824,8 +949,9 @@ export function ProPaymentMethodsDialog({
   };
 
   return (
+    <>
     <FloatingDialogShell
-      visible={visible}
+      visible={visible && !successOpen}
       zIndex={12060}
       defaultSize={defaultSize}
       minSize={{ width: 340, height: 420 }}
@@ -950,6 +1076,19 @@ export function ProPaymentMethodsDialog({
                   {tf("pro.pay.method.directHint", { price: priceLabel })}
                 </Text>
                 {addressMemoBlock(directMemo, "directMemo")}
+                {checkBusy ? (
+                  <Text
+                    style={{
+                      color: colors.primary,
+                      fontSize: 12,
+                      lineHeight: 16,
+                      fontFamily: labelFont,
+                      fontWeight: "600",
+                    }}
+                  >
+                    {t("pro.pay.check.waiting")}
+                  </Text>
+                ) : null}
               </View>,
             )}
 
@@ -968,120 +1107,92 @@ export function ProPaymentMethodsDialog({
                 >
                   {t("pro.pay.method.tonconnectHint")}
                 </Text>
-                <CopyableValueRow
-                  label={t("pro.pay.direct.amountLabel")}
-                  value={formatUsdtAmount(plan.priceUsd)}
-                  copied={copiedField === "amount"}
-                  onCopy={() => void copyText(formatUsdtAmount(plan.priceUsd), "amount")}
-                  copyLabel={t("pro.pay.direct.amountCopy")}
-                  copiedLabel={t("pro.pay.direct.copied")}
-                  colors={colors}
-                  labelFont={labelFont}
-                  mono
-                  chainBadge="USDT"
-                />
                 <Text style={{ color: colors.secondary, fontSize: 11, fontFamily: labelFont }}>
-                  {t("pro.pay.topup.usdtHint")}
+                  {t("pro.pay.memo.autoHint")}
                 </Text>
-                {wallets.length === 0 ? (
-                  <Text
-                    style={{
-                      color: colors.secondary,
-                      fontSize: 13,
-                      lineHeight: 18,
-                      fontFamily: labelFont,
-                    }}
-                  >
-                    {t("pro.pay.tonconnect.empty")}
-                  </Text>
+                {ton.connected && selectedWallet ? (
+                  <View ref={walletChipRef} collapsable={false}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={t("get.connectedWalletA11y")}
+                      disabled={connectBusy}
+                      onPress={openWalletMenu}
+                      style={({ pressed }) => ({
+                        ...subRowStyle,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        gap: 10,
+                        opacity: connectBusy ? 0.55 : pressed ? 0.9 : 1,
+                      })}
+                    >
+                      {selectedWallet.imageUrl ? (
+                        <Image
+                          source={{ uri: selectedWallet.imageUrl }}
+                          style={{ width: 22, height: 22, borderRadius: 6 }}
+                        />
+                      ) : (
+                        <View
+                          style={{
+                            width: 22,
+                            height: 22,
+                            borderRadius: 6,
+                            backgroundColor: "#0098EA",
+                          }}
+                        />
+                      )}
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text
+                          numberOfLines={1}
+                          style={{
+                            color: colors.primary,
+                            fontSize: 13,
+                            fontWeight: "600",
+                            fontFamily: labelFont,
+                          }}
+                        >
+                          {selectedWallet.name?.trim() ||
+                            t("get.connectedWalletFallbackName")}
+                        </Text>
+                        <Text
+                          numberOfLines={1}
+                          style={{
+                            color: colors.secondary,
+                            fontSize: 11,
+                            fontFamily:
+                              Platform.OS === "web" ? WEB_UI_MONO_STACK : FONT_UI_SANS_REGULAR,
+                          }}
+                        >
+                          {middleEllipsis(
+                            selectedWallet.friendlyAddress || selectedWallet.address,
+                          )}
+                        </Text>
+                      </View>
+                      <SwapSelectChevron />
+                    </Pressable>
+                  </View>
                 ) : (
-                  wallets.map((wallet) => {
-                    const key = (wallet.friendlyAddress || wallet.address).trim();
-                    const keyNorm = key.toLowerCase();
-                    const selected = effectiveWalletKey === keyNorm;
-                    const label =
-                      wallet.name?.trim() ||
-                      middleEllipsis(wallet.friendlyAddress || wallet.address);
-                    return (
-                      <Pressable
-                        key={keyNorm}
-                        accessibilityRole="button"
-                        onPress={() => void selectRememberedWallet(keyNorm)}
-                        style={{
-                          ...subRowStyle,
-                          flexDirection: "row",
-                          alignItems: "center",
-                          gap: 10,
-                          borderColor: selected ? colors.primary : colors.highlight,
-                        }}
-                      >
-                        {wallet.imageUrl ? (
-                          <Image
-                            source={{ uri: wallet.imageUrl }}
-                            style={{ width: 22, height: 22, borderRadius: 6 }}
-                          />
-                        ) : (
-                          <View
-                            style={{
-                              width: 22,
-                              height: 22,
-                              borderRadius: 6,
-                              backgroundColor: colors.highlight,
-                            }}
-                          />
-                        )}
-                        <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text
-                            numberOfLines={1}
-                            style={{
-                              color: colors.primary,
-                              fontSize: 13,
-                              fontWeight: "600",
-                              fontFamily: labelFont,
-                            }}
-                          >
-                            {label}
-                          </Text>
-                          <Text
-                            numberOfLines={1}
-                            style={{
-                              color: colors.secondary,
-                              fontSize: 11,
-                              fontFamily:
-                                Platform.OS === "web" ? WEB_UI_MONO_STACK : FONT_UI_SANS_REGULAR,
-                            }}
-                          >
-                            {middleEllipsis(wallet.friendlyAddress || wallet.address)}
-                          </Text>
-                        </View>
-                        <MethodRadio selected={selected} color={colors.primary} />
-                      </Pressable>
-                    );
-                  })
-                )}
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={connectBusy}
-                  onPress={() => void openWalletPicker()}
-                  style={({ pressed }) => ({
-                    ...subRowStyle,
-                    opacity: connectBusy ? 0.55 : pressed ? 0.85 : 1,
-                    alignItems: "center",
-                  })}
-                >
-                  <Text
-                    style={{
-                      color: colors.primary,
-                      fontSize: 14,
-                      fontWeight: "700",
-                      fontFamily: labelFont,
-                    }}
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={connectBusy}
+                    onPress={() => void openWalletPicker()}
+                    style={({ pressed }) => ({
+                      ...subRowStyle,
+                      opacity: connectBusy ? 0.55 : pressed ? 0.85 : 1,
+                      alignItems: "center",
+                    })}
                   >
-                    {ton.connected
-                      ? t("get.connectAnotherWallet")
-                      : t("pro.pay.topup.connectToBuy")}
-                  </Text>
-                </Pressable>
+                    <Text
+                      style={{
+                        color: colors.primary,
+                        fontSize: 14,
+                        fontWeight: "700",
+                        fontFamily: labelFont,
+                      }}
+                    >
+                      {t("pro.pay.tonconnect.connect")}
+                    </Text>
+                  </Pressable>
+                )}
               </View>,
             )}
 
@@ -1207,5 +1318,155 @@ export function ProPaymentMethodsDialog({
         </FloatingDialogBody>
       </FloatingDialogScrollChromeProvider>
     </FloatingDialogShell>
+
+      <ProPaymentSuccessDialog
+        visible={successOpen}
+        planLabel={planLabel}
+        priceUsd={plan.priceUsd}
+        cashbackUsd={successCashback}
+        onClose={() => {
+          setSuccessOpen(false);
+          onClose();
+        }}
+      />
+
+      <Modal
+        visible={walletMenuOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setWalletMenuOpen(false)}
+      >
+        <Pressable style={{ flex: 1 }} onPress={() => setWalletMenuOpen(false)}>
+          <Pressable
+            style={{
+              position: "absolute",
+              top: walletMenuAnchor ? walletMenuAnchor.y + walletMenuAnchor.height + 6 : 120,
+              left: walletMenuAnchor?.x ?? dialogInsets.padX,
+              width: walletMenuAnchor?.width ?? 280,
+              maxWidth: 420,
+              backgroundColor: colors.background,
+              borderWidth: 1,
+              borderColor: colors.highlight,
+              borderRadius: 10,
+              paddingVertical: 6,
+              ...(Platform.OS === "web"
+                ? ({
+                    boxShadow: "0 10px 28px rgba(0,0,0,0.35)",
+                  } as object)
+                : null),
+            }}
+            onPress={(e) => e.stopPropagation?.()}
+          >
+            {wallets.map((wallet) => {
+              const key = (wallet.friendlyAddress || wallet.address).trim();
+              const keyNorm = key.toLowerCase();
+              const selected = effectiveWalletKey === keyNorm;
+              const label =
+                wallet.name?.trim() || middleEllipsis(wallet.friendlyAddress || wallet.address);
+              return (
+                <Pressable
+                  key={keyNorm}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  disabled={connectBusy}
+                  onPress={() => {
+                    setWalletMenuOpen(false);
+                    void selectRememberedWallet(keyNorm);
+                  }}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 10,
+                    paddingVertical: 10,
+                    paddingHorizontal: 12,
+                    backgroundColor: selected ? colors.undercover : "transparent",
+                  }}
+                >
+                  {wallet.imageUrl ? (
+                    <Image
+                      source={{ uri: wallet.imageUrl }}
+                      style={{ width: 20, height: 20, borderRadius: 5 }}
+                    />
+                  ) : (
+                    <View
+                      style={{
+                        width: 20,
+                        height: 20,
+                        borderRadius: 5,
+                        backgroundColor: "#0098EA",
+                      }}
+                    />
+                  )}
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        color: colors.primary,
+                        fontSize: 13,
+                        fontWeight: "600",
+                        fontFamily: labelFont,
+                      }}
+                    >
+                      {label}
+                    </Text>
+                    <Text
+                      numberOfLines={1}
+                      style={{
+                        color: colors.secondary,
+                        fontSize: 11,
+                        fontFamily:
+                          Platform.OS === "web" ? WEB_UI_MONO_STACK : FONT_UI_SANS_REGULAR,
+                      }}
+                    >
+                      {middleEllipsis(wallet.friendlyAddress || wallet.address)}
+                    </Text>
+                  </View>
+                  {selected ? (
+                    <Text style={{ color: colors.primary, fontSize: 13 }}>✓</Text>
+                  ) : null}
+                </Pressable>
+              );
+            })}
+            <View style={{ height: 1, backgroundColor: colors.highlight, marginHorizontal: 10 }} />
+            <Pressable
+              accessibilityRole="button"
+              disabled={connectBusy}
+              onPress={() => {
+                setWalletMenuOpen(false);
+                void openWalletPicker();
+              }}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
+                paddingVertical: 12,
+                paddingHorizontal: 12,
+              }}
+            >
+              <Text
+                style={{
+                  color: colors.primary,
+                  fontSize: 18,
+                  lineHeight: 18,
+                  fontFamily: labelFont,
+                }}
+              >
+                +
+              </Text>
+              <Text
+                style={{
+                  color: colors.primary,
+                  fontSize: 13,
+                  fontWeight: "600",
+                  fontFamily: labelFont,
+                }}
+              >
+                {t("get.connectAnotherWallet")}
+              </Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
   );
 }

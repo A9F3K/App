@@ -1,6 +1,7 @@
 /**
  * Payment memo locks the DLLR credit so TON/USD rate moves cannot shrink the top-up.
- * Format: HSP-{planId}-{dllrCents}-{nonce}
+ * Format (v2, millicents): HSP2-{planId}-{dllrMillis}-{nonce}
+ * Legacy (cents): HSP-{planId}-{dllrCents}-{nonce}
  */
 
 /** Extra TON to send so a brief rate dip still covers the locked DLLR credit. */
@@ -13,16 +14,23 @@ export const PRO_TOPUP_RESIDUAL_DLLR_USD = 1;
 export const PRO_PAYMENT_QUOTE_TTL_MS = 15 * 60 * 1000;
 
 export function createProPaymentMemo(planId: string, dllrUsd: number): string {
-  const cents = Math.max(1, Math.round(dllrUsd * 100));
+  const millis = Math.max(1, Math.round(dllrUsd * 1000));
   const nonce = Math.random().toString(36).slice(2, 8).toUpperCase();
-  return `HSP-${planId}-${cents}-${nonce}`;
+  return `HSP2-${planId}-${millis}-${nonce}`;
 }
 
 /** Parse locked DLLR amount from a payment memo; null if not an HSP memo. */
 export function parseDllrUsdFromProPaymentMemo(memo: string): number | null {
-  const m = memo.trim().match(/^HSP-[a-z0-9]+-(\d+)-[A-Z0-9]+$/i);
-  if (!m?.[1]) return null;
-  const cents = Number.parseInt(m[1], 10);
+  const trimmed = memo.trim();
+  const v2 = trimmed.match(/^HSP2-[a-z0-9]+-(\d+)-[A-Z0-9]+$/i);
+  if (v2?.[1]) {
+    const millis = Number.parseInt(v2[1], 10);
+    if (!Number.isFinite(millis) || millis <= 0) return null;
+    return Math.round(millis) / 1000;
+  }
+  const legacy = trimmed.match(/^HSP-[a-z0-9]+-(\d+)-[A-Z0-9]+$/i);
+  if (!legacy?.[1]) return null;
+  const cents = Number.parseInt(legacy[1], 10);
   if (!Number.isFinite(cents) || cents <= 0) return null;
   return Math.round(cents) / 100;
 }
@@ -30,7 +38,7 @@ export function parseDllrUsdFromProPaymentMemo(memo: string): number | null {
 /** Minimum DLLR top-up so total balance reaches plan price + residual (e.g. 20 when balance is 1). */
 export function minDllrTopUpForPlanUsd(planPriceUsd: number, balanceUsd: number): number {
   const target = planPriceUsd + PRO_TOPUP_RESIDUAL_DLLR_USD;
-  return Math.max(0.01, Math.round((target - balanceUsd) * 100) / 100);
+  return Math.max(0.001, Math.round((target - balanceUsd) * 1000) / 1000);
 }
 
 export function formatQuoteCountdown(remainingMs: number): string {

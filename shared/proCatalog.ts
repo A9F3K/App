@@ -1,13 +1,13 @@
 /**
  * Shared Pro Access catalog: per-feature dollar prices, staged launch flags, term discounts.
  * Charged month price = sum(enabled feature prices) + profit margin ($).
- * Feature prices are independent (cent precision, min $0.01) — no fixed $20 budget.
+ * Feature prices are independent (millicent precision, min $0.001) — no fixed $20 budget.
  */
 
 /** @deprecated Kept for older UI copy; list price is now dynamic. */
 export const PRO_FULL_MONTH_LIST_USD = 20;
-/** Minimum founder-tunable feature / launch price. */
-export const PRO_MIN_FEATURE_USD = 0.01;
+/** Minimum founder-tunable feature / launch / margin price ($0.001). */
+export const PRO_MIN_FEATURE_USD = 0.001;
 
 export const PRO_FEATURE_IDS = [
   "aiModels",
@@ -52,7 +52,7 @@ export type ProCatalogConfig = {
    * Synced from {@link profitMarginUsd} / full list when the catalog is normalized.
    */
   targetProfitMargin: number;
-  /** Fixed profit added on top of enabled feature prices (cent precision). */
+  /** Fixed profit added on top of enabled feature prices (millicent precision). */
   profitMarginUsd: number;
   /** Percent off 3× monthly for quarter term. */
   quarterDiscountPct: number;
@@ -90,11 +90,11 @@ export function roundWholeUsd(n: number): number {
   return Math.max(0, Math.round(n));
 }
 
-/** Round to the nearest cent; values below {@link PRO_MIN_FEATURE_USD} become 0. */
+/** Round to the nearest millicent ($0.001); values below {@link PRO_MIN_FEATURE_USD} become 0. */
 export function roundUsdCents(n: number): number {
   if (!Number.isFinite(n) || n <= 0) return 0;
-  const cents = Math.round(n * 100) / 100;
-  return cents < PRO_MIN_FEATURE_USD ? 0 : cents;
+  const millis = Math.round(n * 1000) / 1000;
+  return millis < PRO_MIN_FEATURE_USD ? 0 : millis;
 }
 
 export function sumFeatureWeights(
@@ -107,7 +107,7 @@ export function sumFeatureWeights(
     const w = weights[id];
     if (Number.isFinite(w) && w > 0) sum += w;
   }
-  return Math.round(sum * 100) / 100;
+  return Math.round(sum * 1000) / 1000;
 }
 
 /** Clamp a founder-entered feature price (independent; no $20 rebalance). */
@@ -191,7 +191,7 @@ export function normalizeProCatalog(
     DEFAULT_PRO_CATALOG.profitMarginUsd,
   );
   const allFeaturesSum = sumFeatureWeights(featureWeights);
-  const fullMonthListUsd = Math.round((allFeaturesSum + profitMarginUsd) * 100) / 100;
+  const fullMonthListUsd = Math.round((allFeaturesSum + profitMarginUsd) * 1000) / 1000;
   return {
     targetProfitMargin: profitMarginFraction(allFeaturesSum, profitMarginUsd),
     profitMarginUsd,
@@ -209,7 +209,7 @@ export function normalizeProCatalog(
 /** Charged monthly price = sum(enabled features) + profit margin $. */
 export function computeProMonthPrice(cfg: ProCatalogConfig): number {
   const sum = sumFeatureWeights(cfg.featureWeights, cfg.featureEnabled);
-  const total = Math.round((sum + Math.max(0, cfg.profitMarginUsd)) * 100) / 100;
+  const total = Math.round((sum + Math.max(0, cfg.profitMarginUsd)) * 1000) / 1000;
   return Math.max(PRO_MIN_FEATURE_USD, roundUsdCents(total) || PRO_MIN_FEATURE_USD);
 }
 
@@ -232,8 +232,8 @@ export function retailFromCogs(cogsUsd: number, margin: number): number {
 export function buildProPlansFromCatalog(cfg: ProCatalogConfig): ProCatalogPlan[] {
   const month = computeProMonthPrice(cfg);
   const listMonth = cfg.fullMonthListUsd;
-  const quarterList = Math.round(listMonth * 3 * 100) / 100;
-  const yearList = Math.round(listMonth * 12 * 100) / 100;
+  const quarterList = Math.round(listMonth * 3 * 1000) / 1000;
+  const yearList = Math.round(listMonth * 12 * 1000) / 1000;
   const quarter = Math.max(
     month,
     roundUsdCents(month * 3 * (1 - cfg.quarterDiscountPct / 100)),
@@ -254,14 +254,14 @@ export function buildProPlansFromCatalog(cfg: ProCatalogConfig): ProCatalogPlan[
       id: "quarter",
       months: 3,
       priceUsd: quarter,
-      monthlyUsd: Math.round((quarter / 3) * 100) / 100,
+      monthlyUsd: Math.round((quarter / 3) * 1000) / 1000,
       listPriceUsd: quarter < quarterList - 1e-9 ? quarterList : undefined,
     },
     {
       id: "year",
       months: 12,
       priceUsd: year,
-      monthlyUsd: Math.round((year / 12) * 100) / 100,
+      monthlyUsd: Math.round((year / 12) * 1000) / 1000,
       listPriceUsd: year < yearList - 1e-9 ? yearList : undefined,
       highlight: true,
     },
