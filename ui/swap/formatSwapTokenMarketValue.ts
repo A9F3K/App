@@ -56,6 +56,20 @@ export function formatSwapTokenPriceUsd(value: number | null | undefined): strin
   return `$${value.toExponential(2)}`;
 }
 
+/** USD notional for a wallet holding (balance × rate). Matches `$` rate style. */
+export function formatSwapHoldingUsd(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) return "—";
+  if (value < 0.01) return "<$0.01";
+  if (value < 1_000) {
+    return `$${value.toFixed(2).replace(/\.?0+$/, "")}`;
+  }
+  if (value < 1_000_000) return `$${Math.round(value / 1_000)}K`;
+  if (value < 1_000_000_000) {
+    return `$${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  return `$${(value / 1_000_000_000).toFixed(1).replace(/\.0$/, "")}B`;
+}
+
 export function formatSwapJettonBalance(balanceRaw: string, decimals: number): string {
   try {
     const raw = BigInt(balanceRaw);

@@ -242,6 +242,7 @@ function CellContent({
           {row.balance}
         </Text>
       );
+    case "value":
     case "rate":
     case "networks":
     case "marketCap":
@@ -527,6 +528,7 @@ const MemoDataRow = memo(
     prev.row.balance === next.row.balance &&
     prev.row.dllrLedger?.hot === next.row.dllrLedger?.hot &&
     prev.row.dllrLedger?.frozen === next.row.dllrLedger?.frozen &&
+    prev.row.value === next.row.value &&
     prev.row.rate === next.row.rate &&
     prev.rank === next.rank &&
     prev.isLast === next.isLast &&
@@ -626,6 +628,7 @@ export function ChooseCurrencyTable({
         rank: t("swap.chooseCurrency.col.rank"),
         currency: t("swap.chooseCurrency.col.currency"),
         balance: t("swap.chooseCurrency.col.balance"),
+        value: t("swap.chooseCurrency.col.value"),
         rate: t("swap.chooseCurrency.col.rate"),
         networks: t("swap.chooseCurrency.col.networks"),
         marketCap: t("swap.chooseCurrency.col.marketCap"),

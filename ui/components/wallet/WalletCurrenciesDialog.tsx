@@ -14,7 +14,7 @@ import { FloatingDialogBody } from "../FloatingDialogBody";
 import { FloatingDialogStickyHeader } from "../FloatingDialogStickyHeader";
 import { ChooseCurrencyTable } from "../swap/ChooseCurrencyTable";
 
-const WALLET_HELD_COLUMNS = ["currency", "balance", "rate"] as const;
+const WALLET_HELD_COLUMNS = ["currency", "balance", "value", "rate"] as const;
 
 type Props = {
   visible: boolean;
@@ -57,8 +57,8 @@ export function WalletCurrenciesDialog({
       visible={visible}
       zIndex={10070}
       defaultSize={defaultSize}
-      minSize={{ width: 300, height: 240 }}
-      sizeStorageKey="hsp.walletCurrencies.size.v2"
+      minSize={{ width: 340, height: 240 }}
+      sizeStorageKey="hsp.walletCurrencies.size.v3"
       offsetStorageKey="hsp.walletCurrencies.offset.v2"
       onRequestClose={onClose}
       testId="wallet-currencies"

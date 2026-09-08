@@ -10,13 +10,14 @@ export type ChooseCurrencyColumnKey =
   | "rank"
   | "currency"
   | "balance"
+  | "value"
   | "rate"
   | "networks"
   | "marketCap"
   | "volume"
   | "lastYear";
 
-export type ChooseCurrencyColumnPriority = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type ChooseCurrencyColumnPriority = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 export type ChooseCurrencyRow = {
   /** Stable list key (jetton address). */
@@ -31,6 +32,8 @@ export type ChooseCurrencyRow = {
    * DLLR-only ledger shown inside the wallet-dialog expand panel (not under the balance cell).
    */
   dllrLedger?: { hot: string; frozen: string };
+  /** USD equivalent of the held balance (balance × rate). */
+  value: string;
   rate: string;
   networks: string;
   marketCap: string;
@@ -60,6 +63,7 @@ export const CHOOSE_CURRENCY_COLUMN_PRIORITY: Record<ChooseCurrencyColumnKey, Ch
     rank: 5,
     currency: 1,
     balance: 4,
+    value: 3,
     rate: 2,
     marketCap: 3,
     networks: 6,
@@ -78,6 +82,7 @@ export function buildChooseCurrencyDllrRow(locale: AppLocale): ChooseCurrencyRow
       icon: swapDllrTokenImage,
     },
     balance: "1",
+    value: "$1",
     rate: "$1",
     networks: "TON, ETH...",
     marketCapUsd,

@@ -11,6 +11,7 @@ import { fetchTonapiAccountHoldings } from "../ton/fetchTonapiAccountHoldings";
 import { requestWalletActivate } from "../ton/requestWalletActivate";
 import { postWalletTopUpFeedNotification } from "../feed/feedNotificationActions";
 import {
+  formatSwapHoldingUsd,
   formatSwapJettonBalance,
   formatSwapTokenPriceUsd,
 } from "../swap/formatSwapTokenMarketValue";
@@ -46,10 +47,20 @@ function buildHeldRow(
   balance: string,
   priceUsd: number | null | undefined,
 ): ChooseCurrencyRow {
+  const balanceNum = Number.parseFloat(balance.replace(/,/g, ""));
+  const usd =
+    Number.isFinite(balanceNum) &&
+    balanceNum > 0 &&
+    priceUsd != null &&
+    Number.isFinite(priceUsd) &&
+    priceUsd > 0
+      ? balanceNum * priceUsd
+      : 0;
   return {
     rowKey,
     currency: { name, ticker, icon },
     balance,
+    value: formatSwapHoldingUsd(usd),
     rate: formatSwapTokenPriceUsd(priceUsd),
     networks: "TON",
     marketCapUsd: 0,
@@ -135,6 +146,7 @@ export function useWalletHeldCurrencyRows(
     return {
       ...base,
       balance: bal || "0",
+      value: formatSwapHoldingUsd(dllrBalanceUsd),
       dllrLedger: {
         hot: fmt(dllrHotUsd),
         frozen: fmt(dllrFrozenUsd),

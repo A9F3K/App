@@ -36,6 +36,7 @@ export const CHOOSE_CURRENCY_TABLE_MINI_CHART_MIN_WIDTH_PX = 40;
 export const CHOOSE_CURRENCY_TABLE_RANK_COLUMN_FLOOR_PX = 22;
 export const CHOOSE_CURRENCY_TABLE_CURRENCY_COLUMN_FLOOR_PX = 120;
 export const CHOOSE_CURRENCY_TABLE_BALANCE_COLUMN_FLOOR_PX = 52;
+export const CHOOSE_CURRENCY_TABLE_VALUE_COLUMN_FLOOR_PX = 64;
 export const CHOOSE_CURRENCY_TABLE_RATE_COLUMN_FLOOR_PX = 76;
 export const CHOOSE_CURRENCY_TABLE_NETWORKS_COLUMN_FLOOR_PX = 56;
 export const CHOOSE_CURRENCY_TABLE_MARKET_CAP_COLUMN_FLOOR_PX = 88;
@@ -60,6 +61,16 @@ export const CHOOSE_CURRENCY_TABLE_VOLUME_LAYOUT_SAMPLES = [
   "2.1T$+",
 ] as const;
 export const CHOOSE_CURRENCY_TABLE_LAST_YEAR_COLUMN_FLOOR_PX = 44;
+
+/** Representative wallet USD-value strings for column width measurement. */
+export const CHOOSE_CURRENCY_TABLE_VALUE_LAYOUT_SAMPLES = [
+  "$1",
+  "$12.34",
+  "<$0.01",
+  "$999.99",
+  "$12K",
+  "$1.2M",
+] as const;
 
 /** Representative rate strings for column width measurement (micro-cap tokens). */
 export const CHOOSE_CURRENCY_TABLE_RATE_LAYOUT_SAMPLES = [

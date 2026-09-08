@@ -17,6 +17,8 @@ import {
   CHOOSE_CURRENCY_TABLE_RANK_LAYOUT_SAMPLE,
   CHOOSE_CURRENCY_TABLE_RATE_COLUMN_FLOOR_PX,
   CHOOSE_CURRENCY_TABLE_RATE_LAYOUT_SAMPLES,
+  CHOOSE_CURRENCY_TABLE_VALUE_COLUMN_FLOOR_PX,
+  CHOOSE_CURRENCY_TABLE_VALUE_LAYOUT_SAMPLES,
   CHOOSE_CURRENCY_TABLE_VOLUME_COLUMN_FLOOR_PX,
   CHOOSE_CURRENCY_TABLE_VOLUME_LAYOUT_SAMPLES,
 } from "./chooseCurrencyTableConstants";
@@ -123,6 +125,7 @@ const COLUMN_FLOOR_PX: Record<ChooseCurrencyColumnKey, number> = {
   rank: CHOOSE_CURRENCY_TABLE_RANK_COLUMN_FLOOR_PX,
   currency: CHOOSE_CURRENCY_TABLE_CURRENCY_COLUMN_FLOOR_PX,
   balance: CHOOSE_CURRENCY_TABLE_BALANCE_COLUMN_FLOOR_PX,
+  value: CHOOSE_CURRENCY_TABLE_VALUE_COLUMN_FLOOR_PX,
   rate: CHOOSE_CURRENCY_TABLE_RATE_COLUMN_FLOOR_PX,
   networks: CHOOSE_CURRENCY_TABLE_NETWORKS_COLUMN_FLOOR_PX,
   marketCap: CHOOSE_CURRENCY_TABLE_MARKET_CAP_COLUMN_FLOOR_PX,
@@ -134,6 +137,7 @@ const COLUMN_FLEX_WEIGHT: Record<ChooseCurrencyColumnKey, number> = {
   rank: 0,
   currency: 5,
   balance: 1.2,
+  value: 1.2,
   rate: 1.2,
   marketCap: 1,
   networks: 0.85,
@@ -145,6 +149,7 @@ const COLUMN_MAX_SHELL_FRACTION: Record<ChooseCurrencyColumnKey, number> = {
   rank: 0.1,
   currency: 0.5,
   balance: 0.2,
+  value: 0.2,
   rate: 0.2,
   marketCap: 0.18,
   networks: 0.16,
@@ -267,6 +272,19 @@ export function buildChooseCurrencyColumnMetrics(
       "balance",
       textContentWidthPx(headers.balance, stableRows.map((row) => row.balance)),
       textContentWidthPx(headers.balance, idealRows.map((row) => row.balance)),
+    ),
+    buildColumnMetrics(
+      "value",
+      compactUsdContentWidthPx(
+        headers.value,
+        stableRows.map((row) => row.value),
+        CHOOSE_CURRENCY_TABLE_VALUE_LAYOUT_SAMPLES,
+      ),
+      compactUsdContentWidthPx(
+        headers.value,
+        idealRows.map((row) => row.value),
+        CHOOSE_CURRENCY_TABLE_VALUE_LAYOUT_SAMPLES,
+      ),
     ),
     buildColumnMetrics(
       "rate",

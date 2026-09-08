@@ -84,8 +84,7 @@ export function ProAccessDialog({ visible, onClose }: Props) {
   );
 
   const onFooterLayout = useCallback((e: LayoutChangeEvent) => {
-    const h = e.nativeEvent.layout.height;
-    if (h > 0) setFooterExtendPx(h);
+    setFooterExtendPx(e.nativeEvent.layout.height);
   }, []);
 
   useEffect(() => {
@@ -117,6 +116,10 @@ export function ProAccessDialog({ visible, onClose }: Props) {
   const expiresLabel = proState.expiresAt
     ? new Date(proState.expiresAt).toLocaleDateString()
     : "";
+
+  useEffect(() => {
+    if (proActive && !switchingPlan) setFooterExtendPx(0);
+  }, [proActive, switchingPlan]);
 
   const tariffsVisible = visible && !paymentOpen;
 
@@ -184,9 +187,9 @@ export function ProAccessDialog({ visible, onClose }: Props) {
                       borderColor: lightTheme
                         ? "rgba(0,0,0,0.08)"
                         : "rgba(255,255,255,0.08)",
-                      paddingHorizontal: 16,
-                      paddingVertical: 16,
-                      gap: 10,
+                      paddingHorizontal: 14,
+                      paddingVertical: 12,
+                      gap: 8,
                       ...(Platform.OS === "web"
                         ? ({
                             boxShadow: lightTheme
@@ -209,16 +212,24 @@ export function ProAccessDialog({ visible, onClose }: Props) {
                           paddingHorizontal: 8,
                           paddingVertical: 3,
                           borderRadius: 8,
-                          backgroundColor: lightTheme
-                            ? "rgba(0,200,80,0.14)"
-                            : "rgba(0,224,90,0.18)",
+                          backgroundColor: proState.cancelAtPeriodEnd
+                            ? cancelChipBg
+                            : lightTheme
+                              ? "rgba(0,200,80,0.14)"
+                              : "rgba(0,224,90,0.18)",
                           borderWidth: 1,
-                          borderColor: HYPERLINKS_SPACE_LOGO_GREEN,
+                          borderColor: proState.cancelAtPeriodEnd
+                            ? cancelRed
+                            : HYPERLINKS_SPACE_LOGO_GREEN,
                         }}
                       >
                         <Text
                           style={{
-                            color: lightTheme ? "#007A32" : HYPERLINKS_SPACE_LOGO_GREEN,
+                            color: proState.cancelAtPeriodEnd
+                              ? cancelRed
+                              : lightTheme
+                                ? "#007A32"
+                                : HYPERLINKS_SPACE_LOGO_GREEN,
                             fontSize: 11,
                             fontWeight: "700",
                             letterSpacing: 0.4,
@@ -226,64 +237,56 @@ export function ProAccessDialog({ visible, onClose }: Props) {
                           }}
                         >
                           {proState.cancelAtPeriodEnd
-                            ? tf("pro.sale.cancelledBadge", { date: expiresLabel })
+                            ? t("pro.sale.cancelledBadge")
                             : t("pro.sale.activeBadge")}
                         </Text>
                       </View>
                       <Text
                         style={{
                           color: ink,
-                          fontSize: 13,
-                          fontWeight: "600",
+                          fontSize: 16,
+                          lineHeight: 22,
+                          fontWeight: "700",
                           fontFamily: labelFont,
+                          flexShrink: 1,
                         }}
+                        numberOfLines={1}
                       >
-                        {t("pro.sale.manageTitle")}
+                        {tf("pro.sale.managePlanLine", {
+                          plan: activePlanLabel,
+                          price: formatUsd(activePlan.priceUsd),
+                        })}
                       </Text>
                     </View>
 
-                    <Text
+                    <View
                       style={{
-                        color: ink,
-                        fontSize: 20,
-                        lineHeight: 26,
-                        fontWeight: "700",
-                        fontFamily: labelFont,
+                        flexDirection: "row",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: 8,
+                        justifyContent: "space-between",
                       }}
                     >
-                      {tf("pro.sale.managePlanLine", {
-                        plan: activePlanLabel,
-                        price: formatUsd(activePlan.priceUsd),
-                      })}
-                    </Text>
+                      {expiresLabel ? (
+                        <Text
+                          style={{
+                            color: muted,
+                            fontSize: 13,
+                            lineHeight: 18,
+                            fontFamily: labelFont,
+                            flexShrink: 1,
+                          }}
+                          numberOfLines={1}
+                        >
+                          {proState.cancelAtPeriodEnd
+                            ? tf("pro.sale.cancelledUntil", { date: expiresLabel })
+                            : tf("pro.sale.activeUntil", { date: expiresLabel })}
+                        </Text>
+                      ) : (
+                        <View />
+                      )}
 
-                    <Text
-                      style={{
-                        color: muted,
-                        fontSize: 14,
-                        lineHeight: 20,
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {proState.cancelAtPeriodEnd
-                        ? tf("pro.sale.cancelledHint", { date: expiresLabel })
-                        : tf("pro.sale.activatedHint", { plan: activePlanLabel })}
-                    </Text>
-
-                    {expiresLabel ? (
-                      <Text
-                        style={{
-                          color: muted,
-                          fontSize: 13,
-                          lineHeight: 18,
-                          fontFamily: labelFont,
-                        }}
-                      >
-                        {tf("pro.sale.activeUntil", { date: expiresLabel })}
-                      </Text>
-                    ) : null}
-
-                    <View style={{ gap: 6, marginTop: 4, alignItems: "flex-start" }}>
                       {proState.cancelAtPeriodEnd ? (
                         <Pressable
                           accessibilityRole="button"
@@ -317,55 +320,41 @@ export function ProAccessDialog({ visible, onClose }: Props) {
                           </Text>
                         </Pressable>
                       ) : (
-                        <>
-                          <Pressable
-                            accessibilityRole="button"
-                            accessibilityLabel={t("pro.sale.cancel")}
-                            hitSlop={4}
-                            onPress={() => cancelProAccessAtPeriodEnd()}
-                            style={({ pressed }) => ({
-                              height: 16,
-                              paddingHorizontal: 6,
-                              borderRadius: 8,
-                              alignItems: "center",
-                              justifyContent: "center",
-                              backgroundColor: pressed
-                                ? lightTheme
-                                  ? "rgba(198,40,40,0.18)"
-                                  : "rgba(255,107,107,0.22)"
-                                : cancelChipBg,
-                              flexShrink: 0,
-                            })}
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={t("pro.sale.cancel")}
+                          hitSlop={4}
+                          onPress={() => cancelProAccessAtPeriodEnd()}
+                          style={({ pressed }) => ({
+                            height: 16,
+                            paddingHorizontal: 6,
+                            borderRadius: 8,
+                            alignItems: "center",
+                            justifyContent: "center",
+                            backgroundColor: pressed
+                              ? lightTheme
+                                ? "rgba(198,40,40,0.18)"
+                                : "rgba(255,107,107,0.22)"
+                              : cancelChipBg,
+                            flexShrink: 0,
+                          })}
+                        >
+                          <Text
+                            style={{
+                              color: cancelRed,
+                              fontSize: 10,
+                              lineHeight: 12,
+                              fontWeight: "400",
+                              fontFamily: labelFont,
+                              ...(Platform.OS === "android"
+                                ? { includeFontPadding: false }
+                                : null),
+                            }}
+                            numberOfLines={1}
                           >
-                            <Text
-                              style={{
-                                color: cancelRed,
-                                fontSize: 10,
-                                lineHeight: 12,
-                                fontWeight: "400",
-                                fontFamily: labelFont,
-                                ...(Platform.OS === "android"
-                                  ? { includeFontPadding: false }
-                                  : null),
-                              }}
-                              numberOfLines={1}
-                            >
-                              {t("pro.sale.cancel")}
-                            </Text>
-                          </Pressable>
-                          {expiresLabel ? (
-                            <Text
-                              style={{
-                                color: muted,
-                                fontSize: 12,
-                                lineHeight: 16,
-                                fontFamily: labelFont,
-                              }}
-                            >
-                              {tf("pro.sale.cancelHint", { date: expiresLabel })}
-                            </Text>
-                          ) : null}
-                        </>
+                            {t("pro.sale.cancel")}
+                          </Text>
+                        </Pressable>
                       )}
                     </View>
                   </View>
@@ -500,26 +489,26 @@ export function ProAccessDialog({ visible, onClose }: Props) {
               </View>
             </HspScrollColumn>
 
-            <View
-              onLayout={onFooterLayout}
-              style={{
-                flexShrink: 0,
-                backgroundColor: colors.background,
-                zIndex: 4,
-              }}
-            >
-              <SmartGradientDivider bleedPastContentInset={false} horizontalPaddingPx={0} />
+            {(!proActive || switchingPlan) ? (
               <View
+                onLayout={onFooterLayout}
                 style={{
-                  paddingHorizontal: dialogInsets.padX,
-                  paddingTop: 14,
-                  paddingBottom: dialogInsets.headerPadBottom + 6,
-                  gap: 10,
-                  alignItems: "center",
+                  flexShrink: 0,
+                  backgroundColor: colors.background,
+                  zIndex: 4,
                 }}
               >
-                {proActive ? (
-                  switchingPlan ? (
+                <SmartGradientDivider bleedPastContentInset={false} horizontalPaddingPx={0} />
+                <View
+                  style={{
+                    paddingHorizontal: dialogInsets.padX,
+                    paddingTop: 14,
+                    paddingBottom: dialogInsets.headerPadBottom + 6,
+                    gap: 10,
+                    alignItems: "center",
+                  }}
+                >
+                  {proActive ? (
                     <ProSubscribeButton
                       label={tf("pro.sale.switch", {
                         plan: selectedPlanLabel,
@@ -528,55 +517,40 @@ export function ProAccessDialog({ visible, onClose }: Props) {
                       onPress={onSubscribe}
                     />
                   ) : (
-                    <Text
-                      style={{
-                        color: muted,
-                        fontSize: 12,
-                        lineHeight: 17,
-                        textAlign: "center",
-                        alignSelf: "stretch",
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {expiresLabel
-                        ? tf("pro.sale.activeUntil", { date: expiresLabel })
-                        : t("pro.sale.activated")}
-                    </Text>
-                  )
-                ) : (
-                  <>
-                    <ProSubscribeButton
-                      label={tf("pro.sale.subscribe", { price: formatUsd(selected.priceUsd) })}
-                      onPress={onSubscribe}
-                    />
-                    <Text
-                      style={{
-                        color: muted,
-                        fontSize: 12,
-                        lineHeight: 17,
-                        textAlign: "center",
-                        alignSelf: "stretch",
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {t("pro.sale.soonFooter")}
-                    </Text>
-                    <Text
-                      style={{
-                        color: muted,
-                        fontSize: 12,
-                        lineHeight: 17,
-                        textAlign: "center",
-                        alignSelf: "stretch",
-                        fontFamily: labelFont,
-                      }}
-                    >
-                      {t("pro.sale.footer")}
-                    </Text>
-                  </>
-                )}
+                    <>
+                      <ProSubscribeButton
+                        label={tf("pro.sale.subscribe", { price: formatUsd(selected.priceUsd) })}
+                        onPress={onSubscribe}
+                      />
+                      <Text
+                        style={{
+                          color: muted,
+                          fontSize: 12,
+                          lineHeight: 17,
+                          textAlign: "center",
+                          alignSelf: "stretch",
+                          fontFamily: labelFont,
+                        }}
+                      >
+                        {t("pro.sale.soonFooter")}
+                      </Text>
+                      <Text
+                        style={{
+                          color: muted,
+                          fontSize: 12,
+                          lineHeight: 17,
+                          textAlign: "center",
+                          alignSelf: "stretch",
+                          fontFamily: labelFont,
+                        }}
+                      >
+                        {t("pro.sale.footer")}
+                      </Text>
+                    </>
+                  )}
+                </View>
               </View>
-            </View>
+            ) : null}
           </FloatingDialogBody>
         </FloatingDialogScrollChromeProvider>
       </FloatingDialogShell>

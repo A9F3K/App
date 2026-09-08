@@ -274,16 +274,16 @@ const en = {
   "pro.sale.manageTitle": "Your subscription",
   "pro.sale.managePlanLine": "{{plan}} · {{price}}",
   "pro.sale.changePlan": "Change plan",
-  "pro.sale.changePlanHint":
-    "Pick another tariff to switch. You’ll pay the new plan price and a fresh period starts from today.",
+  "pro.sale.changePlanHint": "Select another plan to switch. New period starts after payment.",
   "pro.sale.switch": "Switch to {{plan}} · {{price}}",
-  "pro.sale.cancel": "Cancel subscription",
+  "pro.sale.cancel": "Cancel",
   "pro.sale.cancelHint":
     "Your current period remains. Pro stays available until {{date}}.",
-  "pro.sale.cancelledBadge": "Ends {{date}}",
+  "pro.sale.cancelledBadge": "Cancelling",
+  "pro.sale.cancelledUntil": "Ends {{date}} · period kept",
   "pro.sale.cancelledHint":
     "Cancellation scheduled. You keep Pro until {{date}} — no further period after that.",
-  "pro.sale.resume": "Keep subscription",
+  "pro.sale.resume": "Keep",
   "pro.sale.footer":
     "Pro includes all AI models, unlimited messenger accounts, VPN & Proxy, and VIP features. Your plan renews until you cancel — cancel anytime before the next billing date.",
   "pro.sale.soonFooter":
@@ -644,6 +644,7 @@ const en = {
   "swap.chooseCurrency.col.rank": "#",
   "swap.chooseCurrency.col.currency": "Currency",
   "swap.chooseCurrency.col.balance": "Balance",
+  "swap.chooseCurrency.col.value": "Value",
   "swap.chooseCurrency.col.rate": "Rate",
   "swap.chooseCurrency.col.networks": "Networks",
   "swap.chooseCurrency.col.marketCap": "Market Cap",
@@ -1117,16 +1118,16 @@ const ru = {
   "pro.sale.manageTitle": "Ваша подписка",
   "pro.sale.managePlanLine": "{{plan}} · {{price}}",
   "pro.sale.changePlan": "Сменить тариф",
-  "pro.sale.changePlanHint":
-    "Выберите другой тариф. Оплачивается новая цена, и период начинается заново с сегодняшнего дня.",
+  "pro.sale.changePlanHint": "Выберите другой тариф — новый период после оплаты.",
   "pro.sale.switch": "Перейти на {{plan}} · {{price}}",
-  "pro.sale.cancel": "Отменить подписку",
+  "pro.sale.cancel": "Отменить",
   "pro.sale.cancelHint":
     "Текущий период сохраняется. Pro доступен до {{date}}.",
-  "pro.sale.cancelledBadge": "До {{date}}",
+  "pro.sale.cancelledBadge": "Отмена",
+  "pro.sale.cancelledUntil": "До {{date}} · период сохранён",
   "pro.sale.cancelledHint":
     "Отмена запланирована. Pro остаётся до {{date}} — дальше период не продлевается.",
-  "pro.sale.resume": "Оставить подписку",
+  "pro.sale.resume": "Оставить",
   "pro.sale.footer":
     "Pro включает все модели ИИ, безлимитные аккаунты мессенджера, VPN и Proxy и VIP-функции. Подписка продлевается, пока вы не отмените — отмена до следующего списания.",
   "pro.sale.soonFooter":
@@ -1487,6 +1488,7 @@ const ru = {
   "swap.chooseCurrency.col.rank": "#",
   "swap.chooseCurrency.col.currency": "Валюта",
   "swap.chooseCurrency.col.balance": "Баланс",
+  "swap.chooseCurrency.col.value": "В $",
   "swap.chooseCurrency.col.rate": "Курс",
   "swap.chooseCurrency.col.networks": "Сети",
   "swap.chooseCurrency.col.marketCap": "Капитализация",
@@ -1923,16 +1925,16 @@ const zh = {
   "pro.sale.manageTitle": "你的订阅",
   "pro.sale.managePlanLine": "{{plan}} · {{price}}",
   "pro.sale.changePlan": "更换套餐",
-  "pro.sale.changePlanHint":
-    "选择其他套餐即可切换。将按新套餐价格付款，并从今天起重新计算周期。",
+  "pro.sale.changePlanHint": "选择其他套餐即可切换，付款后重新起算周期。",
   "pro.sale.switch": "切换到 {{plan}} · {{price}}",
-  "pro.sale.cancel": "取消订阅",
+  "pro.sale.cancel": "取消",
   "pro.sale.cancelHint":
     "当前周期保留。Pro 可用至 {{date}}。",
-  "pro.sale.cancelledBadge": "至 {{date}}",
+  "pro.sale.cancelledBadge": "将取消",
+  "pro.sale.cancelledUntil": "至 {{date}} · 周期保留",
   "pro.sale.cancelledHint":
     "已安排取消。Pro 保留至 {{date}}，之后不再续期。",
-  "pro.sale.resume": "保留订阅",
+  "pro.sale.resume": "保留",
   "pro.sale.footer":
     "Pro 包含全部 AI 模型、无限消息账户、VPN 与 Proxy 以及 VIP 功能。订阅会自动续费，可在下一计费日前随时取消。",
   "pro.sale.soonFooter":
@@ -2287,6 +2289,7 @@ const zh = {
   "swap.chooseCurrency.col.rank": "#",
   "swap.chooseCurrency.col.currency": "货币",
   "swap.chooseCurrency.col.balance": "余额",
+  "swap.chooseCurrency.col.value": "美元",
   "swap.chooseCurrency.col.rate": "汇率",
   "swap.chooseCurrency.col.networks": "网络",
   "swap.chooseCurrency.col.marketCap": "市值",
